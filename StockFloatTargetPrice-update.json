@@ -1,18 +1,18 @@
 {
   "schema": 1,
   "channel": "stable",
-  "version": "1.4.0",
-  "published_at": "2026-09-20T10:06:49Z",
+  "version": "1.4.1",
+  "published_at": "2026-09-20T10:33:31Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
   "notes": "V1.3.99 发布说明：\n1. 更新检查：检查更新时立即显示等待状态，避免点击后长时间没有反馈。\n2. 下载进度：显示已下载大小和百分比，下载过程中可以取消。\n3. 安装启动：安装后确认新版本持续运行，启动后立即崩溃会自动恢复旧版本。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.0-macos.zip",
-    "size": 27446459,
-    "sha256": "298e58290ed30809d0a30f72b09d22ba512efbbd92846a345580245a9b1c875e"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.1-macos.zip",
+    "size": 27448344,
+    "sha256": "eefce6df395c4d313a3a90ea23ab9f76bc363a77677f002c49047089d9a1c6c2"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "sYaFufsa//qTtC5fx0VplN4AS1o4VeW3yypNNRAPz+mJgtqNC9gJ73SlNFLtr2mALIDJSiFSBR9r0V6BRtzzCQ=="
+    "value": "KL3KUZnlEQeGpHviZXj5+IvQ2/ksQpFrWp7ZAYtcW65lDkCpBsVJFfGSlScaM7QRTEnibYedDwoUcMTufoypBQ=="
   }
 }
