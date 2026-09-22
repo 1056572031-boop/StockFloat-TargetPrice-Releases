@@ -1,18 +1,18 @@
 {
   "schema": 1,
   "channel": "stable",
-  "version": "1.4.6",
-  "published_at": "2026-09-22T02:57:59Z",
+  "version": "1.4.7",
+  "published_at": "2026-09-22T03:34:18Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "V1.4.6 发布说明:\n1. 弹窗样式：更新提示（检查中、发现新版本、结果通知）改用 macOS 系统默认弹窗样式，由系统绘制并显示应用图标，不再使用 Qt 自绘窗口。\n2. 稳定性：弹窗交互移到独立系统进程，主程序退出时不再有窗口析构竞态；\"立即更新/暂不更新\"按钮与更新说明文案保持不变。\n3. 使用体验：行情展示、目标价提醒和现有操作方式保持不变。",
+  "notes": "V1.4.7 发布说明:\n1. 分时图容错：盘中数据源短暂故障时不再清空曲线闪回\"加载中\"——保留当日已有走势，压暗显示并提示\"数据暂缺 · 重试中\"，重连成功后自动恢复实时亮度。\n2. 状态诚实：滞后期间末端呼吸点静止，绝不把旧数据冒充实时；跨日旧数据仍会清空，避免误导走势进度。\n3. 使用体验：行情展示、目标价提醒和现有操作方式保持不变。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.6-macos.zip",
-    "size": 27451949,
-    "sha256": "a0cf3014e6a8d5c95ad74fe0f900ecea9d493eb91554becbb598c05058074a26"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.7-macos.zip",
+    "size": 27453932,
+    "sha256": "e61897b2fedde98727d11d68abd318a48bd847fb21018067c596c5d6452de1bf"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "vCHjabvgK9hPlM5U0vBjsb4Koy4+kkRtf9HLCE8R+FtuQMIWv4gdyYni0BQ8Qg39MD8YyTumNGe3RaWeeBv4AA=="
+    "value": "9ldg7Y05HkXVsLKd36vkCfpUOgIF/rb4nqhkmUwkIxsM+DLbrl3Z/Z7HETd1sVb0rXzxeYlOnXV4Djbhya2nBQ=="
   }
 }
