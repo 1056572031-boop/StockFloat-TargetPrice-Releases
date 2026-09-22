@@ -1,18 +1,18 @@
 {
   "schema": 1,
   "channel": "stable",
-  "version": "1.4.12",
-  "published_at": "2026-09-22T10:55:24Z",
+  "version": "1.4.13",
+  "published_at": "2026-09-22T11:33:17Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "V1.4.12 发布说明:\n1. 功耗优化：消除价格滚动动画期间的重复帧——每条行情到达时原本会额外做一次整窗重绘，\n   而紧接着的动画帧在 16 毫秒内本来就会重绘价格区域，属于纯重复。实测盘中绘制帧数\n   62~68 帧/秒降到 56 帧/秒，整窗重绘占比从 15% 降到 1%，进程 CPU 由 16.9% 降到 13.8%\n   （单核占比，真实窗口稳态）。数字滚动的帧率、时长与观感不变。\n2. 保留例外：日内最高/最低同时刷新、以及动画定时器未真正启动时，仍按原样立即整窗重绘，\n   确保任何情况下新价格与底部数据都会即时上屏。\n3. 使用体验：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、\n   端到端延迟与现有操作方式全部保持不变。",
+  "notes": "V1.4.13 发布说明:\n1. 回退 v1.4.12 的\"减少重复帧\"优化：那次改动会让分时图末端的呼吸灯从约 10 帧/秒掉到\n   约 1 帧/秒（呼吸灯的相位按墙上时钟计算，只有整窗重绘才会更新它，而价格滚动动画的\n   局部重绘按设计不碰图表区）。老板明确要求不得牺牲高帧率，故恢复每条行情到达时的整窗重绘。\n2. 结果：盘中价格滚动仍约 56~68 帧/秒、呼吸灯恢复约 10 帧/秒的平滑起伏；\n   相比 v1.4.11 的功耗收益相应回退（真实窗口盘中约 13.8% 回到 16.9% 单核）。\n3. 保留不变：v1.4.10 的后台线程按需休眠、数据交付信号驱动、置顶复核幂等化仍然生效，\n   盘后/周末的功耗收益（1.57% → 0.62% 单核、唤醒 24 → 5.5 次/秒）完整保留。\n4. 新增回归护栏：用例钉死\"呼吸灯需要整窗帧驱动\"这条耦合，今后任何\"少画一帧\"的优化\n   都会先被这组用例挡下来，不会再悄悄把可见动效的帧率换掉。\n5. 使用体验：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、\n   端到端延迟与现有操作方式全部保持不变。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.12-macos.zip",
-    "size": 27463589,
-    "sha256": "a7e91fa3e4af28a0d36e222ab376f76ce83e7aec203af7bc43402289979ca3e3"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.13-macos.zip",
+    "size": 27464126,
+    "sha256": "08d7f9f4789550c88b8b05af57b407056317c526dfabaf0c5042bb72329b83cc"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "lzDUDypdfNpQ1gfm4DS8f5DTZNLguJ/8Z+sjZraclytU3jTSy/y+/oRbsfLOPjHd6XBhQxzkNzJT8/NBfQBDAg=="
+    "value": "vhSRxTwBezKPISFprIODqTxdA59lt9LJaj8D78cgdV5xVZ4i6Hw66COZtqmzHoq578viKXYBU+QgX8xZACkmDA=="
   }
 }
