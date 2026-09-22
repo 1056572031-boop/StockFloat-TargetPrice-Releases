@@ -1,18 +1,18 @@
 {
   "schema": 1,
   "channel": "stable",
-  "version": "1.4.10",
-  "published_at": "2026-09-22T09:55:25Z",
+  "version": "1.4.11",
+  "published_at": "2026-09-22T10:14:46Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "V1.4.9 发布说明:\n1. 安全加固：更新提示的降级通道改为\"固定脚本 + 参数化传文本\"，远程更新清单中的版本号/说明文字只作为显示参数、绝不进入可执行脚本源码，从机制上消除脚本注入面（安全扫描整改）。\n2. 弹窗样式：保持 v1.4.8 的 macOS 原生 NSAlert 弹窗不变。\n3. 使用体验：行情展示、目标价提醒和现有操作方式保持不变。",
+  "notes": "V1.4.11 发布说明:\n1. 界面修复：启动时主界面右上角四个按钮\"先突然放大、再缩回正常\"的跳变已消除——按钮图标改为在窗口露出之前就准备就绪，第一帧显示的就是最终造型（编辑齿轮/最小化/关闭/目标价铃铛的大小与线条粗细不再变化）。\n2. 功耗优化（承接 v1.4.10）：常驻后台线程改为按需休眠、界面数据交付改为信号驱动、窗口置顶复核幂等化；行情拉取节奏、熔断降档、重试策略与端到端延迟均不变。\n3. 使用体验：行情展示、目标价提醒和现有操作方式保持不变。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.10-macos.zip",
-    "size": 27464297,
-    "sha256": "151ededbb36043bc065b4f7cc7243af96066c486a5e8be69e73b36423dd963b5"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.11-macos.zip",
+    "size": 27464730,
+    "sha256": "3707ce52c49afb48623a4a90c865a524da5cb3665d3b3508ef9e33632ae655df"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "gjTlKKYpjmE9Nvcj2jQ6yXWVVn5TOR6Bm3fZN/wdMldqsXAflrp9hL+tuYXxGJfJXMjCK/fmYpNcXX8frgIUDQ=="
+    "value": "WPSrN1Hg/j5GIiHr+wTORbRzEzSa92TDj1vf2alfLAXbZlIzVpnafQoamHHShByJwF0+cnrxsRFNcDxg/KmyBg=="
   }
 }
