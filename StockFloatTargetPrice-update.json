@@ -1,18 +1,18 @@
 {
   "schema": 1,
   "channel": "stable",
-  "version": "1.4.11",
-  "published_at": "2026-09-22T10:14:46Z",
+  "version": "1.4.12",
+  "published_at": "2026-09-22T10:55:24Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "V1.4.11 发布说明:\n1. 界面修复：启动时主界面右上角四个按钮\"先突然放大、再缩回正常\"的跳变已消除——按钮图标改为在窗口露出之前就准备就绪，第一帧显示的就是最终造型（编辑齿轮/最小化/关闭/目标价铃铛的大小与线条粗细不再变化）。\n2. 功耗优化（承接 v1.4.10）：常驻后台线程改为按需休眠、界面数据交付改为信号驱动、窗口置顶复核幂等化；行情拉取节奏、熔断降档、重试策略与端到端延迟均不变。\n3. 使用体验：行情展示、目标价提醒和现有操作方式保持不变。",
+  "notes": "V1.4.12 发布说明:\n1. 功耗优化：消除价格滚动动画期间的重复帧——每条行情到达时原本会额外做一次整窗重绘，\n   而紧接着的动画帧在 16 毫秒内本来就会重绘价格区域，属于纯重复。实测盘中绘制帧数\n   62~68 帧/秒降到 56 帧/秒，整窗重绘占比从 15% 降到 1%，进程 CPU 由 16.9% 降到 13.8%\n   （单核占比，真实窗口稳态）。数字滚动的帧率、时长与观感不变。\n2. 保留例外：日内最高/最低同时刷新、以及动画定时器未真正启动时，仍按原样立即整窗重绘，\n   确保任何情况下新价格与底部数据都会即时上屏。\n3. 使用体验：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、\n   端到端延迟与现有操作方式全部保持不变。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.11-macos.zip",
-    "size": 27464730,
-    "sha256": "3707ce52c49afb48623a4a90c865a524da5cb3665d3b3508ef9e33632ae655df"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.12-macos.zip",
+    "size": 27463589,
+    "sha256": "a7e91fa3e4af28a0d36e222ab376f76ce83e7aec203af7bc43402289979ca3e3"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "WPSrN1Hg/j5GIiHr+wTORbRzEzSa92TDj1vf2alfLAXbZlIzVpnafQoamHHShByJwF0+cnrxsRFNcDxg/KmyBg=="
+    "value": "lzDUDypdfNpQ1gfm4DS8f5DTZNLguJ/8Z+sjZraclytU3jTSy/y+/oRbsfLOPjHd6XBhQxzkNzJT8/NBfQBDAg=="
   }
 }
