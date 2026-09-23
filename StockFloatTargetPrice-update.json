@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.26",
-  "published_at": "2026-09-23T10:30:56Z",
+  "version": "1.4.27",
+  "published_at": "2026-09-23T12:17:08Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复悬浮窗只显示背景、不显示任何界面元素的问题：行情、分时图与顶部按钮全部不可见，\n   但按原位置点击仍然有效。根因是毛玻璃背景层与内容层同属最高层级，先后顺序只由最后\n   一次上屏调用决定；一旦背景层排到内容层之上，原有置顶复核读到的窗口属性全部正常，\n   永远不会去纠正，空壳状态因此长期保持。\n2. 本轮分三层修复，均不改变窗口层级与外观：① 背景层每次上屏后强制重做一次完整置顶，\n   不再被稳态复核跳过；② 侦测到活动桌面（Space）变化时立即重排，覆盖第三方浏览器\n   进出全屏的时刻，响应不超过 250 毫秒（与置顶复核同频）；③ 每 5 秒向系统查询一次\n   两窗实际前后顺序，兜底纠正来源不明的倒序。稳态下仍为零系统写调用，新增查询实测\n   单次 0.76 微秒，功耗结论不变。\n3. 验证状态：倒序发生后\"永不自愈\"已在本机实测复现并修复；触发点在本机两条路径\n   （缩小到 Dock 后恢复、真实浏览器进出全屏）上未能复现，疑与机型或时序有关，\n   已加入运行日志取证，再次出现时可直接判定原因。\n4. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端延迟、\n   悬浮窗外观与交互。",
+  "notes": "1. 完成 v1.4.26 代码走查后的修复，界面与交互无可感知变化：强制置顶入口改为不带\n   参数的独立方法，消除与既有测试及性能测量工具替身签名的冲突（该冲突会在窗口\n   恢复流程中抛出异常并中断收尾动作）。\n2. 补齐合成顺序判定的回归用例：玻璃层与内容层在系统窗口列表中的前后关系、仅有\n   单层在屏时不作判断、系统查询异常时静默降级，三项均纳入自动检查。\n3. 运行日志的置顶重排取证按原因分别记录，同一原因 60 秒内只保留一条并合并计数，\n   避免长期未愈的故障刷屏冲掉其他排障信息。\n4. 文档口径校正：窗口层级三条否决路线的实测系统版本更正为 macOS 27.0；上一版\n   核验材料中\"缩小到 Dock 必然复现\"的表述统一更正为\"失效机制实测成立、触发点\n   未复现\"。\n5. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端\n   延迟、悬浮窗外观与交互、窗口层级与三层自愈的响应时延。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.26-macos.zip",
-    "size": 27490085,
-    "sha256": "9daf6e6d528a6cfb8151c411e81d81ef72f3608cdc2802f75204021ca805eb5c"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.27-macos.zip",
+    "size": 27490165,
+    "sha256": "e5721c6560554c9e9e8c0e8f958f5fb0af5c43d5813379e4e84f4cb2b8011df3"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "BJE66oAqDUNKk2zoZka7mH2wpxr1NjBwkFL3zSaBzxW7twrXiFe1lGrarX+mSXmi7HOTEMNOsFkxqcycZrXXDw=="
+    "value": "e6UBgGv1Wo9vZWzCWSHWp1WQRrCBvNJgH4AOdoCE4yqe/7Tn8QlAJv8AwuKZv0Tv8TvIkgCKw8UKE+wLC3HcCQ=="
   }
 }
