@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.25",
-  "published_at": "2026-09-23T07:37:38Z",
+  "version": "1.4.26",
+  "published_at": "2026-09-23T10:30:56Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修正临时目录清理的覆盖范围：位于临时目录较深层级的旧副本会被漏扫，现已恢复；\n   同一副本仍只处理一次，不会向运行日志写入重复的失败记录。\n2. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端延迟、\n   悬浮窗外观与交互。",
+  "notes": "1. 修复悬浮窗只显示背景、不显示任何界面元素的问题：行情、分时图与顶部按钮全部不可见，\n   但按原位置点击仍然有效。根因是毛玻璃背景层与内容层同属最高层级，先后顺序只由最后\n   一次上屏调用决定；一旦背景层排到内容层之上，原有置顶复核读到的窗口属性全部正常，\n   永远不会去纠正，空壳状态因此长期保持。\n2. 本轮分三层修复，均不改变窗口层级与外观：① 背景层每次上屏后强制重做一次完整置顶，\n   不再被稳态复核跳过；② 侦测到活动桌面（Space）变化时立即重排，覆盖第三方浏览器\n   进出全屏的时刻，响应不超过 250 毫秒（与置顶复核同频）；③ 每 5 秒向系统查询一次\n   两窗实际前后顺序，兜底纠正来源不明的倒序。稳态下仍为零系统写调用，新增查询实测\n   单次 0.76 微秒，功耗结论不变。\n3. 验证状态：倒序发生后\"永不自愈\"已在本机实测复现并修复；触发点在本机两条路径\n   （缩小到 Dock 后恢复、真实浏览器进出全屏）上未能复现，疑与机型或时序有关，\n   已加入运行日志取证，再次出现时可直接判定原因。\n4. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端延迟、\n   悬浮窗外观与交互。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.25-macos.zip",
-    "size": 27488272,
-    "sha256": "9effb67df7cd8222f27a5af8e6d51e747b07ba8e77e8ad6e5ece6260a4c3622a"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.26-macos.zip",
+    "size": 27490085,
+    "sha256": "9daf6e6d528a6cfb8151c411e81d81ef72f3608cdc2802f75204021ca805eb5c"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "m6VrfmG99l7qve8oFpOWbT7Lqkvz/dli2L2dUJCjV9xjt3PinH3OzK1AkXd++sZsSVroxBeRVuk3airu8wjpDg=="
+    "value": "BJE66oAqDUNKk2zoZka7mH2wpxr1NjBwkFL3zSaBzxW7twrXiFe1lGrarX+mSXmi7HOTEMNOsFkxqcycZrXXDw=="
   }
 }
