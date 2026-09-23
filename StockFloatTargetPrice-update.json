@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.28",
-  "published_at": "2026-09-23T15:37:59Z",
+  "version": "1.4.29",
+  "published_at": "2026-09-23T16:50:11Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 打开「目标价」面板或编辑面板后拖动主窗更跟手：每个指针事件的处理耗时由实测\n   1.61 毫秒降至 0.53 毫秒；面板层级复位不再每次移动都向系统重设，只在主窗被重新\n   前置时执行。\n2. 面板或编辑窗口打开期间的周期性停顿消除：置顶复核原先一见到工具窗就重做一次完整\n   置顶，实测每 250 毫秒占用主线程 2.6～3.5 毫秒（偶发 10 毫秒以上）；现按窗口实际\n   状态判定，稳态单次 0.10 毫秒。三条自愈路径（跨桌面、第三方全屏、背景层遮挡）不变。\n3. 手动拉伸高度的跟随延迟缩短：合并帧的定时器不再在追平目标瞬间停表，鼠标与窗口\n   高度差实测由 2.96 像素降至 1.57 像素；该定时器设 2 秒保持窗口，松手或丢松开事件\n   时照常停止。\n4. 外观与交互不变：按下反馈仍即时上屏（实测 5～7 毫秒），位置保存仍同步写入\n   （1.3～1.8 毫秒）以保证断电不丢配置；行情节奏、提醒、熔断降档、窗口层级均不变。\n   数字为本机真机实测（60Hz、macOS 27.0）。",
+  "notes": "1. 修复目标价面板与编辑面板的层级提升从未生效：该方法调用了一个未导入的名字，每次\n   都在原生接口之前静默失败（面板固定贴在主窗一侧，因此看不出来）。现在真的生效，\n   附带一处可感知变化：极少数贴边收摆放导致面板与主窗重叠时，面板显示在主窗之上\n   （此前是主窗盖住面板）。\n2. 打字链路首次量化：按键→输入框重绘 均值 3.3 毫秒、最差 7.8 毫秒（60Hz 一帧 16.7 毫秒）；\n   打字期间置顶复核单次均值 0.57 毫秒、单次最差 8.7 毫秒。\n3. 新增实验开关 system_drag（默认关闭）：开启后拖动位移交给 macOS 窗口服务器驱动，\n   主线程偶发 4~9 毫秒占用不再拖慢跟手。因\"毛玻璃背景是否同步跟随\"只能在真机触控板\n   上确认，暂不默认开启；开法 features.ini 写 system_drag=1，或环境变量\n   STOCKFLOAT_FEATURES=system_drag。\n4. 更正上一版结论：所谓\"盘中约 123 次/秒整窗绘制\"是测量工具把累计样本当成单场景计数\n   造成的假象，实测恒为 62.5 次/秒、与主绘制时钟一一对应，不存在重复绘制；据此\n   \"悬停导致双倍绘制\"亦不成立（相关代码保留，但收益为零）。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、窗口层级策略、外观与交互。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.28-macos.zip",
-    "size": 27492472,
-    "sha256": "2b17f79c233b3cf834ed2f99bd6714644309e827d29e819d2f9999ba574af90a"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.29-macos.zip",
+    "size": 27495412,
+    "sha256": "46b8c94053a6c0a8bcfcbc4519698687c391cf12926a90ae308dbd67d54ee12e"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "4hDnidg8fVSaYGVjMBQyU6kDyOi8ONDJ/hmn2KWhLqXJRXQ5jyeak5knAtpW5NVzbykNByfQ645MjHTtp7yeAQ=="
+    "value": "oo9CZVIj+gzNSJwa1jteLvCi5itGDbO0rTdoWdUgbsVAZ6Cut4orIFww0vL4eg4CZ6/HGmZ3/zcUcT4jRYYYAA=="
   }
 }
