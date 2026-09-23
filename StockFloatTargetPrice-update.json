@@ -1,19 +1,19 @@
 {
   "schema": 1,
   "channel": "stable",
-  "stage": "beta",
+  "stage": "stable",
   "version": "1.4.27",
-  "published_at": "2026-09-23T12:17:08Z",
+  "published_at": "2026-09-23T13:48:20Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
   "notes": "1. 完成 v1.4.26 代码走查后的修复，界面与交互无可感知变化：强制置顶入口改为不带\n   参数的独立方法，消除与既有测试及性能测量工具替身签名的冲突（该冲突会在窗口\n   恢复流程中抛出异常并中断收尾动作）。\n2. 补齐合成顺序判定的回归用例：玻璃层与内容层在系统窗口列表中的前后关系、仅有\n   单层在屏时不作判断、系统查询异常时静默降级，三项均纳入自动检查。\n3. 运行日志的置顶重排取证按原因分别记录，同一原因 60 秒内只保留一条并合并计数，\n   避免长期未愈的故障刷屏冲掉其他排障信息。\n4. 文档口径校正：窗口层级三条否决路线的实测系统版本更正为 macOS 27.0；上一版\n   核验材料中\"缩小到 Dock 必然复现\"的表述统一更正为\"失效机制实测成立、触发点\n   未复现\"。\n5. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端\n   延迟、悬浮窗外观与交互、窗口层级与三层自愈的响应时延。",
   "archive": {
     "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.27-macos.zip",
-    "size": 27490165,
-    "sha256": "e5721c6560554c9e9e8c0e8f958f5fb0af5c43d5813379e4e84f4cb2b8011df3"
+    "size": 27491541,
+    "sha256": "d35f39f2d825a6baea8d2edc5da95444a4ec836141470016f73a8ad06e213c7d"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "e6UBgGv1Wo9vZWzCWSHWp1WQRrCBvNJgH4AOdoCE4yqe/7Tn8QlAJv8AwuKZv0Tv8TvIkgCKw8UKE+wLC3HcCQ=="
+    "value": "oJt2PqJtNh9DueAsGEWHmtM905JjIHnfjobeC1A0XNu1CA5DSeyP2FubW3vgHbsGGuHzf2ImVwHiJ6eUeX69DA=="
   }
 }
