@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.23",
-  "published_at": "2026-09-23T06:46:16Z",
+  "version": "1.4.24",
+  "published_at": "2026-09-23T07:28:12Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 新增临时目录旧副本自动清理：启动 45 秒后在后台将系统临时目录内本程序的可启动旧副本\n   改名中性化，消除旧版本残留被系统重新拉起时出现的\"程序意外退出\"弹窗（2026-09-22 与\n   09-23 两份 v1.3.97 崩溃报告）。仅改名、不删除任何文件；「应用程序」中的正式版与正在\n   运行的副本不参与。\n2. 发版脚本同步执行该清理，每轮发版自动覆盖历史遗留副本。\n3. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端延迟、\n   悬浮窗外观与交互。",
+  "notes": "1. 临时目录旧副本清理增加核验开关：设置 SF_ALLOW_TEMP_LAUNCH=1 时不再执行清理，\n   避免尚未启动的待核验副本被改名。\n2. 修正同一副本被重复处理的问题：临时目录之间存在包含关系时只处理一次，不再向运行\n   日志写入误导性的\"改名失败\"记录。\n3. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端延迟、\n   悬浮窗外观与交互。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.23-macos.zip",
-    "size": 27486015,
-    "sha256": "121101a5829c6f7f08483f681f9ada62920fc6b0d1160ff04b6da10552e5f8ac"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.24-macos.zip",
+    "size": 27488018,
+    "sha256": "14c4882e9256c0252af90a85fe19a58c781e63307a025c357504db26f68ce7fc"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "0t4ZbFA7CiWw/S1QFodR5L8wHoXHMa9SSbvXN8FyDW9A4jpnhm6M3roZZulT/BHCat6VIoeG2JWfkJrgyuSwAg=="
+    "value": "063n0bkHSEOutBU2mhdjqus+wuynMk/NSR4032wuIKWX5JLTqAZY8aRj0O3/gbNvbqSJnnYa4NNwUuxmR1NaDw=="
   }
 }
