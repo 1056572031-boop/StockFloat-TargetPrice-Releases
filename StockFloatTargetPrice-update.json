@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.30",
-  "published_at": "2026-09-23T17:10:42Z",
+  "version": "1.4.31",
+  "published_at": "2026-09-23T22:44:11Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 新增静态关卡：查出“代码里用了一个本文件从未定义或导入的名字”。这类缺陷会被工程内\n   206 处兜底 `except: pass` 一起静默吞掉，功能从写下起就没执行过而无人察觉——上一版\n   复核即发现目标价面板的层级提升属于这种情况（潜伏几十个版本，已修）。该关卡现纳入\n   自动检查，并配“故意植入一个错误名字必须被抓到”的自检，防止关卡自身退化。\n2. 28 处“一旦失败用户就能看见功能缺失”的静默兜异常改为记录一条限流日志（统一前缀\n   SWALLOWED）：排查时一条 grep 即可回答“现在还有没有功能在静默失效”。刻意保留静默的\n   清理类与正常控制流（如队列取空）不动，并加棘轮关卡，禁止热路径再新增无人知晓的吞异常。\n3. 更正上一版记录中的一条结论：所谓“盘中约 123 次/秒整窗绘制”是测量工具把累计样本当成\n   单场景计数造成的假象，实测恒为 62.5 次/秒且与主绘制时钟一一对应，不存在重复绘制。\n4. 界面、交互、行情节奏、目标价提醒、熔断降档、窗口层级策略与性能全部不变。",
+  "notes": "1. 拖动悬浮窗改为交给 macOS 系统驱动（默认开启）：位移由窗口服务器合成，不再被一次\n   整窗绘制或一次置顶复核卡在两帧之间，消除实测最差 4.7~8.7 毫秒的拖拽长尾。\n2. 同时修掉这一改动原本会带来的视觉退化：系统接管拖动期间应用自身的事件循环不被\n   唤醒，毛玻璃背景层会落后卡片最多 44 像素（卡片本身仅 184 像素宽），松手才对齐。\n   现改由挂在原生运行循环公共模式上的定时器，在拖动期间逐帧把背景层挪到位；\n   松手时再就地强制对齐一次。验收口径：拖拽中与松手后掉队均 ≤ 2 像素（真鼠标实测）。\n3. 想关掉：features.ini 写 system_drag=0，或环境变量 STOCKFLOAT_FEATURES=!system_drag；\n   关闭即回到逐帧自绘拖动（背景零掉队，但保留上述拖拽长尾）。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、窗口层级策略、外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.30-macos.zip",
-    "size": 27496672,
-    "sha256": "f7ff7fbf7c785ce91ccfbaa318f6175b293cfe04a26f400df47b4317a542aa11"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.31-macos.zip",
+    "size": 27498413,
+    "sha256": "e0b87191fffb5fd9d8ce26feacad1dfd58007b25fb793eeed99df9ad1d192d81"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "WfLbJ74BQWzpddyZv3l3Mu3CeDJdNAjiPyLGm0mfgfoEqfk+z/OjwFld/bzNztTx6hNDUqBHELi5ntuSmu9FAA=="
+    "value": "/1pkrmNuUpx/F+I1mR0xpI+ipuGdyuIl4oRtNou0NaKsVI7qbWa374KagNwDMZ5ewJ7SqKgc/1zvjvotz937Dw=="
   }
 }
