@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.24",
-  "published_at": "2026-09-23T07:28:12Z",
+  "version": "1.4.25",
+  "published_at": "2026-09-23T07:37:38Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 临时目录旧副本清理增加核验开关：设置 SF_ALLOW_TEMP_LAUNCH=1 时不再执行清理，\n   避免尚未启动的待核验副本被改名。\n2. 修正同一副本被重复处理的问题：临时目录之间存在包含关系时只处理一次，不再向运行\n   日志写入误导性的\"改名失败\"记录。\n3. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端延迟、\n   悬浮窗外观与交互。",
+  "notes": "1. 修正临时目录清理的覆盖范围：位于临时目录较深层级的旧副本会被漏扫，现已恢复；\n   同一副本仍只处理一次，不会向运行日志写入重复的失败记录。\n2. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端延迟、\n   悬浮窗外观与交互。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.24-macos.zip",
-    "size": 27488018,
-    "sha256": "14c4882e9256c0252af90a85fe19a58c781e63307a025c357504db26f68ce7fc"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.25-macos.zip",
+    "size": 27488272,
+    "sha256": "9effb67df7cd8222f27a5af8e6d51e747b07ba8e77e8ad6e5ece6260a4c3622a"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "063n0bkHSEOutBU2mhdjqus+wuynMk/NSR4032wuIKWX5JLTqAZY8aRj0O3/gbNvbqSJnnYa4NNwUuxmR1NaDw=="
+    "value": "m6VrfmG99l7qve8oFpOWbT7Lqkvz/dli2L2dUJCjV9xjt3PinH3OzK1AkXd++sZsSVroxBeRVuk3airu8wjpDg=="
   }
 }
