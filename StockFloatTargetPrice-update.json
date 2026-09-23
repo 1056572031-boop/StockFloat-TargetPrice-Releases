@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.29",
-  "published_at": "2026-09-23T16:50:11Z",
+  "version": "1.4.30",
+  "published_at": "2026-09-23T17:10:42Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复目标价面板与编辑面板的层级提升从未生效：该方法调用了一个未导入的名字，每次\n   都在原生接口之前静默失败（面板固定贴在主窗一侧，因此看不出来）。现在真的生效，\n   附带一处可感知变化：极少数贴边收摆放导致面板与主窗重叠时，面板显示在主窗之上\n   （此前是主窗盖住面板）。\n2. 打字链路首次量化：按键→输入框重绘 均值 3.3 毫秒、最差 7.8 毫秒（60Hz 一帧 16.7 毫秒）；\n   打字期间置顶复核单次均值 0.57 毫秒、单次最差 8.7 毫秒。\n3. 新增实验开关 system_drag（默认关闭）：开启后拖动位移交给 macOS 窗口服务器驱动，\n   主线程偶发 4~9 毫秒占用不再拖慢跟手。因\"毛玻璃背景是否同步跟随\"只能在真机触控板\n   上确认，暂不默认开启；开法 features.ini 写 system_drag=1，或环境变量\n   STOCKFLOAT_FEATURES=system_drag。\n4. 更正上一版结论：所谓\"盘中约 123 次/秒整窗绘制\"是测量工具把累计样本当成单场景计数\n   造成的假象，实测恒为 62.5 次/秒、与主绘制时钟一一对应，不存在重复绘制；据此\n   \"悬停导致双倍绘制\"亦不成立（相关代码保留，但收益为零）。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、窗口层级策略、外观与交互。",
+  "notes": "1. 新增静态关卡：查出“代码里用了一个本文件从未定义或导入的名字”。这类缺陷会被工程内\n   206 处兜底 `except: pass` 一起静默吞掉，功能从写下起就没执行过而无人察觉——上一版\n   复核即发现目标价面板的层级提升属于这种情况（潜伏几十个版本，已修）。该关卡现纳入\n   自动检查，并配“故意植入一个错误名字必须被抓到”的自检，防止关卡自身退化。\n2. 28 处“一旦失败用户就能看见功能缺失”的静默兜异常改为记录一条限流日志（统一前缀\n   SWALLOWED）：排查时一条 grep 即可回答“现在还有没有功能在静默失效”。刻意保留静默的\n   清理类与正常控制流（如队列取空）不动，并加棘轮关卡，禁止热路径再新增无人知晓的吞异常。\n3. 更正上一版记录中的一条结论：所谓“盘中约 123 次/秒整窗绘制”是测量工具把累计样本当成\n   单场景计数造成的假象，实测恒为 62.5 次/秒且与主绘制时钟一一对应，不存在重复绘制。\n4. 界面、交互、行情节奏、目标价提醒、熔断降档、窗口层级策略与性能全部不变。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.29-macos.zip",
-    "size": 27495412,
-    "sha256": "46b8c94053a6c0a8bcfcbc4519698687c391cf12926a90ae308dbd67d54ee12e"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.30-macos.zip",
+    "size": 27496672,
+    "sha256": "f7ff7fbf7c785ce91ccfbaa318f6175b293cfe04a26f400df47b4317a542aa11"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "oo9CZVIj+gzNSJwa1jteLvCi5itGDbO0rTdoWdUgbsVAZ6Cut4orIFww0vL4eg4CZ6/HGmZ3/zcUcT4jRYYYAA=="
+    "value": "WfLbJ74BQWzpddyZv3l3Mu3CeDJdNAjiPyLGm0mfgfoEqfk+z/OjwFld/bzNztTx6hNDUqBHELi5ntuSmu9FAA=="
   }
 }
