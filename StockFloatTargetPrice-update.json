@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.21",
-  "published_at": "2026-09-23T02:28:04Z",
+  "version": "1.4.22",
+  "published_at": "2026-09-23T04:17:25Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 更新弹窗只显示\"这次更新了什么\"：之前会把最近好几个版本的历史说明一起列出来，\n   一屏拉不到底。现在无论是我这边的发布清单还是程序自己显示，都只保留当前这一版\n   的内容；想看完整变更史仍然在交付记录里。\n2. 顺带加了一道打包闸门：新版本若在发布说明里没有自己那一节标题，打包会直接失败\n   并提示，不会再悄悄把整份历史塞进弹窗。\n3. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端\n   延迟，以及悬浮窗外观与交互。",
+  "notes": "1. 更新下载提速约一倍：实测 26 MB 的更新包从约 29 秒降到约 15~17 秒。原因是个别\n   下载连接会被服务端掐断，之前一断就要整轮重来、一路路降到单路；现在分片更细、\n   断了只从断点补那一小段。网络本身很慢时无能为力，但不再白等。\n2. 顺带修了一个隐藏问题：下载中途连接被掐断，之前会让整次更新直接报\"更新未完成\"，\n   现在会自动重试补齐。\n3. 弹窗版式调整：更新提示与下载进度弹窗改为图标在上、文字在下、整体居中，不再\n   图标居左、文字偏左；\"取消\"按钮的蓝色描边也去掉了。弹窗仍是系统原生样式，\n   深浅色、毛玻璃、Esc 取消都不变。\n4. 不变：行情拉取节奏（盘中 0.1 秒）、目标价提醒、熔断降档、重试策略、端到端\n   延迟，以及悬浮窗外观与交互。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.21-macos.zip",
-    "size": 27475503,
-    "sha256": "2552b1a6c95c5f67ef6a08afb3b992c860d492db613a043dd2a9f9e473d51436"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.22-macos.zip",
+    "size": 27478776,
+    "sha256": "08946c00bdaf5d298ed407e55d2d195358ba3cdaec717a420df524a8b969b0ed"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "VIae/gwXQyOp2xAwD0WAbyZtnDcGrH4eEGC7N218fJetnDBM3UDd3wfnkvs2VvniH5+tQGnPu8A1a2R367R6DQ=="
+    "value": "vZ0Xmm/sWNjEOBtYE0VszhXFO96RcdcV0Xy9NF6ZLTAYGmH6fhZUaDX0bqXh3dD4loGcQSmwvOzL1qdWDHWLDQ=="
   }
 }
