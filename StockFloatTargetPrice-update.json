@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.36",
-  "published_at": "2026-09-24T09:10:53Z",
+  "version": "1.4.37",
+  "published_at": "2026-09-24T09:47:22Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复在浏览器全屏期间拖动主界面后，点击收起/展开分时走势图时主界面瞬移回拖动前\n   位置的问题。根因经实测确认：位移交由系统接管后，应用侧缓存的窗口原点没有跟上，\n   随后的第一次几何写入把它重新推回系统，落点偏差等于整段手势的位移\n   （本机复现：起点 (639,348) → 拖到 (939,508) → 点击收起 → 回到 (639,348)）。\n   现在任何一次几何写入前，先与窗口服务器的真实位置对齐。\n2. 拖动松手后的贴边吸附同样改为先对齐再计算，避免照旧位置算出贴边落点。\n3. 正常桌面拖动与无滞后场景不产生额外写入；对齐检查只挂在两个写几何入口，\n   不进入 16ms 动画热路径。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、窗口外观与性能。",
+  "notes": "1. 消除快速拖动主界面时\"界面元素与毛玻璃背景分开\"的重影：窗口位移不再交给 macOS\n   系统拖拽接管，改回由程序自己逐帧挪动，两层在同一次提交里一起移动。\n   实测依据（上一版装机包，真鼠标逐帧对拍内容层与背景层）：常速约 550 像素/秒时\n   掉队 10 像素（不可见），快速约 3000 像素/秒时掉队 55 像素，甩动约 7300 像素/秒时\n   掉队 88 像素（界面宽 184 像素）；关闭系统拖拽后同一批手势掉队为 0 像素。\n2. 代价如实说明：系统拖拽原本用于消除\"偶发一帧的停顿感\"（一次整窗绘制约 4 毫秒或\n   置顶复核约 6 毫秒插进两拍之间时窗口会在那一帧不动）。本次权衡后选择消除重影。\n   如更在意停顿感，可用 STOCKFLOAT_FEATURES=system_drag=1 一条命令换回。\n3. 背景层跟随的定时器与相关代码保留（开关打开时仍生效），未删除任何回退路径。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、收展动画、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.36-macos.zip",
-    "size": 27520453,
-    "sha256": "1bc11aad674b3fb70df0bd516eef28f0c29fb9d4a418e06454b603b8e753071b"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.37-macos.zip",
+    "size": 27520703,
+    "sha256": "5535722e370ad40f8bfd3e293dd79c5faa855060803f4ad9d54d730a185176e3"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "URy8wQvYbThRBChpaUnh0cDZ0Bqi2zcOPjhTU/sHzZXrtFvpLbM+eli/J5Ldt99uTeFUKbUYxwgUM9evbBMdBg=="
+    "value": "RsJG77mio2p6g3clY+LvhDSSMiJD+FQhEdIh6XL4K+ZnScDj3nNXnPxCfm8qmSiMjtiz+RNuREPwW+S7x9ddDw=="
   }
 }
