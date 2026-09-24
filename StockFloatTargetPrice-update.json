@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.35",
-  "published_at": "2026-09-24T08:54:12Z",
+  "version": "1.4.36",
+  "published_at": "2026-09-24T09:10:53Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复浏览器全屏期间主界面内容可能被毛玻璃背景长期盖住、且无法自愈的问题：\n   置顶复核的最后一步改为向窗口服务器显式声明\"背景层位于内容窗之下\"，不再依赖\n   两次前置调用的先后。实测依据：该状态一旦成立，旧实现每 0.25 秒复核一次、\n   每次判定正确并执行纠正，连续 11 秒仍未改变顺序，而切换一次桌面即刻恢复。\n   本项修复针对的正是这条已证实的失效路径；装机后以 re-top 日志复核收敛情况。\n2. 修正两条不实的排障日志：① 复核节流未到期（本轮未发起查询）不再被记为\n   \"窗口查不到\"；② 取证记录改为按原因分别计时，两种原因交替出现时不再互相\n   清除对方的抑制窗口（此前实测 9 秒内产生 9 条同名记录，故障强度被刷屏掩盖）。\n3. 新增全屏场景取证工具，用于后续同类问题的现场复现与只读旁观。\n4. 本轮未修复：报告中的\"点击收起分时走势图后主界面坐标跳变\"一项，已用实测排除\n   一个候选原因（应用侧几何模型滞后导致回弹），本机暂未重现，继续取证。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
+  "notes": "1. 修复在浏览器全屏期间拖动主界面后，点击收起/展开分时走势图时主界面瞬移回拖动前\n   位置的问题。根因经实测确认：位移交由系统接管后，应用侧缓存的窗口原点没有跟上，\n   随后的第一次几何写入把它重新推回系统，落点偏差等于整段手势的位移\n   （本机复现：起点 (639,348) → 拖到 (939,508) → 点击收起 → 回到 (639,348)）。\n   现在任何一次几何写入前，先与窗口服务器的真实位置对齐。\n2. 拖动松手后的贴边吸附同样改为先对齐再计算，避免照旧位置算出贴边落点。\n3. 正常桌面拖动与无滞后场景不产生额外写入；对齐检查只挂在两个写几何入口，\n   不进入 16ms 动画热路径。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.35-macos.zip",
-    "size": 27519151,
-    "sha256": "d05f6c5c1e835537bda67eabeeac6b54b4b09bcead7cd08e0b5257af0f6b4beb"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.36-macos.zip",
+    "size": 27520453,
+    "sha256": "1bc11aad674b3fb70df0bd516eef28f0c29fb9d4a418e06454b603b8e753071b"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "7e0hMLakmhSSkRWb5T+h8ppUPO5/E7wTSxzja8LHwcUd8qkIOh8+r0jOYT9XpV0aRD+5pPtKfz4luTXokZMKAA=="
+    "value": "URy8wQvYbThRBChpaUnh0cDZ0Bqi2zcOPjhTU/sHzZXrtFvpLbM+eli/J5Ldt99uTeFUKbUYxwgUM9evbBMdBg=="
   }
 }
