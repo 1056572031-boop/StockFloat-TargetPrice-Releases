@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.32",
-  "published_at": "2026-09-23T23:01:27Z",
+  "version": "1.4.33",
+  "published_at": "2026-09-24T06:02:07Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "0. 本版取代 v1.4.31：那一版把「位移交给系统」发了出去，但还没带上背景层跟随的修复，\n   已自动更新到它的用户会看到拖动时毛玻璃落后；装上本版即修复。\n1. 拖动悬浮窗改为交给 macOS 系统驱动（默认开启）：位移由窗口服务器合成，不再被一次\n   整窗绘制或一次置顶复核卡在两帧之间，消除实测最差 4.7~8.7 毫秒的拖拽长尾。\n2. 同时修掉这一改动原本会带来的视觉退化：系统接管拖动期间应用自身的事件循环不被\n   唤醒，且应用读到的自身窗口坐标在那段时间是过时的，毛玻璃背景层会落后卡片最多\n   44 像素（卡片本身仅 184 像素宽），松手才对齐。现改为在原生运行循环上每 8 毫秒\n   向窗口服务器查询卡片实时位置并同步背景层，松手时再强制对齐一次。真鼠标实测\n   （正常拖动速度约 430 像素/秒）：掉队由 p95 26~35 像素降到 **8 像素**、峰值 26 像素，\n   松手后 0 像素。残留约一帧是位置提交的呈现延迟——试过把间隔压到 4 毫秒并用光标\n   位移插值，实测无改善（p95 9 像素），故未采用那份额外复杂度。\n3. 想关掉：features.ini 写 system_drag=0，或环境变量 STOCKFLOAT_FEATURES=!system_drag；\n   关闭即回到逐帧自绘拖动（背景零掉队，但保留上述拖拽长尾）。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、窗口层级策略、外观与性能。",
+  "notes": "1. 修复主窗被全屏应用遮挡期间拖动后，毛玻璃背景层停留在旧位置的问题：稳态判定\n   改为依据窗口服务器返回的真实位置。同一手势实测背景层错位峰值由 46 像素降至\n   10 像素，错位样本归零。\n2. 修复主窗内容短暂缺失（仅剩背景与目标价气泡）后的恢复延迟：层级复核间隔由\n   5 秒缩短至 1 秒，实测空窗时间由 4.46 秒降至 0.57 秒，复核开销占空比 0.039%，\n   功耗无变化。\n3. 长距离缓慢拖动期间，背景层跟随不再于 8 秒后停止，改为按窗口实际位移续期。\n4. 无法读取窗口真实位置时记录一条诊断日志，不再静默跳过，便于后续定位。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.32-macos.zip",
-    "size": 27499749,
-    "sha256": "0eedcaa831717ac4d56afd3ffa2a26bfe14e3e585f666a3f74c13060fac94092"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.33-macos.zip",
+    "size": 27514438,
+    "sha256": "52bdacd2dd0d186006fd45fe77f8ef3967f81eea48d08fedbe98ff59fe41e9ad"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "pJVdlHKXaFNhirtdwvt2J/ZMMQ9138+D3RYtSMMwy5hLGohsoaN03zvP3IGFk3ovBh5BgvWHwuGOTt3K9ru5Ag=="
+    "value": "ACTRCii7cE+9f6j+NwJPm5mx2epx7jm7tcbcUOPR5nhf82vBQRv99KxeB11bjpb5jRxSL5M+EnQzcFSjV5YLAA=="
   }
 }
