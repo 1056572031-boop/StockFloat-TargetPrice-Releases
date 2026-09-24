@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.33",
-  "published_at": "2026-09-24T06:02:07Z",
+  "version": "1.4.34",
+  "published_at": "2026-09-24T07:29:11Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复主窗被全屏应用遮挡期间拖动后，毛玻璃背景层停留在旧位置的问题：稳态判定\n   改为依据窗口服务器返回的真实位置。同一手势实测背景层错位峰值由 46 像素降至\n   10 像素，错位样本归零。\n2. 修复主窗内容短暂缺失（仅剩背景与目标价气泡）后的恢复延迟：层级复核间隔由\n   5 秒缩短至 1 秒，实测空窗时间由 4.46 秒降至 0.57 秒，复核开销占空比 0.039%，\n   功耗无变化。\n3. 长距离缓慢拖动期间，背景层跟随不再于 8 秒后停止，改为按窗口实际位移续期。\n4. 无法读取窗口真实位置时记录一条诊断日志，不再静默跳过，便于后续定位。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
+  "notes": "1. 修复拖动主界面下沿把手时，窗口可被压至 0 高度、内容整体消失的问题：限高地板\n   改为按展开/收起状态取语义高度，不再采用收展动画期间临时降为 0 的系统下限。\n   离屏合成事件实测：修复前同一手势可将高度拖到 0，修复后最低为 224 像素。\n2. 同时修复该状态会被永久固化的问题：拖动会挤掉收展动画的收尾帧，使下限长期停在\n   0；若系统未投递鼠标松开事件，窗口将稳定停在 0 高度且无法用鼠标恢复。现于拖动\n   开始时即完成动画收尾并恢复下限。\n3. 静止状态下的拉伸手感不变：展开态最低 224 像素、最高 420 像素，收起态锁定高度。\n4. 修复数据降级提示「数据暂缺 · 重试中」与 0% 基准白色虚线贴近或重叠的问题：提示\n   改为落在离虚线更远的一侧，最小净空 6 像素；并增加仅包裹文字的半透明底板，\n   保证任何位置都清晰可读。下跌日与窗口偏矮时改善最明显（实测净空由 0 像素升至\n   43 像素以上）。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.33-macos.zip",
-    "size": 27514438,
-    "sha256": "52bdacd2dd0d186006fd45fe77f8ef3967f81eea48d08fedbe98ff59fe41e9ad"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.34-macos.zip",
+    "size": 27518698,
+    "sha256": "b3e3edcdbb44ce3450e434db343945d7c8b517283080018ba2b123e2b3c16e8d"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "ACTRCii7cE+9f6j+NwJPm5mx2epx7jm7tcbcUOPR5nhf82vBQRv99KxeB11bjpb5jRxSL5M+EnQzcFSjV5YLAA=="
+    "value": "n6u8U36p07q/YodsF8wPUcOr/QXRg+Bm36WS5IWIzSFCPwK6hbKXD7A4T8Qgeg1/l0EPLv0Wno4rbzq4DmYUCg=="
   }
 }
