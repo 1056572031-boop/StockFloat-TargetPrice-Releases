@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.34",
-  "published_at": "2026-09-24T07:29:11Z",
+  "version": "1.4.35",
+  "published_at": "2026-09-24T08:54:12Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复拖动主界面下沿把手时，窗口可被压至 0 高度、内容整体消失的问题：限高地板\n   改为按展开/收起状态取语义高度，不再采用收展动画期间临时降为 0 的系统下限。\n   离屏合成事件实测：修复前同一手势可将高度拖到 0，修复后最低为 224 像素。\n2. 同时修复该状态会被永久固化的问题：拖动会挤掉收展动画的收尾帧，使下限长期停在\n   0；若系统未投递鼠标松开事件，窗口将稳定停在 0 高度且无法用鼠标恢复。现于拖动\n   开始时即完成动画收尾并恢复下限。\n3. 静止状态下的拉伸手感不变：展开态最低 224 像素、最高 420 像素，收起态锁定高度。\n4. 修复数据降级提示「数据暂缺 · 重试中」与 0% 基准白色虚线贴近或重叠的问题：提示\n   改为落在离虚线更远的一侧，最小净空 6 像素；并增加仅包裹文字的半透明底板，\n   保证任何位置都清晰可读。下跌日与窗口偏矮时改善最明显（实测净空由 0 像素升至\n   43 像素以上）。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
+  "notes": "1. 修复浏览器全屏期间主界面内容可能被毛玻璃背景长期盖住、且无法自愈的问题：\n   置顶复核的最后一步改为向窗口服务器显式声明\"背景层位于内容窗之下\"，不再依赖\n   两次前置调用的先后。实测依据：该状态一旦成立，旧实现每 0.25 秒复核一次、\n   每次判定正确并执行纠正，连续 11 秒仍未改变顺序，而切换一次桌面即刻恢复。\n   本项修复针对的正是这条已证实的失效路径；装机后以 re-top 日志复核收敛情况。\n2. 修正两条不实的排障日志：① 复核节流未到期（本轮未发起查询）不再被记为\n   \"窗口查不到\"；② 取证记录改为按原因分别计时，两种原因交替出现时不再互相\n   清除对方的抑制窗口（此前实测 9 秒内产生 9 条同名记录，故障强度被刷屏掩盖）。\n3. 新增全屏场景取证工具，用于后续同类问题的现场复现与只读旁观。\n4. 本轮未修复：报告中的\"点击收起分时走势图后主界面坐标跳变\"一项，已用实测排除\n   一个候选原因（应用侧几何模型滞后导致回弹），本机暂未重现，继续取证。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.34-macos.zip",
-    "size": 27518698,
-    "sha256": "b3e3edcdbb44ce3450e434db343945d7c8b517283080018ba2b123e2b3c16e8d"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.35-macos.zip",
+    "size": 27519151,
+    "sha256": "d05f6c5c1e835537bda67eabeeac6b54b4b09bcead7cd08e0b5257af0f6b4beb"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "n6u8U36p07q/YodsF8wPUcOr/QXRg+Bm36WS5IWIzSFCPwK6hbKXD7A4T8Qgeg1/l0EPLv0Wno4rbzq4DmYUCg=="
+    "value": "7e0hMLakmhSSkRWb5T+h8ppUPO5/E7wTSxzja8LHwcUd8qkIOh8+r0jOYT9XpV0aRD+5pPtKfz4luTXokZMKAA=="
   }
 }
