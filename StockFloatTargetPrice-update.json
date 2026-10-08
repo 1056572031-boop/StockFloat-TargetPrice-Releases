@@ -1,19 +1,19 @@
 {
   "schema": 1,
   "channel": "stable",
-  "stage": "stable",
+  "stage": "beta",
   "version": "1.4.38",
-  "published_at": "2026-10-08T02:41:31Z",
+  "published_at": "2026-10-08T02:51:55Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
   "notes": "1. 检查更新相关的窗口改为在屏幕正中间展示：「正在检查更新」「当前已是最新版本」\n   「发现新版本」「正在下载更新」四类提示框此前按系统默认位置摆放，实测明显偏左上\n   （1470x956 单屏：「正在检查更新」的窗口中心比屏幕可用区中心偏左 384 像素、偏上\n   178 像素；带更新说明的一版偏左 254 像素、偏上 70 像素）。现在统一落在正中，\n   并在更新说明换行、下载进度刷新导致窗口长高后重新回到正中。\n2. 多显示器时按主界面所在的那块屏幕居中，不再固定落在主屏：副屏上使用「检查更新」\n   时，提示框出现在另一块屏幕中央、看起来像点了没反应的情况一并消除。\n3. 系统弹窗不可用时的自绘下载框同样按同一规则居中，兜底路径与主路径表现一致。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
   "archive": {
     "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.38-macos.zip",
-    "size": 27523606,
-    "sha256": "7a68437dba9d0122245807223b8ac47a5b80dae39677d58115e0df6364880d6d"
+    "size": 27526381,
+    "sha256": "198cd838c056fdda08abbb46cbc163e08361bfce68579786e72a87a63233ee8d"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "owYWmoNcJPUrO7j6CJjIPZGfFJD2T1CRlDc7AkEZYQLSEwsr4G/0x8MUgAHjLlq5BvLSiPfvJVG2guS4Xl1pDQ=="
+    "value": "AhpwzSspY+JTgsRvGHfDPL1e4LGqqsyVtGThZQCkblIt5+gyqWIXw9kvzQAeHbxh0+yePXVLv2K+iQ0ogNj2Cw=="
   }
 }
