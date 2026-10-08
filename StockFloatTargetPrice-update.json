@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.41",
-  "published_at": "2026-10-08T10:48:27Z",
+  "version": "1.4.42",
+  "published_at": "2026-10-08T11:34:45Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修正自动收起后的状态残留：此前若你在守卫自动收起后自己点 Dock 图标恢复窗口，\n   程序仍认为\"因第二个人被收起\"，下一次你手动缩小窗口时摄像头不会停，约 5 秒后\n   窗口还会自行弹回屏幕。现在手动恢复即视为该状态结束，手动缩小能正常停摄像头。\n2. 摄像头被其他程序（视频会议、相机类应用）占用时，不再继续显示\"运行中\"：\n   连续 60 秒取不到画面即判定\"保护已中断\"，停止占用摄像头，并每 30 秒自动重试，\n   对方释放后无需你动手即可恢复。右键菜单的状态行同步显示这一判定。\n3. 窗口以「缩小到 Dock」以外的方式被隐藏（如系统层隐藏应用）时，摄像头同样停止，\n   与\"仅在窗口可见时检测\"的设定保持一致。\n4. 停止采集不再阻塞界面：缩小窗口、关闭功能时不再等待后台正在建立的采集会话，\n   消除点击后短暂卡顿的可能；退出程序时仍同步等待会话完全释放，确保指示灯熄灭。\n5. 修正采集会话的释放顺序（先摘除帧回调、再停止会话、最后释放引用），消除关闭\n   功能瞬间的随机崩溃风险。\n6. 人脸守卫的单人自测图片不再随版本库分发，仅保留在本地交付目录。\n7. 其余不变：行情节奏、目标价提醒、熔断降档、窗口外观与性能。",
+  "notes": "1. 修正\"保护已中断\"之后无法自动恢复：若中断发生在窗口因第二个人被自动收起期间，\n   停止采集会连带清除\"因第二人被收起\"这一状态，30 秒后的自动重试因此被判定为\n   \"用户自行收起窗口、无需看守\"而再次停止，窗口长期留在 Dock、自动恢复失效。\n   现在中断只清计数、保留该状态，对方释放摄像头后可正常自动恢复。\n2. 修正\"从未收到任何画面\"时不判中断：摄像头被其他应用占用时，系统仍会报告采集\n   \"运行中\"但不发送任何帧。此前该形态不参与 60 秒超时判定，表现为指示灯常亮且\n   菜单显示\"运行中\"。现按同一口径判定为\"保护已中断\"并自动重试。\n3. 采集队列改为全进程复用一条，停止采集的兜底暂存增加上限（8 个）：消除反复\n   开关功能、反复缩小恢复时的资源累积。\n4. 新增 2 条回归用例，分别锁住上述两条路径（人脸守卫用例共 53 条）。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.41-macos.zip",
-    "size": 27714298,
-    "sha256": "ca6830b15225ab3cade57f2c900296aedb169f30d2fb89449f9641ee564c9725"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.42-macos.zip",
+    "size": 27714085,
+    "sha256": "ca19cb0e2d6028ada6c964b1b7ed3365f3a5226f7051a0c5574cc4cc0dbd1aa3"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "Yf5DBlizr4iFwQYgOxKf7OMpOHzbBA7axZi0Bcw4fXt4pOHp6AeEJUwlKMxpICGzaj/Gu6xGnLWoaFBpZuaXCg=="
+    "value": "hXrXCRYfpvTrxQd1wDVD/bdpnj7seAV0e2YnVIKzvQgByQaWHUQdPxTB1imnEntPizaugYNPAatIv/0ahu2MCg=="
   }
 }
