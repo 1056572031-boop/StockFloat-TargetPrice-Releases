@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.38",
-  "published_at": "2026-10-08T02:51:55Z",
+  "version": "1.4.39",
+  "published_at": "2026-10-08T09:39:17Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 检查更新相关的窗口改为在屏幕正中间展示：「正在检查更新」「当前已是最新版本」\n   「发现新版本」「正在下载更新」四类提示框此前按系统默认位置摆放，实测明显偏左上\n   （1470x956 单屏：「正在检查更新」的窗口中心比屏幕可用区中心偏左 384 像素、偏上\n   178 像素；带更新说明的一版偏左 254 像素、偏上 70 像素）。现在统一落在正中，\n   并在更新说明换行、下载进度刷新导致窗口长高后重新回到正中。\n2. 多显示器时按主界面所在的那块屏幕居中，不再固定落在主屏：副屏上使用「检查更新」\n   时，提示框出现在另一块屏幕中央、看起来像点了没反应的情况一并消除。\n3. 系统弹窗不可用时的自绘下载框同样按同一规则居中，兜底路径与主路径表现一致。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
+  "notes": "1. 新增「人脸在场守卫」：右键菜单勾选并允许摄像头权限后，程序每 1 秒统计一次画面中的\n   人脸数量，连续 2 次检测到两张及以上时，主界面自动收起到 Dock 程序坞，表现与手动\n   缩小到 Dock 完全一致（目标价气泡、毛玻璃背景层与呼吸灯动画一并收口）。默认关闭，\n   必须用户在菜单中主动开启，程序不会自行启用摄像头。\n2. 自动恢复条件：画面中确实只剩一张脸、连续 5 次才重新显示。一张脸都没有时不会自动\n   显示，需点 Dock 图标手动恢复 —— 人离开座位时把行情亮出来，比继续收起更危险。\n   自动收起后最长看守 10 分钟，超时即停止摄像头，改由手动恢复。\n3. 取舍如实说明：macOS 会在菜单栏亮起绿色摄像头占用灯且无法隐藏；照片与视频中的面孔\n   同样会被检出（可能误触发），侧脸、遮挡或光线过暗则可能检不到（可能漏触发）。\n   检测由系统 Vision 框架在本机完成，视频帧不保存、不上传、不做人脸识别。\n4. 未引入任何新依赖：调用系统自带的 AVFoundation 与 Vision（本机实测单帧 18.0 毫秒，\n   1 秒节拍下的占空比约 1.8%），安装包体积与依赖清单不变，仅在应用信息中增加一项\n   摄像头用途说明。手动缩小到 Dock 或关闭功能时，摄像头立即停止。\n5. 生效规则可见：右键菜单常驻一行状态，明确当前是运行中、等待授权，还是因权限被拒绝\n   而未生效；「导出诊断信息」同步写入人脸守卫的现场与全部阈值参数，便于远程排查。\n6. 其余不变：行情节奏、目标价提醒、熔断降档、系统拖拽、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.38-macos.zip",
-    "size": 27526381,
-    "sha256": "198cd838c056fdda08abbb46cbc163e08361bfce68579786e72a87a63233ee8d"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.39-macos.zip",
+    "size": 27547209,
+    "sha256": "86372c479ac2ab5d8a87c029010aa794c79750fb28956ea7440a5ffc7acf0d33"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "AhpwzSspY+JTgsRvGHfDPL1e4LGqqsyVtGThZQCkblIt5+gyqWIXw9kvzQAeHbxh0+yePXVLv2K+iQ0ogNj2Cw=="
+    "value": "1b5sslGcaLpTTif5PKndLDh3gSbrPxgFlEeE7kUSN0pdHW7GPwSeU4uqemY0tqQkopL+I4x8E88KEAmLYN0kCg=="
   }
 }
