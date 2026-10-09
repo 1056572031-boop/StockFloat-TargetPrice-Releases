@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.47",
-  "published_at": "2026-10-09T02:57:51Z",
+  "version": "1.4.48",
+  "published_at": "2026-10-09T03:15:55Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 更新或重新安装后首次启动时，不再自动弹出系统的「允许访问摄像头」对话框。\n2. 授权请求改为只在你主动点开右键菜单「人脸在场守卫」的那一刻发起；同一进程内不重复询问。\n3. 未授权期间保护不生效，菜单状态行如实显示「未授权 · 保护没在跑」并说明如何开启；\n   导出的诊断包同样带上该状态与原因，便于远程判断\"到底有没有在保护\"。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
+  "notes": "1. 修复「吸附有时不生效，尤其是屏幕底部」：卡片被拖到 Dock 之下或越过屏幕边缘时，\n   旧判定把它当成\"离边很远\"，越用力贴边反而越不吸附。现在越过边缘一律贴回边沿。\n2. 贴边落点仍然避开 Dock 与菜单栏：悬浮卡片层级高于 Dock，压上去会吞掉那块 Dock 的点击。\n3. 顺带修掉一处 1px 口径偏差（Qt 的边界含端点），贴齐后不再被挪动 1 像素。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.47-macos.zip",
-    "size": 27725774,
-    "sha256": "add50c82166bc0a1adb45e83f79483144b93f0ce300301b7a14f413ded008993"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.48-macos.zip",
+    "size": 27728250,
+    "sha256": "4741964bc76601ea9202c79ce5a89de7e6bdcedc9f6336396215055064bb45c4"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "Xdn+dxoo+ZcxgQSmxmBCmD4PKwBoQl6vODDsodnsZ2+ZVP1aNzUq+dzQ1PsUbms7gOhccUBuiZjjfTsBawcHDg=="
+    "value": "Q5u8lQMsZ6Jp0TnXbFRne5jSIeGhwCfr/+2GfWV0ycvqM7rJJgvH0s2QqFAn22esPEOJ8O6vaqWAhCLDp8v9CA=="
   }
 }
