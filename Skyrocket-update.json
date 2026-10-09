@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.55",
-  "published_at": "2026-10-09T07:50:58Z",
+  "version": "1.4.56",
+  "published_at": "2026-10-09T08:23:57Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "程序名、安装包与菜单文案统一改为 Skyrocket；数据与目标价原样保留。摄像头权限需重新允许一次。",
+  "notes": "第二人入镜后约 0.4 秒收起（原约 0.75 秒）；屏幕锁定或显示器休眠时暂停摄像头，唤醒自动恢复。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.55-macos.zip",
-    "size": 27718759,
-    "sha256": "ef1126d2fa7718b7d1bc6840af06bbc02a5387485cec490d42d0d931b5cc3c0d"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.56-macos.zip",
+    "size": 27719636,
+    "sha256": "94e281294d16df236b8aabcc35984aec94f94a6a9a2297995fa7bc7b0a42fa21"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "nwhzsPK3HP1QLcTOLR/2Q9SGOL+iCX6vfJ1Vn8txs95NMXGFVgnzbA5ZOWeaEKFBoM3PDBpnu2zw8yCViTBMCw=="
+    "value": "jF0TWQmLAYT7m9gTsDvNj+TqShOjCFiASLyQjgkPJ7RrXytcZ2C1nsDmA6STmyZ32iZj4RkUHgZFNABKUa+1Bg=="
   }
 }
