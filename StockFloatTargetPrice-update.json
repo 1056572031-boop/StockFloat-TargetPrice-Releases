@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.46",
-  "published_at": "2026-10-09T02:11:01Z",
+  "version": "1.4.47",
+  "published_at": "2026-10-09T02:57:51Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 「导出诊断信息」新增一项玻璃层现场（glass.json）：合成顺序、背景层与内容窗的真实\n   错位、置顶复核是否处于盲区，以及最近 30 分钟内各类失效的首次/末次时刻与次数。\n2. 用途：出现「只剩背景、内容看不见」这类现象时不必在本机复现——诊断包发回后由\n   tools/quality_trend.py --from-diag 读取那台机器的现场时刻，直接得到问题起点。\n3. 隐私与打扰：不新增任何用户可见操作，不自动上传；诊断包仍只在主动点击时生成于桌面。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
+  "notes": "1. 更新或重新安装后首次启动时，不再自动弹出系统的「允许访问摄像头」对话框。\n2. 授权请求改为只在你主动点开右键菜单「人脸在场守卫」的那一刻发起；同一进程内不重复询问。\n3. 未授权期间保护不生效，菜单状态行如实显示「未授权 · 保护没在跑」并说明如何开启；\n   导出的诊断包同样带上该状态与原因，便于远程判断\"到底有没有在保护\"。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.46-macos.zip",
-    "size": 27726189,
-    "sha256": "c8bcd24db1ef511b7859dc630361b4fe7572bc7227fa6dc217c288554b9b3528"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.47-macos.zip",
+    "size": 27725774,
+    "sha256": "add50c82166bc0a1adb45e83f79483144b93f0ce300301b7a14f413ded008993"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "05hmfBnpkysUMmeARgQuDAg7i81BSSQ5EXdI9OIw+H/5o+C1eQseA+s1mYYptDaVEmsafwr4U4toZgqX+i8ZDA=="
+    "value": "Xdn+dxoo+ZcxgQSmxmBCmD4PKwBoQl6vODDsodnsZ2+ZVP1aNzUq+dzQ1PsUbms7gOhccUBuiZjjfTsBawcHDg=="
   }
 }
