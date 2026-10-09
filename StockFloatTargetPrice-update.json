@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.53",
-  "published_at": "2026-10-09T06:18:16Z",
+  "version": "1.4.54",
+  "published_at": "2026-10-09T07:08:53Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 「有第二人时自动收起」改名为「自动隐藏窗口」，功能与触发条件不变\n   （画面里连续两次数到两张以上人脸时，窗口收进 Dock）。\n2. 菜单最后一行去掉「版本」两个字，直接显示 v1.4.53（Beta 阶段带 Beta 后缀）。\n3. 其余不变：行情节奏、目标价提醒规则、熔断降档、检查更新流程、窗口外观与性能。",
+  "notes": "摄像头采集降到 640×480、帧率上限 15fps；检测节拍 1 秒改 0.5 秒，约 1 秒收起、2.5 秒恢复；菜单勾号实时刷新并贴近文字。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.53-macos.zip",
-    "size": 27732017,
-    "sha256": "d99a6fa20904c0dab4eef295d2452f21d7c355c22104e5b687c49f2eb4695caf"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.54-macos.zip",
+    "size": 27735803,
+    "sha256": "53c641fe9cf6416e11f682213fc4f236f6656842fc9b7a8574e3ba9cd9a1c0a9"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "pKtCrTSfOTF5JXnIiaIDxhNOqAl8LcuXMIaQ9JbZ5A4AANi3AVq+b1wjk1pH+9yj4hBsnc/hNbO5mc+W5zpoDA=="
+    "value": "SKyM3kxuz/eoMgECVFkUw7YyNR74K9ntsrSQ28335JbZiPVJSB7l9xv5toWrohgE9KrMlDpco9gqOqiEsoQmAA=="
   }
 }
