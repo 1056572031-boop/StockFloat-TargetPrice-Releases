@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.45",
-  "published_at": "2026-10-08T14:29:27Z",
+  "version": "1.4.46",
+  "published_at": "2026-10-09T02:11:01Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 摄像头被其他程序占用时：此前会话已启动却一帧未到，菜单仍显示「运行中」长达\n   60 秒，期间守卫实际不工作（第二个人入镜不会收窗）。现在启动后 10 秒仍未收到\n   画面即判定「保护已中断」；60 秒宽容期保留给「来过帧、后来停了」的会话。\n2. 上述等待期内，菜单如实显示「已启动 · 尚未收到画面」，不再写「运行中」。\n3. 失败原因改用人话：菜单与诊断包此前直接显示框架异常的英文原文，现在显示可读\n   描述，原文仅保留在本地日志中。\n4. 摄像头授权框按进程只问一次：上次未作答又经历停→开（或重启程序）时，不再重复\n   弹出授权框。\n5. 系统弹窗构造失败时的降级现在会记录到本地日志（此前静默降级，用户只觉得\n   「弹窗不居中/看不见」，无从排查）。\n6. 弹窗不再出现「先出现在旧位置、再跳到正中」的一下挪动：改为上屏前就摆到正中。\n   实测（本机真 NSAlert）提前摆位不会被系统覆盖，故旧注释「必须上屏后再摆」已更正。\n7. 副屏上的检查更新：新增一组注入式多屏用例，直接证明「锚点落在哪块屏就弹在那块屏」，\n   并覆盖拔掉副屏、鼠标兜底、主屏不在原点等退化路径（此前那两条断言以选屏结果\n   自证，单屏机器上恒成立）。\n8. 修掉一处测试污染：本地股票字典的用例把桩函数留在进程里没还原，随机执行顺序下\n   会让别的模块的 3 条用例误报为不稳定（已改为上下文补丁，并在模块结束时还原环境变量）。\n9. 新增 8 条回归用例（人脸守卫）+ 7 条选屏用例；书写纪律存量下降 2 条，基线同步下调。\n10. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
+  "notes": "1. 「导出诊断信息」新增一项玻璃层现场（glass.json）：合成顺序、背景层与内容窗的真实\n   错位、置顶复核是否处于盲区，以及最近 30 分钟内各类失效的首次/末次时刻与次数。\n2. 用途：出现「只剩背景、内容看不见」这类现象时不必在本机复现——诊断包发回后由\n   tools/quality_trend.py --from-diag 读取那台机器的现场时刻，直接得到问题起点。\n3. 隐私与打扰：不新增任何用户可见操作，不自动上传；诊断包仍只在主动点击时生成于桌面。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.45-macos.zip",
-    "size": 27719787,
-    "sha256": "bf381d58f648610a7e7fb46f4e1f41bab9e97309489689b988192c6a201c87b0"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.46-macos.zip",
+    "size": 27726189,
+    "sha256": "c8bcd24db1ef511b7859dc630361b4fe7572bc7227fa6dc217c288554b9b3528"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "ioUaW5EQgTjZA13nfM1xMfs6o2dGADPNIKwjXNKvyRN/nNMNBj50M3jcFJl0yBpHW+UzqLyXgg/R8zm5PgT5Ag=="
+    "value": "05hmfBnpkysUMmeARgQuDAg7i81BSSQ5EXdI9OIw+H/5o+C1eQseA+s1mYYptDaVEmsafwr4U4toZgqX+i8ZDA=="
   }
 }
