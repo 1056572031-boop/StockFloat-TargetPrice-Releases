@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.56",
-  "published_at": "2026-10-09T08:23:57Z",
+  "version": "1.4.57",
+  "published_at": "2026-10-09T09:47:32Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "第二人入镜后约 0.4 秒收起（原约 0.75 秒）；屏幕锁定或显示器休眠时暂停摄像头，唤醒自动恢复。",
+  "notes": "点 Dock 图标不再闪退；未授权时重复点击可重新请求；系统通知恢复由本应用发送，点击可回悬浮窗。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.56-macos.zip",
-    "size": 27719636,
-    "sha256": "94e281294d16df236b8aabcc35984aec94f94a6a9a2297995fa7bc7b0a42fa21"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.57-macos.zip",
+    "size": 27723046,
+    "sha256": "05fc8db2fc2a5dcc33d900b39a704db9a4ae38678d39bb7448628545eb45c4c4"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "jF0TWQmLAYT7m9gTsDvNj+TqShOjCFiASLyQjgkPJ7RrXytcZ2C1nsDmA6STmyZ32iZj4RkUHgZFNABKUa+1Bg=="
+    "value": "djHkE8XgcUtp83ttKxKmerkcqJOB5y1D8AGju20zMCoXTM6Q2iXj1QUID+dnSH6sMTt4C1FMeQ6TWOcWWtcfDQ=="
   }
 }
