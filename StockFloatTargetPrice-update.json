@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.50",
-  "published_at": "2026-10-09T04:01:46Z",
+  "version": "1.4.51",
+  "published_at": "2026-10-09T04:45:59Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复「第二个人入镜仍然不收起」的第二处成因：系统摄像头授权处于\"从未请求\"状态时，\n   功能按配置显示为已开启，但摄像头不会打开，因此始终无效。现在菜单勾选直接表示\n   \"保护此刻是否在运行\"，未运行时为未勾选，点一次即可出现授权框（原先需要点两次）。\n2. 未授权提示改为指向界面上真实存在的菜单项，此前的提示入口名称与界面不一致，\n   用户按提示无法完成操作。\n3. 授权通过后采集会话的重试间隔由 10 秒缩短为 2 秒。\n4. 状态可见性：日志与诊断包新增\"首帧是否到达\"\"画面已采集但人脸检测连续失败次数\"。\n   出现后者时，菜单不再显示\"运行中\"，而是明确写出识别失败次数。\n5. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
+  "notes": "1. 修复「输入 510300 等代码提示未找到、无法加入悬浮窗」：ETF／基金（51、15、58）、\n   可转债（11）、国债（01）、B 股（90、20）此前一律被本地股票字典判为\"代码不存在\"。\n   这些品种本可正常报价，问题出在录入校验把\"字典收录不到\"当成\"市场里不存在\"。\n   现在字典只为其收录的股票段发言，其余品种向行情接口确认真实存在后再放行；\n   断网时按可用性优先放行，不影响录入。\n2. 修复「价位已到、横幅却没弹，且当天不再提醒」：系统通知授权尚未作答的窗口期内，\n   提醒会被静默丢弃。现在这一状态改用系统通知通道补发，并记录一条告警。\n   未授权不等于已拒绝 —— 用户没有表态时不再代其选择\"不打扰\"。\n3. 右键菜单精简：去掉「自动检查：启动后 15 秒…」与「运行中 · 每 1 秒数一次脸…」\n   两行灰色说明文字。人脸守卫是否真的在保护，仍由该项的勾号直接反映；\n   完整状态说明改在首次开启的提示框与导出的诊断信息里给出。\n4. 其余不变：行情节奏、目标价提醒规则、熔断降档、检查更新流程、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.50-macos.zip",
-    "size": 27730998,
-    "sha256": "7ce4007c7bcac6d7d85c099be0b2b8a75ae9c2d29940beb4f0ac37fca5648015"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.51-macos.zip",
+    "size": 27733189,
+    "sha256": "c3bf61619d95f9c9f04eb992c5d53f37319e56196fe5377a3e7e2486727136a1"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "C6T0EpQFaVSI4RKbFP4j//1Nz98cT3VVfa9y+t+6eD2vhFv9lBVQjx29VPtYTvhse3dAfzYXdSpdlfhdfcRsDQ=="
+    "value": "LrOKjTX7goE8elCF7aot/lWbxrhdH4sgbShkZt5rQaAkGre7HAmB84xVJeySaIQvIRdffHiK9Loso1zhU8IeAw=="
   }
 }
