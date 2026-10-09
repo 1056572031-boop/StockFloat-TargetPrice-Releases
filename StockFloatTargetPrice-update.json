@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.48",
-  "published_at": "2026-10-09T03:15:55Z",
+  "version": "1.4.49",
+  "published_at": "2026-10-09T03:26:10Z",
   "bundle_id": "com.stockfloat.targetprice",
   "app_name": "实时股价-目标价版.app",
-  "notes": "1. 修复「吸附有时不生效，尤其是屏幕底部」：卡片被拖到 Dock 之下或越过屏幕边缘时，\n   旧判定把它当成\"离边很远\"，越用力贴边反而越不吸附。现在越过边缘一律贴回边沿。\n2. 贴边落点仍然避开 Dock 与菜单栏：悬浮卡片层级高于 Dock，压上去会吞掉那块 Dock 的点击。\n3. 顺带修掉一处 1px 口径偏差（Qt 的边界含端点），贴齐后不再被挪动 1 像素。\n4. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
+  "notes": "1. 修复「第二个人进入画面时主窗口不收起」：采集会话建立方式有一处形状错误，导致该功能\n   自上线以来从未真正启动（摄像头权限已授予的情况下依然无效）。现在会话可正常启动。\n2. 会话建立失败时，菜单与日志会带上系统给出的原因（例如设备被其他程序占用），不再只报\n   一句空话；失败仍会按退避自动重试。\n3. 其余不变：行情节奏、目标价提醒、熔断降档、检查更新流程、窗口外观与性能。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.48-macos.zip",
-    "size": 27728250,
-    "sha256": "4741964bc76601ea9202c79ce5a89de7e6bdcedc9f6336396215055064bb45c4"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.49-macos.zip",
+    "size": 27728564,
+    "sha256": "4547d867a1d33564806da169a6024e9302e4a2ca7f0cc59e50d5a3a609019f96"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "Q5u8lQMsZ6Jp0TnXbFRne5jSIeGhwCfr/+2GfWV0ycvqM7rJJgvH0s2QqFAn22esPEOJ8O6vaqWAhCLDp8v9CA=="
+    "value": "rPRezCO7MJJy6znNqtyO2AWoLlluqqiYyIgLJOlbwlPGtnVDAa1i2En/rZnnjWQxaYQiuPVvLnLbQHLTJoOeBA=="
   }
 }
