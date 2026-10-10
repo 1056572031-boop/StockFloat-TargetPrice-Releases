@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.57",
-  "published_at": "2026-10-09T09:47:32Z",
+  "version": "1.4.59",
+  "published_at": "2026-10-10T05:00:26Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "点 Dock 图标不再闪退；未授权时重复点击可重新请求；系统通知恢复由本应用发送，点击可回悬浮窗。",
+  "notes": "切换股票后原股目标价保留，权限被拒可直达系统设置；高低点放不下时自动缩小数字而非整行缺失；自动更新不再需要开发者工具。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.57-macos.zip",
-    "size": 27723046,
-    "sha256": "05fc8db2fc2a5dcc33d900b39a704db9a4ae38678d39bb7448628545eb45c4c4"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.59-macos.zip",
+    "size": 27769172,
+    "sha256": "01df1fb71fc51125d178a1c99439d17d907db796228e254a91c5954c3e5aacb3"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "djHkE8XgcUtp83ttKxKmerkcqJOB5y1D8AGju20zMCoXTM6Q2iXj1QUID+dnSH6sMTt4C1FMeQ6TWOcWWtcfDQ=="
+    "value": "GesWPGSGO832zTWI00gpaM07Wtx49eeUzFZXo1pynNWMr8NopXloFPzpP+/aNPEenaBYOb7i6MpKwTKPLR9oBA=="
   }
 }
