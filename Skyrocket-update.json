@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.61",
-  "published_at": "2026-10-10T08:02:32Z",
+  "version": "1.4.62",
+  "published_at": "2026-10-10T17:43:04Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "更新完成后不再在「应用程序」里留下隐藏旧版本副本，避免磁盘被越更新占满；自动更新链路本身不变。",
+  "notes": "目标价面板字号统一到单一来源，观感与像素完全不变；已触发标记移到行首，行宽不足时截去百分比而非状态；底部数字缩档时日志写清需要多宽。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.61-macos.zip",
-    "size": 27772590,
-    "sha256": "3360e73dcaccc97d0f2afff0930ed5a976ca859b9d7ffa0f1bd2458fd47b96c4"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.62-macos.zip",
+    "size": 27773822,
+    "sha256": "f215cd9c711d184e656e4d8043f1140b369bf338fe12fee5a7c460d3bdd55380"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "YysG5AkFPeSi7B4+m6Y31CDkXe7nt8kcxyJYQrZ7XdEyTiV3T/uqACYMnMc8LpHtMKE820gMTlDBVAib84tQBg=="
+    "value": "9N18Sp5wocB2sHnoNgbdEg0e+oqmQsBAcrXDxT+XduQr59LYtJyDfaQ234ZaKWESeCRGnLHb4I2OO/7iZ/qsBA=="
   }
 }
