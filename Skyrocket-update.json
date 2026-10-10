@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.59",
-  "published_at": "2026-10-10T05:00:26Z",
+  "version": "1.4.60",
+  "published_at": "2026-10-10T07:01:11Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "切换股票后原股目标价保留，权限被拒可直达系统设置；高低点放不下时自动缩小数字而非整行缺失；自动更新不再需要开发者工具。",
+  "notes": "升级前设置的目标价只归属原股票，切换股票不再串味；锁屏后解锁，自动隐藏窗口继续工作；备源提示与诊断信息更可查。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.59-macos.zip",
-    "size": 27769172,
-    "sha256": "01df1fb71fc51125d178a1c99439d17d907db796228e254a91c5954c3e5aacb3"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.60-macos.zip",
+    "size": 27771663,
+    "sha256": "e794008f6ac255f4810340dfadbe64a59f786c46faec242c5b02bf11f2c676ad"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "GesWPGSGO832zTWI00gpaM07Wtx49eeUzFZXo1pynNWMr8NopXloFPzpP+/aNPEenaBYOb7i6MpKwTKPLR9oBA=="
+    "value": "bShFngW0Vy5Zmtd4mBJnzanRgkIidZwl5b/WC1hYCeFflObeqlrWssv7OmWnwK1NJeITaM9ebu/7c4bhtIsRCA=="
   }
 }
