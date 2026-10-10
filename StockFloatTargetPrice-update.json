@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "channel": "stable",
+  "stage": "beta",
+  "version": "1.4.54",
+  "published_at": "2026-10-09T07:08:53Z",
+  "bundle_id": "com.stockfloat.targetprice",
+  "app_name": "实时股价-目标价版.app",
+  "notes": "摄像头采集降到 640×480、帧率上限 15fps；检测节拍 1 秒改 0.5 秒，约 1 秒收起、2.5 秒恢复；菜单勾号实时刷新并贴近文字。",
+  "archive": {
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/StockFloatTargetPrice-1.4.54-macos.zip",
+    "size": 27735803,
+    "sha256": "53c641fe9cf6416e11f682213fc4f236f6656842fc9b7a8574e3ba9cd9a1c0a9"
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "value": "SKyM3kxuz/eoMgECVFkUw7YyNR74K9ntsrSQ28335JbZiPVJSB7l9xv5toWrohgE9KrMlDpco9gqOqiEsoQmAA=="
+  }
+}
