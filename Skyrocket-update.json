@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.66",
-  "published_at": "2026-10-12T07:56:07Z",
+  "version": "1.4.67",
+  "published_at": "2026-10-12T16:37:40Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "边缘半张脸出画的人也算第二个人；约 1.5 米外的人不再触发收起；需停留满 0.38 秒才收窗；收窗从 0.74 秒降到 0.57 秒。",
+  "notes": "「自动隐藏窗口」首次点击立即亮起开关并保持，无需再点第二次；安装磁盘内的一键安装脚本不再显示 .command 后缀。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.66-macos.zip",
-    "size": 27780280,
-    "sha256": "1821282220bf1af2cb37d58cad81dfdbd32b47aa43796de0c4f605f3fb0195db"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.67-macos.zip",
+    "size": 27781221,
+    "sha256": "a88648cd2bbb08312fdb45b13ec449a7ccb8e405504fd70aeecb9d9a4bcea5ed"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "CEZsDDTojV0Vcd3JMfDg5hCc181pTyjZhXpdcBt2hOy3BdW4fhWZHfLQngVl1iupr4EqkKlwQ65/+AHFFzGNBw=="
+    "value": "KtE9nm6mfUbDK5KE9o9TqY6cz6BW3Vpu4YsF+zYwhGBFleMHn0Iv8rp/GxTnw4c/8yWciKzEXU2hn74rmU2SCw=="
   }
 }
