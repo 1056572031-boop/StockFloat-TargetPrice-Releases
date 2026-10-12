@@ -1,19 +1,19 @@
 {
   "schema": 1,
   "channel": "stable",
-  "stage": "beta",
-  "version": "1.4.63",
-  "published_at": "2026-10-12T03:24:49Z",
+  "stage": "stable",
+  "version": "1.4.64",
+  "published_at": "2026-10-12T05:09:04Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "DMG 卷内的「一键安装.command」显示为安装包图标，不再是脚本缩略图；安装步骤与自动更新链路不变。",
+  "notes": "停牌股取不到价格时，「--」右侧恢复显示「停牌」标记，与断网/加载中区分；面板与弹窗的禁用态文字提亮；两个双击维护工具在改名后的机器上恢复可用。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.63-macos.zip",
-    "size": 27770950,
-    "sha256": "51c645e5aeb5ff49cbd162dd991db715d7e91e0eee549a8ae337902031713a7e"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.64-macos.zip",
+    "size": 27773406,
+    "sha256": "aa784156940ec5880f1d9a5f378a4c196e15fdc9b88d9eee9c3b46e7175d3583"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "+pubZ1sAkbXuQTsUgBDTf3plc6BVv0pvbl4o8Vd+bBWjc0lvLVjveo6lprF0l3sy5EHfdbLlw1qXFvFuuTuiAw=="
+    "value": "7iOVTBLBtNpa4CsYpXRZpoLTrn2cXHWl1UUmzHGFwZegBSrWruEmGmrpHmXUESKLLvMp/mTmeBsySvVyn8OyBA=="
   }
 }
