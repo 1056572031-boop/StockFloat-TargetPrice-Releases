@@ -1,19 +1,19 @@
 {
   "schema": 1,
   "channel": "stable",
-  "stage": "stable",
-  "version": "1.4.64",
-  "published_at": "2026-10-12T05:09:04Z",
+  "stage": "beta",
+  "version": "1.4.65",
+  "published_at": "2026-10-12T06:04:03Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "停牌股取不到价格时，「--」右侧恢复显示「停牌」标记，与断网/加载中区分；面板与弹窗的禁用态文字提亮；两个双击维护工具在改名后的机器上恢复可用。",
+  "notes": "分时数据源卡死时主界面不再被连带阻塞；数据恢复后分时曲线重回实时态由最长 12.4 秒缩短到 2.4 秒；失败期轮询不再慢于常规周期。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.64-macos.zip",
-    "size": 27773406,
-    "sha256": "aa784156940ec5880f1d9a5f378a4c196e15fdc9b88d9eee9c3b46e7175d3583"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.65-macos.zip",
+    "size": 27775252,
+    "sha256": "c1a68ee5daa7369ba2d8c4bc9f0b3d4483e85bc265cc1928fc727f57f8ae482f"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "7iOVTBLBtNpa4CsYpXRZpoLTrn2cXHWl1UUmzHGFwZegBSrWruEmGmrpHmXUESKLLvMp/mTmeBsySvVyn8OyBA=="
+    "value": "qnZMLNmUAfOaThv4Y+0WFiERZvl3eqDvLzAk+a8vJTyc3XYRYxanmGWIvV40U6dRW6caZD8QFbtbKvbwzpmEDg=="
   }
 }
