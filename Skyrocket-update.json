@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.65",
-  "published_at": "2026-10-12T06:04:03Z",
+  "version": "1.4.66",
+  "published_at": "2026-10-12T07:56:07Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "分时数据源卡死时主界面不再被连带阻塞；数据恢复后分时曲线重回实时态由最长 12.4 秒缩短到 2.4 秒；失败期轮询不再慢于常规周期。",
+  "notes": "边缘半张脸出画的人也算第二个人；约 1.5 米外的人不再触发收起；需停留满 0.38 秒才收窗；收窗从 0.74 秒降到 0.57 秒。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.65-macos.zip",
-    "size": 27775252,
-    "sha256": "c1a68ee5daa7369ba2d8c4bc9f0b3d4483e85bc265cc1928fc727f57f8ae482f"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.66-macos.zip",
+    "size": 27780280,
+    "sha256": "1821282220bf1af2cb37d58cad81dfdbd32b47aa43796de0c4f605f3fb0195db"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "qnZMLNmUAfOaThv4Y+0WFiERZvl3eqDvLzAk+a8vJTyc3XYRYxanmGWIvV40U6dRW6caZD8QFbtbKvbwzpmEDg=="
+    "value": "CEZsDDTojV0Vcd3JMfDg5hCc181pTyjZhXpdcBt2hOy3BdW4fhWZHfLQngVl1iupr4EqkKlwQ65/+AHFFzGNBw=="
   }
 }
