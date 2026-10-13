@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.69",
-  "published_at": "2026-10-13T03:32:47Z",
+  "version": "1.4.70",
+  "published_at": "2026-10-13T04:57:41Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "右键菜单四行各加一枚行首图标，「自动隐藏窗口」以眼睛开合显示状态；「导出诊断信息」改名「导出诊断包」。",
+  "notes": "浏览器全屏时，主窗口右键菜单与目标价面板可正常显示，响应约 0.27 秒。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.69-macos.zip",
-    "size": 27824297,
-    "sha256": "0e1869ed39772fbf4ef8a6b297898a90b364dfbbd7180c1ba72179c57a6723a4"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.70-macos.zip",
+    "size": 27831236,
+    "sha256": "984a7542e4ddaa64a3a91b568fae00442fe151c9eb21a3f94bd5b4379b00776d"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "44/4ioXFVKxLbWVZKWyj+eGgEgDbrGC2GhHlULzYC0UUGlANtl9vsVw8wAXOg8IYTMSB7w07BTPUyIvyfczsDA=="
+    "value": "wNQL1VZa/IozBFRdXQB1z9Rm3yWvdwUSVi5EtvVHaUToZid89luyMyku/PAh1r0RuUoOKf7JJFF5yekKhsRnDQ=="
   }
 }
