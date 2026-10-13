@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.78",
-  "published_at": "2026-10-13T15:20:16Z",
+  "version": "1.4.79",
+  "published_at": "2026-10-13T16:25:26Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "拒绝非法等待参数，防止重复双击同时安装；先在暂存包上完成标签与签名校验，再切换正式版本，失败时保留旧版本不动。",
+  "notes": "置顶复核改用粗粒度计时器，减少 macOS 后台唤醒与 WindowServer 无效调用；行情刷新、价格动画和拖拽响应时序保持不变。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.78-macos.zip",
-    "size": 25953700,
-    "sha256": "41a2fce28a07523bd82b2826d999decb8ecb1e74f027033e41972bfd259ca8b2"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.79-macos.zip",
+    "size": 25951253,
+    "sha256": "c7683d7298a1db664bc0b67c2efddc2d33a4b7fd4be588eb404123703376c6aa"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "kB4oapFTuKn2tp1CC5BxLGLfsvLFYTI8FDbw88Jy6eKNI8xaW3hEsicGISJJP36uet6H0AdAeL87bIBkEELZBw=="
+    "value": "CjcaGNj7IyRfYoKFcoFSCPw1bFB4Qwb2n97cJgdWQg4/R01K+vYc+xfxYJcAcqSfEMJwu7Nz/29UmtkGb+XyCA=="
   }
 }
