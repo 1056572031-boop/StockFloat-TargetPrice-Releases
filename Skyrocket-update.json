@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.80",
-  "published_at": "2026-10-13T16:50:06Z",
+  "version": "1.4.81",
+  "published_at": "2026-10-13T23:16:44Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
   "notes": "集合竞价期间按盘中频率刷新并显示阶段标识，避免零成交量误报停牌。仍使用行情源现价，实时虚拟撮合价尚待竞价时段验证。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.80-macos.zip",
-    "size": 25950705,
-    "sha256": "475dab1e74b1c2d56ba2c192fe67785b347ac13aeb21e1ac1cd28a5bfa6d2bc1"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.81-macos.zip",
+    "size": 25952646,
+    "sha256": "0b9ce3594d47806cc9cc3ffb731ba63def307089f24a57f224bbfed9f1a6eaba"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "nhu5eW9o5vfoQlMuqpAz3ByqwawNux5YUfFkHlv/BiEHmsWr2rJSpassZ44fcQI3SOcSnVXWtDiJaBDagsi/AA=="
+    "value": "X13DYzksLx7cza9VZauAdvddvY53q/K7W/FIpupeXzyh56/7IRWCmximgbpDPvrMSaOy2SFE/MMzO10lc1Q9Aw=="
   }
 }
