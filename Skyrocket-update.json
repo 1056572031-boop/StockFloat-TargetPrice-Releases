@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.74",
-  "published_at": "2026-10-13T08:40:44Z",
+  "version": "1.4.75",
+  "published_at": "2026-10-13T09:10:41Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "检查更新首点显示，取消后再查正常响应；修复分片重复下载，菜单图标微调，加固原生窗口。macOS 27 本机核验，26 待实机验收。",
+  "notes": "包含检查更新首点显示与取消后复查修复；临时下载地址被拒绝时自动回到原签名入口，保留完整文件校验。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.74-macos.zip",
-    "size": 27836457,
-    "sha256": "a7f3fbcf48bd17a638491931e32b09d0cc6a2d8ef08d0d02d9808c68ec324a6b"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.75-macos.zip",
+    "size": 27836306,
+    "sha256": "36ef22549e722aacb9fee47e6fbc0d50537336c3373d6222e5f0940bcdc78a40"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "4gdih54RZ4ZESp0NidBc0iKSf1wkG5h/YqPAE+pJYDGWRTU0gum3O2X2udckeB7Iz1fiAEc0qtn/Na8BCsIhDA=="
+    "value": "3jaLHjnffol2G547Ht5yRcoX6gkSqHCWon29jWRyuSjsMmN66KbqZlW34ISF6NNVoMWSihkrwAzYSlH7kRFAAw=="
   }
 }
