@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.75",
-  "published_at": "2026-10-13T09:10:41Z",
+  "version": "1.4.76",
+  "published_at": "2026-10-13T11:45:26Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "包含检查更新首点显示与取消后复查修复；临时下载地址被拒绝时自动回到原签名入口，保留完整文件校验。",
+  "notes": "诊断导出新增自动采集运行状态并在每次发版时强制核对覆盖；应用保留中文与英文 Qt 翻译，减少不需要的语言资源，功能与运行库不变。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.75-macos.zip",
-    "size": 27836306,
-    "sha256": "36ef22549e722aacb9fee47e6fbc0d50537336c3373d6222e5f0940bcdc78a40"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.76-macos.zip",
+    "size": 25952097,
+    "sha256": "2fc11b6bdfe2bc80037e2459c31d228bba4523de957e264863ea93826c5eaa8c"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "3jaLHjnffol2G547Ht5yRcoX6gkSqHCWon29jWRyuSjsMmN66KbqZlW34ISF6NNVoMWSihkrwAzYSlH7kRFAAw=="
+    "value": "9bt4OIj4pFf2og4zBocs8Kdl2DqNhgwnGE7dib4kvhCOZSgE2r/4GAalJZt4KRX2CrnHk+dm+i2GvjPmVigwAA=="
   }
 }
