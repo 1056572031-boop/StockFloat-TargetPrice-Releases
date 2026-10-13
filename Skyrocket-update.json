@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.71",
-  "published_at": "2026-10-13T06:55:13Z",
+  "version": "1.4.74",
+  "published_at": "2026-10-13T08:40:44Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "分时图区也可拖动悬浮窗，短点击仍可收展；修复切换应用后隐藏状态漏检，补齐置顶与鼠标响应的自动恢复。",
+  "notes": "检查更新首点显示，取消后再查正常响应；修复分片重复下载，菜单图标微调，加固原生窗口。macOS 27 本机核验，26 待实机验收。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.71-macos.zip",
-    "size": 27831506,
-    "sha256": "0cf99f39588c88600980ae166f746188d24c4685fb712da6d682275d61fa861f"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.74-macos.zip",
+    "size": 27836457,
+    "sha256": "a7f3fbcf48bd17a638491931e32b09d0cc6a2d8ef08d0d02d9808c68ec324a6b"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "xPxdE/E3946onNEy+wKTcbsxppFLrv0qFPbW9lnqr5/1HogygXcGRR9IKqMBEVvkYwS0sv1VhHaFTbDcjVnGCg=="
+    "value": "4gdih54RZ4ZESp0NidBc0iKSf1wkG5h/YqPAE+pJYDGWRTU0gum3O2X2udckeB7Iz1fiAEc0qtn/Na8BCsIhDA=="
   }
 }
