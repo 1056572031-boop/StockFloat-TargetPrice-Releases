@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.77",
-  "published_at": "2026-10-13T14:19:49Z",
+  "version": "1.4.78",
+  "published_at": "2026-10-13T15:20:16Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "拒绝非法等待参数，防止重复双击同时安装，并在变更前确认应用程序目录与废纸篓可用；失败时保留旧版本不动。",
+  "notes": "拒绝非法等待参数，防止重复双击同时安装；先在暂存包上完成标签与签名校验，再切换正式版本，失败时保留旧版本不动。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.77-macos.zip",
-    "size": 25952814,
-    "sha256": "90a2b829ed37d6bd8ce65604c922036880721c78552a0d9b0490df1778e4c916"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.78-macos.zip",
+    "size": 25953700,
+    "sha256": "41a2fce28a07523bd82b2826d999decb8ecb1e74f027033e41972bfd259ca8b2"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "zPHcfkPg/OyNGtYDwilnvbFSziECZpVZ0d+wI886EldsR/Dp/eyV24dFaN9xpNAeT1f57MkrxXEyd4vgWB57CA=="
+    "value": "kB4oapFTuKn2tp1CC5BxLGLfsvLFYTI8FDbw88Jy6eKNI8xaW3hEsicGISJJP36uet6H0AdAeL87bIBkEELZBw=="
   }
 }
