@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.68",
-  "published_at": "2026-10-12T17:47:22Z",
+  "version": "1.4.69",
+  "published_at": "2026-10-13T03:32:47Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "「检查更新」无响应与铃铛面板打不开两类问题已修复：一处异常不再带走整帧刷新，损坏的目标价条目按无效丢弃。",
+  "notes": "右键菜单四行各加一枚行首图标，「自动隐藏窗口」以眼睛开合显示状态；「导出诊断信息」改名「导出诊断包」。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.68-macos.zip",
-    "size": 27782909,
-    "sha256": "1438ccbf5633b3b583da0e4710749ccb6582f3147a6b3f104b69da12e2223190"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.69-macos.zip",
+    "size": 27824297,
+    "sha256": "0e1869ed39772fbf4ef8a6b297898a90b364dfbbd7180c1ba72179c57a6723a4"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "yms6OsYKa6lCf9fEFgqkXi6+QwwlT0QcwtMm9JjRNfqqWe6zGBHLHjGIxlTGRXtIt/LQVj6pRRY9SwnCEuJoCA=="
+    "value": "44/4ioXFVKxLbWVZKWyj+eGgEgDbrGC2GhHlULzYC0UUGlANtl9vsVw8wAXOg8IYTMSB7w07BTPUyIvyfczsDA=="
   }
 }
