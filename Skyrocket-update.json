@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.86",
-  "published_at": "2026-10-14T17:50:36Z",
+  "version": "1.4.87",
+  "published_at": "2026-10-14T23:10:51Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "完成主窗口职责拆分，保留入口与数据目录兼容；新增边界测试，完整回归和覆盖率门禁通过。",
+  "notes": "支持的系统采用原生暗黑玻璃，保留95%玻璃层与164暗化；不支持或创建失败自动回退，文字和图表布局不变。保留主窗口职责拆分与旧数据兼容。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.86-macos.zip",
-    "size": 26138149,
-    "sha256": "26c0bd96a9088ed1069fcbad05a79229b37d9bb353bbc11a5cd74cf9f4162934"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.87-macos.zip",
+    "size": 26141394,
+    "sha256": "d59e52342ea47261af8545fb0f69c2cd38e38255bd16f26e8ea005b75b029c3b"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "b4fv8+Cp/51fVKRm9k5P9mPX06TtThcxypJW2trMTyhBbWQ+YDz8TovZ2F0nMeAdQeqaqtHZcCXO/RlW8fP5Dw=="
+    "value": "LVUpYv9TwACrf2mnkzHoT0J6ppbLPYe4dT+fQkINFYxQXwUA4CrpioNFp1LFKmvbrnH3Kf0s7qGZLoBrltK/AQ=="
   }
 }
