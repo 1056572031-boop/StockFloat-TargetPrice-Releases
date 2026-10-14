@@ -16,12 +16,16 @@ def package_resources(datas, binaries=()):
                                pure=[], scripts=[])
     collected = {}
 
+    def analyze(*args, **kwargs):
+        collected["requested_datas"] = kwargs["datas"]
+        return analysis
+
     def collect(exe, packaged_binaries, packaged_datas, **kwargs):
         collected.update(datas=packaged_datas, binaries=packaged_binaries)
         return SimpleNamespace(**kwargs)
 
     constructors = {
-        "Analysis": lambda *args, **kwargs: analysis,
+        "Analysis": analyze,
         "PYZ": lambda *args, **kwargs: object(),
         "EXE": lambda *args, **kwargs: object(),
         "COLLECT": collect,
@@ -38,6 +42,21 @@ def resource(destination, kind="DATA"):
 
 
 class TestBundleResources(SFCase):
+    def test_project_docs_and_titlecase_dependency_license_are_collected(self):
+        dependency = SimpleNamespace(files=[Path("licenses/License.txt"), Path("COPYING"),
+                                            Path("package/not-a-license.py")],
+                                     locate_file=lambda entry: Path("/dependency") / entry)
+        with patch("importlib.metadata.distribution", return_value=dependency):
+            requested = package_resources([])["requested_datas"]
+        for entry in (("README.md", "docs"), ("SECURITY.md", "docs"),
+                      ("docs/INSTALL.md", "docs"), ("LICENSE", "licenses")):
+            self.assertIn(entry, requested)
+        for package in ("pyobjc-core", "pyobjc-framework-UserNotifications", "pyobjc-framework-AVFoundation",
+                        "pyobjc-framework-CoreMedia", "pyobjc-framework-CoreAudio"):
+            self.assertIn(("/dependency/licenses/License.txt", "licenses/" + package), requested)
+            self.assertIn(("/dependency/COPYING", "licenses/" + package), requested)
+        self.assertFalse(any("not-a-license" in source for source, destination in requested))
+
     def test_keeps_chinese_and_english_for_all_qt_translation_catalogs(self):
         entries = [resource("PyQt6/Qt6/translations/%s_%s.qm" % (catalog, locale))
                    for catalog in ("qtbase", "qt", "qt_help")

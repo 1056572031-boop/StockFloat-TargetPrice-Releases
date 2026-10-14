@@ -43,7 +43,7 @@ for _package in ('PyQt6', 'PyQt6-Qt6', 'PyQt6-sip', 'PyNaCl', 'cffi',
                  'pyobjc-framework-CoreMedia', 'pyobjc-framework-CoreAudio'):
     _dist = _distribution(_package)
     for _entry in _dist.files or ():
-        if _entry.name.startswith(('LICENSE', 'COPYING')):
+        if _entry.name.upper().startswith(('LICENSE', 'COPYING')):
             _license_data.append((str(_dist.locate_file(_entry)), 'licenses/' + _package))
 
 

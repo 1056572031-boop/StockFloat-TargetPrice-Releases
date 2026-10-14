@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
@@ -106,10 +107,33 @@ class GateJudgesTheRealRepo(SFCase):
                          "闸门读到的版本与产品不同源：申报段会永远匹配不上")
 
     def test_previous_bump_lands_on_a_real_older_version(self):
-        prev = gate.previous_bump(ROOT)
-        self.assertTrue(prev, "取不到上一个版本位：本轮区间无法界定（闸门会退 2，这是对的，但判据要能发现）")
-        self.assertNotEqual(gate.version_at(ROOT, prev), sf_constants.APP_VERSION,  # discipline-ok(R1): 锚点判据只能拿当前版本比对
-                            "找到的锚点版本号与当前相同 —— 它不是「上一轮」")
+        # A public root snapshot has no private predecessor. Test actual Git behavior in a bounded history.
+        clean_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        with tempfile.TemporaryDirectory(prefix="sfdiag_history_") as directory, \
+                patch.dict(os.environ, clean_env, clear=True):
+            repo = pathlib.Path(directory)
+
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=repo, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.name", "fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            old_version, current_version = "1.0.0", "1.0.1"
+            constants = repo / "sf_constants.py"
+            constants.write_text("APP_VERSION = '%s'\n" % old_version)
+            git("add", "sf_constants.py")
+            git("commit", "-qm", "initial public version")
+            old_commit = git("rev-parse", "HEAD")
+            self.assertEqual(gate.previous_bump(repo), "", "A root snapshot must not invent an older version")
+            constants.write_text("APP_VERSION = '%s'\n" % current_version)
+            git("add", "sf_constants.py")
+            git("commit", "-qm", "next version")
+            prev = gate.previous_bump(repo)
+            self.assertEqual(prev, old_commit)
+            self.assertEqual(gate.version_at(repo, prev), old_version)
+            self.assertNotEqual(gate.version_at(repo, prev), gate.head_version(repo))
 
     def test_the_shipped_declaration_block_is_structurally_valid(self):
         """申报清单本身不许写成解析不出来的样子：指令只有 skip、模块名必须真存在、

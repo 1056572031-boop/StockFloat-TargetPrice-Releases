@@ -21,11 +21,11 @@
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
 version 1.4.85
-checkfile docs/README.md::v1.4.85 Beta
-checkfile docs/README.md::未签名、未公证
-checkfile docs/INSTALL.md::v1.4.85
-checkfile docs/SECURITY.md::私下报告漏洞
-checkfile licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
+checkfile Contents/Resources/docs/README.md::v1.4.85 Beta
+checkfile Contents/Resources/docs/README.md::未签名、未公证
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.85
+checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
+checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 stale-feature 1.4.85 本轮新增公开文档与链上文档闸门，无新增产品字节码符号；按包内资源核验本版 README、安装说明、安全政策与 GPL 全文，不借旧符号冒充新增证据。
 stale-feature 1.4.84 安装成功自动关窗仅改 DMG 根的一键安装脚本，不在 .app 的 PYZ 内；证据为实际脚本的 13 项关窗回归及隔离真实 Terminal 安装验证，不借旧字节码符号冒充安装器特征。
 check sf_editor::verify_bare_code
