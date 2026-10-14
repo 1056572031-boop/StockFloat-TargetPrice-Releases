@@ -81,6 +81,17 @@ from sf_animator import anim_duration_ms, crossed_key_level, is_tiny_move, quote
 # ---- 模块化拆分 sf_quote_loop（v1.2.40 上帝类拆分第二步②）：行情循环与轮询调度 ----
 from sf_quote_loop import (QuoteLoopSchedule, minute_retry_state, next_poll_backoff,
                            ui_poll_interval_ms, ui_top_poll_interval_ms)
+# 主窗消息路由：只负责队列消费与行情合批，业务应用仍留在主线程。
+from sf_window_message_router import WindowMessageRouter
+from sf_update_controller import UpdateController
+from sf_diagnostics_controller import DiagnosticsExportController
+from sf_window_state import UpdateFlowState
+from sf_window_geometry import keep_on_screen_position
+from sf_window_lifecycle import WindowLifecycleController
+from sf_quote_runtime import QuoteRuntimeController
+from sf_quote_presentation import QuotePresentationController
+from sf_target_controller import TargetController
+from sf_face_guard_controller import FaceGuardController
 
 # ---- 模块化拆分 sf_runtime（v1.2.41 上帝类拆分第三步）：App Nap 省电 / 置顶 / 缩 Dock 运行状态 ----
 from sf_runtime import RuntimeState, restore_ui_interval
@@ -366,6 +377,17 @@ def _install_global_excepthook():
         pass
 
 
+def _ensure_update_controller(owner):
+    """给真实窗口和旧式 fake host 提供同一个更新后台边界。"""
+    controller = getattr(owner, "_update_controller", None)
+    if controller is not None:
+        return controller
+    enqueue = getattr(owner, "_q_put", lambda _message: None)
+    controller = UpdateController(enqueue, _bundle_version)
+    owner._update_controller = controller
+    return controller
+
+
 def _normalize_code_6(code):
     """v1.2.48(B2)：切股丢弃判断用代码归一 —— 去市场前缀，纯数字统一补 0 到 6 位
     （北交所 4 位老代码 8307→830700）。非纯数字/无法归一返回 None（不参与比较）。
@@ -381,6 +403,15 @@ def _normalize_code_6(code):
     if len(c) < 6:
         c = c.ljust(6, "0")
     return c
+
+
+def _lazy_attr(owner, name, factory):
+    """只在第一次访问时创建代理对象，避免热路径反复构造默认值。"""
+    value = owner.__dict__.get(name)
+    if value is None:
+        value = factory()
+        owner.__dict__[name] = value
+    return value
 
 # ---- 8.1 reopen 转发代理 ----
 # 点击 Dock 图标恢复悬浮窗依赖 NSApplicationDelegate 的
@@ -580,6 +611,27 @@ class TargetBubble(QWidget):
         p.end()
 
 
+class ToolWindowManager:
+    """主窗持有的工具窗引用表。
+
+    编辑器、目标价面板和右键菜单仍由各自的现有代码创建与销毁；本对象只拥有
+    引用，避免这些生命周期字段继续散落在主窗的业务状态中。FloatWindow 保留
+    同名 property，兼容旧测试和历史调用方。
+    """
+
+    def __init__(self):
+        self.editor = None
+        self.context_menu = None
+        self.target_panel = None
+        self.target_bubble = None
+
+    def clear(self) -> None:
+        self.editor = None
+        self.context_menu = None
+        self.target_panel = None
+        self.target_bubble = None
+
+
 def _flush_deferred_deletions():
     """在进程退出前，把排队待删（deleteLater）的 Qt 对象就地销毁。
 
@@ -662,8 +714,222 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
     def _nap_activity(self):
         return self._runtime.nap_token
 
+    @property
+    def running(self):
+        return _lazy_attr(self, "_lifecycle_controller", WindowLifecycleController).running
+
+    @running.setter
+    def running(self, value):
+        _lazy_attr(self, "_lifecycle_controller", WindowLifecycleController).running = bool(value)
+
+    @property
+    def _quitting(self):
+        return _lazy_attr(self, "_lifecycle_controller", WindowLifecycleController).quitting
+
+    @_quitting.setter
+    def _quitting(self, value):
+        controller = _lazy_attr(self, "_lifecycle_controller", WindowLifecycleController)
+        controller.state.quitting = bool(value)
+
+    @property
+    def _threads_stopped(self):
+        return _lazy_attr(self, "_lifecycle_controller", WindowLifecycleController).threads_stopped
+
+    @_threads_stopped.setter
+    def _threads_stopped(self, value):
+        controller = _lazy_attr(self, "_lifecycle_controller", WindowLifecycleController)
+        controller.state.threads_stopped = bool(value)
+
+    @property
+    def quote(self):
+        return _lazy_attr(self, "_quote_presentation", QuotePresentationController).state.quote
+
+    @quote.setter
+    def quote(self, value):
+        _lazy_attr(self, "_quote_presentation", QuotePresentationController).state.quote = value
+
+    @property
+    def minute_points(self):
+        return _lazy_attr(self, "_quote_presentation", QuotePresentationController).state.minute_points
+
+    @minute_points.setter
+    def minute_points(self, value):
+        _lazy_attr(self, "_quote_presentation", QuotePresentationController).state.minute_points = value
+
+    @staticmethod
+    def _state_property(name, state_name=None):
+        state_name = state_name or name.lstrip("_")
+
+        def getter(self):
+            return getattr(_lazy_attr(
+                self, "_quote_presentation", QuotePresentationController).state, state_name)
+
+        def setter(self, value):
+            setattr(_lazy_attr(
+                self, "_quote_presentation", QuotePresentationController).state, state_name, value)
+
+        return property(getter, setter)
+
+    _minute_day = _state_property("_minute_day")
+    _minute_stale = _state_property("_minute_stale")
+    _minute_last_ok_at = _state_property("_minute_last_ok_at")
+    _net_ok = _state_property("_net_ok")
+    _quote_fail = _state_property("_quote_fail")
+    _last_ok_time = _state_property("_last_ok_time")
+    _real_price = _state_property("_real_price")
+    _price_is_fallback = _state_property("_price_is_fallback")
+    _pct_unknown = _state_property("_pct_unknown")
+    _disp_price = _state_property("_disp_price")
+    _disp_pct = _state_property("_disp_pct")
+    _line_ver = _state_property("_line_ver")
+    _chart_changed = _state_property("_chart_changed")
+    _need_redraw = _state_property("_need_redraw")
+    _width_dirty = _state_property("_width_dirty")
+
+    @staticmethod
+    def _update_state_property(name, state_name=None):
+        state_name = state_name or name.lstrip("_")
+
+        def getter(self):
+            return getattr(_lazy_attr(self, "_update_state", UpdateFlowState), state_name)
+
+        def setter(self, value):
+            setattr(_lazy_attr(self, "_update_state", UpdateFlowState), state_name, value)
+
+        return property(getter, setter)
+
+    _update_checking = _update_state_property("_update_checking")
+    _update_downloading = _update_state_property("_update_downloading")
+    _update_prompted_version = _update_state_property("_update_prompted_version")
+    _update_pending = _update_state_property("_update_pending")
+    _update_cancel = _update_state_property("_update_cancel")
+    _update_prompt_when_ready = _update_state_property("_update_prompt_when_ready")
+    _update_ready_archive = _update_state_property("_update_ready_archive")
+    _update_ready_version = _update_state_property("_update_ready_version")
+    _update_progress_pending = _update_state_property("_update_progress_pending")
+    _update_manual_wait = _update_state_property("_update_manual_wait")
+    _update_last_check_at = _update_state_property("_update_last_check_at")
+    _update_last_result = _update_state_property("_update_last_result")
+    _update_stale_resets = _update_state_property("_update_stale_resets")
+    _update_check_aborted = _update_state_property("_update_check_aborted")
+    _update_failure_count = _update_state_property("_update_failure_count")
+    _update_transition_pending = _update_state_property("_update_transition_pending")
+
+    @staticmethod
+    def _target_state_property(name, state_name=None):
+        state_name = state_name or name.lstrip("_")
+
+        def getter(self):
+            return getattr(_lazy_attr(self, "_target_controller", TargetController).state, state_name)
+
+        def setter(self, value):
+            setattr(_lazy_attr(self, "_target_controller", TargetController).state, state_name, value)
+
+        return property(getter, setter)
+
+    _alerts = _target_state_property("_alerts")
+
+    @staticmethod
+    def _face_value_property(name, state_name=None):
+        state_name = state_name or name.removeprefix("_face_guard_")
+
+        def getter(self):
+            return getattr(_lazy_attr(
+                self, "_face_guard_controller", FaceGuardController).state, state_name)
+
+        def setter(self, value):
+            setattr(_lazy_attr(
+                self, "_face_guard_controller", FaceGuardController).state, state_name, value)
+
+        return property(getter, setter)
+
+    _face_guard_pref = _face_value_property("_face_guard_pref", "preference")
+    _face_guard_paused = _face_value_property("_face_guard_paused")
+    _face_guard_next_retry = _face_value_property("_face_guard_next_retry")
+    _face_guard_logged_state = _face_value_property("_face_guard_logged_state")
+    _face_guard_stalled = _face_value_property("_face_guard_stalled")
+    _face_guard_screen_locked = _face_value_property("_face_guard_screen_locked")
+    _face_guard_screen_probe_at = _face_value_property("_face_guard_screen_probe_at")
+    _face_guard_last_fresh = _face_value_property("_face_guard_last_fresh")
+    _face_guard_fed_ts = _face_value_property("_face_guard_fed_ts")
+    _face_guard_last_stop = _face_value_property("_face_guard_last_stop")
+
+    @property
+    def _diagnostics_exporting(self):
+        return self._diagnostics_controller.exporting
+
+    @_diagnostics_exporting.setter
+    def _diagnostics_exporting(self, value):
+        self._diagnostics_controller.exporting = value
+
+    @property
+    def _diagnostics_thread(self):
+        return self._diagnostics_controller.thread
+
+    @_diagnostics_thread.setter
+    def _diagnostics_thread(self, value):
+        self._diagnostics_controller.thread = value
+
+    @property
+    def _quote_thread(self):
+        return self._quote_runtime.quote_thread
+
+    @_quote_thread.setter
+    def _quote_thread(self, value):
+        self._quote_runtime.replace_quote(value)
+
+    @property
+    def _minute_thread(self):
+        return self._quote_runtime.minute_thread
+
+    @_minute_thread.setter
+    def _minute_thread(self, value):
+        self._quote_runtime.replace_minute(value)
+
+    @property
+    def _editor(self):
+        return self._tool_windows.editor
+
+    @_editor.setter
+    def _editor(self, value):
+        self._tool_windows.editor = value
+
+    @property
+    def _ctx_menu(self):
+        return self._tool_windows.context_menu
+
+    @_ctx_menu.setter
+    def _ctx_menu(self, value):
+        self._tool_windows.context_menu = value
+
+    @property
+    def _target_panel(self):
+        return self._tool_windows.target_panel
+
+    @_target_panel.setter
+    def _target_panel(self, value):
+        self._tool_windows.target_panel = value
+
+    @property
+    def _target_bubble(self):
+        return self._tool_windows.target_bubble
+
+    @_target_bubble.setter
+    def _target_bubble(self, value):
+        self._tool_windows.target_bubble = value
+
     def __init__(self):
         super().__init__()
+        self._tool_windows = ToolWindowManager()
+        self._lifecycle_controller = WindowLifecycleController()
+        self._lifecycle_state = self._lifecycle_controller.state
+        self._quote_presentation = QuotePresentationController()
+        self._quote_state = self._quote_presentation.state
+        self._update_state = UpdateFlowState()
+        self._target_controller = TargetController()
+        self._target_state = self._target_controller.state
+        self._face_guard_controller = FaceGuardController()
+        self._face_guard_values = self._face_guard_controller.state
         # 目标价与替换股票均为可独立关闭的工具窗；禁止 Qt 把它们关闭误判为
         # “最后一个窗口已关闭”而退出整个行情应用。放在主窗构造期，开发态与打包态一致。
         app = QApplication.instance()
@@ -673,6 +939,10 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 1.3 v1.2.0：启动时从 config.json 加载 API 地址覆盖（改地址无需重新打包）
         load_api_urls()
         self.q = queue.Queue(maxsize=32)  # 有界队列：UI 卡顿时丢弃最旧行情，防止内存无限积压
+        self._update_controller = UpdateController(
+            lambda item: self._q_put(item), _bundle_version)
+        self._diagnostics_controller = DiagnosticsExportController(_publish_diagnostics_file)
+        self._quote_runtime = QuoteRuntimeController()
         self._target_ticks = TargetTickBuffer()
         self._snapshot_writer = SnapshotWriter(save_last_quote)
         self.running = True
@@ -989,12 +1259,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
 
         # 5.1 v1.2.27：后台线程保存引用，供 quit() 显式 join 优雅退出；loop 外层
         # wrapper 捕获子线程异常并带频率限制自动恢复（见 _quote_loop_wrapper）。
-        self._quote_thread = threading.Thread(target=self._quote_loop_wrapper,
-                                              daemon=True, name="quote-loop")
-        self._minute_thread = threading.Thread(target=self._minute_loop_wrapper,
-                                               daemon=True, name="minute-loop")
-        self._quote_thread.start()
-        self._minute_thread.start()
+        self._quote_runtime.start(self._quote_loop_wrapper, self._minute_loop_wrapper)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
@@ -1996,16 +2261,7 @@ QMenu::separator {
         if manual:
             self._show_checking_dialog()
 
-        def worker():
-            try:
-                import sf_update
-                # v1.4.10：统一走 _q_put —— 它负责"入队即唤醒 UI"。原来这些
-                # 更新回包只写队列，靠 UI 定时器下一次触发才被取走。
-                self._q_put(("update_check", (manual, sf_update.check_for_update(_bundle_version()), None)))
-            except Exception as exc:
-                self._q_put(("update_check", (manual, None, exc)))
-
-        threading.Thread(target=worker, daemon=True, name="update-check").start()
+        _ensure_update_controller(self).check(manual)
 
     def _update_check_stale(self):
         """这一次在飞检查是不是已经过期（起算时刻 + UPDATE_CHECK_STALE_SEC）。
@@ -2321,30 +2577,7 @@ QMenu::separator {
         if show_progress:
             self._open_download_progress_box()
 
-        def worker():
-            last_pct = {"v": -1}
-
-            def report(downloaded, total):
-                # v1.4.10：走 _q_put 顺带唤醒 UI —— 下载进度条靠 1 秒看门狗
-                # 会明显卡顿，必须每条进度都即时上屏。
-                pct = 0 if not total else downloaded * 100 // total
-                # v1.4.18 建议#4：按整数百分比合流。8 路分片每 1MB 回调一次，
-                # 队列满时 _q_put 丢最旧 —— 洪峰可能把一次性的 update_download
-                # 完成事件挤掉，导致 _update_downloading 永久锁真、进度框不关。
-                # 同一百分比不重复入队（100% 恒放行，保证收尾）。
-                if pct == last_pct["v"] and pct < 100:
-                    return
-                last_pct["v"] = pct
-                self._q_put(("update_progress", (pct, downloaded, total)))
-            try:
-                import sf_update
-                archive = sf_update.download_update(update, cancel_event=self._update_cancel,
-                                                    progress_callback=report)
-                self._q_put(("update_download", (update, archive, None)))
-            except Exception as exc:
-                self._q_put(("update_download", (update, None, exc)))
-
-        threading.Thread(target=worker, daemon=True, name="update-download").start()
+        _ensure_update_controller(self).download(update, self._update_cancel)
 
     def _open_download_progress_box(self):
         """下载进度框：优先 macOS 原生弹窗 + 系统进度条，不可用时退回 Qt 自绘框。
@@ -2901,6 +3134,30 @@ QMenu::separator {
                     "install_result": _field("update.install_result",
                                              lambda: _peek_install_result(), None),
                 }
+                # 控制器自身只外发生命周期计数，不触发任何业务动作；显式引用类名让
+                # 诊断覆盖闸门把这两个新模块记入 curated 闭包，而不是误判为未接线。
+                runtime["controllers"] = {
+                    "update": _field(
+                        "controllers.update",
+                        lambda: (bool(UpdateController),
+                                  self._update_controller.diagnostics())[1], None),
+                    "lifecycle": _field(
+                        "controllers.lifecycle",
+                        lambda: (bool(WindowLifecycleController),
+                                  self._lifecycle_controller.diagnostics())[1], None),
+                    "presentation": _field(
+                        "controllers.presentation",
+                        lambda: (bool(QuotePresentationController),
+                                  self._quote_presentation.diagnostics())[1], None),
+                    "targets": _field(
+                        "controllers.targets",
+                        lambda: (bool(TargetController),
+                                  self._target_controller.diagnostics())[1], None),
+                    "face_guard": _field(
+                        "controllers.face_guard",
+                        lambda: (bool(FaceGuardController),
+                                  self._face_guard_controller.diagnostics())[1], None),
+                }
                 # ---- 诊断补全：功能开关此刻的实际生效值（1.4.37 那一族）----
                 # system_drag 之类过去只在 STARTUP 行里，被轮转挤掉就等于没说。
                 runtime["features"] = _field("features", lambda: feature_snapshot(), None)
@@ -3031,11 +3288,10 @@ QMenu::separator {
                            "extract_crash": extract_crash_key_sections}
                 z.defer(lambda: write_diagnostic_attachments(z, paths, metadata, diag_issues, helpers))
             if background:
-                self._diagnostics_exporting = True
-                worker = threading.Thread(target=self._finish_diagnostics_export,
-                    args=(z, temp_out, requested), name="diagnostics-export", daemon=True)
-                self._diagnostics_thread = worker
-                worker.start()
+                worker = self._diagnostics_controller.start(
+                    z, temp_out, requested, self.diagnostics_ready.emit)
+                if worker is None:
+                    return None
                 temp_out = None
                 QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 10)),
                                   "正在导出诊断信息...", self)
@@ -3070,24 +3326,8 @@ QMenu::separator {
                     log_line("diagnostics temporary cleanup error: %r" % (exc,), "WARNING")
 
     def _finish_diagnostics_export(self, archive, temporary, requested):
-        result: tuple[Optional[str], Optional[str]] = (None, None)
-        try:
-            archive.finish()
-            result = (_publish_diagnostics_file(temporary, requested), None)
-        except Exception as exc:
-            log_line("diagnostics export error: %r" % (exc,), "ERROR")
-            result = (None, type(exc).__name__)
-        finally:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                temporary = ""
-            except OSError as exc:
-                log_line("diagnostics temporary cleanup error: %r" % (exc,), "WARNING")
-        try:
-            self.diagnostics_ready.emit(result)
-        except RuntimeError as exc:
-            log_swallow("stock_float_window.diagnostics_completed_after_close", exc)
+        self._diagnostics_controller.finish_sync(
+            archive, temporary, requested, self.diagnostics_ready.emit)
 
     def _on_diagnostics_ready(self, result):
         self._diagnostics_exporting = False
@@ -4000,56 +4240,23 @@ QMenu::separator {
         self._update_nap_policy(trading)
         # 定时轮询：先合并队列里的同类最新数据，再一次性应用。实时行情只需展示
         # 最新状态，避免积压时重复执行目标价判断、动画重置和图表状态更新。
-        processed = False
-        latest_quote = None
-        latest_minute = None
-        minute_stale_after = None   # v1.4.7：本批最后一条分时信号若为失败，记录其代码
-        latest_net = None
-        has_latest_net = False
-        update_checks = []
-        update_check_cancels = []
-        update_prompt_answers = []
-        update_progresses = []
-        update_downloads = []
-        try:
-            # v1.4.10 功耗：见 _icons_pending —— 队列空时不再每拍排一遍空队列
-            if self._icons_pending():
-                self._apply_icons()
-            while True:
-                kind, data = self.q.get_nowait()
-                processed = True
-                if kind == "quote":
-                    data_code, quote = data if (isinstance(data, tuple) and len(data) == 2) else (self.code, data)
-                    if data_code == self.code:
-                        evaluate = getattr(self, "_evaluate_received_quote", None)
-                        if latest_quote is not None and callable(evaluate):
-                            evaluate(latest_quote)
-                        latest_quote = quote
-                elif kind == "minute":
-                    # data 形如 (请求时的代码, 分时点列表)：旧股票的迟到回包直接丢弃
-                    data_code, points = data if (isinstance(data, tuple) and len(data) == 2) else (self.code, data)
-                    if data_code == self.code:
-                        latest_minute = points
-                        minute_stale_after = None   # 成功在后：失败态已被更新数据覆盖
-                elif kind == "minute_stale":
-                    minute_stale_after = data
-                elif kind == "net":
-                    latest_net = data
-                    has_latest_net = True
-                elif kind == "update_check":
-                    update_checks.append(data)
-                elif kind == "update_check_cancel":
-                    update_check_cancels.append(data)
-                elif kind == "update_prompt_answer":
-                    update_prompt_answers.append(data)
-                elif kind == "update_progress":
-                    update_progresses[:] = [data]
-                elif kind == "update_download":
-                    update_downloads.append(data)
-        except queue.Empty:
-            pass
-        except Exception as exc:
-            log_line("poll error: %r" % (exc,))
+        # v1.4.10 功耗：见 _icons_pending —— 队列空时不再每拍排一遍空队列
+        if self._icons_pending():
+            self._apply_icons()
+        batch = WindowMessageRouter.drain(self.q, self.code)
+        processed = batch.processed
+        latest_quote = batch.latest_quote
+        latest_minute = batch.latest_minute
+        minute_stale_after = batch.minute_stale_after
+        latest_net = batch.latest_net
+        has_latest_net = batch.has_latest_net
+        update_checks = batch.update_checks
+        update_check_cancels = batch.update_check_cancels
+        update_prompt_answers = batch.update_prompt_answers
+        update_progresses = batch.update_progresses
+        update_downloads = batch.update_downloads
+        if batch.error is not None:
+            log_line("poll error: %r" % (batch.error,))
 
         # v1.4.66 复核（2026-10-12）：这一段此前在兜异常范围**之外** —— 消费队列那段
         # 有 except 兜底，而批末的行情应用与五个 OTA handler 没有。任何一个 handler
@@ -4057,6 +4264,10 @@ QMenu::separator {
         # 界面只表现为"点了检查更新没反应"，日志里只有一行 poll error（甚至没有）。
         # 现在整段纳入守卫并留痕；后面的重绘/呼吸灯/宽度收尾无论如何都执行。
         try:
+            for quote in batch.quote_evaluations:
+                evaluate = getattr(self, "_evaluate_received_quote", None)
+                if callable(evaluate):
+                    evaluate(quote)
             if latest_quote is not None:
                 self._apply_quote(latest_quote)
             if latest_minute is not None:
@@ -4212,16 +4423,9 @@ QMenu::separator {
             # 于是吸附与回移两个函数互相推翻（下一次内容变宽/_keep_on_screen 被调即现形）。
             # 改成 exclusive 之后，贴齐时算出来的落点与当前位置相同，下面的守卫直接不动。
             ag_right, ag_bottom = ag.x() + ag.width(), ag.y() + ag.height()
-            right, bottom = fg.x() + fg.width(), fg.y() + fg.height()
-            if right > ag_right - 4:
-                x = max(ag.left() + 4, ag_right - fg.width())
-            if fg.left() < ag.left():
-                x = ag.left()
-            if fg.top() < ag.top():
-                y = ag.top()
-            # 下边缘：整体落在可用区下方时上移；窗口高于可用区时顶到上沿优先
-            if bottom > ag_bottom:
-                y = max(ag.top(), ag_bottom - fg.height())
+            x, y = keep_on_screen_position(
+                x, y, fg.width(), fg.height(), ag.left(), ag.top(),
+                ag_right, ag_bottom, padding=4)
             if (x, y) != (self.x(), self.y()):
                 self.move(x, y)
         except Exception:
@@ -6457,6 +6661,9 @@ QMenu::separator {
         aboutToQuit 是这两条路径唯一的通知点，故线程清理必须下沉到本方法并由
         aboutToQuit 与 quit() 共用（幂等，重复调用直接返回）。
         """
+        controller = getattr(self, "_update_controller", None)
+        if controller is not None:
+            controller.stop()
         if getattr(self, "_threads_stopped", False):
             return
         self._threads_stopped = True
@@ -6550,7 +6757,14 @@ QMenu::separator {
         # 幂等退出：自动关闭/用户点关闭等路径可能并发触发
         if getattr(self, "_quitting", False):
             return
-        self._quitting = True
+        lifecycle = getattr(self, "_lifecycle_controller", None)
+        if lifecycle is not None:
+            if not lifecycle.begin_quit():
+                return
+        elif getattr(self, "_quitting", False):
+            return
+        else:
+            self._quitting = True
         # v1.2.95：置 running / _wake.set() / join 后台线程 / 关连接池统一由
         # _shutdown_threads 完成（aboutToQuit 也挂了它），此处不再重复一份。
         self._shutdown_threads()

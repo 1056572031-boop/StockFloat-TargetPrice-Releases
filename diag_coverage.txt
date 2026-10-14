@@ -57,8 +57,6 @@ version 1.4.76
 #                    runtime.json 的 render 分组说）
 #   sf_system_alert  弹窗是一次性同步动作，无常驻实例；失败经 log_swallow 落 SWALLOWED
 #                    留痕（sf_system_alert.py 第 102-103 行那份入口），包内 debug.log 读得到
-version 1.4.85
-# 本轮仅补充公开资料与发行工具，无新增产品运行状态。
 version 1.4.84
 skip sf_runtime runtime.power is explicitly exported; the holder object itself has no additional report-only state
 skip sf_camera_check explicit hardware-check command writes its own bounded JSON result; it never owns normal application state
@@ -67,3 +65,18 @@ skip sf_http stateless request validation and bounded reads; failures use networ
 skip sf_instance process lifetime file-lock ownership; startup refusal is logged and the lock has no business payload
 skip sf_macos_menu stateless action wiring reuses existing handlers and adds no independent business state
 skip sf_privacy pure credential-scrubbing functions with no mutable product state
+version 1.4.85
+# 本轮加入主窗拆分的纯函数、状态容器与后台任务控制器；用户可见状态仍由
+# stock_float_window 的既有 runtime.json / debug.log 通路外发。
+skip sf_diagnostics_controller transient export worker only; completion and failures are reported by the existing diagnostics signal and log
+skip sf_window_geometry pure coordinate calculations; no machine-specific state is held
+skip sf_window_message_router stateless queue coalescing; it owns no persistent runtime state
+skip sf_window_state plain value containers whose fields are exported through the host runtime snapshot
+skip sf_quote_runtime thread-handle owner; worker liveness is exported by the host runtime and no separate payload exists
+version 1.4.86
+# 本轮发布主窗职责拆分；新控制器的现场已通过 runtime.json 的 controllers 分组或既有日志通路外发。
+skip sf_diagnostics_controller transient export worker only; completion and failures are reported by the existing diagnostics signal and log
+skip sf_window_geometry pure coordinate calculations; no machine-specific state is held
+skip sf_window_message_router stateless queue coalescing; it owns no persistent runtime state
+skip sf_window_state plain value containers whose fields are exported through the host runtime snapshot
+skip sf_quote_runtime thread-handle owner; worker liveness is exported by the host runtime and no separate payload exists

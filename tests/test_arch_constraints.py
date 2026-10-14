@@ -276,11 +276,11 @@ class TestNoNewSilentSwallowAnywhere(unittest.TestCase):
     # 在 target_panel 新加一处静默兜异常，总数上完全看不出来。
     BASELINE = {
         "sf_bootstrap.py": 2, "sf_calendar.py": 2, "sf_config.py": 2,
-        "sf_editor.py": 9, "sf_glass.py": 9, "sf_icons.py": 3,
-        "sf_logging.py": 24, "sf_network.py": 7, "sf_notify.py": 3,
-        "sf_quote.py": 7, "sf_runtime.py": 1, "sf_system_alert.py": 4,
+        "sf_editor.py": 8, "sf_glass.py": 8, "sf_icons.py": 3,
+        "sf_logging.py": 17, "sf_network.py": 7, "sf_notify.py": 3,
+        "sf_quote.py": 7, "sf_runtime.py": 0, "sf_system_alert.py": 4,
         "sf_temp_sweep.py": 1, "sf_ui_render.py": 5, "sf_universe.py": 3,
-        "sf_update.py": 2, "stock_float_window.py": 76, "target_panel.py": 5,
+        "sf_update.py": 2, "stock_float_window.py": 75, "target_panel.py": 5,
     }
 
     def _count(self):

@@ -20,10 +20,20 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.85
-checkfile Contents/Resources/docs/README.md::v1.4.85 Beta
+version 1.4.86
+check sf_window_message_router::WindowMessageRouter
+check sf_update_controller::UpdateController
+check sf_diagnostics_controller::DiagnosticsExportController
+check sf_quote_runtime::QuoteRuntimeController
+check sf_quote_presentation::QuotePresentationController
+check sf_target_controller::TargetController
+check sf_face_guard_controller::FaceGuardController
+check sf_window_geometry::keep_on_screen_position
+check sf_window_lifecycle::WindowLifecycleController
+check sf_window_state::UpdateFlowState
+checkfile Contents/Resources/docs/README.md::v1.4.86 Beta
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.86
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.85
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 stale-feature 1.4.85 本轮新增公开文档与链上文档闸门，无新增产品字节码符号；按包内资源核验本版 README、安装说明、安全政策与 GPL 全文，不借旧符号冒充新增证据。

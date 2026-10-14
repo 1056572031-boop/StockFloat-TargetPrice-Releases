@@ -144,9 +144,14 @@ class GateJudgesTheRealRepo(SFCase):
         self.assertTrue(blocks, "清单里一个版本段都没有")
         products = set(gate.product_modules(ROOT))
         curated = gate.curated_modules(ROOT)
+        current_version = sf_constants.APP_VERSION
         declared_names = []
+        in_current = False
         for line in text.splitlines():
-            if not line.startswith("skip "):
+            if line.startswith("version "):
+                in_current = line.split(None, 1)[1].strip() == current_version
+                continue
+            if not in_current or not line.startswith("skip "):
                 continue
             parts = line.split(None, 2)
             self.assertGreaterEqual(len(parts), 3, "%s 少了理由（理由为空即拒）" % line)

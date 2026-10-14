@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -50,7 +51,13 @@ class PublicReleaseCase(SFCase):
         body = readme.read_text()
         readme.write_text(body.replace("v" + docs.APP_VERSION, "v0.0.0", 1))
         self.assertTrue(self.document_problems())
-        readme.write_text(body.replace("补齐安装、隐私、行情使用边界和安全说明", "old changes"))
+        notes = (self.root / "release_notes.txt").read_text()
+        section = re.search(r"^V%s\s+[^\n]+\n(.*?)(?=^V\d+\.\d+\.\d+\s|\Z)"
+                            % re.escape(docs.APP_VERSION), notes, re.M | re.S)
+        self.assertIsNotNone(section)
+        change_text = section[1].strip()
+        self.assertIn(change_text, body)
+        readme.write_text(body.replace(change_text, "old changes", 1))
         self.assertTrue(self.document_problems())
 
     def test_missing_and_empty_release_notes_fail(self):

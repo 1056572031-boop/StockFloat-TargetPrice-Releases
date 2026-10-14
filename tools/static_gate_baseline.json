@@ -32,13 +32,13 @@
   "mypy:sf_ui_render.py:var-annotated": 1,
   "mypy:sf_universe.py:var-annotated": 4,
   "mypy:sf_update.py:arg-type": 2,
-  "mypy:stock_float_window.py:assignment": 9,
+  "mypy:stock_float_window.py:assignment": 8,
   "mypy:stock_float_window.py:attr-defined": 2,
   "mypy:stock_float_window.py:call-arg": 2,
   "mypy:stock_float_window.py:index": 1,
   "mypy:stock_float_window.py:misc": 3,
   "mypy:stock_float_window.py:union-attr": 16,
-  "mypy:stock_float_window.py:var-annotated": 3,
+  "mypy:stock_float_window.py:var-annotated": 2,
   "mypy:target_panel.py:arg-type": 2,
   "mypy:target_panel.py:assignment": 1,
   "mypy:target_panel.py:union-attr": 6,
@@ -80,5 +80,5 @@
   "mypy:tools/verify_bundle_consts.py:var-annotated": 1,
   "ruff:stock_float_window.py:F401": 9
  },
- "total": 313
+ "total": 311
 }
