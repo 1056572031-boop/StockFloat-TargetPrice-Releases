@@ -1,0 +1,75 @@
+# Skyrocket 安装说明（v1.4.85）
+
+提供 DMG 和 ZIP 两种安装包，普通用户建议用下文的 DMG 双击安装。
+**未签名、未公证**：本项目没有 Apple Developer ID 开发者签名和 Apple 公证。
+包内临时 ad-hoc 签名只用于完整性检查，不能证明开发者身份，也不代表 Apple 已审核。
+请只从[官方发行页](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)下载，核对本版文件名和 SHA-256；校验不符或来源不明时停止安装，不要盲目放行。
+不会关闭全系统安全保护；以下放行方式仅在你确认信任本项目后使用。
+发行页的 `Skyrocket-1.4.85-SHA256SUMS.txt` 列出本版 DMG、应用 ZIP 和源码 ZIP 校验值。
+在终端执行下列命令，并将输出与校验清单的同名文件一行对照：
+
+```sh
+shasum -a 256 ~/Downloads/Skyrocket-V1.4.85.dmg
+```
+装好后可自动更新；旧名客户端和 v1.4.58 及更早版本须先手动装一次当前版本。
+
+## 一、ZIP 安装（仅首次安装；熟悉终端时使用）
+
+打开「终端」（访达 → 应用程序 → 实用工具，或启动台里搜 terminal），
+把下面这一整行原样粘贴进去，按回车：
+
+```sh
+curl -fsSL -o ~/Downloads/Skyrocket-1.4.85-macos.zip 'https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0/Skyrocket-1.4.85-macos.zip' && ditto -x -k ~/Downloads/Skyrocket-1.4.85-macos.zip /Applications/ && open /Applications/Skyrocket.app
+```
+
+这一行只做三件事：从 github.com 下载本版安装包 → 解压到「应用程序」→ 打开它。
+它不使用 `sudo`，不删除任何文件，也不会碰你别的目录。
+
+为什么这样装不会被系统拦：拦下未签名程序靠的是文件上那张「来历标签」，
+而那张标签是**浏览器或微信下载**这个动作贴上去的，用上面这行命令取回来的文件不带它，
+这不会增加文件的可信度；企业设备策略仍可能阻止运行。
+
+**已经装过旧版本的人请用第二种**（它会先把旧版移到废纸篓再装新版），或先把「应用程序」里那个旧图标拖进废纸篓，再执行上面这一行。
+
+## 二、双击安装（拿到的是 DMG，且不想碰终端）
+
+1. 双击桌面上的 `Skyrocket-V1.4.85.dmg`，它会挂载成一个白色磁盘图标；
+2. 打开那个磁盘，**双击 `一键安装`**（图标是一枚银灰色驱动器）；
+3. 它会把旧版本移到废纸篓（不是删除）、装入新版、清掉刚装入那一份的来历标签、
+   校验包体完整性，然后自己打开。
+
+如果你只看到「无法打开，因为来自身份不明的开发者」，那是 macOS 在问你确不确认：
+确认来源和校验值无误后，到「系统设置 → 隐私与安全性」查看是否有「仍要打开」。
+不同系统或企业设备可能没有这个入口；不要为此关闭全系统 Gatekeeper。
+
+## 三、兜底：照旧拖进「应用程序」，再跑一条放行命令
+
+1. 打开 DMG，把 Skyrocket.app 拖到旁边的「Applications」替身上；
+2. 第一次打开被拦时，在终端里粘贴这一行并按回车：
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Skyrocket.app
+```
+
+它只清除这一个程序路径上的来历标签，不清系统里的其他任何东西。
+
+## 想核对拿到的是不是同一份包（可选）
+
+```sh
+shasum -a 256 ~/Downloads/Skyrocket-1.4.85-macos.zip
+```
+
+期望值：`955fd058b07f089a2ab5f10ab24fbfce6d2f1897bae2cee9b2c4ef426c39dfe7`。不一致就是包在路上被换过或下坏了，重新按第一种装法来一次。
+
+## 照做之后还是装不上
+
+不要反复试。请把以下三样发给 [GitHub 问题反馈](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/issues)：
+
+- 你用的是第几种装法、卡在哪一步（截图最好）；
+- 你的 macOS 版本（苹果菜单 → 关于本机）；
+- 如果程序曾经打开过：右键悬浮窗 →「导出诊断包」，把桌面上的 zip 一并发来。
+
+诊断包不会自动上传，但可能有股票代码、设备信息、运行状态和脱敏后的错误日志。
+发送前请检查并删除不愿公开的信息，不要把完整诊断包直接贴进公开 Issue。
+配置和目标价留在本机；行情查询会向第三方发送股票代码或搜索词，更新会访问 GitHub。
+完整隐私说明与行情接口使用边界见随包 README；漏洞请按 SECURITY.md 私下报告。
