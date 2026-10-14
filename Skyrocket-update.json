@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.84",
-  "published_at": "2026-10-14T10:27:08Z",
+  "version": "1.4.85",
+  "published_at": "2026-10-14T11:49:02Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "修复搜索误替换、ETF 输入卡顿和到价漏提醒；加强诊断脱敏、后台导出及休眠兼容。安装成功自动关闭专用终端，失败保留错误。",
+  "notes": "补齐安装、隐私、行情使用边界和安全说明；公开对应源码与许可证，安装包随附说明，发版自动检查文档版本。包含上一版安装与可靠性修复。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.84-macos.zip",
-    "size": 26071022,
-    "sha256": "2d9e78dd7f15cebdfa34327101dd89d9b784087638409ada56b7fad0f9b7f353"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.85-macos.zip",
+    "size": 26114233,
+    "sha256": "955fd058b07f089a2ab5f10ab24fbfce6d2f1897bae2cee9b2c4ef426c39dfe7"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "yfIDZjw9b5QpBY6T70R6bcQwbjr4PKifnnSCaAQNzEoh3gQqxLrIDrKUr9Btj+KpUA8fzlMYni7ihsdn2D2VDA=="
+    "value": "zsPn7JSVqmUm+KfqPlSQXNSbhK8kxJPIrNipwG3b5akULBO5Om5wtFJ5dT+ZpJhCBD+SSyZ77XZ9rqv30rE1CA=="
   }
 }
