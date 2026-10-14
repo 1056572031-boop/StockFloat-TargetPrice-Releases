@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.85",
-  "published_at": "2026-10-14T11:49:02Z",
+  "version": "1.4.86",
+  "published_at": "2026-10-14T17:50:36Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "补齐安装、隐私、行情使用边界和安全说明；公开对应源码与许可证，安装包随附说明，发版自动检查文档版本。包含上一版安装与可靠性修复。",
+  "notes": "完成主窗口职责拆分，保留入口与数据目录兼容；新增边界测试，完整回归和覆盖率门禁通过。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.85-macos.zip",
-    "size": 26114233,
-    "sha256": "955fd058b07f089a2ab5f10ab24fbfce6d2f1897bae2cee9b2c4ef426c39dfe7"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.86-macos.zip",
+    "size": 26138149,
+    "sha256": "26c0bd96a9088ed1069fcbad05a79229b37d9bb353bbc11a5cd74cf9f4162934"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "zsPn7JSVqmUm+KfqPlSQXNSbhK8kxJPIrNipwG3b5akULBO5Om5wtFJ5dT+ZpJhCBD+SSyZ77XZ9rqv30rE1CA=="
+    "value": "b4fv8+Cp/51fVKRm9k5P9mPX06TtThcxypJW2trMTyhBbWQ+YDz8TovZ2F0nMeAdQeqaqtHZcCXO/RlW8fP5Dw=="
   }
 }
