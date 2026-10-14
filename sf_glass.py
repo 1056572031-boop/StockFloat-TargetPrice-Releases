@@ -4,6 +4,7 @@
 import time
 import traceback
 from sf_constants import (ACCENT_BLUE_HEX, APP_VERSION, BG_GLASS_DIM, BG_GLASS_DIM_LIGHT,
+                          BG_LIQUID_GLASS_DIM, LIQUID_GLASS_OPACITY,
                           GLASS_INSET, GLASS_MASK_THROTTLE, R,
                           FG_BRIGHT_HEX, FG_TEXT_HEX, FG_HINT_HEX, FG_DISABLED_HEX)
 from sf_logging import feature_enabled, log_line, log_swallow, recent_log_anchors, RUN_ID
@@ -748,6 +749,32 @@ def detect_system_appearance():
     return "dark"
 
 
+def create_glass_surface(appkit, frame, prefer_liquid=False):
+    """Create the requested native material, falling back before attaching it."""
+    reason = ""
+    if prefer_liquid:
+        try:
+            cls = getattr(appkit, "NSGlassEffectView", None)
+            if cls is None:
+                reason = "liquid_api_unavailable"
+            else:
+                view = cls.alloc().initWithFrame_(frame)
+                view.setStyle_(appkit.NSGlassEffectViewStyleRegular)
+                view.setCornerRadius_(float(R))
+                view.setEffectIsInteractive_(False)
+                view.setAppearance_(appkit.NSAppearance.appearanceNamed_(appkit.NSAppearanceNameDarkAqua))
+                view.setAlphaValue_(LIQUID_GLASS_OPACITY)
+                return view, "liquid", ""
+        except Exception as exc:
+            reason = "liquid_create_failed:" + type(exc).__name__
+            log_swallow("sf_glass.create_glass_surface", exc)
+    view = appkit.NSVisualEffectView.alloc().initWithFrame_(frame)
+    view.setMaterial_(21)
+    view.setBlendingMode_(0)
+    view.setState_(1)
+    return view, "legacy", reason
+
+
 class GlassMixin:
         """原生毛玻璃背景层 + 强制置顶 + 弹窗材质这一族的宿主 mixin。
 
@@ -773,10 +800,44 @@ class GlassMixin:
         # 就是一张跨实例共享的可变类属性，第二个窗口的场次会接在第一个后面。
         _gap_open: "dict | None" = None
         _gap_episodes: "list[dict] | None" = None
+        _prefer_liquid_glass = False
+        _glass_backend = "none"
+        _glass_fallback_reason = ""
 
         def _setup_glass(self):
-            """创建独立毛玻璃 NSWindow 置于主窗下层，作为背景（Qt 内容不被遮挡）。
-            成功返回 True；任何异常静默返回 False，由调用方降级处理。"""
+            """Create the independent background; retry legacy after Liquid Glass failure."""
+            self._glass_backend = "none"
+            self._glass_fallback_reason = ""
+            nsw = content_ns_window(self)
+            if nsw is None:
+                self._glass_fallback_reason = "native_window_unavailable"
+                return False
+            try:
+                import AppKit
+                from Foundation import NSRect
+                frame = NSRect((0, 0), (self.width(), self.height()))
+                view, backend, reason = create_glass_surface(
+                    AppKit, frame, getattr(self, "_prefer_liquid_glass", False))
+                self._glass_backend = backend
+                self._glass_fallback_reason = reason
+                if self._install_glass_window(nsw, view):
+                    return True
+                if backend == "liquid":
+                    self._glass_fallback_reason = "liquid_window_setup_failed"
+                    view, backend, _reason = create_glass_surface(AppKit, frame)
+                    self._glass_backend = backend
+                    return self._install_glass_window(nsw, view)
+                return False
+            except Exception as exc:
+                self._glass_backend = "none"
+                self._glass_fallback_reason = "glass_setup_failed:" + type(exc).__name__
+                log_swallow("sf_glass._setup_glass", exc)
+                return False
+
+        def _install_glass_window(self, nsw, vev):
+            """Attach one material, with identical ownership and cleanup for both backends."""
+            changed_appearance = False
+            old_appearance = None
             try:
                 # 只有 cocoa 下 winId() 才是 NSView*。offscreen/minimal 下把它当指针
                 # 转成 objc_object 再 .window()，是**直接段错误而不是异常** —— 下面
@@ -787,11 +848,7 @@ class GlassMixin:
                 # 与 disable_native_window_shadow 同一口径：先问平台，再伸手进 AppKit。
                 # 平台判定收在 content_ns_window 里，与 _force_top / _sync_glass_frame
                 # 同一处 —— 漏掉任何一处都是一次 try/except 兜不住的段错误。
-                nsw = content_ns_window(self)
-                if nsw is None:
-                    return False
                 import AppKit
-                from Foundation import NSRect
                 gw = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
                     nsw.frame(), 0, 2, False)  # 无边框、Buffered
                 # PyObjC 持有该窗口对象；禁止 NSWindow 在 close 时自行 release，
@@ -806,14 +863,12 @@ class GlassMixin:
                 gw.setIgnoresMouseEvents_(True)  # 不拦截鼠标事件
                 gw.setHasShadow_(False)   # 关闭玻璃窗阴影，避免窗口外圈出现描边/暗边
                 nsw.setHasShadow_(False)  # 关闭主窗原生阴影，与玻璃层保持完全一致
-                vev = AppKit.NSVisualEffectView.alloc().initWithFrame_(
-                    NSRect((0, 0), (self.width(), self.height())))
-                # 材质选型（实测 macOS 26.6）：
-                #   sheet(11)/popover(6) 等浮层材质自带四周描边边框（用户反馈"悬浮窗四周有描边"），
-                #   underWindowBackground(21) 为纯毛玻璃无边框材质，通透且不画描边。
-                vev.setMaterial_(21)   # NSVisualEffectMaterialUnderWindowBackground
-                vev.setBlendingMode_(0)      # NSVisualEffectBlendingModeBehindWindow=0
-                vev.setState_(1)             # NSVisualEffectStateActive=1
+                if self._glass_backend == "liquid":
+                    old_appearance = nsw.appearance()
+                    appearance = AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua)
+                    changed_appearance = True
+                    nsw.setAppearance_(appearance)
+                    gw.setAppearance_(appearance)
                 self._glass_view = vev
                 # 先 setContentView 再挂圆角 mask：contentView 切换会重建 view 的
                 # layer，若在 setContentView 之前 setMask 会被重置，玻璃层退回直角，
@@ -829,7 +884,9 @@ class GlassMixin:
                 # 「同尺寸跳过重建」的目标尺寸缓存复用判定
                 self._glass_mask_w = self.width()
                 self._glass_mask_h = self.height()
-                log_line("glass ok, mask=" + ("set" if self._glass_mask_layer is not None else "none"))
+                log_line("glass ok, backend=%s, mask=%s, fallback=%s" % (
+                    self._glass_backend, "set" if self._glass_mask_layer is not None else "native",
+                    self._glass_fallback_reason or "none"))
                 return True
             except Exception:
                 # v1.4.18 走查：若异常发生在 gw.orderFront_ 之后（如 _set_glass_mask
@@ -847,6 +904,11 @@ class GlassMixin:
                         nsw.setHasShadow_(True)
                 except Exception:
                     pass
+                if changed_appearance:
+                    try:
+                        nsw.setAppearance_(old_appearance)
+                    except Exception as exc:
+                        log_swallow("sf_glass._install_glass_window.appearance", exc)
                 try:
                     log_line("glass setup error: " + traceback.format_exc().strip().replace("\n", " | "))
                 except Exception:
@@ -854,6 +916,7 @@ class GlassMixin:
                 self._glass_window = None
                 self._glass_view = None
                 self._glass_mask_layer = None
+                self._glass_backend = "none"
                 return False
 
         def _init_glass_state(self):
@@ -865,6 +928,8 @@ class GlassMixin:
             仅影响外观（退回半透明深色卡），不破坏任何功能。
             """
             self._bg_effect = False          # 是否已生效系统毛玻璃
+            self._glass_backend = "none"
+            self._glass_fallback_reason = ""
             self._glass_view = None
             self._glass_window = None        # 独立毛玻璃 NSWindow（置于本窗下层）
             self._glass_mask_layer = None    # 玻璃层圆角裁剪 CAShapeLayer
@@ -1101,6 +1166,8 @@ class GlassMixin:
             self._glass_window = None
             self._glass_view = None
             self._glass_mask_layer = None
+
+            self._glass_backend = "none"
             self._glass_pending = False
             self.update()
 
@@ -1119,6 +1186,7 @@ class GlassMixin:
                 except Exception:
                     pass
             self._bg_effect = False
+            self._glass_backend = "none"
             # M9：复位"待注入"标记与 mask 尺寸缓存 —— 否则实例被复用时
             # （同一面板 close 后再 show，如"有未生效修改"的复用分支）：
             #   · _glass_pending 仍是 False → showEvent 不再注入 → 该实例
@@ -1134,6 +1202,9 @@ class GlassMixin:
         def _set_glass_mask(self, vev, w, h):
             """用 CAShapeLayer 圆角 mask 裁剪玻璃层，使其与主窗圆角贴合（四角不露方角）。
             窗口尺寸变化（拉伸）时由 _sync_glass_frame 重建 path。"""
+            if getattr(self, "_glass_backend", "legacy") == "liquid":
+                vev.setCornerRadius_(float(R))
+                return
             try:
                 from Quartz import CGRectMake, CAShapeLayer, CATransaction
                 # 内缩 GLASS_INSET：玻璃层边缘材质自带 1~3px 描边，整体内缩后由主窗
@@ -1289,6 +1360,8 @@ class GlassMixin:
             注：调用方（含 stock_float_window._on_screen_changed 里的
             `self._glass_mode = None`）无需再做失效复位，该赋值现为无害冗余。
             """
+            if getattr(self, "_glass_backend", "legacy") == "liquid":
+                return BG_LIQUID_GLASS_DIM
             return glass_dim_for_mode(detect_system_appearance())
 
         def _glass_surface_rim(self):
@@ -1747,6 +1820,11 @@ class GlassMixin:
                    "main_interaction": None,
                    "glass_present": getattr(self, "_glass_window", None) is not None,
                    "follow_timer_active": getattr(self, "_glass_follow_timer", None) is not None}
+            backend = getattr(self, "_glass_backend", "none")
+            out["surface"] = {"backend": backend,
+                              "fallback_reason": getattr(self, "_glass_fallback_reason", ""),
+                              "opacity": LIQUID_GLASS_OPACITY if backend == "liquid" else 1.0,
+                              "dim_alpha": self._glass_dim()}
             if not out["native_cocoa"]:
                 out["real_state"] = None
                 out["real_state_note"] = ("非 cocoa 进程（offscreen/minimal）不碰 AppKit，"

@@ -33,6 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from tests._base import SFCase    # noqa: E402
 
 import sf_glass                   # noqa: E402
+from sf_constants import BG_LIQUID_GLASS_DIM, LIQUID_GLASS_OPACITY, R  # noqa: E402
 
 _TOP_LEVEL = sf_glass._TOP_WINDOW_LEVEL   # discipline-ok(R5): 层级期望值只有一个来源，取实现里那一份
 
@@ -170,6 +171,40 @@ class GlassSetupChainTest(SFCase):
         self.assertEqual(m.get("fixes_after_fault"), "True", "判出故障的那一拍必须真的动手")
         self.assertEqual(m.get("settles_back_to_steady"), "True",
                          "纠正完要回到什么都不写的稳态，否则会一直写下去")
+
+    def test_liquid_surface_configuration_resize_and_teardown(self):
+        _proc, markers = self._run("liquid_setup")
+        self.assertEqual(markers["setup"], "True")
+        if markers["api_available"] == "True":
+            self.assertEqual(markers["backend"], "liquid")
+            self.assertEqual(float(markers["opacity"]), LIQUID_GLASS_OPACITY)
+            self.assertEqual(int(markers["dim"]), BG_LIQUID_GLASS_DIM)
+            self.assertEqual(float(markers["radius"]), float(R))
+            self.assertEqual(markers["style"], "0")
+            self.assertIn("Dark", markers["appearance"])
+        else:
+            self.assertEqual(markers["backend"], "legacy")
+            self.assertEqual(markers["reason"], "liquid_api_unavailable")
+        self.assertEqual(markers["resize_aligned"], "True")
+        self.assertEqual(markers["hidden_after_close"], "True")
+
+    def test_mapped_liquid_failure_retries_legacy_without_an_orphan(self):
+        _proc, markers = self._run("liquid_late_failure")
+        if markers["api_available"] == "False":
+            self.skipTest("Native Liquid Glass API is unavailable on this machine")
+        self.assertEqual(markers["setup"], "True")
+        self.assertEqual(markers["backend"], "legacy")
+        self.assertEqual(markers["reason"], "liquid_window_setup_failed")
+        self.assertEqual(markers["created"], "2")
+        self.assertEqual(markers["failed_window_hidden"], "True")
+        self.assertEqual(markers["fallback_visible"], "True")
+
+    def test_liquid_z_order_self_heals_and_returns_to_idle(self):
+        _proc, markers = self._run("liquid_force_top")
+        self.assertEqual(markers["probe_sees_pair_before_fix"], "True")
+        self.assertEqual(markers["inverted_before_fix"], "True")
+        self.assertEqual(markers["healed"], "True")
+        self.assertEqual(markers["settles_back_to_steady"], "True")
 
 
 if __name__ == "__main__":

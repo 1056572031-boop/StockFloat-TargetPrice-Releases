@@ -57,7 +57,9 @@ class PublicReleaseCase(SFCase):
         self.assertIsNotNone(section)
         change_text = section[1].strip()
         self.assertIn(change_text, body)
-        readme.write_text(body.replace(change_text, "old changes", 1))
+        stale_body = body.replace(change_text, "old changes", 1)
+        self.assertNotEqual(stale_body, body, "The stale-change injection must modify the public document")
+        readme.write_text(stale_body)
         self.assertTrue(self.document_problems())
 
     def test_missing_and_empty_release_notes_fail(self):

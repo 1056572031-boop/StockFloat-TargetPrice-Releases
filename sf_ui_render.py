@@ -8,7 +8,7 @@ import time
 from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QFontInfo, QFontMetrics, QPainter,
                          QPainterPath, QPen, QBrush, QLinearGradient, QImage)
 from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer
-from sf_constants import (R, GLASS_INSET, FG_DIM, UP_RED_HEX, DOWN_GREEN_HEX,
+from sf_constants import (R, GLASS_INSET, LIQUID_GLASS_INSET, FG_DIM, UP_RED_HEX, DOWN_GREEN_HEX,
                          BTN_ICON_PT)
 from renderer import smooth_round_rect_path, _bottom_layout, price_pct_layout
 from sf_utils import fmt_pct
@@ -934,15 +934,20 @@ class RenderMixin:
                 self._bg_path_wh = (w, h)
             path = self._bg_path
             if self._bg_effect:
+                liquid = getattr(self, "_glass_backend", "legacy") == "liquid"
+                key = (w, h, "liquid") if liquid else (w, h)
                 # 玻璃已由 NSVisualEffectView 提供，仅叠加轻微暗化保证文字可读；
                 # 填充路径与玻璃层 mask 一样内缩 GLASS_INSET：边缘 3px 完全透明露出背景，
                 # 与内缩玻璃层边缘对齐，杜绝四周描边/暗边残留
-                if self._bg_path_ins is None or self._bg_path_ins_wh != (w, h):
-                    ins = GLASS_INSET
+                if self._bg_path_ins is None or self._bg_path_ins_wh != key:
+                    ins = LIQUID_GLASS_INSET if liquid else GLASS_INSET
+                    radius = R - ins if liquid else R
                     self._bg_path_ins = smooth_round_rect_path(
-                        ins, ins, max(w - 2 * ins, 1), max(h - 2 * ins, 1), R)
-                    self._bg_path_ins_wh = (w, h)
+                        ins, ins, max(w - 2 * ins, 1), max(h - 2 * ins, 1), radius)
+                    self._bg_path_ins_wh = key
                 p.fillPath(self._bg_path_ins, QColor(0, 0, 0, self._glass_dim()))
+                if liquid:
+                    return
                 # 玻璃材质的受光只留在内侧 1px，随系统深浅外观实时变化；背景的
                 # 暖冷色仍由原生 NSVisualEffectView 负责，避免人为染色干扰行情可读性。
                 rim = smooth_round_rect_path(

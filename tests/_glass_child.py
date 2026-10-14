@@ -120,10 +120,14 @@ class _WindowFactory:
         return _Recorded()
 
 
-def _quiet_host():
+class LiquidHost(Host):
+    _prefer_liquid_glass = True
+
+
+def _quiet_host(liquid=False):
     """造一个「平台窗口已存在、但屏幕上看不见」的宿主：winId() 不 show + alpha 0。"""
     app = _app()
-    host = Host()
+    host = LiquidHost() if liquid else Host()
     host.resize(MAIN_W, MAIN_H)
     host.winId()                       # 只造 NSWindow，不映射上屏
     app.processEvents()
@@ -282,7 +286,7 @@ def _wait_order(numbers, want_glass_on_top, rounds=40, step=0.05):
     return False, rounds
 
 
-def run_force_top():
+def run_force_top(liquid=False):
     """置顶复核的真路径：稳态必须收敛到"什么都不写"，倒序必须能自己纠正。
 
     为什么值得单独跑一次真窗口：`_force_top` 里那十几行（含 v1.4.35 收尾的
@@ -292,7 +296,7 @@ def run_force_top():
     ①~② 是 v1.4.10 的省电不变量：体检通过时一次系统写都不发。
     ③~⑤ 是 v1.4.26/33/35 的自愈不变量：顺序倒了要判得出、纠得回、之后回到稳态。
     """
-    host = _quiet_host()
+    host = _quiet_host(liquid=liquid)
     if not host._setup_glass():  # discipline-ok(R5): 被测对象本身就是 GlassMixin 的私有入口
         _marker("error", "glass not built")
         return 2
@@ -373,8 +377,75 @@ def run_force_top():
     return 0
 
 
+def run_liquid_setup():
+    host = _quiet_host(liquid=True)
+    ok = host._setup_glass()  # discipline-ok(R5): Native lifecycle entry is the behavior under test.
+    window = sf_glass.content_ns_window(host)
+    glass = getattr(host, "_glass_window", None)
+    view = getattr(host, "_glass_view", None)
+    _hide(window, glass)
+    _app().processEvents()
+    surface = host.glass_diagnostics()["surface"]
+    _marker("api_available", getattr(AppKit, "NSGlassEffectView", None) is not None)
+    _marker("setup", ok)
+    _marker("backend", surface["backend"])
+    _marker("reason", surface["fallback_reason"])
+    _marker("opacity", view.alphaValue() if view is not None else -1)
+    _marker("dim", surface["dim_alpha"])
+    if surface["backend"] == "liquid":
+        _marker("style", view.style())
+        _marker("radius", view.cornerRadius())
+        _marker("appearance", view.effectiveAppearance().name())
+    host.resize(MAIN_W, MAIN_H + 80)
+    host._sync_glass_frame(force_mask=True)  # discipline-ok(R5): Exercise production resize synchronization.
+    _app().processEvents()
+    _marker("resize_aligned", bool(glass is not None and glass.frame() == window.frame()))
+    host._close_glass()  # discipline-ok(R5): Native teardown is the behavior under test.
+    _marker("hidden_after_close", glass is not None and not glass.isVisible())
+    return 0
+
+
+def run_liquid_late_failure():
+    host = _quiet_host(liquid=True)
+    if getattr(AppKit, "NSGlassEffectView", None) is None:
+        _marker("api_available", False)
+        return 0
+    _marker("api_available", True)
+    factory = _WindowFactory()
+    real_nswindow = AppKit.NSWindow
+    real_mask = host._set_glass_mask  # discipline-ok(R5): Keep the real step except at the injected fault.
+    hits = []
+
+    def mask(view, width, height):
+        if isinstance(view, AppKit.NSGlassEffectView):
+            hits.append(1)
+            if len(hits) == 2:
+                raise RuntimeError("liquid mask failed after mapping")
+        return real_mask(view, width, height)
+
+    AppKit.NSWindow = factory
+    host._set_glass_mask = mask  # discipline-ok(R5): Inject a post-mapping failure in the native lifecycle.
+    try:
+        ok = host._setup_glass()  # discipline-ok(R5): Exercise complete fallback, not a reconstructed excerpt.
+        _hide(sf_glass.content_ns_window(host), *factory.made)
+        _app().processEvents()
+        surface = host.glass_diagnostics()["surface"]
+        _marker("setup", ok)
+        _marker("backend", surface["backend"])
+        _marker("reason", surface["fallback_reason"])
+        _marker("created", len(factory.made))
+        _marker("failed_window_hidden", len(factory.made) == 2 and not factory.made[0].isVisible())
+        _marker("fallback_visible", len(factory.made) == 2 and factory.made[1].isVisible())
+        host._close_glass()  # discipline-ok(R5): Verify teardown of the successful fallback.
+    finally:
+        AppKit.NSWindow = real_nswindow
+    return 0
+
+
 MODES = {"probe": run_probe, "setup": run_setup, "setup_fail": run_setup_fail,
-         "force_top": run_force_top}
+         "force_top": run_force_top, "liquid_setup": run_liquid_setup,
+         "liquid_late_failure": run_liquid_late_failure,
+         "liquid_force_top": lambda: run_force_top(liquid=True)}
 
 
 if __name__ == "__main__":

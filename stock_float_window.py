@@ -688,6 +688,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
     # 每秒醒 62.3 次，其中约 84% 队列是空的。改后唤醒次数与数据条数同级（≈10/秒），
     # 且端到端等待窗口从 0~16ms 压到 0~2ms：更省电，也更跟手。
     # 必须显式 Qt.QueuedConnection：见 __init__ 里的连接处注释。
+    _prefer_liquid_glass = True
     ui_wakeup = pyqtSignal()
 
     # 人脸守卫：采集线程数完一张新快照就 emit 一次，主线程立刻判一遍。
