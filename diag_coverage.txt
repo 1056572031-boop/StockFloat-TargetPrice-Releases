@@ -1,0 +1,69 @@
+# diag_coverage.txt —— 诊断覆盖申报清单（发版链第 3.9 关消费）
+#
+# 这份文件是**堆叠历史**（同 release_checks.txt / release_notes.txt）：新版本往最上面插，
+# 不许就地替换上一版那一段。
+#
+# 为什么要有它：`outputs/诊断导出逐版核查-v1.4.27至v1.4.66-2026-10-12.md` 逐版对账的
+# 结论是 39 个实发版本里 29 个引入了当时远程读不出来的状态，而全量回归两年全绿 ——
+# "接线"这件事从来没有一道关卡看过。tools/diag_coverage_check.py 现在每轮都问一句：
+# 本轮改过的产品模块，诊断包答得上来吗？答不上来就在这里留一行理由。
+#
+# 形状（只有当前 APP_VERSION 那一段生效，段外一律不认 —— 台账 G26 那条
+# "无主的 stale-feature 被下一版继承"就是这个形状）：
+#
+#     version 1.4.76
+#     skip <模块名> <为什么不需要单独接进诊断包>
+#
+# 三条硬规矩，闸门逐条判：
+#   ① 理由为空即拒；② 申报本轮**没改过**的模块即拒（清单只增不减＝没人读）；
+#   ③ 模块已被导出面读到（curated）或运行态确实会被 sf_diag 自动采走（auto）时，
+#      申报它同样判红 —— 不许用一句"不用接"把真实缺口盖过去。
+#
+# 一句话讲清这份清单**能**保证什么、**不能**保证什么：它保证每一轮都有人当面回答
+# "这个模块坏了用户说什么"，并把答案留在受版本控制的地方可被 review。它不能替你
+# 回答得对 —— 理由写错，包里就是空的。所以每条理由都必须写"信息具体从哪一条通路
+# 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
+# "不重要"。
+
+version 1.4.81
+# 本轮 sf_quote 已由 curated 诊断导出闭包覆盖，无新增常驻运行态。
+
+version 1.4.76
+# 这一版**一条 skip 都没有**，这是正常状态而不是漏写：本轮只改了 sf_diag 与
+# stock_float_window，两个都在导出面的符号闭包里（curated），没有需要答复"为什么不用进包"
+# 的模块。真需要申报的那一轮，闸门会当场点名（实测：把下面那两条留档行误留在段内时，
+# 闸门报的是「申报了本轮没改的模块」——段内一条 skip 都不该多写）。
+# ⚠ 一条 skip 必须写在一行里：解析器只认 `skip 模块 理由` 这一种形状，换行续写会被当成
+# 一条不认识的指令并判红（本文件写完就实测到过一次）。要展开请写注释行，注释不参与判定。
+# 下面五条是 2026-10-13 顺手把上一轮（v1.4.69）改动过的模块一起核过的结论，留在这里备
+# 下一轮对照用。闸门**不认注释行**（只吃当前版本段里的 skip），所以它们不享受任何豁免：
+# 那五个模块是 3.9 关上线之前那一轮改的，当时没有这道关，账上就缺这一格 —— 现在补的是
+# 认知，不是免检。
+#   sf_utils         纯函数工具层：模块顶层名 0 条、无类无实例，没有可外发的运行态
+#   sf_bootstrap     启动守卫的结论（冻结与否、是否从临时目录起）已由 runtime.json 的
+#                    identity 分组与 debug.log 的 STARTUP 身份行外发；模块本身只有
+#                    _TEMP_ROOTS 一条永不被改写的常量
+#   sf_temp_sweep    清扫是发版/启动各一次的动作，每中性化一个副本写一行 debug.log
+#                    （"temp-copies sweep: neutralized N"）；顶层 5 个名字全是常量
+#   sf_editor        编辑器的拒绝计数写在 sf_universe._REJECTS（sf_editor.py 那四处调用点），
+#                    经 universe.json 的 rejects 外发；模块自身只剩窗口对象，而窗口只在
+#                    打开期间存在，导出那一下常为 None
+#   sf_runtime       节电/最小化/UI 间隔的**值**经主窗 property 落到 runtime.json
+#                    （minimized 等键），而 RuntimeState 实例的属性名一条都不命中 sf_diag
+#                    词表（实测 instance_held 算出的是 sf_anim_driver，不含 sf_runtime）——
+#                    自动层确实收不到它，这条的意思是"已知只有这一点没进包"
+#   sf_animator      逐位滚动的时长/跨位判据是纯计算：AST 实测模块顶层名 0 条、无类、
+#                    无实例，没有任何"这一台机器上的运行态"可外发（滚动本身的末态由
+#                    runtime.json 的 render 分组说）
+#   sf_system_alert  弹窗是一次性同步动作，无常驻实例；失败经 log_swallow 落 SWALLOWED
+#                    留痕（sf_system_alert.py 第 102-103 行那份入口），包内 debug.log 读得到
+version 1.4.85
+# 本轮仅补充公开资料与发行工具，无新增产品运行状态。
+version 1.4.84
+skip sf_runtime runtime.power is explicitly exported; the holder object itself has no additional report-only state
+skip sf_camera_check explicit hardware-check command writes its own bounded JSON result; it never owns normal application state
+skip sf_editor transient editor and search workers expose rejection reasons through universe.json; no extra permanent state is required
+skip sf_http stateless request validation and bounded reads; failures use network counters and logs
+skip sf_instance process lifetime file-lock ownership; startup refusal is logged and the lock has no business payload
+skip sf_macos_menu stateless action wiring reuses existing handlers and adds no independent business state
+skip sf_privacy pure credential-scrubbing functions with no mutable product state

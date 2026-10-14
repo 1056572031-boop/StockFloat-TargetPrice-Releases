@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Export and audit corresponding source without exposing private Git history."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from sf_constants import APP_VERSION  # noqa: E402
+from make_update_assets import REPO, TAG  # noqa: E402
+from public_docs_check import problems  # noqa: E402
+
+PUBLIC_BRANCH = "public-source"
+EXCLUDED = ("AGENTS.md", "DELIVERY_CHECKLIST.md", "QC_CHECKLIST.md", "backups", "outputs",
+            "TESTS_AUDIT_2026-09-14.md", "REFACTOR_CHANGES_V1.3.46.md", "tools/archive",
+            "目标价功能技术方案_v6.md", "目标价功能评估_基于v1.2.74.md")
+DOCS = ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md", "docs/INSTALL.md",
+        "docs/CONTRIBUTING.md")
+CREDENTIALS = re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+                         rb"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
+PERSONAL_MAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@(?:qq|foxmail|gmail|icloud|outlook|hotmail)\.com")
+PHONE = re.compile(rb"(?<![0-9.,eE+\-])1[3-9][0-9]{9}(?![0-9.,a-fA-F])")
+
+
+def git_env() -> dict:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_AUTHOR_NAME="Skyrocket maintainers", GIT_COMMITTER_NAME="Skyrocket maintainers",
+               GIT_AUTHOR_EMAIL="skyrocket@users.noreply.github.com",
+               GIT_COMMITTER_EMAIL="skyrocket@users.noreply.github.com")
+    return env
+
+
+def run(args, cwd=ROOT, binary=False):
+    result = subprocess.run(args, cwd=cwd, env=git_env(), capture_output=True,
+                            text=not binary, check=True)
+    return result.stdout
+
+
+def excluded(name: str) -> bool:
+    return any(name == item or name.startswith(item + "/") for item in EXCLUDED)
+
+
+def sanitize(text: str, home: str) -> str:
+    # Keep the functional GitHub namespace in URLs; remove local identity instead.
+    text = text.replace(home, "/Users/example")
+    text = text.replace(".private_tools", ".private_tools")
+    return text
+
+
+def privacy_problems(data: bytes, home: str, secrets=()) -> list[str]:
+    bad = []
+    if any(secret and secret in data for secret in secrets):
+        bad.append("release signing secret")
+    if CREDENTIALS.search(data):
+        bad.append("credential")
+    if PERSONAL_MAIL.search(data):
+        bad.append("personal contact")
+    if PHONE.search(data):
+        bad.append("personal phone number")
+    if home.encode() in data:
+        bad.append("personal home path")
+    if b"." + b"workbuddy" in data:
+        bad.append("internal credential directory")
+    # An existing download namespace is necessary. Do not grant a blanket number exemption.
+    owner = REPO.split("/", 1)[0].encode()
+    number = owner.split(b"-", 1)[0]
+    if number.isdigit() and number in data.replace(owner, b"maintainer"):
+        bad.append("personal numeric identifier outside GitHub namespace")
+    return bad
+
+
+def signing_secrets(root: Path) -> list[bytes]:
+    path = root / ".private_tools" / "update_signing_key.txt"
+    if not path.is_file():
+        return []
+    text = path.read_bytes().strip()
+    values = [text]
+    try:
+        values.append(bytes.fromhex(text.decode("ascii")))
+    except ValueError:
+        import base64
+        values.append(base64.b64decode(text, validate=True))
+    return values
+
+
+def audit_history(root: Path, home: str, secrets=()) -> None:
+    objects = run(["git", "rev-list", "--objects", "--all"], root).splitlines()
+    if not objects:
+        raise ValueError("No reachable objects: cannot audit an empty repository")
+    issues = []
+    for entry in objects:
+        oid, _, name = entry.partition(" ")
+        if name and (excluded(name) or re.search(r"\.(dmg|log|ips)$|(^|/)config\.json$", name)):
+            issues.append("internal history entry: " + name)
+        kind = run(["git", "cat-file", "-t", oid], root).strip()
+        if kind not in ("blob", "commit"):
+            continue
+        data = run(["git", "cat-file", "-p", oid], root, binary=True)
+        for label in privacy_problems(data, home, secrets):
+            issues.append(label + ": " + (name or oid[:10]))
+    if issues:
+        raise ValueError("Public history audit failed:\n" + "\n".join(issues))
+    print("Public history audit: %d reachable objects; no private history or detected secrets" % len(objects))
+
+
+def export_source(out: Path, root: Path = ROOT) -> None:
+    # Production code must be committed; the generated install guide can acquire a post-upload digest.
+    dirty = run(["git", "diff", "HEAD", "--name-only"], root).splitlines()
+    untracked = run(["git", "ls-files", "--others", "--exclude-standard"], root).splitlines()
+    # Untracked research/tests in a shared checkout are not application build inputs.
+    product_untracked = [name for name in untracked
+                         if ("/" not in name and name.endswith((".py", ".spec")))
+                         or name.startswith(("updater/", "installer/", "fonts/"))]
+    unsafe = [name for name in dirty + product_untracked if name not in DOCS and not excluded(name)]
+    if unsafe:
+        raise ValueError("Commit release inputs before exporting: " + ", ".join(unsafe))
+    raw = run(["git", "archive", "--format=tar", "HEAD"], root, binary=True)
+    out.mkdir(parents=True, exist_ok=False)
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        members = [member for member in archive.getmembers() if not excluded(member.name)]
+        archive.extractall(out, members=members, filter="data")
+    for name in DOCS:
+        destination = out / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / name, destination)
+    home = str(Path.home())
+    for path in out.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeError:
+            continue
+        cleaned = sanitize(text, home)
+        if cleaned != text:
+            path.write_text(cleaned, encoding="utf-8")
+    bad = problems(out, APP_VERSION)
+    if bad:
+        raise ValueError("Invalid public documents: " + ", ".join(bad))
+    run(["git", "init", "-q", "-b", PUBLIC_BRANCH], out)
+    run(["git", "add", "-A"], out)
+    run(["git", "commit", "-qm", "Corresponding source v" + APP_VERSION], out)
+    audit_history(out, home, signing_secrets(root))
+
+
+def push_source(out: Path) -> str:
+    url = "https://github.com/%s.git" % REPO
+    refs = run(["git", "ls-remote", url, "refs/heads/" + PUBLIC_BRANCH], out)
+    if refs.strip():
+        run(["git", "fetch", "-q", url, PUBLIC_BRANCH], out)
+        # Attach only to the already public branch, never to the private development commit.
+        tree = run(["git", "rev-parse", "HEAD^{tree}"], out).strip()
+        commit = run(["git", "commit-tree", tree, "-p", "FETCH_HEAD", "-m",
+                      "Corresponding source v" + APP_VERSION], out).strip()
+        run(["git", "update-ref", "refs/heads/" + PUBLIC_BRANCH, commit], out)
+    audit_history(out, str(Path.home()), signing_secrets(ROOT))
+    run(["git", "push", "-q", url, "HEAD:refs/heads/" + PUBLIC_BRANCH], out)
+    return run(["git", "rev-parse", "HEAD"], out).strip()
+
+
+def upload_asset(path: Path) -> None:
+    # Never overwrite immutable same-name assets. A retry must verify identical content.
+    import json
+    assets = json.loads(run(["gh", "api", "repos/%s/releases/tags/%s" % (REPO, TAG)]))["assets"]
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    for asset in assets:
+        if asset["name"] == path.name:
+            if asset.get("digest") != "sha256:" + digest:
+                raise ValueError("Existing immutable asset differs: " + path.name)
+            print("Already published identical asset: " + path.name)
+            return
+    run(["gh", "release", "upload", TAG, str(path), "--repo", REPO])
+
+
+def publish_documents(source: Path) -> None:
+    # Clone the latest manifest branch, changing only documents so OTA pointers remain untouched.
+    with tempfile.TemporaryDirectory(prefix="sfpublic_docs_") as directory:
+        checkout = Path(directory) / "release"
+        run(["git", "clone", "-q", "--depth=1", "--branch", "main",
+             "https://github.com/%s.git" % REPO, str(checkout)])
+        for name in DOCS + ("fonts/OFL-D-DIN.txt",):
+            path = checkout / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / name, path)
+        run(["git", "add", "--", *DOCS, "fonts/OFL-D-DIN.txt"], checkout)
+        if run(["git", "diff", "--cached", "--name-only"], checkout).strip():
+            run(["git", "commit", "-qm", "Public documentation v" + APP_VERSION], checkout)
+            run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], checkout)
+
+
+def self_test() -> int:
+    home = "/Users/" + "private-owner"
+    token = b"ghp_" + b"a" * 30
+    cases = ((home.encode(), True), (token, True), (b"person@" + b"qq.com", True),
+             (b"138" + b"00138000", True),
+             (b"safe example", False), (REPO.encode(), False))
+    if any(bool(privacy_problems(data, home)) != want for data, want in cases):
+        return 1
+    if sanitize(home + "/project .private_tools", home) != "/Users/example/project .private_tools":
+        return 1
+    with tempfile.TemporaryDirectory(prefix="sfpub_self_") as directory:
+        root = Path(directory)
+        run(["git", "init", "-q"], root)
+        path = root / "file.txt"
+        path.write_bytes(b"safe")
+        run(["git", "add", "."], root)
+        run(["git", "commit", "-qm", "clean"], root)
+        audit_history(root, home)
+        path.write_bytes(token)
+        run(["git", "add", "."], root)
+        run(["git", "commit", "-qm", "planted leak"], root)
+        path.write_bytes(b"safe again")
+        run(["git", "add", "."], root)
+        run(["git", "commit", "-qm", "removed from current tree"], root)
+        try:
+            audit_history(root, home)
+        except ValueError:
+            print("public_release: secret in old reachable history correctly rejected")
+            return 0
+    return 1
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--source-only", action="store_true")
+    parser.add_argument("--audit", type=Path)
+    args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
+    if args.audit:
+        audit_history(args.audit, str(Path.home()), signing_secrets(ROOT))
+        return 0
+    base = ROOT / "build"
+    base.mkdir(exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="public_v%s_" % APP_VERSION, dir=base)) / "source"
+    export_source(out)
+    if args.publish:
+        commit = push_source(out)
+        print("Public source commit: " + commit)
+        if not args.source_only:
+            archive = out.parent / ("Skyrocket-%s-source.zip" % APP_VERSION)
+            run(["git", "archive", "--format=zip", "--prefix=Skyrocket-source/",
+                 "-o", str(archive), "HEAD"], out)
+            upload_asset(archive)
+            dmg = ROOT / "build" / ("Skyrocket-V%s.dmg" % APP_VERSION)
+            upload_asset(dmg)
+            application = ROOT / "build/update_assets" / ("V" + APP_VERSION) / (
+                "Skyrocket-%s-macos.zip" % APP_VERSION)
+            sums = out.parent / ("Skyrocket-%s-SHA256SUMS.txt" % APP_VERSION)
+            sums.write_text("".join("%s  %s\n" % (hashlib.sha256(path.read_bytes()).hexdigest(), path.name)
+                                    for path in (dmg, application, archive)), encoding="ascii")
+            upload_asset(sums)
+            publish_documents(out)
+    print("Audited public source: " + str(out))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+        print("Public release failed: %s" % exc, file=sys.stderr)
+        sys.exit(1)

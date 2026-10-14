@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.coverage
+# 静态检查闸门（tools/static_gate.py）的增量缓存，本机加速用，不入库
+.mypy_cache/
+.ruff_cache/
+
+# 本机运行环境（工程内虚拟环境与独立解释器，勿提交）
+# ⚠ 两条都要写：`.venv/` 只匹配**目录**，而隔离工作树里 .venv 常是符号链接 —— v1.4.59 就把它提交进了分支，合并到主树时 git 需要用符号链接替换目录，结果主树那份真实工程环境被覆盖成自指符号链接（两边 python 全废，只能按 requirements.txt 重建）。裸 `.venv` 才管得住符号链接这一形。
+.venv
+.venv/
+.pyenvs/
+
+# 构建产物
+build/
+dist/
+
+# 修改前的源码级回退副本（AGENTS.md §5：受控机制，勿删改）
+# 忽略是为了**不再往里塞整包 .app**（历史上曾塞进 6 份、约 422MB 二进制，
+# 已在 f718744 清除）。现有的 bak_*.py / bak_*.spec 是早于该规则入库的，仍受版本管理。
+backups/
+
+# 一次性发版脚本，已由 build_release.sh 取代并废弃，不入库
+build_v1262_dmg.sh
+
+# 系统文件
+.DS_Store
+
+# 本工程不使用 Node.js；本机浏览器工具遗留的依赖不可纳入桌面应用交付
+node_modules/
+package.json
+package-lock.json
+
+# Qoder 分析运行目录
+.qoder/better-harness-runs/
+.qoder/better-harness/
+
+# WorkBuddy 会话数据（记忆/日志，属本地私有，勿入历史）
+.private_tools/
+
+# v1.4.41 复核 F9：人脸守卫的自测素材是生成的合成图片（1.0MB PNG，git 里不可压缩且永久占体积）。
+# 留在磁盘上供实机自测用，但不入库；需要时由 tools/verify_face_presence.py 的说明重新生成。
+outputs/人脸守卫自测素材-*.png

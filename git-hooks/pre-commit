@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# 实时股价 本地强制检查关卡（v1.2.28 第3项）
+# 提交前自动执行：py_compile（语法校验） + ./run_tests.sh（全量测试）
+# 任一失败即非零退出，阻止本次提交。
+# 安装：git init 后运行 ./git-hooks/install-hooks.sh 即可启用。
+set -euo pipefail
+
+# 优先使用工程内 .venv（Python 3.11）解释器，避免误用系统 3.9 导致导入失败。
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+VENV_PY="$REPO_ROOT/.venv/bin/python3"
+if [ ! -x "$VENV_PY" ]; then
+  echo "!! [pre-commit] 未找到工程内虚拟环境解释器：.venv/bin/python3" >&2
+  echo "!! [pre-commit] 请先重建 .venv（Python 3.11），依赖见 requirements.txt 头部注释" >&2
+  exit 1
+fi
+PY="$VENV_PY"
+echo "== [pre-commit] 使用解释器: $PY ($("$PY" --version 2>&1)) =="
+
+echo "== [pre-commit] 语法检查 py_compile =="
+# 排除 .venv/.pyenvs（第三方依赖）、build/dist（生成物）等目录：
+# 只校验项目自有源码；且 .venv 深层文件名过长，py_compile 写 __pycache__ 会触发
+# macOS 文件名上限，误报 [Errno 2] 阻断提交。
+find . -name '*.py' \
+  -not -path './backups/*' -not -path './.git/*' \
+  -not -path './.venv/*' -not -path './.pyenvs/*' \
+  -not -path './build/*' -not -path './dist/*' \
+  -not -path '*/__pycache__/*' -print0 \
+  | xargs -0 -n1 "$PY" -m py_compile \
+  || { echo "!! [pre-commit] py_compile 失败：存在语法错误，已阻止提交"; exit 1; }
+echo "== [pre-commit] py_compile 通过 =="
+
+echo "== [pre-commit] 运行发版测试关卡 run_tests.sh =="
+./run_tests.sh \
+  || { echo "!! [pre-commit] 测试未通过，已阻止提交（请先修复并重跑 ./run_tests.sh 通过后再提交）"; exit 1; }
+
+echo "== [pre-commit] 全部检查通过，允许提交 =="
+exit 0

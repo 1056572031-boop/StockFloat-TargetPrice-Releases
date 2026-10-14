@@ -1,0 +1,79 @@
+# Skyrocket（原名 实时股价-目标价版）质量门禁：离屏全量回归 + Cocoa 原生平台冒烟。
+name: ci
+
+on:
+  push:
+    branches: [main, master, feat/target-price, public-source]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-offscreen:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.7"
+          cache: pip
+      - name: 安装依赖到工程内 .venv
+        # run_tests.sh 第一件事就是找 .venv/bin/python3，找不到按约定 exit 1
+        # （AGENTS §1：不许脱离工程 venv 跑测试）。CI 若只 pip install 到 runner 的系统
+        # 解释器，公开仓库的 CI 会在关卡门口就红 —— 这层 venv 是必须的，不是装饰。
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install --require-hashes -r requirements.lock
+      - name: 运行全量回归与覆盖率门禁（offscreen）
+        env:
+          QT_QPA_PLATFORM: offscreen
+        # pipefail 是必须的：加了 tee 之后管道退出码默认取最后一段，
+        # 那会让 run_tests.sh 失败也"绿着过"，整道门禁变成假门。
+        run: |
+          set -o pipefail
+          ./run_tests.sh 2>&1 | tee run_tests_offscreen.log
+      - name: 失败时把日志尾部写成注解
+        # Actions 的日志下载端点常需额外权限（本项目实测 401），而 jobs/runs 与
+        # annotations 用同一个令牌就能读。把尾部塞进注解，红的时候才有东西可查 ——
+        # 之前 CI 连着红，谁都说不清是哪一条。
+        if: failure()
+        run: |
+          tail -n 60 run_tests_offscreen.log > /tmp/ci_tail.txt || true
+          echo "::error::run_tests 尾部：$(tr '\n' ' ' < /tmp/ci_tail.txt | cut -c1-900)"
+      - name: 导出覆盖率报告
+        # 同上：coverage 装在 .venv 里，系统解释器上没有这个模块。
+        run: .venv/bin/python -m coverage xml -o coverage.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  test-cocoa-native:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.7"
+          cache: pip
+      - name: 安装依赖到工程内 .venv
+        # run_tests.sh 第一件事就是找 .venv/bin/python3，找不到按约定 exit 1
+        # （AGENTS §1：不许脱离工程 venv 跑测试）。CI 若只 pip install 到 runner 的系统
+        # 解释器，公开仓库的 CI 会在关卡门口就红 —— 这层 venv 是必须的，不是装饰。
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install --require-hashes -r requirements.lock
+      - name: Cocoa 原生平台冒烟
+        env:
+          QT_QPA_PLATFORM: cocoa
+        # 必须用工程内 .venv 的解释器：上面那步把 requirements.txt 全装进 .venv，
+        # 而 setup-python 给的系统 python 是干净的 —— 2026-10-10 的 CI 就是这样红的：
+        # 三个模块全部 ModuleNotFoundError: No module named 'PyQt6'，
+        # 报出来像"产物坏了"，实际是 job 用错了 Python。本机复现不了，
+        # 因为这台机器的系统 python 里恰好也有 PyQt6（AGENTS §1 那句
+        # "系统 python3 可能不是项目运行时"在 CI 上是反过来的：它一定不是）。
+        run: .venv/bin/python -m unittest tests.test_smoke tests.test_render tests.test_quit_lifecycle -v

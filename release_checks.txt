@@ -1,0 +1,683 @@
+# 本轮发版的产物特征清单 —— build_release.sh 第 3.6 步必读、必过
+#
+# 规则（实现见 tools/release_feature_check.py）：
+#   version <X.Y.Z>        必须是本轮 sf_constants.APP_VERSION；不是就拒绝出包
+#   check  <模块>::<符号>   该名字必须出现在包内字节码里
+#   forbid <模块>::<符号>   该名字必须**不再**出现（用于"旧实现确实删掉了"）
+#
+# 每轮修复完，发版人必须做两件事：把 version 改成本轮版本号，
+# 并至少填一条**落在本轮改动文件上**的特征。填不出来就说明这次改动
+# 没有任何可核验的产物证据 —— 那正是 v1.4.17 之前"核验器每次无脑 PASS"的老路。
+#
+# 注意 co_names 的边界：`feature_enabled("system_drag")` 这种**纯字符串字面量**
+# 查不到，要查它的使用点符号（下面第 2 条就是这个例子）。
+#   checkfile <包内路径>::<字串> / forbidfile <包内路径>::<字串>
+#                  改的是随包带出去的 shell/字体这类**资源文件**时用这两条（v1.4.58 补）
+#   stale-feature <理由>
+#                  本轮包内拿不出新名字时的**书面申报**：改动全在打包资产或链上工具，
+#                  包内只动了版本号/阶段标签这类字符串字面量（co_names 看不见）。
+#                  必须带理由，运行时大声打 WARNING；它只跳过"新增特征"这一条判据。
+#                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
+#                  文件里才能被 review，命令行开关只活在一次日志里。
+
+version 1.4.85
+checkfile docs/README.md::v1.4.85 Beta
+checkfile docs/README.md::未签名、未公证
+checkfile docs/INSTALL.md::v1.4.85
+checkfile docs/SECURITY.md::私下报告漏洞
+checkfile licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
+stale-feature 1.4.85 本轮新增公开文档与链上文档闸门，无新增产品字节码符号；按包内资源核验本版 README、安装说明、安全政策与 GPL 全文，不借旧符号冒充新增证据。
+stale-feature 1.4.84 安装成功自动关窗仅改 DMG 根的一键安装脚本，不在 .app 的 PYZ 内；证据为实际脚本的 13 项关窗回归及隔离真实 Terminal 安装验证，不借旧字节码符号冒充安装器特征。
+check sf_editor::verify_bare_code
+check sf_quote::quote_is_current
+check sf_quote_delivery::TargetTickBuffer
+check sf_credentials::seal_url
+check sf_http::read_limited
+check sf_instance::acquire_instance_lock
+check sf_maintenance::BackgroundMaintenance
+check sf_camera_check::judge_camera_result
+check sf_diagnostics::write_attachments
+check sf_storage_tasks::SnapshotWriter
+check sf_macos_menu::install_window_actions
+forbid sf_runtime::NSActivityUserInitiated
+check sf_icons::_SEARCH_ICON_SVG
+check sf_ui_render::ICON_SEARCH_WIDTH
+forbid sf_ui_render::ICON_PENCIL_WIDTH
+check stock_float_window::_publish_diagnostics_file
+check stock_float_window::LOG_MAX_BYTES
+check sf_diag::scrub_text
+check sf_diag::_URL_CREDENTIAL_RE
+check sf_diag::_collect_values
+check stock_float_window::_ready_update_archive
+check stock_float_window::_launch_downloaded_update
+stale-feature 1.4.81 承接1.4.80已验证的集合竞价修复，以新版本发布避免覆盖线上同名资产；本轮仅提升版本，无新增co_names，核验版本三方同源和现有产物特征。
+check sf_quote::auction_status
+stale-feature 1.4.80 竞价时段入口已随1.4.79的并行提交进入包内，本轮缩短竞价结束提示并补齐边界、轮询和真实绘制回归，没有新的co_names符号；不以旧符号冒充新增产物证据，仍核验auction_status存在与版本三方同源。
+# v1.4.79：置顶复核属于容错看门狗，不需要精确定时；使用 Qt 粗粒度计时器让 macOS
+# 合并无意义唤醒，保持 250ms 响应上限不变。改动只是函数体内已有 Qt 枚举的调用方式，
+# 不会在 PYZ 的 co_names 中产生可区分的新符号；由专项回归与源码审查提供本轮证据。
+stale-feature 1.4.79 置顶复核改为已有 Qt CoarseTimer 枚举，属于函数体行为调整，PYZ co_names 无新增可核验符号；专项性能/动画/输入回归与完整回归均通过，不能用旧符号冒充本轮特征。
+# 本轮修复只改 DMG 卷内一键安装脚本：等待参数先校验、安装过程加原子锁，
+# 并在任何搬动旧版前确认目标目录与废纸篓可用。该脚本在 3.6 的 .app
+# 产物核验之后才被复制到 DMG 根，不能伪造一个包内路径；安装器行为由
+# test_installer_script_branches 的真实脚本夹具和 3.8 安装路线核验。
+stale-feature 1.4.78 本轮改动仅在 DMG 根的一键安装脚本，3.6 的 .app 不携带该文件；由安装器行为测试与发版链 3.8 的真实路线核验，不能用旧字节码符号冒充包内特征。
+# 本轮诊断自动采集层新增包内入口；资源精简属于 spec 资产变化，没有独立 co_names，
+# 证据由实际产物的翻译名单、资源完整性、冻结冒烟和 OTA ZIP 体积对比提供。
+check sf_diag::collect
+# Branch-coverage hardening: late frame results must belong to the active session.
+check sf_presence::_frame_generation_active
+stale-feature 1.4.76 Qt 翻译资源精简只改 StockFloat.spec 的 datas 筛选，包内无新增 co_names；不以旧符号冒充本轮资产特征。
+# macOS compatibility and the pending update/menu fixes included in this release.
+check sf_presence::vision_request_succeeded
+check sf_update::resolve_download_url
+check sf_system_alert::_retry_active_space
+check sf_system_alert::present
+check sf_system_alert::_join_active_space
+check stock_float_window::_update_check_dialog_token
+check sf_update::_DownloadSource
+# part_progress is local; only attribute names enter co_names.
+check sf_update::get_url
+check sf_icons::MENU_ICON_CONTENT_SCALE
+# Native drift repair and Qt's inactive tool-window policy are new in this round.
+check sf_glass::_repair_main_interaction
+check stock_float_window::WA_MacAlwaysShowToolWindow
+check stock_float_window::startDragDistance
+# ---- 2026-10-13 弹层全屏补齐批：浏览器全屏时右键弹不出菜单 ----
+# 本轮改的产品代码全在包内，两条特征都落在 sf_glass.py，不走 stale-feature 申报。
+#   join_active_space：补齐动作的唯一实现 —— 先把 Space 行为换成含 CanJoinAllSpaces 的
+#     那一位（Qt 给所有顶层窗的默认值是 258，不含它），仍不在活动 Space 才补私有 CGS。
+#     它修的是用户报障「浏览器全屏时主窗右键弹不出菜单」：实测菜单窗**建出来了**
+#     （layer 101、bounds 152x173、距点击 6~9ms）但在屏窗口列表 0/97 —— 是"不显示"，
+#     不是"没反应"。判据 tests/test_popup_fullscreen_space.py 18 条，九处种错实测必红。
+#   watch_active_space：Show 那一刻补一次**不够**（本机实测续补到第 9 拍才落地，
+#     右键到看见 0.27 秒），所以按 30ms 节拍复核到 isOnActiveSpace 为真。
+#     两条都得填：只查第一条会放过"补一次就不管"的退化写法，而那种写法在真机上
+#     与没修同形 —— 界面上同样是"右键没菜单"、零报错。
+check sf_glass::join_active_space
+check sf_glass::watch_active_space
+# ---- 2026-10-13 菜单图标批：右键菜单四行加行首图标 + 「导出诊断包」改名 ----
+# 本轮改的产品代码全在包内，三条特征都落在改动文件上，不走 stale-feature 申报。
+#   menu_images / menu_icon（sf_icons 新增）：五张内嵌 SVG 的出图与取用。
+#     为什么产物层必须查得到：这一轮"用户看得见"的就是四枚图标在不在，而它缺了
+#     **不会报错** —— 无 QtSvg 时 menu_icon 返回 None、菜单安静地少掉四张图，
+#     与"设计就是没图标"在界面上同形（AGENTS §5.1 第一道防线那一族）。
+#   _set_menu_icon（主窗新增）：贴图动作只有一份实现，弹出路径与 300ms 刷新共用它。
+#     写成两处各贴一次，就会出现"勾号换了、眼睛没换"（v1.4.67 那枚缺陷的变体）。
+#   「导出诊断包」是字符串字面量，co_names 天生查不到，不填 forbid；
+#     判据在 tests/test_menu_row_icons.py（11 条，含"没贴图必须判不出图标"的反向对照）。
+check sf_icons::menu_images
+check sf_icons::menu_icon
+check stock_float_window::_set_menu_icon
+
+# ---- 2026-10-13 复核批：覆盖率轮记下的 5 件待修 + 随机顺序档那枚 SIGABRT ----
+# 本轮改的产品代码只有三处，全在包内，特征查得到，不走 stale-feature 申报。
+# has_bundle_identity / _un_center：sf_notify 新增的两个名字。它们存在的理由是随机序档那枚
+#   SIGABRT —— 没有 app bundle 身份的进程里 `currentNotificationCenter()` 抛的是 ObjC 异常，
+#   PyObjC 与 `except Exception` 都接不住（实测：裸解释器同一台机器上 rc=134，同进程里
+#   `NSBundle…bundleIdentifier()` 只给 None、`NSAlert` 构造正常，只有取 center 这一步会炸）。
+#   守卫的形状是"只圈那一个调用 + 用对象身份比对"，写成整路线判定会打断 v1.4.57
+#   那两条真框架用例，写成模块级布尔位会在随机序里被别的用例置真后泄漏（两种都实测踩过）。
+#   判据 tests/test_review_fixes_20261012.py（子进程真跑裸解释器，三条都必须 rc=0）。
+check sf_notify::has_bundle_identity
+check sf_notify::_un_center
+#   另两处产品改动给不出包内新名字，都只在**源码/行为层**有判据，如实写在这里：
+#   · `_poll` 的守卫作用域（批末行情应用与五类 OTA 消息此前全在兜异常之外）—— 改的是
+#     try 的缩进范围，没有新符号可查；判据 tests/test_window_poll_message_routing.py
+#     的三条（批末收尾照做 / handler 抛错不外抛 / 同批后续消息不丢），种错必红已验。
+#   · `target_panel._as_slot` 对非 dict 脏条目不设防（表现是"点铃铛没反应"）—— 名字本来就在
+#     co_names 里，产物层查不出这次补的那两行；判据 tests/test_panel_and_editor_gap_paths.py。
+
+# ---- 2026-10-12 分时「数据暂缺 · 重试中」→ 恢复正常曲线这段耗时：三处（改动全在包内代码）----
+# _minute_busy：分时线程的防重入守卫，从数据锁 _minute_lock 里拆出来单独一把。
+#   它守的是本轮最严重的一处：旧写法把整段网络调用攥在主线程也要用的那把锁上，
+#   实测主线程 _maybe_cache_first_screen 被卡 **33.78 秒** —— 整窗不重绘、不响应点击，
+#   而且同批队列里已到手的分时数据贴不上屏（"重试中"因此在数据早回来后还挂着）。
+#   判据 tests/test_minute_recovery_latency.py::GuardIsNotTheDataLock（合回一把锁必红）。
+check stock_float_window::_minute_busy
+# MINUTE_HTTP_TIMEOUT / _RETRIES：分时这一路单独的超时预算（2s、不重试）。
+#   查的是 sf_quote 这一侧的**使用点**而不是 sf_constants 里的定义 —— 常量定义在那儿
+#   不代表传进去了；真传进去才把一次分时尝试的墙钟上限从实测 34.3s 压到 8s。
+#   阈值来源是盘中直连两源实测：主源 p50 44ms/max 82ms、备源 p50 35ms/max 99ms、
+#   整链 max 194ms —— 2s 是最坏值的 10 倍。判据 MinuteBudgetIsBounded（含推导上限那条）。
+check sf_quote::MINUTE_HTTP_TIMEOUT
+check sf_quote::MINUTE_HTTP_RETRIES
+#   第三处是倒挂：MINUTE_RETRY_INTERVAL=2.5s 慢于展开态常规 1.0s，改成 min(重试, 常规)。
+#   两个名字改前改后都在 co_names 里，产物层查不出这处，判据在
+#   tests/test_minute_recovery_latency.py::RetryWindowNeverSlower（写回固定 2.5s 必红）。
+
+# ---- 2026-10-12 全方位复核：颜色口径、降级态停牌徽标（S49）、身份与死码 ----
+# 本轮改的是包内代码，特征查得到，不用走 stale-feature 那条申报通道。
+# badge_in_band_top：降级态（价格显示 --）徽标的新定位函数。它存在的理由是 S49 ——
+#   旧写法把价格带顶当涨跌幅顶传给 badge_vertical，被 min_top 钳制恒判"空间不够"，
+#   于是那条支路自 v1.3.42 起一次都没画出来过。判据是像素：tests/test_render.py
+#   的降级态用例（反向验过：把定位函数改成恒不画，它当场红）。
+check sf_ui_render::badge_in_band_top
+#   价格带高度此前只写在 drawText 的参数里（那个 +10 没人知道），现在是具名常量。
+check sf_ui_render::PRICE_BAND_H
+# FG_DISABLED_HEX：两处禁用态灰（2.66:1 / 3.43:1，比本轮被判不达标删掉的旧值还暗）
+#   合成一枚并提亮到 4.74:1。产物层查的是"这两个文件真的引用了这枚 token"，
+#   色值本身是字符串字面量、co_names 天生看不见 —— 值的判据在
+#   tests/test_style_hex_tokens.py（算式 + 真渲染取画出字的颜色）。
+check target_panel::FG_DISABLED_HEX
+check sf_glass::FG_DISABLED_HEX
+# QSettings 那处"每次展开都写、全仓没人读回"的持久化已删（写了不等于存了）。
+forbid stock_float_window::QSettings
+# ---- v1.4.63：卷内「一键安装.command」带上自绘图标（改动全在打包资产与链上工具） ----
+# 包内唯一变化是 APP_VERSION 与 RELEASE_STAGE 两个字符串字面量，co_names 查不到；
+# 与其编一条无关旧符号糊过闸门（那正是这道关当初要治的病），不如按上面的规则书面申报。
+# 本轮的真实判据在两处，都不在包内：
+#   · tools/apply_installer_icon.py --self-test —— 正当输入判绿 + 四处种错判红，其中
+#     "贴了另一枚图"那一处专治"只看有没有自定义图标"这种没分辨力的写法；
+#   · tools/verify_install_paths.py 的 R2 与 S7 —— 真挂卷、把卷内那条脚本的图标像素
+#     读回来比，S7 种"忘了贴图标"必须让 R2 红。
+# 另外发版链第 4 步多了一道：造完 DMG 挂载真产物再读一次图标，验的是资源叉能不能活着
+# 穿过 UDZO/HFS+；挂不上就中止，不猜它没问题。
+stale-feature 1.4.63 本轮改动全在打包资产（DMG 卷内脚本的图标）与链上工具；包内只有 APP_VERSION 与 RELEASE_STAGE 两个字符串字面量变化，co_names 无新增可查
+# ---- v1.4.62：三项"没人消费/各写各的"收口（面板字号唯一来源、旧阈值删除、缩档日志留需宽） ----
+# 面板五处字号此前各写 font-size:12px，改一处要肉眼数四遍；现在唯一来源是
+# target_panel.PANEL_FONT_PX，判据读 Qt 真生效的 font().pixelSize()（像素零变化是硬约束，
+# 本机实测 96dpi 下 12px 与 9pt 等宽，所以这不是改字号，只是把"散落"消掉）。
+check target_panel::PANEL_FONT_PX
+# 497a5b9：目标价列表的"已触发"移到**行首** —— 右省略截断时先切百分比，不许切状态
+# （2026-10-10 云端实测被切成「已触…」）。这条改动只挪了一个字面量的位置，而
+# co_names 对纯字面量天生无感 —— 所以把标记文字收成一个具名常量（唯一来源，
+# 用例也引用它），产物层才有真东西可查。行为判据在
+# tests/test_target_panel.py::test_hit_marker_survives_row_truncation。
+check target_panel::HIT_MARKER_PREFIX
+# sf_quote 那个按次取模的旧阈值常量必须真的不在包里：它自 v1.4.60 改按时间节流后无消费者，
+# 注释却还写着"按次计" —— 没人读又说过时话的常量比不写更坏。
+forbid sf_quote::DEGRADED_SOURCE_ALERT_AFTER
+# min_width 的判据：renderer._bottom_layout 第 3 个返回值在主窗被接成 `_min_w`，看名字像死值，
+# 实际是"底部数字缩到几 pt、需要多宽"那条日志里的数（本轮复核我自己就先误判过一次）。
+# 产物层查不到函数局部量，判据在 tests/test_v1459_bottom_fit.py::
+#   test_shrink_leaves_an_audible_need_width（真绘制入口 + 断言日志带「需要」）。
+# 覆盖率门禁分档、跳覆盖率不落戳、发版第 7 步推源码 —— 均在 382caba，非包内改动。
+# ---- 2026-10-12 同号转正（用户口头确认）+ 卷内安装脚本改名「一键安装.command」 ----
+# 阶段标签会编进产物（右键菜单版本行、诊断包里的 VERSION_LABEL），所以这一轮必须
+# **重新构建**，只改线上清单等于"清单说稳定、用户机器上仍显示 Beta"。
+# ⚠ 下面这条只证明"Beta 后缀收成了常量、并且进了包"，**证明不了 RELEASE_STAGE 的值
+#   是 stable** —— 字符串字面量在 co_names 里天生隐形（v1.4.37 那次同样如此）。
+#   值核验单独跑一次，并把读到的两个值写进交付记录：
+#     ./.venv/bin/python tools/verify_bundle_consts.py /Applications/Skyrocket.app sf_constants RELEASE_STAGE
+#     ./.venv/bin/python tools/verify_bundle_consts.py /Applications/Skyrocket.app sf_constants VERSION_LABEL
+#   期望读到 `stable` 与 `v1.4.62`（不带 Beta 后缀）；读出 beta 就是发版没带上本轮改动。
+# 改名那一半不在包里（安装脚本只进 DMG 根，不进 .app），产物层无从核验，判据换成两处：
+#   发版链 3.8 的 verify_install_paths（按 installer/*.command 发现脚本并真装一遍）
+#   与 tests/test_gate_clean_machine.py 的"0 枚/2 枚必须红"。
+check sf_constants::BETA_SUFFIX
+# ---- v1.4.61：自动更新装完之后，回退包真的只留最近一份（正向路线整条跑通） ----
+# 实测缺陷：write_result 里的 parent="$(dirname "$RESULT")" 覆盖了外层"安装目录"这个
+# 全局变量，走完 installed 之后的 prune_rollbacks 于是去扫 result.json 所在的临时目录，
+# 一条也扫不到 —— 三份回退包全留在「应用程序」里且零报错。抽出来单独跑的测法测不到
+# 它（它自己传 parent），所以现在判据是**真助手跑到 installed** + 目录树本身。
+forbidfile Contents/Resources/updater/update_helper.sh::parent="$(dirname "$RESULT")"
+checkfile Contents/Resources/updater/update_helper.sh::wr_dir=
+checkfile Contents/Resources/updater/update_helper.sh::rb_root=
+# wr_dir / rb_root 是新写法的两个名字（旧文件里根本没有）；rb_root 这一条钉的是
+# "剪枝自己从 TARGET 现算安装目录"，就算再有人覆盖 parent 也不会静默扫错目录。
+# 正向路线用例（本机需可用 codesign 与 LaunchServices，缺则跳过并打印理由，不假装通过）：
+#   QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_update_helper
+# 反向验证做法：把 HEAD 那份助手单独喂给这两条用例，prune 那条必须报"剩下 3 份"。
+# ---- v1.4.60：全方位复核的 14 条一起落地（两处必须修 + 七处最好修 + 清理） ----
+# 必须修 F1：升级带来的"无 code 目标价条目"从"对任何股票都可见"改成
+#   **归属 config 顶层那只股票**。不这么改的话，切到 B 会把 A 的条目显示成 B 的，
+#   而任何一次 B 的写入都把它们盖章成 code=B —— 切回 A 一条不剩（对外说明第一句就是它）。
+# 必须修 F2：屏幕锁定/休眠只停采集、**不停那张 0.5 秒轮询表**（它是"解锁后重新武装"
+#   的唯一驱动），用例补的是 `_guard_timer.isActive()` 这件可观测的事。
+# 最好修 F5/F6/F7：备源提示改按时间节流、菜单禁用项回到唯一色值、
+#   上限剪枝现场进诊断包 targets.json。
+check sf_config::_record_store_prune
+check sf_config::store_prune_report
+check stock_float_window::store_prune_report
+check sf_quote::DEGRADED_SOURCE_LOG_SEC
+check sf_constants::FG_DIM_HEX
+# F10：那句"旧清单地址"的常量全仓无人消费，注释却说诊断包会用它 —— 名字必须已经消失，
+# 否则下一个人还会以为程序会去读 StockFloatTargetPrice-update.json。
+forbid sf_constants::LEGACY_UPDATE_MANIFEST_URL
+# F9：包内 shell 资源的注释把用例文件名写错了（test_update_helper_prune.py 并不存在），
+# 照它去找会一无所获 —— 整句旧写法必须消失（forbidfile 查整句，不查裸名字）。
+forbidfile Contents/Resources/updater/update_helper.sh::tests/test_update_helper_prune.py
+# F3：对外安装说明的两处占位符（`Skyrocket-V%s.dmg` 少一步 % 运算、联系邮箱未替换）。
+# 渲染器不在 .app 内，产物查不到，发版前当场跑并把读数写进交付记录：
+#   ./.venv/bin/python tools/render_install_guide.py            # 渲染（%s 残留直接拒绝写入）
+#   ./.venv/bin/python tools/render_install_guide.py --check    # 占位符判据，未设邮箱判红
+#   QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_install_guide_placeholders
+#   QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_v1460_review_fixes
+# ---- v1.4.59：目标价改股不再丢、授权被拒可直达系统设置、底部数字不再整段消失 ----
+# S4 的彻底解（用户拍板）：目标价按 code 分桶存储与读取，切走的股票的目标价进休眠而不是删除。
+# 三个新落点必须同时在场：主窗的写入入口、切股时的接管、配置层的休眠/剪枝。
+check stock_float_window::_persist_alerts
+check stock_float_window::_adopt_targets_for
+check sf_config::_dormant_of
+check sf_config::_prune_store
+# 加确认框那一版（本轮被彻底解取代）的符号必须已经消失：
+forbid stock_float_window::_apply_stock_confirm
+forbid stock_float_window::_apply_stock_drop_ok
+# 摄像头权限被系统拒掉之后，点击要能直达「系统设置 > 隐私与安全性 > 摄像头」，
+# 而不是只剩一个永远不动的勾（S2 那族"未决/已拒"没出口的问题在权限侧的补法）：
+check stock_float_window::_open_camera_privacy_settings
+check stock_float_window::CAMERA_PRIVACY_URL
+# S8 视觉项两条（都改在 sf_ui_render，且都有能失败的像素/度量判据）：
+#   底部两行放不下时逐级缩**数字**字号，而不是整段不画（默认股茅台：低点 1666.66
+#   在 184px 宽里需要 193px，旧行为是「最低点 1666.66」凭空消失）；
+#   分时折线渐变终点改回趋势色（旧写法线尾 #b71c1c、呼吸点 #ff5252，同一条线两种色）。
+check sf_ui_render::bottom_rows_fitting
+check sf_ui_render::chart_line_stop_colors
+# S6：OTA 更新助手去掉了 /usr/bin/python3 依赖（那是 Command Line Tools 的桩，
+# 没装开发者工具的机器上一执行就失败，OTA 会伪装成"包有问题"），并把改名漏改的
+# 第七处（助手按写死的旧可执行文件名做存活复核 → 装好的新版会被回滚）改成读
+# Info.plist 的 CFBundleExecutable。这两处都在**包内 shell 资源**里，字节码查不到：
+checkfile Contents/Resources/updater/update_helper.sh::LC_ALL=C
+checkfile Contents/Resources/updater/update_helper.sh::CFBundleExecutable
+checkfile Contents/Resources/updater/update_helper.sh::prune_rollbacks
+forbidfile Contents/Resources/updater/update_helper.sh::zipfile.ZipFile
+forbidfile Contents/Resources/updater/update_helper.sh::new_exec="$TARGET/Contents/MacOS/StockFloatTargetPrice"
+# ⚠ forbidfile 必须查**整句旧写法**，本轮当场踩过两次：
+#   ① /usr/bin/python3 现在只作为注释里的说明存在（"这一段原先跑在它上面"），
+#      按裸名字 forbid 会把一次正当发版判成失败；
+#   ② 同理 MacOS/StockFloatTargetPrice 也还在那段说明里 —— 改成钉整句
+#      new_exec="$TARGET/Contents/MacOS/StockFloatTargetPrice"，
+#      旧赋值消失即通过，注释怎么措辞都不影响。
+# 本轮新增/收紧的四道闸门都不在 .app 内，发版前当场跑并把读数写进交付记录：
+#   ./.venv/bin/python tools/gate_stamp.py --self-test        # 关卡时间戳，11 项变异
+#   ./.venv/bin/python tools/verify_install_paths.py --self-test  # 首装路线，含 S6 两条
+#   QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_update_helper  # 16 条端到端真跑助手
+#   QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_v1459_bottom_fit tests.test_v1459_color_tokens tests.test_v1459_button_icons
+# ---- v1.4.58：内置数字字体换成 Datto 官方 D-DIN + 数字定宽占位（走查 S8）----
+# 定宽口径的四个新落点全在 sf_ui_render.py（本轮唯一的行为改动文件）：
+# 格宽计算、串宽、格宽缓存、"量真正会画的那一串"、单格偏移。
+check sf_ui_render::digit_cell_width
+check sf_ui_render::tabular_advance
+check sf_ui_render::_digit_cell
+check sf_ui_render::_roll_drawn_string
+check sf_ui_render::_glyph_slot
+# ⚠ 字体这件事**产物符号查不到**，两条都得当场跑并把读数写进交付记录：
+#   ① 清单值核验（BUNDLED_FONT_FILES 是字符串元组，只进 co_consts，check/forbid 都无感）：
+#        ./.venv/bin/python tools/verify_bundle_consts.py \
+#            "/Applications/Skyrocket.app" sf_ui_render BUNDLED_FONT_FILES NUM_FONT
+#      期望 BUNDLED_FONT_FILES ('D-DIN.otf', 'D-DIN-Bold.otf')、NUM_FONT D-DIN。
+#   ② 包内文件核验（旧件必须消失、许可原文必须在场）：
+#        ls "/Applications/Skyrocket.app/Contents/Resources/fonts/"
+#      期望只有 D-DIN.otf / D-DIN-Bold.otf / OFL-D-DIN.txt，**没有** D-DIN-PRO-*.ttf。
+#   ③ Bold 样式名非标准（官方件叫 DIN-Bold）：离屏按权重选得到，装机版必须肉眼复验
+#      价格行明显比 Regular 粗 —— 这条是本轮唯一"量不到"的产物级风险。
+
+# ---- v1.4.57：reopen（点 Dock 图标）签名钉成 BOOL；UN 通知路线恢复可用 ----
+# iMac 实机崩溃（1.4.55 / macOS 27.0.1）：PyObjC 建代理类时 AppKit 元数据还没就位，
+# hasVisibleWindows 这个 BOOL 被当成对象指针解引用 → 主线程 SIGSEGV at 0x1。
+# 修法是在建类前显式注册签名，三个落点必须在包里：
+check sf_logging::_pin_reopen_signature
+check sf_logging::registerMetaDataForSelector
+check sf_logging::_reopen_signature
+# 第二处同族事故：pyobjc 12 的 Foundation 不再导出 dispatch_async，那句 import
+# 一失败整条 UN 通知路线静默降级 osascript（点击横幅恢复窗口彻底没了）。
+# 回主线程改用 NSOperationQueue 承载 —— 查的是这条新路线真正用到的两个名字：
+check sf_notify::NSOperationQueue
+check sf_notify::addOperationWithBlock_
+# ⚠ 两条边界，本轮都当场踩过：
+#   ① 不能写 `forbid sf_notify::dispatch_get_main_queue` —— 那个名字作为模块级占位与
+#      g[…] 赋值的键仍然存在（STORE_NAME 进 co_names），forbid 会误判成本轮没改。
+#   ② 也不能查替代实现里那两个**嵌套函数** `_main_queue` / `_post_to_queue` ——
+#      CPython 3.11+ 把不捕获外部变量的内嵌 def 编成"内联函数常量"，名字只进
+#      co_consts 不进 co_names，实测命中 0（本文件第一版就是这么写的，
+#      发版链 3.6 步直接把一次正常打包拒了）。要证明嵌套实现，只能查它**内部**
+#      用到的属性名与 import 名。
+
+# 第三处：授权弹窗被错过后菜单项永久空操作 —— 旧实现是进程级永久布尔，
+# 现在换成带冷却的时间戳。冷却常量与它的两个使用点必须在包里，
+# 而旧的那个永久布尔名字必须已经消失（forbid 查的是精确名字，不会误命中 _ACCESS_ASKED_AT；
+# 本轮同时把 v1.4.45 那条老锚点改成了新名字，两处说的必须是同一件事）：
+check sf_constants::FACE_GUARD_REASK_COOLDOWN_SEC
+check sf_presence::FACE_GUARD_REASK_COOLDOWN_SEC
+check sf_presence::_ACCESS_ASKED_AT
+forbid sf_presence::_ACCESS_ASKED
+
+# 新闸门 tools/pyobjc_sig_check.py 不在 .app 内，发版前当场跑并把读数写进交付记录：
+#   ./.venv/bin/python tools/pyobjc_sig_check.py --report
+#   ./.venv/bin/python tools/pyobjc_sig_check.py --self-test
+#   QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_reopen_signature
+
+# ---- v1.4.56：事件驱动加急复检（灵敏度）+ 屏幕锁定/休眠停摄（省电）----
+# 三条新常量的值必须读出来（界面不再显示这些数，包内值是唯一凭据）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       "/Applications/Skyrocket.app" sf_constants FACE_GUARD_EXPEDITE_SEC FACE_GUARD_SCREEN_PROBE_SEC
+# 期望 0.08 与 2.0。
+check sf_constants::FACE_GUARD_EXPEDITE_SEC
+check sf_constants::FACE_GUARD_EXPEDITE_BUDGET
+check sf_constants::FACE_GUARD_SCREEN_PROBE_SEC
+# 两条落点本体：加急复检的判定、屏幕状态的查询与消费点：
+check sf_presence::_arm_expedite
+check sf_presence::screen_unavailable
+check stock_float_window::_face_guard_screen_off
+
+# ---- v1.4.55：全局改名 Skyrocket（含 bundle id），数据目录刻意不动 ----
+# 改名后的产物身份必须成对出现：清单校验拿 bundle_id + app_name 比对客户端自己
+# 那两个值（sf_update.verify_manifest），所以这一轮的身份字段用值核验读，
+# 符号查不出字符串值（本文件开头那条 co_names 边界）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       "/Applications/Skyrocket.app" sf_constants BUNDLE_ID APP_DISPLAY_NAME APP_SUPPORT_DIR
+# 期望 BUNDLE_ID com.skyrocket.app、APP_DISPLAY_NAME Skyrocket、
+#      APP_SUPPORT_DIR 仍指向 …/StockFloatTargetPrice（数据不动）。
+check sf_constants::BUNDLE_ID
+check sf_constants::APP_DISPLAY_NAME
+check sf_constants::LEGACY_BUNDLE_IDS
+check sf_constants::LEGACY_APP_DISPLAY_NAMES
+# 临时副本清扫必须继续认得改名前的旧包（漏扫=旧副本仍会被 LaunchServices 拉起并崩溃）：
+check sf_temp_sweep::OWN_APP_NAMES
+# 崩溃报告与诊断导出要能同时翻到两代进程名：
+check sf_crashreport::CRASH_NAME_PREFIXES
+
+# ---- v1.4.54：守卫功耗画像（640x480 + 15fps 上限）+ 节拍减半 + 勾号实时刷新 ----
+# 功耗画像的落点是一个方法，查不到它就说明"省电"只活在提交说明里：
+check sf_presence::_apply_power_profile
+# 两个新常量：帧率上限是会跑的数值，发版后必须值核验（读数写进交付记录）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       "/Applications/实时股价-目标价版.app" sf_constants FACE_GUARD_CAMERA_FPS FACE_GUARD_TICK_SEC
+#   期望 FACE_GUARD_CAMERA_FPS 15、FACE_GUARD_TICK_SEC 0.5（1/10s 在本机实测会被
+#   设备拒绝，15 是设备报告区间 15~30fps 的下限）。
+check sf_constants::FACE_GUARD_CAMERA_FPS
+check sf_constants::FACE_GUARD_CAMERA_PRESET
+# 勾号实时刷新：菜单开着时由这个定时器回调校准真值：
+check stock_float_window::_refresh_face_guard_menu_check
+
+# ---- v1.4.53：菜单文案改名（守卫项 → 「自动隐藏窗口」、版本行去掉「版本」）----
+# ⚠ 这一轮改的是**字符串字面量**，co_names 查不到（本文件开头那条边界规则）——
+#   所以下面两条只能证明"改动点进了包"，值本身必须用值核验读出来并写进交付记录：
+#     ./.venv/bin/python tools/verify_bundle_consts.py \
+#         "/Applications/实时股价-目标价版.app" sf_constants FACE_GUARD_MENU_TEXT
+#   期望输出 `FACE_GUARD_MENU_TEXT  自动隐藏窗口`；读出别的值就是发版没带上本轮改动。
+check sf_constants::FACE_GUARD_MENU_TEXT
+# 版本那一行走的是 `_bundle_version()`（去掉「版本」前缀只动了拼接的字面量）：
+check stock_float_window::_bundle_version
+
+# ---- v1.4.52：移除人脸守卫开启时那次"代价说明"框 ----
+# ---- v1.4.52：移除人脸守卫开启时的那次说明弹窗（用户看图要求"永不出现"）----
+# 这一轮是**删东西**，没有新符号可查，所以用 forbid：那个方法名连同它的字符串常量
+# 一起从字节码里消失才算真删干净。留着 forbid 而不是"改几条 check 意思一下"，
+# 是因为 check 只能证明包里有什么，证明不了什么已经被拿掉。
+forbid stock_float_window::_show_face_guard_notice
+# 唯一仍然存在的对外读取口（状态那句话改由它进诊断包）：
+check stock_float_window::face_guard_field_evidence
+
+# ---- v1.4.51：30 轮走查补丁合入（ETF 录入恢复 + 未授权提醒补发）----
+# 判据本体：字典段覆盖判定是新函数，落在改动文件 sf_universe.py 上；
+# sf_editor 那一侧查它的**调用点**符号（同一个名字在两个文件各算一条证据）：
+check sf_universe::covers_segment
+check sf_editor::verify_bare_code
+# 非覆盖段改为"向行情要一次权威答案"，这条分支的判据是 QuoteDataError 这个导入名
+# （`log_swallow("sf_editor.probe_offsegment", …)` 那个是**字符串字面量**，co_names 查不到，
+# 别往这里写 —— 本文件开头那条边界规则在 v1.4.50 刚拒过一次出包）：
+check sf_editor::QuoteDataError
+# 通知：未授权态改为走 osascript 补发，查 deliver 里新增的那条引用
+check sf_notify::_deliver_osascript
+# 本轮另有一项 UI 收敛：右键菜单的两行灰字提示（更新节奏、守卫状态）按用户要求撤掉。
+# 撤掉本身查不到（删代码不留符号），所以查它**替代通路**的落点：那句状态话现在只随
+# 诊断包外发，走这个新方法；菜单里再没有别的东西调用它。
+check stock_float_window::face_guard_field_evidence
+# G14 那一族里产品侧的真实缺口：锚点窗口此前只写下界，时钟超前的行永远算"最近"。
+# 新常量的读取点必须在包里，否则"补了上界"只是提交说明里的一句话：
+check sf_logging::ANCHOR_FUTURE_TOLERANCE_SEC
+# ⚠ 本批另有两处是**关卡自己会说假话**的修复（tools/static_gate.py 的 mypy 层静默归零、
+#   tools/test_discipline_scan.py 的空目录假通过）。tools/ 不进 .app，产物核验覆盖不到，
+#   只能当场跑这两个自检，并把读数写进交付记录：
+#     ./.venv/bin/python tools/static_gate.py --self-test
+#     ./.venv/bin/python tools/test_discipline_scan.py --self-test
+#     ./.venv/bin/python tools/test_discipline_scan.py --dir /tmp/空目录   # 必须非 0
+#   以及"基线上调必须被拒"：`--update` 不带 `--allow-rise` 时若有任何键变高就 exit 1。
+
+# ---- v1.4.50：人脸守卫"未授权死路"收口 + 画面/检测可见状态（台账 E03）----
+# 勾选口径换掉了：菜单勾的是"此刻在不在保护"，这个新判据是唯一落点，查不到就说明
+# 界面还在按配置显示勾，而配置开着 ≠ 摄像头开着（实机取证：整场只有"未授权"一行）。
+check stock_float_window::_face_guard_protecting
+# 提示语必须指着真实菜单项；常量与它在两个使用点的引用都要在包里：
+check sf_constants::FACE_GUARD_MENU_TEXT
+check stock_float_window::FACE_GUARD_MENU_TEXT
+check sf_presence::FACE_GUARD_MENU_TEXT
+# 新观测面：帧计数与检测失败计数（后者守的就是 v1.4.49 之前被丢掉的那个返回值）。
+# ⚠ 这两个名字在主窗那一侧**查不到**：`face_guard_diagnostics` 读它们走的是
+#   `int(getattr(mon, "detect_errors", 0) or 0)` 与 `d["detect_errors"]` —— 都是
+#   co_consts 里的字符串字面量，不是 co_names（本文件开头那条边界规则的同款情况，
+#   当场被这道闸门拒了一次，2026-10-09）。所以查采集侧的实现与主窗的读取入口：
+check sf_presence::_count_detect_error
+check sf_presence::detect_errors
+check sf_presence::frames
+check stock_float_window::face_guard_diagnostics
+
+# ---- v1.4.49：人脸守卫采集会话修形（PyObjC 元组返回）----
+check sf_presence::FacePresenceMonitor
+check sf_presence::_build_session
+
+# ---- v1.4.48：屏幕边缘吸附判定改用带符号距离（贴底/越界都吸附）----
+# 吸附本体：新判定的落点与钳制都在这一个方法里，改动文件与符号同源：
+check stock_float_window::_snap_to_edge
+# 复现用的锚点常量仍在（判定带宽度唯一来源，没被写死进函数体）：
+check stock_float_window::SNAP_MARGIN
+
+# ---- v1.4.47：摄像头授权只在用户点菜单开启时发起 ----
+# 新入口 + 新状态名（两处都是本轮改动的落点，不在改动文件上就不算证据）：
+check sf_presence::request_access_once
+check sf_presence::STATE_NEEDS_AUTH
+# 主窗确实在菜单开关里引用了这个发起点（属性调用名会进 co_names）：
+check stock_float_window::request_access_once
+# v1.4.46 那两条继续保留：本版产物必须仍然带着诊断包的玻璃层现场
+check sf_glass::glass_diagnostics
+
+# ---- v1.4.46：诊断包新增玻璃层现场与失效锚点（现场取证链路）----
+# 日志锚点扫描：把「现象第一次能被观测到」的时刻从 debug.log 里读出来。
+check sf_logging::recent_log_anchors
+check sf_logging::GLASS_ANCHORS
+# 玻璃层现场（合成顺序 / 真实错位 / 盲区 / 每种失效最后一次）：
+check sf_glass::glass_diagnostics
+# 导出诊断信息真的引用了这条方法（writestr 的 "glass.json" 是字符串字面量，
+# co_names 查不到，所以查使用点符号 —— 本文件开头那条边界规则的同款用法）：
+check stock_float_window::glass_diagnostics
+
+# ---- v1.4.45：复核 A2/A3/A4/B1 —— 零帧说实话、失败给人话、授权进程级、降级留痕 ----
+check sf_constants::FACE_GUARD_FIRST_FRAME_SEC
+check sf_presence::_friendly_error
+# v1.4.57 更新这条锚点：授权去重从"进程级永久布尔"换成"带冷却的时间戳"，
+# 名字随之从 _ACCESS_ASKED 变成 _ACCESS_ASKED_AT（本轮上面已按新名字 check + 按旧名字 forbid）。
+check sf_presence::_ACCESS_ASKED_AT
+# B3（弹窗不再跳一下）与 B2（多屏选屏证据）没有新符号可查：
+#   · B3 的判据是 `tests/test_v1438_alert_center.py::RealAlertPositionTest` ——
+#     它起子进程真弹框、量窗口原点是否在屏幕可用区正中（改前实测偏左 384pt）；
+#     摆位改在 makeKeyAndOrderFront_ 之前，若被 AppKit 覆盖这条用例会直接红。
+#   · B2 的判据是 `tests/test_v1445_screen_pick_evidence.py`（注入两块假屏，
+#     断言"锚点在哪块屏就选哪块"，不再用 target_screen() 自证）。
+# 值核验（发版后手动跑，读数写进交付记录）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       /Applications/实时股价-目标价版.app sf_constants FACE_GUARD_FIRST_FRAME_SEC
+#   期望 10.0（冷启动首帧实测 76ms 的两个数量级余量；来源见常量旁注释）。
+
+# ---- v1.4.44：复核 F2/F4/F5 的三条补修，特征都落在本轮真正改动的函数上 ----
+# 卡死自愈：过期判定与它引出的重新起检查。这两个名字查不到，就说明"回包丢失后
+# 更新从此不再发生"这个坑又回来了。
+check stock_float_window::_update_check_stale
+check sf_constants::UPDATE_CHECK_STALE_SEC
+# 可取消：点击结果的处理入口（新队列种类 update_check_cancel 也由它消费）
+check stock_float_window::_handle_update_check_cancel
+check stock_float_window::_update_check_aborted
+# 人脸守卫委托类只注册一次（不这么做，功能每个进程只能起来一次）：
+check sf_presence::_presence_sink_class
+check sf_presence::_SINK_OWNERS
+# 值核验（发版后手动跑，读数写进交付记录）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       /Applications/实时股价-目标价版.app sf_constants UPDATE_CHECK_STALE_SEC
+#   期望 45（= 12 秒 × 2 次重试 + 20 秒余量，必须大于两者乘积，由用例锁住）。
+
+# ---- v1.4.43：检查更新的三处静默失效修复 + 清单超时放宽 ----
+# 本轮新增的两个符号必须在包里：_show_checking_dialog 是"点击立刻有反馈"那条路径的
+# 唯一落点，_update_manual_wait 是"撞上进行中检查时把点击记下来、由那次回包兑现"的账本。
+# 缺任意一个，就等于"点了没反应"这个缺陷仍在。
+check stock_float_window::_show_checking_dialog
+check stock_float_window::_update_manual_wait
+# 两个新常量：节流间隔与放宽后的清单超时/重试次数。读不到说明发版没带上本轮改动。
+check sf_constants::UPDATE_RESUME_MIN_GAP_SEC
+check sf_constants::UPDATE_MANIFEST_TIMEOUT_SEC
+check sf_constants::UPDATE_MANIFEST_ATTEMPTS
+# 值核验（发版时手动跑，读数写进交付记录）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       /Applications/实时股价-目标价版.app sf_constants UPDATE_MANIFEST_TIMEOUT_SEC
+#   期望 UPDATE_MANIFEST_TIMEOUT_SEC 12、UPDATE_RESUME_MIN_GAP_SEC 60。
+#   数字来源：本机 2026-10-08 对清单地址实测首字节 7.4~8.3 秒（另有一次 12 秒无响应），
+#   旧值 5 秒在这条链路上会判失败。
+
+# ---- v1.4.41：复核后的 5 处修复（F1-F5），特征落在本轮真正改动的文件上 ----
+# 停会话改成"可不等锁"的两种收口（同步退出 / 异步交互），这两个新方法是本轮新增的落点：
+check sf_presence::_stop_locked
+check sf_presence::_deferred_stop
+# 采不到画面的中断判定与自愈退避，两个新常量必须在包里（读不到就是发版没带上本轮改动）：
+check sf_constants::FACE_GUARD_STALE_SEC
+check sf_constants::FACE_GUARD_RETRY_STALLED_SEC
+# 值核验（发版时手动跑，读数写进交付记录）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       /Applications/实时股价-目标价版.app sf_constants FACE_GUARD_STALE_SEC
+#   期望 FACE_GUARD_STALE_SEC  60；主窗还有一处判定"因第二张脸收起且当前不可见"才是
+#   继续看守，这条没有独立符号可查，只能靠用例 test_manual_dock_restore_clears_guard_state。
+
+# 本轮（v1.4.40）：**新功能**人脸在场守卫 —— 检测到画面里出现第二张脸时自动收起主窗。
+# 没有新增任何 pip 依赖：Vision/AVFoundation 由 PyObjC 动态装载（实测 7 个系统类
+# 全部取到），所以打包闭包不变，但**权限键必须进 Info.plist**：
+#   plutil -extract NSCameraUsageDescription raw \
+#       "/Applications/实时股价-目标价版.app/Contents/Info.plist"
+#   期望输出一段中文用途说明；缺这个键，一开摄像头就会被系统当场终止。
+# 六条特征全部落在本轮新增/改动的三个文件上：
+check sf_presence::FacePresenceMonitor
+check sf_presence::PresenceArbiter
+check sf_presence::count_faces
+# v1.4.40 追加：授权框这条路依赖 AVFoundation 桥接的 block 元数据，缺依赖时功能
+# 永远起不来 —— 介质常量的解析点必须在包里，否则说明依赖没装上（见 _media_video 注释）：
+check sf_presence::_media_video
+# 实机核验工具本体也进包外核验（它在 tools/ 下，随仓库版本走）：
+check sf_presence::STATE_UNSUPPORTED
+check stock_float_window::face_guard_diagnostics
+check stock_float_window::_on_face_guard_tick
+check sf_config::save_face_guard_pref
+# ⚠ 这一轮**不能**用 `check sf_constants::face_guard`：它是 _FEATURE_DEFAULTS 字典里的
+# 字符串键，只进 co_consts，co_names 查不到（本文件开头已写过这条边界）。
+# 要证明 kill switch 在包里，查它的读取点符号 `stock_float_window::_face_guard_available`：
+check stock_float_window::_face_guard_available
+# 值核验（发版时手动跑一次，并把读到的数字写进交付记录）：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       /Applications/实时股价-目标价版.app sf_constants FACE_GUARD_HIDE_HITS
+#   期望 FACE_GUARD_HIDE_HITS  2；读出别的值就是发版没带上本轮改动。
+
+# ---- 上一轮（v1.4.38）的特征，仍在包内，留作回归锚点 ----
+# v1.4.38：检查更新相关的窗口一律落在**屏幕正中**（用户 2026-10-08 要求）。
+# 改前实测（本机 1470x956 单屏，真把窗口弹出来量窗口中心相对可用区中心的偏移）：
+#   「正在检查更新」偏左 384pt、偏上 178pt；带长更新说明那版偏左 254pt、偏上 70pt。
+# 四条特征全部落在本轮改动的两个文件上：
+check sf_system_alert::center_window
+check sf_system_alert::set_screen_anchor
+# 选屏锚点由产品侧在每次弹窗前登记（四个更新弹窗调用点共用这一个入口）：
+check stock_float_window::_anchor_update_dialog_screen
+# 原生弹窗不可用时的 Qt 自绘下载框走的是另一条居中入口，也要在包里：
+check stock_float_window::_center_on_own_screen
+
+# ---- 上一轮（v1.4.37）的特征，仍在包内，留作回归锚点 ----
+# v1.4.37 改的就是一个默认值：窗口位移不再交给 macOS 系统拖拽，消除快速拖动时
+# 内容层与毛玻璃背景层分开的重影（装机版实测掉队：常速 10px / 快速 55px / 甩动 88px，
+# 关掉后 0px）。特征落在改动文件 sf_constants.py 上：
+check sf_constants::SYSTEM_DRAG_DEFAULT
+# ⚠ 这条只证明"这个开关进了包"，**证明不了它的值是 False** —— 字典字面量里的值
+# 读不出来（会被报成"推导值"），所以本轮特意把它单独命名成顶层布尔。发版时必须再跑
+# 一次值核验，并把读到的值写进交付记录：
+#   ./.venv/bin/python tools/verify_bundle_consts.py \
+#       /Applications/实时股价-目标价版.app sf_constants SYSTEM_DRAG_DEFAULT
+#   期望输出 `SYSTEM_DRAG_DEFAULT  False`；读出 True 就是发版没带上本轮改动。
+
+# ---- 上一轮（v1.4.36）的特征，仍在包内，留作回归锚点 ----
+# 本轮（v1.4.36）：第三方全屏 Space 里拖动主界面后，点「收起分时走势图」卡片瞬移回
+# 拖动前的位置（本机正式版实测 (639,348) →拖到 (939,508) → 点收起 → 回到 (639,348)，
+# 落点偏差 = 整段手势位移）。根因是系统接管拖拽后 Qt 缓存的原点没追上，下一次写几何
+# 把过时原点推回 AppKit。修法是在两处写几何之前先与 WindowServer 对表：
+check sf_glass::_reconcile_model_with_server
+# 对表用的那一份 CG 全局口径（左上原点、y 向下，可直接与 QWidget 全局坐标相减）：
+check sf_glass::_content_cg_bounds
+
+# ---- 上一轮（v1.4.35）的特征，仍在包内，留作回归锚点 ----
+# 本轮（v1.4.35）三条特征，全部落在改动文件 sf_glass.py 上：
+# ① 置顶路径的**最后一步**把"背景层在内容窗之下"显式交给 WindowServer。
+#    实测依据：本机正式版在 Chrome 全屏 Space 内一旦倒序，每 250ms 一拍的完整置顶
+#    连续 11 秒压不回去（日志 9 条 re-top: glass above main），而换一次 Space 立刻
+#    正常 —— 旧实现依赖两次 orderFront 的先后，那个先后会被同一条路径里后发生的
+#    Space 插入抹掉。
+check sf_glass::_order_glass_below_content
+# ② 取证日志改为**按原因分槽**压重。旧的全类单槽被两种交替原因互相顶掉计时，
+#    实测 9 秒内打出 9 条同名日志，"这件事在反复发生"的强度信息全丢在刷屏里。
+check sf_glass::_retop_slots
+# ③ "本轮没到 1 秒节流、什么都没问"不再被写成"查不到这一对窗口"（实测每条
+#    glass above main 之后恰好 250ms 必跟一条 blind，而节流是 1000ms）。
+check sf_glass::_z_probe_asked
+
+# ---- 上一轮（v1.4.34）的特征，仍在包内，留作回归锚点 ----
+# 本轮（v1.4.34）：拖主界面下沿把手能把窗口压到 0 高（离屏实测 height=0）。
+# 两层修法各留一个落点符号，两个都长在**本轮改动的文件**上：
+#   ① 限高地板改取语义高度，不再用收展动画期间临时为 0 的 Qt 下限；
+#   ② 拉伸这一拍把在飞的收展动画就地收敛并补发 min/max 收口帧。
+check stock_float_window::_stretch_floor_height
+check sf_anim_driver::settle_layout_for_stretch
+# 另一项：滞后提示「数据暂缺 · 重试中」不得与 0% 基准白色虚线贴近或重叠，
+# 落点规则收在这个纯函数里（sf_ui_render._draw_chart_stale 调它）。
+check sf_ui_render::stale_hint_y
+
+# v1.4.32 的两条特征仍在包内（跟随定时器与系统拖拽开关没被删），一并留着当回归锚点。
+# v1.4.32：系统拖拽期间毛玻璃背景层掉队最多 44px —— 修复是挂在 run loop
+# common modes 上的原生定时器，实现在 sf_glass._glass_follow_begin。
+check sf_glass::_glass_follow_begin
+# 开关落地的那个属性名（字符串开关名查不到，查赋值点）：
+check stock_float_window::_sys_drag
+
+# 上一轮（v1.4.33）：
+# ① 浏览器全屏期间拖动主窗后，背景层永久停在别处（用户截图实测约 450px）。
+#    根因不在拖动时序，而在**判据**：_top_state_ok 比的 gw.frame() 与
+#    window.frame() 是两个同样过时的应用侧模型，真实错位 11px 时它照样返回
+#    "已经对了"（本机 tools/glass_desync_audit.py 实测 blind_samples=3）。
+#    修法是补一问"用户实际看到什么"，实现在 sf_glass._steady_state_fault，
+#    与合成顺序共用一次 WindowServer 查询（glass_main_real_state）。
+check sf_glass::_steady_state_fault
+check sf_glass::glass_main_real_state
+# 松手与置顶复核改为以 WindowServer 真实位置摆背景层，新走这条取真实矩形的路径：
+check sf_glass::_content_real_bounds
+#   ⚠ 这里**不能**写 `check sf_glass::use_server_origin`：它是形参名/关键字实参名，
+#   只进 co_varnames 与 co_consts，co_names 永远查不到（本文件上一版就是这么写的，
+#   真跑会在发版链 3.6 步把一次正常发版判成失败）。字符串开关名同理，见开头说明。
+# ② offscreen 下把 winId() 当 NSView* 用 → 不可捕获的 SIGSEGV（v1.4.32 产物
+#    rc=139，崩溃报告 objc_opt_self ← object_new ← class_call）。平台判定收在
+#    一个函数里，四个入口共用：
+check sf_glass::content_ns_window
+# 背景层跟随的 8 秒安全截止改为"按真实移动续期"（长拖不断跟）：
+check sf_glass::_glass_follow_pos
+# ③ "只剩背景、内容不见"的恢复延迟：复核节流 5s→1s（实测空窗 4.46s → 0.57s），
+#    以及"两窗查不到却一行不留"的永久盲区现在会写日志：
+check sf_glass::_log_blind
+
+# 下一轮：见 DELIVERY_CHECKLIST 与台账 recurrence_risk —— 高置信的两处是
+# A26（图带填充无任何判据）与 D08（用例手抄了区间公式，改成调用产品自己的映射）。
+
+# ---- v1.4.66：自动隐藏窗口的两条口径 + 事件驱动判定（本轮改动文件全覆盖）----
+# ① 边脸放宽与 1.5 米闸门都落在 count_faces 里，但它的**新**支撑函数才是本轮真加的东西：
+#    max_face_width 是"把 6.5% 换成真米数"的标定棒（本机镜头视角实测读不到），
+#    geometry_failures 是"读不到检测框几何"的计数 —— 没有它，贴边放宽整体失效时
+#    日志里一个字都查不到（AGENTS §6 第 9 条那一族）。
+check sf_presence::max_face_width
+check sf_presence::geometry_failures
+# ② 判定从"等轮询对齐"改成"数完就判"：新信号 + 新工厂 + 按样本时刻去重的落点。
+#    去掉任何一条，tests/test_face_guard.py 的事件驱动/去重两条用例当场红。
+check stock_float_window::face_guard_wakeup
+check stock_float_window::_face_guard_new_monitor
+
+# ---- v1.4.67：菜单首点即反馈（产品侧唯一行为变化）+ 卷内一键安装隐藏后缀 ----
+# _face_guard_switch_on：勾号与"点下去会切成什么"共用的新口径。它修的是用户报障
+#   「自动隐藏窗口每次第一次点击都没反应，要第二下才生效」。点击没丢（日志里每一下都
+#   记了"授权发起点=菜单点击"），丢的是反馈：勾号旧口径要求 state==running，而会话
+#   起起来要 0.2~0.6 秒（首次授权等系统框实测 3.7 秒），300ms 的刷新定时器在这个窗口
+#   里每一拍都把用户刚点出来的勾按回"未勾"。复现序列 [True×6, False×12]，判据
+#   tests/test_face_guard.py::test_first_click_tick_survives_the_spin_up（把口径改回
+#   只认 running 必红），另两条钉"启动窗口内再点=关"与"起不来时勾必须灭"（诚实侧）。
+check stock_float_window::_face_guard_switch_on
+# 卷内「一键安装.command」不再显示后缀：改的是链上工具与 DMG 卷内条目，包内没有对应
+#   字节码符号，所以这一半的证据不在这里，而在发版链第 4 步（造完 DMG 挂载真产物读回
+#   图标与显示名）与 tools/verify_install_paths.py 的 R2/S8（挂真卷、种"忘了隐藏"必须
+#   让路线红）。本轮不走 stale-feature：上面那条 check 是包内真新增符号。

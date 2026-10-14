@@ -1,0 +1,35 @@
+# 实时股价 v1.1.0 运行/打包依赖锁定（13.1 / 2.2 / 13.2）
+# 安装：python3 -m pip install -r requirements.txt
+# 注意：已从 PyQt5 迁移至 PyQt6（v1.1.0 起），PyQt6/Qt6 为当前主流维护版本。
+# 依赖全部使用 == 精确锁定，保证构建机与运行环境可复现。
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.13.0
+pyobjc-core==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-Quartz==12.2.2
+pyobjc-framework-UserNotifications==12.2.2
+pyobjc-framework-Security==12.2.2
+# v1.4.40 人脸在场守卫需要 AVFoundation 的**方法元数据**：
+# requestAccessForMediaType:completionHandler: 的第三个参数是 ObjC block，只有
+# pyobjc-core 时 PyObjC 直接报 "Argument 3 is a block, but no signature available"，
+# 授权框弹不出来、功能永远起不来（三条绕法实测都不通，见 sf_presence._request_access
+# 的注释）。装了桥接同一段调用立刻成功。
+# CoreMedia / CoreAudio 是 AVFoundation 桥接的依赖，一并锁版本保证可复现。
+# 体积代价（本机实测）：site-packages 下 944K + 388K + 328K ≈ 1.6MB 源码，
+# 无模型、无二进制框架新增（系统框架本来就在 /System 里）。
+pyobjc-framework-AVFoundation==12.2.2
+pyobjc-framework-CoreMedia==12.2.2
+pyobjc-framework-CoreAudio==12.2.2
+# 测试覆盖率门禁（本地与 CI 共用）
+coverage==7.16.1
+# 第一道防线：静态检查闸门 tools/static_gate.py（本地钩子与 CI 共用，需精确锁定；
+# 版本一升，mypy 的推断结论可能变化并让 B 级基线整体漂移 —— 升版本时同步跑
+# `python tools/static_gate.py --update` 复核差值，不要盲目提交新基线）
+ruff==0.16.8
+mypy==2.3.1
+# 打包仅需（构建机）
+pyinstaller==6.22.2
+macholib==1.16.4
+# 自动更新清单的 Ed25519 验签（私钥仅保存在本机 .private_tools/，绝不随应用发布）
+PyNaCl==1.6.2

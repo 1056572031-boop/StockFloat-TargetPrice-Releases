@@ -1,0 +1,2845 @@
+{
+  "schema": 1,
+  "updated": "2026-10-14",
+  "notes": {
+    "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
+    "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
+    "定位时长": "observed_at(第一次能观测到现象的时刻) 与 rootcause_at(根因写清楚的时刻) 两个时间戳由 quality_trend.py --open/--rootcause 当场盖，历史条目一律为 null。null 不是 0，不许回填估算值。",
+    "evidence": "verified=本轮逐行复核过出处；second-hand=从交付记录的文字结论转录，行号未逐条复核"
+  },
+  "entries": [
+    {
+      "id": "A03",
+      "symptom": "价格大字冻结在旧值、滚动卡在中途",
+      "component": "行情与动画",
+      "channel": "online_user",
+      "introduced_version": "1.2.51",
+      "introduced_note": "同日两版才修净：v1.2.52 漏清 _roll_prev/_roll_anim",
+      "found_version": "1.2.52",
+      "fixed_version": "1.2.55",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "滚动状态机没有不变量判据，只能靠眼睛",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录只写现象与修法，没有任何时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.2.5x 早期批次",
+      "evidence": "second-hand",
+      "recurrence_verdict": "只有用例，且保不住",
+      "recurrence_evidence": "tests/test_bugfix_155.py::TestTinyMoveClearsAllRollState 断言 _roll_prev/_roll_anim 清零，但宿主是 FloatWindow.__new__ + MagicMock 定时器，只锁两条已知分支；第三条赋值路径无用例，也没有「显示值必收敛到最新行情」这条不变量",
+      "recurrence_risk": "中",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "A04",
+      "symptom": "休市提示不在顶栏真正中央",
+      "component": "排版与几何",
+      "channel": "online_user",
+      "introduced_version": "1.0.36",
+      "introduced_note": "设计期就没对齐，后期才被截图发现",
+      "found_version": "1.2.53",
+      "fixed_version": "1.2.53",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "没有离屏像素判据",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录无时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.2.5x 早期批次",
+      "evidence": "second-hand",
+      "recurrence_verdict": "有判据（只到布局决策层）",
+      "recurrence_evidence": "tests/test_v153.py::TestMarketStatusRect::test_left_edge_aligns_name 断言 market_status_rect()[0]==PAD_X，调用点确实走它；像素层没有覆盖，同文件 test_label_is_drawn_centred… 只断言文本被画（名字口径已过期）",
+      "recurrence_risk": "低",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "A05",
+      "symptom": "涨跌幅时不时跑到窗口下方",
+      "component": "排版与几何",
+      "channel": "online_user",
+      "introduced_version": "1.2.62",
+      "introduced_note": "原文：比用户描述的「时不时」更严重，w=200 实测 100% 回落",
+      "found_version": "1.2.63",
+      "fixed_version": "1.2.63",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "底部两行重叠此前只靠人工看截图",
+      "defense_added": "tools/verify_bottom_gap_px.py 离屏像素判据（v1.4.33 起进 run_tests.sh 关卡）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录无时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.2.63 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A12",
+      "symptom": "主窗「设目标」标签与休市状态文字重叠",
+      "component": "排版与几何",
+      "channel": "online_user",
+      "introduced_version": "1.2.81",
+      "introduced_note": "用户 5 张截图报回",
+      "found_version": "1.2.82",
+      "fixed_version": "1.2.82",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "窄宽度下的文字碰撞没有判据",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录无时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.2.82 批次",
+      "evidence": "second-hand",
+      "recurrence_verdict": "没有任何东西拦得住",
+      "recurrence_evidence": "肇事元素已在 v1.2.83 撤除（sf_ui_render._paint_target_label 是 return 空实现，本轮亲自复核到），所以复发的唯一路径是「重新加回标签」；而现成的全组合防重叠闸 tests/test_v163.py::TestNoOverlapAnySize 只覆盖价格行，顶部栏「名称×状态文字×按钮带」不在内",
+      "recurrence_risk": "低（但补闸最便宜）",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "A13",
+      "symptom": "禁用按钮看起来还能点；铃铛图标变形（上一版声称已重绘其实没有）",
+      "component": "点击与热区",
+      "channel": "online_user",
+      "introduced_version": "1.2.84",
+      "introduced_note": "同一诉求被打回三轮",
+      "found_version": "1.2.85",
+      "fixed_version": "1.2.86",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "规则写在代码里≠渲染生效，当时没有渲染结果判据",
+      "defense_added": "像素采样法（从产物实际画出来的像判断，而不是读源码）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录无时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.2.84~86；QC_CHECKLIST.md 对应核查记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A15",
+      "symptom": "目标价触发后入口被禁用，用户无法继续改下一档",
+      "component": "目标价",
+      "channel": "online_user",
+      "introduced_version": "1.2.87",
+      "introduced_note": null,
+      "found_version": "1.2.90",
+      "fixed_version": "1.2.90",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "触发后的状态流转没有用例",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录无时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.2.90 批次",
+      "evidence": "second-hand",
+      "recurrence_verdict": "有判据拦住",
+      "recurrence_evidence": "tests/test_ui.py::test_fired_target_still_allows_opening_panel 在真 FloatWindow 上断言 _bell_state()==fired、按钮未禁用且面板真可见；test_target_panel.py 另守越界/锁定态",
+      "recurrence_risk": "已关闭",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "A16",
+      "symptom": "点「立即生效」主线程 SIGSEGV，弹窗变空壳",
+      "component": "崩溃与生命周期",
+      "channel": "online_user",
+      "introduced_version": "1.2.87",
+      "introduced_note": "子窗玻璃化引入；NSVisualEffectView objc_release 双重释放",
+      "found_version": "1.2.90",
+      "fixed_version": "1.2.91",
+      "failed_lines": [
+        "locate",
+        "verify"
+      ],
+      "why_missed": "当时没有自动化，只有 4 份 .ips 崩溃报告",
+      "defense_added": "真 cocoa 子进程用例 + 50 次连点（见 tests/ 的 _child harness 一族）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "崩溃报告有时刻，交付记录没有写排查多久",
+      "source": "DELIVERY_CHECKLIST.md · V1.2.91 批次；QC_CHECKLIST.md V1.2.9x",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A17",
+      "symptom": "缩到 Dock 再打开主窗闪退消失；第一次修完用户仍报「闪现消失」",
+      "component": "崩溃与生命周期",
+      "channel": "online_user",
+      "introduced_version": "1.3.31",
+      "introduced_note": "连跨 1.3.32/33/34/35/36 五个版本反复",
+      "found_version": "1.3.32",
+      "fixed_version": "1.3.36",
+      "failed_lines": [
+        "static",
+        "locate"
+      ],
+      "why_missed": "已销毁对象的属性访问没有静态检查；当时日志留痕不足以定位",
+      "defense_added": "static_gate A 级硬零 + log_swallow(SWALLOWED)（v1.4.30 起）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "原文只写「只读审查＋真实日志」定到 P0，没有时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.32~36 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A21",
+      "symptom": "冷启动「窗口先很高再被压扁」，首帧画完占位符再整屏换",
+      "component": "启动与首帧",
+      "channel": "online_user",
+      "introduced_version": "1.3.44",
+      "introduced_note": null,
+      "found_version": "1.3.45",
+      "fixed_version": "1.3.45",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "冷启动时序此前没有度量",
+      "defense_added": "tools/coldstart_bench.py",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录无时刻（只有修复前后 7/7→0/7 的复现计数）",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.45 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A22",
+      "symptom": "回归测试把用户真实 bg=glass 写成 translucent，老板看见「毛玻璃消失」；两次修补后同一症状复发",
+      "component": "测试污染用户数据",
+      "channel": "online_user",
+      "introduced_version": "1.3.46",
+      "introduced_note": "复发链条：1.3.48 恢复配置 → 1.3.50 只在 run_tests.sh 里 export → 裸跑单测又写坏",
+      "found_version": "1.3.48",
+      "fixed_version": "1.3.52",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "「测试全绿」从来不含「没碰用户数据」这条判据",
+      "defense_added": "常量层隔离 + run_tests.sh 的「用户数据未改动」红线",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "有配置文件的写入时间戳，但没人记排查时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.48/1.3.52 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A24",
+      "symptom": "股价与涨跌幅底边错位拉锯，逐版反复（一天连发 7 版）",
+      "component": "排版与几何",
+      "channel": "online_user",
+      "introduced_version": "1.2.63",
+      "introduced_note": "基线对齐设计 + 小字号 hinting 墨水差；v1.3.53~55 三条干预被 v1.3.56 整体回退",
+      "found_version": "1.3.53",
+      "fixed_version": "1.3.61",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "没有逐字形/像素级判据，只能一版一版用眼睛试",
+      "defense_added": "离屏逐字形像素判据（本轮起逐版补齐）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "原文写「一次确认比改错四版便宜」，没有时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.53~61 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A26",
+      "symptom": "分时曲线下方大片留空像横带；改完又「太淡」，绿比红淡",
+      "component": "图表与视觉",
+      "channel": "online_user",
+      "introduced_version": "1.3.61",
+      "introduced_note": "填充底边锚在昨收线上",
+      "found_version": "1.3.62",
+      "fixed_version": "1.3.64",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "图带几何没有判据（verify_bottom_gap_px 只管底部两行）",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "早期记录无时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.62~64 批次",
+      "evidence": "second-hand",
+      "recurrence_verdict": "没有任何东西拦得住",
+      "recurrence_evidence": "sf_ui_render 现在钉 rect.bottom()、渐变上沿取曲线最高点、绿/红各用 CHART_FILL_ALPHA_GREEN/CHART_FILL_ALPHA；tests 里对 _draw_chart_fill 的唯一引用是调用计数 spy（只数次数），全仓无测试引用 CHART_FILL*",
+      "recurrence_risk": "高",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "A27",
+      "symptom": "搜股票慢：两趟串行网络，中位 160ms、最坏十几秒",
+      "component": "性能取舍",
+      "channel": "online_user",
+      "introduced_version": "1.3.64",
+      "introduced_note": null,
+      "found_version": "1.3.65",
+      "fixed_version": "1.3.66",
+      "failed_lines": [
+        "none"
+      ],
+      "why_missed": "这不是防线失守，是性能取舍从没被排进优先级",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "原文有实测毫秒数，但没有定位时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.65/66 批次",
+      "evidence": "second-hand",
+      "recurrence_verdict": "只有用例，且保不住（无度量）",
+      "recurrence_evidence": "根治项「本地字典命中零往返」有断言（test_v1366_universe.py::test_hit_skips_network）；并行化只剩间接痕迹，且 :108-123 明确放弃过「东财不被调用」的断言；全仓没有任何搜索耗时闸（coldstart_bench/input_latency_probe/frame_rate_audit 都不涉及搜索）",
+      "recurrence_risk": "中",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "A28",
+      "symptom": "测试把 5.3 万次假失败灌进用户真实 debug.log，排障方向被带偏、差点据此换主源",
+      "component": "日志与诊断",
+      "channel": "online_user",
+      "introduced_version": "1.3.66",
+      "introduced_note": "LOG_PATH / SINGLE_SOCK 未隔离；单秒最多 90 条",
+      "found_version": "1.3.67",
+      "fixed_version": "1.3.67",
+      "failed_lines": [
+        "locate"
+      ],
+      "why_missed": "防线三的留痕本身是脏的，越查越偏",
+      "defense_added": "测试期日志/配置/socket 全量隔离；后续核验工具同样重定向（v1.4.44 F1）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "交付记录有假异常的条数与时间戳，没有排查时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.67 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A29",
+      "symptom": "外机点「检查更新」就中断：_cffi_backend / nacl 没打包，ModuleNotFoundError",
+      "component": "供给链与更新",
+      "channel": "second_machine",
+      "introduced_version": "1.3.72",
+      "introduced_note": "受影响版本无法 OTA 自愈，必须手装一次",
+      "found_version": "1.3.74",
+      "fixed_version": "1.3.74",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "代码 import 的模块与包内实际内容从来没对拍过",
+      "defense_added": "tools/bundle_closure_check.py（发版链 3.6 硬拦）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "原文写「外机诊断已定位」，没有时长",
+      "source": "QC_CHECKLIST.md · V1.3.74 交付核查记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "A30",
+      "symptom": "外机点下载即「下载或校验失败」：固定中文标签让 Py3.14 urllib 抛 UnicodeEncodeError",
+      "component": "供给链与更新",
+      "channel": "second_machine",
+      "introduced_version": "1.3.72",
+      "introduced_note": "清单能下能验签，界面先显示有更新再统一报失败",
+      "found_version": "1.3.79",
+      "fixed_version": "1.3.79",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "本机没跑过「真实发布标签 + 真实下载」的组合",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "外机回传有现象，没有时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.79 批次",
+      "evidence": "second-hand",
+      "recurrence_verdict": "有判据拦住（有一条零成本加强）",
+      "recurrence_evidence": "tests/test_coverage_notify_update.py 除 _request_url 外还 patch urlopen 抓 request.full_url 断言真发出的就是编码 URL，test_update.py 另防双重转义；缺口是只断言「含 %E6%B5%8B…」，没断言「最终请求行全 ASCII」",
+      "recurrence_risk": "基本关闭",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "A31",
+      "symptom": "更新弹窗连续 4 版被截图打回；同版还藏着 _ActionTarget 嵌套定义导致第二次创建弹窗直接崩溃",
+      "component": "供给链与更新",
+      "channel": "online_user",
+      "introduced_version": "1.3.83",
+      "introduced_note": "ObjC 同名类重复注册 —— 与 D24（人脸守卫）同族",
+      "found_version": "1.3.84",
+      "fixed_version": "1.3.86",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "弹窗只断言「创建成功」，不断言子视图几何",
+      "defense_added": "子视图级精确断言；同名类注册改为进程内一次 + 登记表反查",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "同一天连发三版，交付记录没有时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.3.84~86 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "B02",
+      "symptom": "v1.4.2 装机现场退出时 QMessageBox 闪退",
+      "component": "崩溃与生命周期",
+      "channel": "installed_field",
+      "introduced_version": "1.4.2",
+      "introduced_note": "AppKit 模态循环 × QSurface 延迟析构",
+      "found_version": "1.4.2",
+      "fixed_version": "1.4.3",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "退出期原生对象销毁时序没有真 cocoa 覆盖",
+      "defense_added": "tests/_exit_child.py 真 cocoa 子进程（v1.4.20 正式成型）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "原文只写「v1.4.2 现场复现」",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.3 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "B03",
+      "symptom": "/tmp 里的旧 dist 副本被 LaunchServices 重新拉起，PyQt6 导入期 SIGSEGV「程序意外退出」",
+      "component": "崩溃与生命周期",
+      "channel": "online_user",
+      "introduced_version": "1.4.4",
+      "introduced_note": "发版脚本把旧产物移到 /tmp 才留下这个雷",
+      "found_version": "1.4.5",
+      "fixed_version": "1.4.5",
+      "failed_lines": [
+        "locate",
+        "static"
+      ],
+      "why_missed": "崩溃栈指向 CFBundleCopyBundleURL 拿到 NULL，本机没有触发条件",
+      "defense_added": "sf_bootstrap 守卫 + tools/sweep_temp_apps.py（v1.4.23 起启动 45 秒后自动清扫）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "崩溃报告有时刻（09-22 上午），排查时长没记",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.5 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "B06",
+      "symptom": "启动时右上角四个按钮「先突然放大再缩回」",
+      "component": "启动与首帧",
+      "channel": "online_user",
+      "introduced_version": "1.4.10",
+      "introduced_note": "实测 792ms；未修复路径 996ms",
+      "found_version": "1.4.11",
+      "fixed_version": "1.4.11",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "首帧按钮尺寸没有像素判据",
+      "defense_added": "5 条像素用例 + 真渲染栈冒烟",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "老板反馈没有时刻戳",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.11 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "B08",
+      "symptom": "v1.4.12 把分时末端呼吸灯压到 0.6 帧/秒，真的发到线上约 37 分钟后回退",
+      "component": "动效与帧率",
+      "channel": "online_user",
+      "introduced_version": "1.4.12",
+      "introduced_note": "回退原因原文：老板指出后核实",
+      "found_version": "1.4.12",
+      "fixed_version": "1.4.13",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "功耗优化只盯总 CPU，没有「动效还在不在跳」的判据",
+      "defense_added": "三条「不得用可见动效帧率换功耗」护栏 + tools/frame_rate_audit.py",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "原文有上线约 37 分钟，那是暴露时长不是定位时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.12/13 批次",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "C04",
+      "symptom": "iMac 点「立即更新」→ 下载跑完 → 闪退（rc=139）",
+      "component": "崩溃与生命周期",
+      "channel": "second_machine",
+      "introduced_version": "1.4.17",
+      "introduced_note": "QApplication.quit() 被 cocoa 转成 terminate:，带 QWindow 的框在 exit() 后才 deleteLater",
+      "found_version": "1.4.20",
+      "fixed_version": "1.4.20",
+      "failed_lines": [
+        "locate",
+        "verify"
+      ],
+      "why_missed": "「iMac 上为什么会退回兜底路径」至今没有日志，本机也复现不出；offscreen 根本测不到这条链",
+      "defense_added": "tests/_exit_child.py 真 cocoa 子进程",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "崩溃报告时刻 2026-09-23 09:29:33 有，根因中的「为何走兜底」仍未定位",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.20 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "C05",
+      "symptom": "临时目录里 ≤1.4.4 的残留副本再次被拉起崩溃（iMac 14:08 回传，版本 1.3.97）",
+      "component": "崩溃与生命周期",
+      "channel": "second_machine",
+      "introduced_version": "1.4.4",
+      "introduced_note": "与 B03 同一现象第 2 次逃逸：守卫在新产物里，管不到旧副本",
+      "found_version": "1.4.23",
+      "fixed_version": "1.4.23",
+      "failed_lines": [
+        "locate",
+        "static"
+      ],
+      "why_missed": "确切损坏形态本机未能复现，处置只能「不依赖触发条件」",
+      "defense_added": "清扫改为不依赖守卫存在（tools/sweep_temp_apps.py + cleanup_temp_copies.command）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "有崩溃报告时刻，没有定位时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.23 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "C07",
+      "symptom": "第三方全屏回桌面后「只剩毛玻璃、内容看不见但点得动」，且永不自愈",
+      "component": "玻璃层与层级",
+      "channel": "online_user",
+      "introduced_version": "1.4.25",
+      "introduced_note": "倒序一旦成立，_top_state_ok 读到的属性全部为真 → 250ms 复核永久空转",
+      "found_version": "1.4.26",
+      "fixed_version": "1.4.26",
+      "failed_lines": [
+        "static",
+        "verify",
+        "locate"
+      ],
+      "why_missed": "判据在结构上看不见这个故障；本机 100% 复现是上一轮写下的假结论；取证日志自己会说假话",
+      "defense_added": "判据改成问 WindowServer（OnScreenOnly）+ re-top 取证 + glass_desync_audit.py",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "上一会话中断在 ENOSPC、连续 5 次续跑失败 —— 有过程没有时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.26 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "D02",
+      "symptom": "快速拖动时内容与毛玻璃层分开（重影），实测掉队 55~88px",
+      "component": "玻璃层与层级",
+      "channel": "online_user",
+      "introduced_version": "1.4.32",
+      "introduced_note": "结构性的「永远晚一帧」",
+      "found_version": "1.4.32",
+      "fixed_version": "1.4.37",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "跟随性没有同机同手势的 A/B 量法",
+      "defense_added": "glass_follow_probe.py + 输入跟手性测量底座；v1.4.37 默认关回自绘拖拽",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "同日多版，记录没有时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.33~37 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "D03",
+      "symptom": "全屏 Space 内拖动后点「收起分时走势图」，主界面瞬移回拖动前位置",
+      "component": "玻璃层与层级",
+      "channel": "online_user",
+      "introduced_version": "1.4.31",
+      "introduced_note": "n_back=893 拍停在旧位",
+      "found_version": "1.4.35",
+      "fixed_version": "1.4.36",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "写几何前没有与服务端对表；两条错误假设靠同日实测才排掉",
+      "defense_added": "写几何前先与 WindowServer 对表 + 3 条变异自检",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "有实测数字没有时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.35/36 交付记录；outputs/全屏Space坐标跳变与背景层压盖-实测报告",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "D04",
+      "symptom": "拖动后背景层永久停在别处，截图实测约 450px",
+      "component": "玻璃层与层级",
+      "channel": "online_user",
+      "introduced_version": "1.4.31",
+      "introduced_note": "判据拿两个同样过时的应用侧模型互比，真错位 11px 仍返「已对了」",
+      "found_version": "1.4.33",
+      "fixed_version": "1.4.33",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "自指判据；用户那条触发链本机至今未复现",
+      "defense_added": "glass_desync_audit.py blind 3→0、峰值 46→0",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "触发链未复现，时长口径不成立",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "D05",
+      "symptom": "「只剩背景、内容不见」的空窗 4.46 秒（用户第二次报同一症状）",
+      "component": "玻璃层与层级",
+      "channel": "online_user",
+      "introduced_version": "1.4.26",
+      "introduced_note": "看门狗没坏，是每 5 秒才问一次",
+      "found_version": "1.4.33",
+      "fixed_version": "1.4.33",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "自愈节流按「省 CPU」定，没按「用户看得见空窗多久」定",
+      "defense_added": "空窗 4.46s→0.57s；永久盲区留痕",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "同一症状跨 7 版，交付记录没有首次报障时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录（提交 5a53b34）",
+      "evidence": "verified"
+    },
+    {
+      "id": "D07",
+      "symptom": "手动拖主窗下沿把手能把高度压到 0，0 高窗口没有可点区域，只能重启",
+      "component": "玻璃层与层级",
+      "channel": "online_user",
+      "introduced_version": "1.2.35",
+      "introduced_note": "为过渡动画连续主动把 minimumHeight 降到 0；丢一次 mouseRelease 就永久为 0",
+      "found_version": "1.4.34",
+      "fixed_version": "1.4.34",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "第一版假设（收起态拖把手）被实测推翻，重画了高度状态模型才定位",
+      "defense_added": "14 条状态模型用例 + 变异自检（4 条转红 0 != 224）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "潜伏约 4 周/60 个版本，但没记哪天报的障",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.34 交付记录；outputs/底部把手拖到0高度-实测报告",
+      "evidence": "verified"
+    },
+    {
+      "id": "D08",
+      "symptom": "「数据暂缺 · 重试中」压在 0% 基准白色虚线上（昨收高于当日最高时必然撞字）",
+      "component": "图表与视觉",
+      "channel": "online_user",
+      "introduced_version": "1.4.7",
+      "introduced_note": "提示钉死 rect.top()+2；窗口 224~300 高实测净空 0.0px",
+      "found_version": "1.4.34",
+      "fixed_version": "1.4.34",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "verify_bottom_gap_px.py 只覆盖底部两行，图带区域没有判据",
+      "defense_added": null,
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "用户截图驱动，没有时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.34 交付记录",
+      "evidence": "verified",
+      "recurrence_verdict": "有判据拦住，但判据自己可以说假话",
+      "recurrence_evidence": "tests/test_v1434_hint_gap.py::_baseline_y 在测试里**手抄**了一份区间公式（含 0.10 pad），漏了产品侧 hi-lo<1e-6 → hi=lo+1 的平盘分支 —— 它自己的 docstring 写着「用渲染器自己的区间算法，不在测试里另推一套」，实际却另推了一套：区间算法一改就静默失真（自证永真）",
+      "recurrence_risk": "高（修法极便宜）",
+      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+    },
+    {
+      "id": "D14",
+      "symptom": "「只剩毛玻璃」修完仍测到倒序 9.63 秒，六轮 11168 拍零复现但不写「已修复」",
+      "component": "玻璃层与层级",
+      "channel": "online_user",
+      "introduced_version": "1.4.26",
+      "introduced_note": "根因线索：全屏 Space 下这两个窗口确实不在 OnScreenOnly 列表里，看门狗在最需要它的 Space 里看不见这对窗",
+      "found_version": "1.4.35",
+      "fixed_version": "1.4.37",
+      "failed_lines": [
+        "static",
+        "verify",
+        "locate"
+      ],
+      "why_missed": "取证日志会说假话（blind 是节流冒充、压重单槽互相顶掉），修后仍见 186~188 次/分钟盲区",
+      "defense_added": "_z_probe_asked 真前置 + 按原因分槽留痕 + Space id 锚点",
+      "observed_at": "2026-09-24T16:08:05",
+      "rootcause_at": null,
+      "locate_unknown_reason": "起点已有（日志锚点），终点没有：当时没人记下「根因写清楚」那一刻，交付记录只到日期不到时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.35~37 交付记录",
+      "evidence": "verified",
+      "observed_origin": "log",
+      "field_evidence": "装机版 v1.4.34 run=1bcb3a（STARTUP 16:06:22，会话到 16:40:18）：re-top: glass above main 482 行 / 持续 1278.0 秒，order probe blind 509 行 / 持续 2034.6 秒。由 tools/quality_trend.py --from-log --days 30 扫出，比交付记录当时写的「9 条同名日志」口径准。"
+    },
+    {
+      "id": "D15",
+      "symptom": "点「检查更新」毫无反应：0 个框、0 行日志（已知有新版本时本该秒弹确认也被吞）",
+      "component": "供给链与更新",
+      "channel": "online_user",
+      "introduced_version": "1.3.92",
+      "introduced_note": "激活补查 + 守卫处 return 把点击吞掉",
+      "found_version": "1.4.43",
+      "fixed_version": "1.4.43",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "可见反馈那段有 isinstance(self, QWidget) 守卫，测试替身整段跳过 —— 用例绿而用户看不见",
+      "defense_added": "tools/probe_update_click.py 三时机必须 ≥1 框 + update check done 每次留痕",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "用户报障没有时刻；潜伏约 3 周（09-17→10-08）由版本日期反推",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.43/44 交付记录",
+      "evidence": "verified"
+    },
+    {
+      "id": "D18",
+      "symptom": "更新弹窗从不居中：实测偏左 384pt、偏上 178pt",
+      "component": "供给链与更新",
+      "channel": "online_user",
+      "introduced_version": "1.3.70",
+      "introduced_note": "「系统弹窗本来就在中间」是想当然的前提；本仓此前一次都没写过弹窗位置",
+      "found_version": "1.4.38",
+      "fixed_version": "1.4.38",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "没有位置判据",
+      "defense_added": "真窗口 _alert_child position 模式五场景 ≤0.5pt",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "用户附截图提要求，没有时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.38 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "S09",
+      "symptom": "工具窗抬层整段从写下起从未执行（裸调未导入的 _objc_deps，NameError 被 except: pass 吞）",
+      "component": "玻璃层与层级",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "原文：潜伏几十个版本。因为面板恒贴在不重叠一侧，用户看不见",
+      "found_version": "1.4.28",
+      "fixed_version": "1.4.29",
+      "failed_lines": [
+        "static",
+        "verify",
+        "locate"
+      ],
+      "why_missed": "防线一当时不存在；防线二里原文写明「以前所有用例都把函数体整块 patch 掉，正是它能潜伏几十个版本的原因」；防线三被 except: pass 关死",
+      "defense_added": "undefined_name_scan（含故意种错名字的变异自检）+ static_gate A 级硬零 + log_swallow(SWALLOWED) + 按文件棘轮",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "发现即定位，但没记时长",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.29 交付记录（第 1143、1151 行已复核）",
+      "evidence": "verified"
+    },
+    {
+      "id": "S10",
+      "symptom": "弹窗居中功能已上线且静默失效（SWALLOWED sf_system_alert._center_content: AttributeError）",
+      "component": "日志与诊断",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.22",
+      "introduced_note": "防线三第一次真正抓到已上线的静默失效",
+      "found_version": "1.4.33",
+      "fixed_version": "1.4.33",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "失效有留痕所以定位极快，缺的是发版前没有任何判据",
+      "defense_added": "SWALLOWED 留痕机制（本身即防线三，这轮证明它有效）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "留痕有时刻，但没记人查了多久",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "S16",
+      "symptom": "更新清单超时 5 秒 vs 实测首字节 7.4~8.3 秒 → 冷启动那次基本必失败，常年从未告知过有新版本",
+      "component": "供给链与更新",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.3.70",
+      "introduced_note": "用户不知道自己错过了版本，所以从未报障",
+      "found_version": "1.4.43",
+      "fixed_version": "1.4.43",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "超时值从来没用真网络量过",
+      "defense_added": "12 秒 + 只重试取清单；实测 7.6 秒取到并验签通过",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "由 D15 的报障顺带量出，无独立时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.43/44 交付记录（第 266 行已复核）",
+      "evidence": "verified"
+    },
+    {
+      "id": "S29",
+      "symptom": "分时末端呼吸灯 0.2 帧/秒、目标价彩虹 30.5 帧/秒 —— 看着在呼吸，其实价格一停就冻住",
+      "component": "动效与帧率",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "原文：先于本轮功耗优化就存在的设计缺口",
+      "found_version": "1.4.14",
+      "fixed_version": "1.4.14",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "当时的 power_profile 只报汇总绘制次数，把「某个动效其实没在跳」平均掉了",
+      "defense_added": "tools/frame_rate_audit.py 逐动效逐场景子进程 + 6 场景全 ≥60 护栏",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "由本轮新探针首次量出，此前无人报",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.14 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "S33",
+      "symptom": "NSAlert 构造失败静默降级成不居中、可能看不见的 osascript 框，且无留痕",
+      "component": "日志与诊断",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.8",
+      "introduced_note": "except Exception: pass",
+      "found_version": "1.4.45",
+      "fixed_version": "1.4.45",
+      "failed_lines": [
+        "locate"
+      ],
+      "why_missed": "热路径兜异常没有留痕，AGENTS §6 第 9 条的规则没覆盖到这一处",
+      "defense_added": "_swallow 留痕（AGENTS §6 第 9 条）",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "复核直接读出，无用户时刻",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.45 交付记录 B1",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "G01",
+      "symptom": "verify_dmg_pyz.py 写死一批 v1.2.63 特征 → 十几个版本每次发版无脑 PASS，还打印「DMG 内含 v1.2.63 修复代码」",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": null,
+      "introduced_note": "原文：一个永不失败的检查等于没有检查；跨度约 54 个版本",
+      "found_version": "1.4.17",
+      "fixed_version": "1.4.17",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "闸门自己不报告「本轮没传特征」",
+      "defense_added": "release_checks.txt + tools/release_feature_check.py：不填本轮特征直接拒绝出包",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "AGENTS.md §3.1；DELIVERY_CHECKLIST.md · V1.4.17 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "G02",
+      "symptom": "release_checks.txt 里写了一条永不可能命中的伪特征（形参名只进 co_varnames，核验器只扫 co_names），本次发版被拦在最后一步",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.33",
+      "introduced_note": "同批还有一条：读整份 notes 卡 4000 字但读出的值无人使用",
+      "found_version": "1.4.33",
+      "fixed_version": "1.4.33",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "新写的闸门没有「三种篡改都必须被拒」的变异自检",
+      "defense_added": "删伪特征 + 本版一节逐字对拍 + 篡改自检",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "G03",
+      "symptom": "探针用 Chrome「显示」菜单计数判全屏 → 前面两批共 6 轮 entered=True 全是假的，并据此一度把「v1.4.37 不再复现」当结论",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.35",
+      "introduced_note": "Chrome 不在前台时 AX 返回陈旧菜单；原文：一个永不失败的前置条件比没有前置更糟",
+      "found_version": "1.4.37",
+      "fixed_version": "1.4.37",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "前置条件没有独立校验",
+      "defense_added": "全屏前置改由活动 Space id 判定，并据此重测",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.37 交付记录；QC_CHECKLIST.md",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "G04",
+      "symptom": "位图缓存核验报「36 组比对全部零差异」，其实整段空转（_chart_layer_key 漏 m 参数，NameError 被兜成 None，缓存从未启用）",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.14",
+      "introduced_note": "核验器自己踩了防线一该拦的那类错",
+      "found_version": "1.4.14",
+      "fixed_version": "1.4.14",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "度量工具自己没有防空转断言",
+      "defense_added": "四道防空转断言 + 「键算不出来」改限流 WARNING",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.14 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "G05",
+      "symptom": "功耗打桩回包写死 600519，行情在动画分支前被静默丢弃 → 交付记录里「盘中 5.58%→1.00%」是错的，_anim_tick/paintEvent 计数恒 0",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.10",
+      "introduced_note": null,
+      "found_version": "1.4.12",
+      "fixed_version": "1.4.12",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "夹具忠实度没有对拍",
+      "defense_added": "速率口径改为「本轮增量/本轮墙钟」",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.12 交付记录",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "G06",
+      "symptom": "run_tests.sh 把静态闸门排在「检测到正式版在运行就 exit 2」红线之前，「请先退出正式版」被伪装成「代码有问题」（v1.4.33 真的这样红过一次）",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.33",
+      "introduced_note": null,
+      "found_version": "1.4.33",
+      "fixed_version": "1.4.33",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "关卡之间没有各自的归因输出",
+      "defense_added": "AGENTS §2 写死关卡顺序与理由",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录；AGENTS.md §2",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "G07",
+      "symptom": "像素关卡 verify_bottom_gap_px 的净间距上限写成 BOTTOM_ROW_GAP + 3 —— 上限只由被验对象自己的常量决定，常量被改大这道关卡就跟着把松垮间距判成合理（判据自指）",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": null,
+      "introduced_note": "工具自 v1.2.63 起就这么写；v1.4.33 起进 run_tests.sh 第 0.5 关，直到本轮复盘才被看出来",
+      "found_version": "1.4.45",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "全仓对这个关卡 0 条用例、0 次 --self-test（triage 实测：引用次数 0）；同类根子在 G01/G03/D-30 已出现过，但没有一条规则拦「判据引用被验对象的输出」",
+      "defense_added": "判据改成 min(GAP_CEILING_PX=8, BOTTOM_ROW_GAP+3)：今天的强度一点没放松（仍是 5px），但常量变大不再放宽判据；judge() 纯函数化 + --self-test 9 类判定（33px/超上限 1px/上限收紧到 5px 全部必须判红，实测形态与 6px 在默认上限下必须放行，且断言自检进程不导入 sf_ui_render）；tests/test_release_gates.py 每轮跑这条自检",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "本轮读 tools/verify_bottom_gap_px.py 旧判据第 142 行 + triage 脚本实测「tests/ 引用 0 次」",
+      "evidence": "verified"
+    },
+    {
+      "id": "G08",
+      "symptom": "版本闸门 dist_version_check.py 从没被证明会红 —— 全仓对它的唯一引用是 tests/test_core.py 里的一句注释",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.2.95",
+      "introduced_note": "为 v1.2.95 第 8 轮走查的「拿旧 dist 打新 DMG」事故而生，但闸门自身一直没有自检",
+      "found_version": "1.4.45",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "它守的是发版链上不可逆的一步（DMG/安装/OTA），却没有任何一条断言证明它会拒绝旧产物",
+      "defense_added": "--self-test 9 类输入：旧包/坏 plist/缺 Info.plist/路径不存在/只带 V 前缀 全部必须被拒，同版本与带首尾空白的同版本必须放行，退出码 0/1/2 各归位；tests/test_release_gates.py 再用 dist/ 真产物对一个不可能的版本号判不匹配",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
+      "source": "本轮 triage：grep tests/ 对 dist_version_check 的命中只有 test_core.py:234 的注释行",
+      "evidence": "verified"
+    },
+    {
+      "id": "G09",
+      "symptom": "人脸守卫中断判定的 8 条用例结果取决于开机时长：假帧时刻写成 monotonic()-3600，在开机不足一小时的机器上是负数，产品按「没有基线」直接 return，于是同一条码在重启前全绿、重启后稳定红",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.41",
+      "introduced_note": "git log -S 取证：这条用例基线由提交 e6ac747（2026-10-08，发版 v1.4.41：修人脸守卫复核出的 5 处）引进",
+      "found_version": "1.4.46",
+      "fixed_version": "1.4.46",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线二没有「用例不得依赖环境时刻」这条判据；§6 第 4 条只管了交易时段，没管单调时钟基线（开机时长）",
+      "defense_added": [
+        "tests/test_face_guard.py::_long_ago() 把很久以前表达成恒正时刻，并写下实测因果；开机 17 分钟的机器上 82 条守卫用例全绿"
+      ],
+      "observed_at": "2026-10-09 09:47:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-09 10:05:35+08:00",
+      "locate_unknown_reason": null,
+      "source": "提交钩子报红 → uptime/sysctl kern.boottime 取证（09:44 重启，monotonic=1038s）",
+      "evidence": "verified"
+    },
+    {
+      "id": "G10",
+      "symptom": "bundle_closure_check 的 --self-test 要求传一个真 .app；CI 或没有产物的机器上，守着它的用例整段 skipTest —— 这条打包闭包闸门在多数环境里从来没执行过",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": null,
+      "introduced_note": "自检从写下来就依赖真产物；同一族的『只在打包机上有效的门』此前已由 release_feature_check 的复核 F8 修过一次，这是第二处",
+      "found_version": "1.4.46",
+      "fixed_version": "1.4.46",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "规矩（链条工具必须自带可用自检）当时没有关卡执行；本轮新加的 tests/test_release_gates.py::test_every_chain_tool_can_prove_it_fails 第一次真跑每个工具的 --self-test，当场把它抓出来（退出码 2）",
+      "defense_added": "自检拆两层：不传 app 也必跑离线判定层（收集器 + 缺失/放行 + ALLOW_MISSING 既不许漏判也不许当命中），有产物时再加验真产物层；用例默认不带 app，产物在场时断言真的跑到了第二层；并由链条关卡守着『必须能独立自证』这条规矩",
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认；它由本轮新关卡当场抓到并同轮修掉",
+      "source": "本轮实测：新关卡首跑报 bundle_closure_check.py（不认 --self-test，退出码 2）",
+      "evidence": "verified"
+    },
+    {
+      "id": "E01",
+      "symptom": "屏幕边缘吸附不生效：卡片被拖到 Dock 之下或越过屏幕边缘时，越用力贴边越吸不上（底部最明显）",
+      "component": "窗口位置与吸附",
+      "channel": "online_user",
+      "introduced_version": "1.2.51",
+      "introduced_note": "**不晚于** 1.2.51：仓库初始提交 61e9c00（2026-08-30）里 SNAP_MARGIN 就已存在，当时 APP_VERSION=1.2.51；更早的引入点仓库无记录，不猜",
+      "found_version": "1.4.48",
+      "fixed_version": "1.4.48",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线二没有覆盖这条几何判定的任何一种越界形状：SNAP_MARGIN 只有 32px，而 Dock 常驻就有 70px；用例当初只验了「在可用区内靠近边」这一种",
+      "defense_added": [
+        "防线二：tests/test_v1448_snap_edge.py 5 条（越过物理底/越过左边/贴齐不许挪 1px/中途不误吸/卡片高于可用区时落点再钳）",
+        "防线三：判定重写带符号距离并在注释里写明 Dock 与菜单栏两种保留区的差异"
+      ],
+      "observed_at": "2026-10-09 11:12:40+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-09 11:12:40+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户 2026-10-09 实机报障：「屏幕吸附边缘的功能，有时候不生效，特别是屏幕底部」",
+      "evidence": "verified"
+    },
+    {
+      "id": "E02",
+      "symptom": "第二张脸出现时主窗不收起：人脸守卫的采集会话从来没起来过（-[OC_BuiltinPythonArray session] unrecognized selector）",
+      "component": "人脸在场守卫",
+      "channel": "online_user",
+      "introduced_version": "1.2.51",
+      "introduced_note": "PyObjC 带 NSError 出参的构造方法返回 (对象, error) 元组，旧代码当单对象用；if not input_port 对元组恒假，保护形同虚设",
+      "found_version": "1.4.49",
+      "fixed_version": "1.4.49",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线二 82 条守卫用例全用假类，假类返回值是手写的单对象，恰好不是真实框架的元组形状 —— 这条路径整体测不到却显示为已覆盖",
+      "defense_added": [
+        "防线二：tests/test_v1449_face_session.py 4 条，桩按真实元组形状返回（含 None+NSError 必须抛错并带原因）",
+        "同机 PyObjC 实测复现出一字不差的 NSException，先复现再修",
+        "复发追溯：v1.4.49 的发布说明写了「现在会话可正常启动」，而这条结论当时只有假类用例支撑，装机版日志里既没有 running 也没有首帧锚点 —— 写'可正常启动'之前应有的是实机一行日志。",
+        "实机闭环 2026-10-09 12:22（装机版 v1.4.50，run 29908b，日志原文）：12:22:22 授权发起点=菜单点击 → 12:22:24 permission granted=True → 12:22:26 face_guard running → 12:22:28 首帧已计数：1 张脸 → 12:22:46 收起：连续命中，画面 2 张脸（随后摄像头继续看守）→ 12:22:50 恢复：连续 5 次只剩一张脸 → 12:22:54 再次收起 → 12:22:57 再次恢复。这是该功能自 v1.4.40 上线以来第一次在真硬件上跑完整闭环（收起+自动恢复各两轮）。12:25:07 重启后无需再问授权，3.2 秒即出首帧。"
+      ],
+      "observed_at": "2026-10-09 11:17:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-09 11:24:50+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户 2026-10-09 11:17 实机报障；日志 face_guard session FAILED ×3，权限 granted=True 历史上仅 1 次",
+      "evidence": "verified",
+      "recurrence_risk": "已关闭（E03 复发一次后，v1.4.50 实机闭环：见 defense_added 末尾）"
+    },
+    {
+      "id": "E03",
+      "symptom": "第二人入镜仍不收窗（v1.4.49 修完会话形状之后依然无效）：守卫按配置显示为已开启，摄像头却从未打开——授权停在 undetermined，而程序被规定永不再问",
+      "component": "人脸在场守卫",
+      "channel": "online_user",
+      "introduced_version": "1.4.47",
+      "introduced_note": "v1.4.47 把 requestAccess 从 start() 里撤出、只挂在菜单点击上，但没撤掉'配置开着=显示已开启'这一层：ad-hoc 签名每次更新后 TCC 回到 undetermined，于是老用户的守卫全部停在 needs_auth，且菜单打勾、点一次变成关闭、要点两次才弹框",
+      "found_version": "1.4.49",
+      "fixed_version": "1.4.50",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "防线二没有一条用例覆盖'配置开着 + 未授权'这个组合：82 条守卫用例全在假类与桩状态上跑，而桩的 request_start 一律返回 running；防线三此时只有一行 未授权 WARNING，界面却写着已开启 —— 两者相反，人只能靠猜。本轮靠'读一遍实机日志 + 一次不需要授权的离线 Vision 核验'定位，未复现即定案",
+      "defense_added": [
+        "防线二：tests/test_face_guard.py 新增 5 条，把'配置开着+未授权'这个组合变成有判据的现场（勾必须灭、一次点击就发起授权、在跑时勾亮且点一下即关、检测连续失败不许再写运行中、未授权提示必须指着真实菜单项）",
+        "防线二：tools/verify_face_presence.py 新增 --image 档，Vision 半段不再依赖摄像头与 TCC 授权（本机实测两人照数出 2 张脸，conf 0.822/0.811）；自检带'素材图不存在时必须非 0'的变异，防它成为又一道永真关卡",
+        "防线三：sf_presence 新增 frames/detect_errors 两个整数与 face_guard 首帧锚点，performRequests:error: 的返回值不再被丢弃 —— 日志从此能一句话回答'帧到底来没来'",
+        "防线一：菜单项文案收进 sf_constants.FACE_GUARD_MENU_TEXT 单一来源，界面提示不再指向屏幕上不存在的入口",
+        "实机闭环 2026-10-09 12:22（装机版 v1.4.50，run 29908b，日志原文）：12:22:22 授权发起点=菜单点击 → 12:22:24 permission granted=True → 12:22:26 face_guard running → 12:22:28 首帧已计数：1 张脸 → 12:22:46 收起：连续命中，画面 2 张脸（随后摄像头继续看守）→ 12:22:50 恢复：连续 5 次只剩一张脸 → 12:22:54 再次收起 → 12:22:57 再次恢复。这是该功能自 v1.4.40 上线以来第一次在真硬件上跑完整闭环（收起+自动恢复各两轮）。12:25:07 重启后无需再问授权，3.2 秒即出首帧。"
+      ],
+      "observed_at": "2026-10-09 11:33:28+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-09 11:49:52+08:00",
+      "locate_unknown_reason": null,
+      "source": "装机版实机日志取证：run cc97a9 与 b16428 两段人脸守卫只有 未授权 一行，全程没有 running/session FAILED/首帧；同机离线 Vision 实测两人照能数出 2 张脸（conf 0.822/0.811），排除了检测侧",
+      "evidence": "verified"
+    },
+    {
+      "id": "S06",
+      "symptom": "ETF/基金(51,15,58)、可转债(11)、国债(01)、B股(90,20) 全都加不进悬浮窗：输 510300 提示「未找到该代码」，而同一个代码 fetch_quote 能正常报价",
+      "component": "代码录入与本地字典",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.18",
+      "introduced_note": "v1.4.18 建议#5 给裸 6 位码加本地字典存在性校验，把「字典查不到」当成「市场里不存在」；字典按东财 fs 段拉取，本机实测 5917 行的 2 位前缀只有 60/68/00/30/92/83 —— 全是股票段",
+      "found_version": "1.4.51",
+      "fixed_version": "1.4.51",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "v1.4.18 那条存在性校验的用例只用 60/00 段的股票码（123456 这类「字典查不到的坏码」），字典根本不收录的 ETF/基金/债券一段都没进过用例 —— 判据覆盖了「字典说了算」的那一半，把「字典无权发言」的那一半当成同一件事。",
+      "defense_added": [
+        "防线二：tests/test_v1450_etf_entry.py 9 条 —— 段覆盖判定 + 非覆盖段行情探测的三种答案（存在→放行、接口答无此码→提示、断网→可用性优先放行），桩只换外部世界、判定走 sf_editor 真实分支",
+        "防线一/判据本体：sf_universe.covers_segment 让字典只为自己收录的 2 位段发言，判据从字典自身推导而非写死段表（空字典一律 False）"
+      ],
+      "observed_at": "2026-10-09 12:22:48+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "source": "30 轮走查第 9 轮（并行会话）实测坐实；本轮合入前再次实测：covers_segment('510300')=False，fetch_quote('sh510300')=沪深300ETF华泰柏瑞 4.326",
+      "evidence": "verified"
+    },
+    {
+      "id": "S07",
+      "symptom": "目标价价位命中却一条横幅都没有，且当天不再提醒：系统通知授权尚未作答（notDetermined/unknown）时走 UN 被静默丢弃，deliver 仍返回 'un'，调用方据此把条目置为已触发",
+      "component": "目标价提醒",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.2.75",
+      "introduced_note": "deliver 只拦 denied 这一个状态，其余一律交给 UN；首次设目标价时 requestAuthorization 是异步的，授权框没答复就命中价位是超短线的常态",
+      "found_version": "1.4.51",
+      "fixed_version": "1.4.51",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "用例覆盖过 authorized 与 denied 两端，没覆盖「还没答」这个中间态；而 UN 对未授权态是**静默丢弃**（addRequest 不报错也不显示），日志一行痕迹都没有，事后既看不见现象也归不了因。",
+      "defense_added": [
+        "防线二：deliver 对非授权态一律 osascript 补发，不再让 UN 静默吞掉",
+        "防线三：补发时把 status 写进 WARNING 日志 —— 事后能回答「那条提醒为什么没弹」"
+      ],
+      "observed_at": "2026-10-09 12:22:48+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "source": "30 轮走查（并行会话）读码核实；本轮合入前复核了判据上下文（sf_notify.deliver 的 status 分支）",
+      "evidence": "verified"
+    },
+    {
+      "id": "G11",
+      "symptom": "静态闸门的 mypy 层在没装 mypy 的解释器上静默归零仍打印「静态闸门通过」：python -m mypy 缺包时退出码恰好也是 1，而闸门把 1 当作「有 finding」接受、stdout 为空 → B 级从 323 掉到 13",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.33",
+      "introduced_note": "第一道防线建成时就把 mypy 的退出码写成 0/1 两种都算正常，没验过「这层到底跑没跑」",
+      "found_version": "1.4.51",
+      "fixed_version": "1.4.51",
+      "failed_lines": [
+        "static"
+      ],
+      "why_missed": "闸门只验「跑没跑出结果」，没验「这一层是否真的执行过」；缺包时退出码与「有 finding」的退出码同为 1，两者在判据里无法区分。",
+      "defense_added": [
+        "防线一：run_mypy 先探 \"import mypy.version\"，取不到就当场失败（本闸门的规矩是检查器跑不起来不算通过）；collect() 再加一条「本次产出 0 条而基线里还记着 mypy 债务 → 拒绝下结论」。本轮用桩实测两条都拦得住：mypy 不可用抛错、0 条时拒绝下结论"
+      ],
+      "observed_at": "2026-10-09 12:22:59+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "source": "30 轮走查（并行会话）实测；本轮合入前用桩复现两条守卫：mypy 不可用 → 当场抛错；mypy 跑通但 0 条而基线记有 310 条 → collect() 拒绝下结论",
+      "evidence": "verified"
+    },
+    {
+      "id": "G12",
+      "symptom": "B 级棘轮的「只降不升」只存在于文档：--update 从不与旧值比较，任何上调都被无条件写进新基线（git 实测 322→321→317→323，df0bb0d 把 mypy:sf_glass.py:attr-defined 从 22 抬到 28）",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.33",
+      "introduced_note": "基线写入路径没有比较分支；AGENTS §3.1 一直写着「只降不升」，但没有任何代码执行它",
+      "found_version": "1.4.51",
+      "fixed_version": "1.4.51",
+      "failed_lines": [
+        "static"
+      ],
+      "why_missed": "「只降不升」写在 AGENTS 与基线的 _note 里，代码里没有比较分支 —— 文档承担了本应由关卡承担的职责，于是抬基线无人拦截。",
+      "defense_added": [
+        "防线一：write_baseline 与旧基线逐键比较，任何上调一律拒绝；确需上调必须显式带 --allow-rise，并当场把每条差值打出来。本轮实测：把 attr-defined 从 28 抬到 29 被拒，且基线文件 md5 未变（e7401546745a）"
+      ],
+      "observed_at": "2026-10-09 12:22:59+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "source": "30 轮走查（并行会话）提的；本轮合入后实测：write_baseline 传 29 时抛错拒绝，且基线文件 md5 未变（e7401546745a）",
+      "evidence": "verified"
+    },
+    {
+      "id": "G13",
+      "symptom": "书写纪律关卡的范围会整体脱账：glob 对空目录/不存在的目录都安静返回空表，--dir 指错就是「零输入零违规 = 整关通过」（实测 rc=0）；用例一旦挪进子目录同样整体不进账",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.33",
+      "introduced_note": "扫描器没有「输入规模」红线；同一族的 self_test 反向用例（应当 0 违规的干净样例）从不重扫",
+      "found_version": "1.4.51",
+      "fixed_version": "1.4.51",
+      "failed_lines": [
+        "static"
+      ],
+      "why_missed": "扫描器的输入规模没有红线，`glob` 对空目录/不存在的目录都返回空表；「关卡范围失效」与「代码真的干净」在输出上完全一样。",
+      "defense_added": [
+        "防线一：scan() 加输入规模红线 —— tests/ 少于 100 个 .py 就报错（实测打补丁前指空目录 rc=0 假通过，打补丁后 rc=2 并报「只取到 0 个 .py」）；self_test 的干净样例改为重扫并断言 0 违规"
+      ],
+      "observed_at": "2026-10-09 12:22:59+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "source": "30 轮走查（并行会话）实测；本轮合入前实测打补丁前 rc=0（假通过），合入后同一命令 rc=2 并报「只取到 0 个 .py」",
+      "evidence": "verified"
+    },
+    {
+      "id": "G14",
+      "symptom": "玻璃层锚点用例从写下起就在验一个时钟巧合：样本时刻写死成 datetime(2026,10,9,12,0,0)，而产品默认路径自己取墙钟 —— 12:12 那轮全量它是绿的（什么都没验到），12:39 起变红，明天起永远红",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.46",
+      "introduced_note": "v1.4.46 建这条用例时为了『不依赖跑测试那天几点』把参照时刻写成固定值，方向正好弄反：显式传 now 的那几条确实不依赖，而不传 now 的那条（glass_diagnostics 走产品默认）依赖的是「真实时刻是否落在固定值 +30 分钟内」",
+      "found_version": "1.4.51",
+      "fixed_version": "1.4.51",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "AGENTS §6 第 4 条禁的是「写死日期做断言」，这条用例表面合规（时刻全部相对 now 生成）却把 now 本身钉在一个整点；判据里没有一条是「不传 now 的那条路径必须贴着真实时钟」",
+      "defense_added": [
+        "防线二：NOW 改为贴着真实时钟取（datetime.now()），显式传 now 的与不传 now 的两类断言同时确定性成立；并把这段教训写进测试文件的注释里，防止下次又钉一个整点",
+        "防线二：产品侧顺手补上真正的漏洞 —— 锚点窗口此前只写下界，一条时钟超前的行会永远算作「最近 30 分钟」（把三天前说成刚刚）。现在晚于参照时刻 5 分钟以上的行单独计入 future_lines 并排除，配一条用例两个方向都验（超前一小时必须被剔、超前 60 秒必须仍算数）"
+      ],
+      "observed_at": "2026-10-09 12:41:20+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "全量当场红、单跑同样红、报错文字直接指出锚点数为 0 —— 从看到红到定根因在一次读码之内，不构成一个可统计的定位区间（且起点是关卡红而非线上现象）",
+      "source": "本轮 v1.4.51 全量回归当场红（12:37，failures=1，重跑仍红 → 不是抖动）；单跑该模块同样红 → 与时序无关",
+      "evidence": "verified"
+    },
+    {
+      "id": "N01",
+      "symptom": "iMac 实机（v1.4.55 / macOS 27.0.1 / Mac16,2）点 Dock 图标即崩：主线程 EXC_BAD_ACCESS (SIGSEGV)、KERN_INVALID_ADDRESS at 0x1，顶帧 objc_opt_self ← pythonify_c_value ← method_stub ← ffi_closure_SYSV ← -[NSApplication(NSAppleEventHandling) _handleAEReopen:]；启动后 11 分 41 秒命中",
+      "component": "桥接层形状（PyObjC 方法编码）",
+      "channel": "second_machine",
+      "introduced_version": "1.4.8",
+      "introduced_note": null,
+      "found_version": "1.4.55",
+      "fixed_version": "1.4.57",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "编码在 PyObjC 建 Python 子类那一刻就写进 runtime，而产品侧唯一的读取（tests/test_coverage_logging.py）是从 Python 直接调用那个方法 —— 参数不经 ObjC 转换，编码错了也测不出来（与 v1.4.49 那 82 条假类用例同族：守的是分支写对没有，不是桥的另一端怎么递参数）。叠加触发条件是'另一台机器的 import 顺序'：本机 1.4.56 实测走的是安全一侧（点 Dock 打了 reopen called 且进程活着），iMac 走的是危险一侧，于是全量回归与本机装机核验都碰不到这条路径。",
+      "defense_added": [
+        "防线一（新增）：tools/pyobjc_sig_check.py 进 run_tests.sh 第 0.3 关 —— 在全新解释器里按产品的真实调用顺序建类、读 runtime 登记的编码，再等框架元数据就位现造对照类读权威编码，两者不一致就红；同一关还核对全仓 pyobjc 符号引用是否真的取得到（dispatch_async 那一族就是这么抓的）；带 --self-test：种'不钉签名就建类'、种'不存在的符号'、未登记新类、陈旧条目四种都必须被抓到",
+        "防线二：tests/test_reopen_signature.py + tests/_reopen_child.py —— 用 ctypes 按调用方签名 v@:@B 真发一次消息。cold_bad 档必须 rc=-11（探针自己能失败），product 档必须存活且编码等于权威编码",
+        "防线二：tests/test_coverage_notify_update.py::TestUnRouteWithRealFramework —— 不用替身跑真 UserNotifications，_ensure_un 必须成功、delegate 必须真装得上（此前这条路线整体坏死时，替身用例照样全绿）"
+      ],
+      "observed_at": "2026-10-09 16:21:40+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-09 17:13:38+08:00",
+      "locate_unknown_reason": null,
+      "source": "iMac 崩溃报告（2026-10-09 16:21:40，Incident 26FB2B89-63FA-4348-8238-F489B5C97786）；本机 .venv 实测：冷序建类登记编码 ['@','@',':','@','@']，框架元数据权威编码 ['B','@',':','@','B']；再用 ctypes 按调用方签名 v@:@B 向代理真发一次 → 同形状 SIGSEGV，DiagnosticReports 顶帧与 iMac 报告逐帧一致",
+      "evidence": "verified"
+    },
+    {
+      "id": "S34",
+      "symptom": "整条 UserNotifications 通知路线自 pyobjc 12 升级起静默坏死：sf_notify 里那句 from Foundation import …, dispatch_get_main_queue, dispatch_async 抛 ImportError（本机实测 pyobjc-core 12.2.2 的 Foundation 已不导出这两个名字），except 兜住后置 _UN_UNAVAILABLE=True → 每条提醒都走 osascript 降级，点击横幅恢复窗口与 on_click 回调整体失效，日志只留一行 'notify delegate install error'",
+      "component": "桥接层形状（PyObjC 符号可用性）",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.2.51",
+      "introduced_note": "不晚于 git 基线（v1.2.51 / 2026-08-30）就已是这个写法；pyobjc 何时把 dispatch_* 移出 Foundation 无法从本仓库判定（依赖随 .venv 重建升到 12.2.2）",
+      "found_version": "1.4.56",
+      "fixed_version": "1.4.57",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "全部替身用例都把 dispatch_* 做成桩（NotifyCase._fake_un），真框架里这两个名字已经不存在这件事没有任何一条用例经过；运行期又被宽 except 兜成'降级'，症状只是'横幅身份不对、点了没反应'，不是崩溃 —— 三道防线里静态层从不核对 pyobjc 符号，验证层全用替身，定位层只有一行 WARNING。",
+      "defense_added": [
+        "防线一：tools/pyobjc_sig_check.py 的符号核对 —— 全仓每一处 from <pyobjc 框架> import X 都真去 getattr 一次，取不到就红（这条红就是本轮第一次抓到它）",
+        "防线二：tests/test_coverage_notify_update.py::TestUnRouteWithRealFramework —— 不用替身跑真 UserNotifications：_ensure_un 必须成功、主队列载体必须存在、delegate 必须真装得上"
+      ],
+      "observed_at": "2026-10-09 17:14:17+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "起点无法确定：坏死发生在依赖升到 pyobjc 12 的那一刻，而仓库里 requirements 的升级时刻与 .venv 重建时刻不一致（git 基线 v1.2.51 就已是这个写法），没有一条现场日志记下'第一次取不到名字'。observed_at 因此是本轮扫出的时刻，不构成定位区间，本条不进数字二样本。",
+      "source": "本轮建 tools/pyobjc_sig_check.py 时由符号可用性核对扫出（全仓 34 处 pyobjc 引用里唯二取不到的就是这两个名字）；复现：./.venv/bin/python -c 'from Foundation import dispatch_async' → ImportError；修后 tests/test_coverage_notify_update.py::TestUnRouteWithRealFramework 走真框架两条全绿",
+      "evidence": "verified"
+    },
+    {
+      "id": "N02",
+      "symptom": "「自动隐藏窗口」点了没反应（本机 1.4.56 实测日志）：16:36:34 第一下点击真的向系统请求了权限（结果=requested），弹窗没被作答；随后 16:36:41 / 46 / 53 / 56 四下点击全部只得到 asked —— 这个菜单项在本进程里永久变成空操作，勾号不动、也不再有第二次弹窗，用户唯一出路是重启程序",
+      "component": "人脸在场守卫（自动隐藏窗口）",
+      "channel": "online_user",
+      "introduced_version": "1.4.45",
+      "introduced_note": "v1.4.45 复核 A4 把「问过没有」从 monitor 实例改成进程级**永久布尔** —— 那次改动是为了修「换个实例就再弹一次框」，代价是错过一次弹窗就永久装死",
+      "found_version": "1.4.56",
+      "fixed_version": "1.4.57",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "v1.4.50 收 E02 时把「一次点击必须真的去请求权限」做对了，却把「请求过而用户没答」当成终态：用例只验了 requested→asked 这条去重（test_permission_is_asked_only_once 断言第二下必须是 asked），没有任何一条问「用户永远没答，这个开关还能不能用」。去重本身是对的（防连点叠三个框），错在它是永久的、且界面上没有任何东西回答「我在等你答那个框」。",
+      "defense_added": [
+        "防线二：tests/test_face_guard.py::test_ask_latch_expires_so_a_missed_prompt_is_recoverable —— 冷却到点后再点必须重新请求；变异自检实测把冷却改成 1e9（等价旧行为）这条当场红 asked != requested",
+        "防线三：菜单每一击都把结果写进日志（requested / asked / authorized / denied），「点了没反应」在 debug.log 里能一句话回答是哪一种；asked 的 last_error 现在带「稍后再点一次可重问」"
+      ],
+      "observed_at": "2026-10-09 16:36:41+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-09 17:32:15+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户 2026-10-09 反馈「自动隐藏窗口，现在点击没反应了，功能失效了」+ 本机 debug.log 16:36 会话 184fe1 五行点击记录逐条对上",
+      "evidence": "verified",
+      "recurrence_verdict": "E02 同族第二次（对外症状都是「自动隐藏窗口没在保护」，根因不同：E02 是采集会话建不起来，本轮是权限请求的进程级永久闩锁）",
+      "recurrence_evidence": "E02（v1.4.49 修会话形状）→ v1.4.50 收「未授权死路」→ 本轮 v1.4.57 收「弹窗没答就永久装死」",
+      "recurrence_risk": "中：TCC 弹窗被置顶悬浮窗压住这件事我们无法控制，只能保证「再点一次一定有效」"
+    },
+    {
+      "id": "N03",
+      "symptom": "价格逐位跳动时右侧涨跌幅与状态徽标整体横移；位数一跨（99.98→100.00）价格压住涨跌幅约 8px、持续 2~3 帧",
+      "component": "价格行排版与逐位滚动",
+      "channel": "online_user",
+      "introduced_version": "1.2.24",
+      "introduced_note": "v1.2.24 起注释与常量把内置字体称作「等宽数字字体/杜绝位置抖动」，而该字体数字是比例数字（27pt 实测 1=13px、7=16px、8=19px）；量宽与绘制都按自然 advance，抖动因此一直在。叠压那一半另有来源：v1.2.25 引入 _roll_pending 后布局量插值中间串、绘制画目标串，两份口径",
+      "found_version": "1.4.51",
+      "fixed_version": "1.4.58",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "防线二当时对价格行只验\"画得出来、不重叠\"，没有任何一条判据问\"同位数的两个价格串宽度是否相同\"；而注释与常量名都写着\"等宽数字\"，读代码的人据此以为这件事由字体保证 —— 判据缺失被一句假话补位了。走查报告当场算出了 1=13px/8=19px 这组数字并建议本轮就改，但报告与台账之间没有交接机制，记完就散。",
+      "defense_added": [
+        "防线二：tests/test_digit_tabular.py 7 条 —— 同位数价格的涨跌幅起点必须一模一样、可见墨水不得越出定宽占位盒、布局量的必须是这一帧真正绘制的那一串；另配一条反向用例（不改口径时宽度确实会跳），防止断言变空",
+        "判据本体：sf_ui_render 新增 digit_cell_width / tabular_advance，成为量宽与绘制的唯一口径（_glyph_slot 出「占位宽 + 格内居中偏移」，_digit_cell 按字体档位缓存）；test_v124 那条「总宽==自然 advance」改成「总宽==布局量出的定宽」，否则旧断言一直为错误口径背书"
+      ],
+      "observed_at": "2026-10-10 00:04:52+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "现象在 30 轮走查（found_version 1.4.51）的报告里已记录，根因与量化是本轮重测坐实的，两个时刻分属不同会话，按\"观测→根因\"相减不构成定位时长，故本条不进数字二样本。",
+      "source": "30 轮走查报告 S8（outputs/走查与修复报告-30轮-2026-10-09.md 第 109~112 行）当时记而未修；本轮重测坐实：改前同形状 125 个串宽度落在 10 个取值上（82~101），改后只有 103 一个取值",
+      "evidence": "verified"
+    },
+    {
+      "id": "S35",
+      "symptom": "随包分发的数字字体「D-DIN-PRO」权利链不成立：文件版权行是第三方个人署名并自贴一份 OFL 声明，而其 0-9 逐格 advance 与 Datto 官方 D-DIN-PRO 完全一致 —— 属修改版抹掉权利人版权声明并沿用保留名，那份 OFL 不成立。自 v1.2.24 起随每个 DMG 与 OTA 外发",
+      "component": "随包资源与许可",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.2.24",
+      "introduced_note": "v1.2.24 为让任意 Mac 上数字效果一致，把中文站流传的「D-DIN PRO 免费可商用」两个 ttf 放进 fonts/ 并写进 spec datas；当时未解析 name 表，也未把许可原文随包",
+      "found_version": "1.4.58",
+      "fixed_version": "1.4.58",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "三道防线全部只看代码与像素，没有任何一道检查\"随包资源是谁的、许可原文在不在包内\"；NOTICE.md 自 v1.2.22 起只声明了 PyQt6 一项 —— 缺声明这件事本身没有可见面，而中文站把同一款字体当\"免费可商用\"传播、还误署名为 Adrian Frutiger，取证时先入为主的概率极高。",
+      "defense_added": [
+        "防线三（事后可取证）：NOTICE.md 补字体许可段，含三个 sha256、权利人 Datto 的 OFL 声明原文位置与旧件历史说明；许可原文随包 fonts/OFL-D-DIN.txt",
+        "发版链 3.6 步补两条产物级核验：值核验 BUNDLED_FONT_FILES / NUM_FONT（字符串元组只进 co_consts，check/forbid 查不到），以及包内 fonts/ 目录清单 —— 旧 D-DIN-PRO-*.ttf 必须消失、官方件与许可原文必须在场",
+        "判据与复跑清单写进 .sf-opensource/docs/FONT_LICENSE.md（公开快照前置项结项）"
+      ],
+      "observed_at": "2026-10-10 00:04:52+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "合规类发现，不是运行时故障：没有\"现象第一次可被观测到的时刻\"可盖，observed_at 是登记时刻，与本条 rootcause 无关，故不进数字二样本。",
+      "source": "对外分发就绪度复核（开源快照前置项）。取证链三步：解析字体 name 表发现「CyberFei. All rights reserved」与 OFL 字段自相矛盾 → 与 github.com/CyberFei/D-DIN-PRO 的 TTF/Normal 两文件 sha256 逐字节相同 → 与 Datto 官方构建逐格 advance 完全一致",
+      "evidence": "verified"
+    },
+    {
+      "id": "S36",
+      "symptom": "OTA 更新助手的 ZIP 预检与软链接边界核验两段都跑在 /usr/bin/python3 上，而那是 Command Line Tools 的桩：没装开发者工具的机器上文件在、一执行就失败，装机版唯一一条自动更新通路必停 archive_preflight_failed，且症状看起来像「包坏了」",
+      "component": "自动更新与安装",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.3.71",
+      "introduced_note": "v1.3.71 给助手加 ZIP 预检时选了最顺手的 zipfile，未区分系统自带与开发者工具件",
+      "found_version": "1.4.59",
+      "fixed_version": "1.4.59",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "开发机一直装着 Xcode CLT，发版链从未在「无开发者工具」的环境里跑过助手；而首装核验 R4 的判据只盯 archive_layout_invalid，助手在更早的解包步骤就死掉时它照样算通过（本轮 S36 正是从这条缝里过去的）",
+      "defense_added": [
+        "防线二：预检改用 Info-ZIP 的 zipinfo 读中央目录（与 unzip 同一份 root:wheel 系统件），软链接边界改用本脚本已经依赖的 perl；本机对线上 1.4.57 资产逐字段实测两版口径一致（561 条、合计 74069005 字节）",
+        "防线二：tests/test_update_helper.py 共 16 条端到端用例真跑这个 shell 助手（正当包/相对软链接/含空格与中文的条目名/逃出包的软链接/绝对软链接/悬空链接/穿越条目名/绝对条目名/顶层名不符/哈希不符），判据是助手停在 result.json 的哪一站",
+        "防线一：TestHelperNeedsNoDevTools 两条依赖围栏（非注释行不得再出现任何 python 解释器路径；助手点名的每个绝对命令必须在本机存在）",
+        "防线二：LC_ALL=C 是实测逼出来的必需项 —— ditto 造的非 ASCII 条目名经 zipinfo 按代码页转换后是非法 UTF-8，macOS 的 awk 一碰到就整条中止（实测 towc: multibyte conversion failure），这类缺陷只会在一台装了中文命名旧包的客户机上露头"
+      ],
+      "observed_at": "2026-10-10 11:41:14+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-10 11:41:14+08:00",
+      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "S37",
+      "symptom": "改名之后 OTA 的第二处漏改：助手装完新版做存活复核时 pgrep 写死 Contents/MacOS/StockFloatTargetPrice，而 v1.4.55 起可执行文件叫 Skyrocket —— 解包、替换、签名全部成功之后仍判 restart_new_app_failed，把装好的新版回滚掉",
+      "component": "自动更新与安装",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.55",
+      "introduced_note": "2f46b50 那次改名换了产物名与 bundle id，这一行与包内顶层名一起被漏掉；它一直没露头是因为更早的 archive_layout_invalid 先把流程挡住了（1.4.58 修掉那一处之后它就是下一张多米诺）",
+      "found_version": "1.4.59",
+      "fixed_version": "1.4.59",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "同一族缺陷的复发性状：AGENTS §3 把「改名要两代都认」写成清单（五处、后来补到第六处），但清单是人维护的，而没有任何一道防线能回答「还有第几处没进清单」。这条是 S26/dc403a3 那次的同源复发",
+      "defense_added": [
+        "改法本身不再列名字清单：存活复核直接读 Info.plist 的 CFBundleExecutable（打包时唯一决定这个名字的字段），读不到就判失败并回滚 —— 把「认两代名字」这件事从人维护的清单换成结构上不会漂移的来源",
+        "发版链 3.6 步新增 forbidfile：包内 shell 资源里 MacOS/StockFloatTargetPrice 这种写死旧名的整句必须消失，否则拒绝出包（checkfile/forbidfile 是本轮第一次真正用在改名类缺陷上）"
+      ],
+      "observed_at": "2026-10-10 11:41:15+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-10 11:41:15+08:00",
+      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "S38",
+      "symptom": "每次自动更新都在 /Applications 里留下一份隐藏的回退包（约 100MB，名字以 . 开头、Finder 看不见），永不回收：更新十次就是 1GB，且磁盘吃紧后下一次更新会直接停在 insufficient_disk_space",
+      "component": "自动更新与安装",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.3.71",
+      "introduced_note": "助手替换 .app 前把旧包 mv 成 .rollback-<epoch> 作回退，注释写的「下次更新会再生成新回退包」默认了旧的那份会被顶掉，实际从来不会",
+      "found_version": "1.4.59",
+      "fixed_version": "1.4.59",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "这条只在「装机版跑过很多次更新」之后才显形，开发机每轮都是完整重装；诊断包里没有 /Applications 占用这一项，所以既没人看见也没处可查",
+      "defense_added": [
+        "助手装成功后只保留最近一份回退包，更早的一律 mv 进系统临时目录交 macOS 回收（全程不删文件）；留在临时目录的目录名不以 .app 结尾，不会被 LaunchServices 当成应用重新拉起（v1.4.5 那枚 SIGSEGV 的成因）",
+        "防线二：tests/test_v1459_bottom_fit 同批新增的 tests/test_update_helper.py::TestRollbackPrune 四条夹具真跑该函数，判据是目录树（谁还在原位、谁被挪走、只有一份时一份都不许动、目的地不存在要能建出来）；正向路线要真拉起新版才走得到，夹具不该开 GUI，所以函数体用成对标记（# BEGIN/END prune_rollbacks）抽出来在同一个 /bin/sh 里跑 —— 标记被删用例当场红，不会静默变成没测"
+      ],
+      "observed_at": "2026-10-10 11:42:06+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-10 11:42:06+08:00",
+      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G15",
+      "symptom": "发版脚本 build_release.sh 从第 1 步版本号一路走到第 6 步对外发 OTA，全程没有调用过 run_tests.sh / static_gate：一轮回归都不跑也能出包、覆盖桌面 DMG、替换 /Applications 并切换线上清单指针，而且零报错",
+      "component": "发布与关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.2.63",
+      "introduced_note": "v1.2.63 提供统一发版脚本时把「发版前先跑回归」留在文档与人工习惯里；三件产物核验（3.6）都排在打包之后，而打包本身是不可逆动作",
+      "found_version": "1.4.59",
+      "fixed_version": "1.4.59",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "关卡本身是全绿的，所以没人怀疑它没被调用 —— 「有一道好闸门」和「闸门在链路上」是两件事，此前没有任何判据区分过它们；本轮做 S7-② 之前先 grep 了一遍 build_release.sh 才确认它一次都没出现过 run_tests.sh",
+      "defense_added": [
+        "防线二：tools/gate_stamp.py —— run_tests.sh 整轮全绿时按**构建输入的内容指纹**落一枚时间戳，build_release.sh 第 0 步核验，不同源就自动补跑一整轮回归，红则中止发版（不覆盖 DMG、不动 /Applications、不切 OTA）",
+        "判据是内容指纹而非 HEAD：未提交的改动同样进包（所以覆盖未跟踪新文件与文件权限），而只提交文档不该逼人重跑两分钟回归 —— 这一条是它能长期被沿用的前提，测试里各有一条正反用例钉住",
+        "防线二：gate_stamp 自带 11 项变异自检（没跑过回归/跑完改代码/新增未跟踪 .py/只 chmod/半截 JSON/缺字段/空清单必须被抓到；只改文档、只提交必须不被误判）+ tests/test_gate_stamp.py 15 条覆盖函数面与命令行面",
+        "防线一：test_arch_constraints 三条位置判据 —— 核验排在 hdiutil / cp 到 /Applications / publish_update_release 之前、落戳排在「全部测试通过」之后、--skip-tests 必须带 WARNING 且不是唯一分支；用源码结构断言是因为守的对象是 shell 脚本的调用顺序，没有可调用的行为（该文件 §6 第 2 条例外的指定落点）",
+        "本轮实测闸门真的会拦：APP_VERSION 一改（.py 动过）时间戳即判过期，build_release 自动补跑一整轮回归 —— 这是设计意图，不是故障"
+      ],
+      "observed_at": "2026-10-10 11:42:06+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-10 11:44:42+08:00",
+      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G16",
+      "symptom": "首装与更新路线核验的 R4 判据过松：只要求助手「别停在 archive_layout_invalid」，于是助手在任何包上都解不动（ZIP 预检的 awk 一遇非 ASCII 条目名就中止）时 R4 仍然是绿的 —— 一道只看包名的判据把整条 OTA 通路放过去了",
+      "component": "发布与关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.58",
+      "introduced_note": "v1.4.58 补 R4 时针对的是「改名漏改顶层名」这一处具体缺陷，判据按那一个症状写，没有覆盖「更早就解不动」这一族",
+      "found_version": "1.4.59",
+      "fixed_version": "1.4.59",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "判据是照着上一枚事故的具体症状写的，而不是照着「这条路线要真的走通」写的：R4 只排除 archive_layout_invalid，于是「更早就解不动」整族都能从它底下滑过去。本轮把 S36 种回临时副本才看见它依旧绿 —— 松判据只有变异自检能发现",
+      "defense_added": [
+        "R4 判据改为「必须停在 new_app_signature_invalid」：替身 app 一律不签名，正当输入的终点必然就是那一站；停在它之前=解不了包，停在它之后=夹具被改坏，两头都拦",
+        "verify_install_paths --self-test 由五处错增到七处：S6 两条专门种这一族错，其中一条先断言「LC_ALL=C 确实被摘干净了」，防止变异空跑（自检里种不进去的错，等于没种）",
+        "顺带修掉核验器自己的一处脆断：run() 严格 UTF-8 解码会被助手吐出的非法字节砸出 UnicodeDecodeError —— 闸门不是红而是崩，看起来像工具坏了、说不清被测对象哪儿不对；改 errors=replace 并写明原因"
+      ],
+      "observed_at": "2026-10-10 11:42:06+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-10 11:44:43+08:00",
+      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "S39",
+      "symptom": "默认股茅台（以及任何高/低都是 7 个字符的行情）底部第二行「最低点 1666.66」整段凭空消失：没有省略号、没有提示，用户看到的就是少了一个数",
+      "component": "主界面渲染",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.2.62",
+      "introduced_note": "v1.2.62 双行底部布局定稿时窗口宽还是 200；后来宽度被用户定死为 184（缩短 20%），而 renderer 算出的 min_width 无人消费，布局对放不下的段直接判 fits=False、绘制侧 continue",
+      "found_version": "1.4.59",
+      "fixed_version": "1.4.59",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "第 0.5 关只断言「两行不重叠、间距合理、不越出窗口底」，这三条在「少画一段」时全部成立 —— 判据量的是画出来的东西对不对，没量「该画的东西画没画」",
+      "defense_added": [
+        "改法是「放不下就缩字号」而不是撑宽窗口：sf_ui_render.bottom_rows_fitting 从当前字号起最多缩两档（下限不低于徽标字号 7pt，档位选择有实测依据：茅台形态需要 193px 而窗口固定 184px，缩 1pt 后 187px 即放下），两档都不够才如实回到丢段并打一条节流日志；撑宽与用户「固定窄版」的明确决定冲突，故未采用",
+        "防线二：tests/test_v1459_bottom_fit.py 七条 —— 纯函数契约（普通行情不许无谓缩号、缺陷现场必须找回段落、缩号有下限且不谎报）+ 真墨水对照（同一帧画两遍，差出来的像素就是被找回的那一段，实测 476→887）+ 子类化 QPainter 记录 setFont 真入参（像素口径抓不到「按 8pt 排、按 9pt 画」：实测越界像素为 0，故必须看绘制实际做了什么）"
+      ],
+      "observed_at": "2026-10-10 11:42:07+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-10 11:42:07+08:00",
+      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "S40",
+      "symptom": "同一屏上有两种红：主卡涨色 #ff5252、目标价面板涨色 #ff6b6b，而面板代码注释写的却是「与主界面涨色一致」；分时折线的渐变两端又各自写死 Material 自造色，线尾 #b71c1c 与钉在同一坐标的呼吸点 #ff5252 两种颜色",
+      "component": "视觉令牌",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.2.87",
+      "introduced_note": "v1.2.87 把面板视觉「与主界面保持一致」时按肉眼近似取色，没有把值收敛到一个来源；注释先于事实漂移",
+      "found_version": "1.4.59",
+      "fixed_version": "1.4.59",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "颜色没有判据：静态层查不出「两个不同来源的同名语义色」，像素关卡只量几何不量色 —— 这类问题只能靠人眼，而它恰好藏在「注释说它们一致」的掩护下",
+      "defense_added": [
+        "涨跌业务色收拢到 sf_constants 一处（UP_RED_HEX / DOWN_GREEN_HEX），主卡与面板、面板 QSS 都从它取；折线渐变改为 chart_line_stop_colors：终点=趋势色本身，线尾与呼吸点结构上必然同色",
+        "防线二：tests/test_v1459_color_tokens.py 七条 —— 同源判据（改任一侧即红）+ WCAG 算式复核（阈值来源写明是 AA 小字 4.5:1，不是本仓口味值）+ 端点必须等于 token 而渐变仍然存在的两条正反判据",
+        "同轮把底部弱化灰 FG_DIM 由 #6b7280 提到 #848d9c：实测对面板底 3.45:1→4.98:1、对纯黑 4.34:1→6.27:1（AA 小字下限 4.5:1）；这条是本轮唯一改动全局配色的一项，装机版肉眼复看后再定去留"
+      ],
+      "observed_at": "2026-10-10 11:42:07+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-10 11:42:07+08:00",
+      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "S41",
+      "symptom": "升级到 1.4.59 后，原股目标价在「切股→在新股下设一条→切回原股」这条真实序列里整片消失：无 code 的旧条目对任何股票都可读，于是在别的股票名下被盖章改属",
+      "component": "目标价存储",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.59",
+      "introduced_note": "v1.4.59 为「升级第一条都不许藏」定的保守口径是「无主条目对谁都可见」，没有把它绑到归属股票上；对外说明的第一句恰好承诺的是切股不丢",
+      "found_version": "1.4.60",
+      "fixed_version": "1.4.60",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "config 层用例只测「这次写入不带走别人的条目」，没有任何一条走用户的真实动作序列（切股→设→切回），串味那一步在单函数用例里根本不出现在",
+      "defense_added": [
+        "sf_config.load_alerts/_dormant_of 改为按 config 顶层 code 定归属（顶层也无 code 才退回对谁都可见），并在别的股票下写入时顺手补齐 owner",
+        "tests/test_v1460_review_fixes.py::LegacyEntriesBelongToTheConfigStock 四条（含 owner 未知那档）",
+        "tests/test_v1459_targets_per_code.py::test_upgrade_legacy_entries_never_move_to_another_stock 走真实序列；两条都把 owner 改回空串验过「改坏必红」"
+      ],
+      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 14:51:10+08:00",
+      "locate_unknown_reason": null,
+      "source": "全方位复核 F1；sf_config.py:429-434 与 495-509、stock_float_window.py:2457-2460/4417-4422；/tmp 真代码复现输出：切回 A 读到 0 条、4 条全归 sz000001",
+      "evidence": "verified"
+    },
+    {
+      "id": "S42",
+      "symptom": "锁屏或显示器休眠一次之后，「自动隐藏窗口」整天不再工作：停摄像头时把 0.5 秒轮询表一起停掉，而唯一会重新 start 它的地方就在这张表的回调里",
+      "component": "人脸守卫生命周期",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.56",
+      "introduced_note": "v1.4.56 省电那条把「停摄」与「停表」当成同一件事；恢复逻辑写在回调里，回调的驱动却被自己停了",
+      "found_version": "1.4.60",
+      "fixed_version": "1.4.60",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "tests/test_face_guard.py 为躲 QTimer 抖动直调 _on_face_guard_tick()，判的是恢复逻辑对不对，从没读过那张表的活性——逻辑对、驱动没了，126 条守卫用例照样全绿",
+      "defense_added": [
+        "_stop_face_guard 新增 stop_timer 参数，screen off 这一支只停采集不停轮询表（AGENTS §5.2 立为长期口径：凡停回调表又指望它自己醒的写法必须有活性判据）",
+        "tests/test_face_guard.py::test_screen_off_leaves_the_polling_timer_running 断言 QTimer.isActive()，把 stop_timer=False 改回默认即红"
+      ],
+      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 14:51:10+08:00",
+      "locate_unknown_reason": null,
+      "source": "全方位复核 F2；stock_float_window.py:5149-5153 配 5114-5116，全仓仅 5202/5225 与 _sync_face_guard 会 start，调用者都在被停的那张表内或需用户手动开关菜单",
+      "evidence": "verified"
+    },
+    {
+      "id": "S43",
+      "symptom": "主源长时间坏、靠备源撑着时 debug.log 每 2 秒写一条 WARNING（一天约 1800 条），把 7 天轮转整个挤掉——本轮想消灭的「事后查不到」由提示 itself 造成",
+      "component": "降级留痕",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.59",
+      "introduced_note": "DEGRADED_SOURCE_ALERT_AFTER=20 的注释自己写着「盘中 0.1s 节拍 ≈ 2 秒」，把次数换算成时间这一步没人做",
+      "found_version": "1.4.60",
+      "fixed_version": "1.4.60",
+      "failed_lines": [
+        "locate"
+      ],
+      "why_missed": "日志类缺陷只在「真去查日志」时暴露，而刷屏挤掉的正是查日志的能力；防线二不管日志速率，防线三只负责留痕不负责留得下",
+      "defense_added": [
+        "sf_quote 的备源提示改按时间：首条必记 + 每 DEGRADED_SOURCE_LOG_SEC=60 秒一条，主源恢复时把手表一起归零（否则下一次降级被上一条顶掉）",
+        "tests/test_v1460_review_fixes.py::DegradedSourceNoticeIsThrottledByTime 三条，把节流常数改回 0 即红"
+      ],
+      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 14:51:11+08:00",
+      "locate_unknown_reason": null,
+      "source": "全方位复核 F5；sf_quote.py:48-63 配 sf_constants.py:148 POLL_INTERVAL_NORMAL=0.1",
+      "evidence": "verified"
+    },
+    {
+      "id": "S44",
+      "symptom": "本轮把次要文字灰从 4.34:1 提亮到 4.98:1，但右键菜单里「点不动的那几行」仍写死旧值 #6b7280，用户看到的淡字照旧难读",
+      "component": "视觉令牌",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.59",
+      "introduced_note": "提亮只改了 token 与渲染取色点；QSS 里的手写 hex 不在任何清单里",
+      "found_version": "1.4.60",
+      "fixed_version": "1.4.60",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "像素关卡只量几何不量色，color_tokens 用例测的是 token 侧算式；样式表文本此前没有任何判据读过",
+      "defense_added": [
+        "新增 sf_constants.FG_DIM_HEX 作为唯一字符串来源（FG_DIM = QColor(FG_DIM_HEX)），菜单禁用项从 token 取，样式表不许再出现裸 hex",
+        "tests/test_v1459_targets_per_code.py::test_disabled_menu_items_use_the_single_gray_token 读 QMenu.styleSheet() 的公开输出；把 hex 写回旧值即红"
+      ],
+      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 14:51:11+08:00",
+      "locate_unknown_reason": null,
+      "source": "全方位复核 F6；sf_constants.py:376-379 与 stock_float_window.py:1494（改名前同位置）",
+      "evidence": "verified"
+    },
+    {
+      "id": "S45",
+      "symptom": "目标价存储超上限（12 只/120 条）剪掉休眠条目时只在日志写一行；界面不许加弹窗、日志会被轮转挤掉，「我某天设的目标价怎么不见了」在产物里问不出来",
+      "component": "可观测性",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.59",
+      "introduced_note": "剪枝当初按「有日志就算有痕」收口，没区分「留痕」与「留得住」",
+      "found_version": "1.4.60",
+      "fixed_version": "1.4.60",
+      "failed_lines": [
+        "locate"
+      ],
+      "why_missed": "判据本身就是「日志里有一行」，而日志按 5MB×3 代轮转；诊断包这一层当时没人想到要加键",
+      "defense_added": [
+        "sf_config.store_prune_report()（时间/条数/被剪掉的 code）+ 诊断包 targets.json 新增 stored_total 与 store_prune 两键，界面继续不加说明行与弹窗（v1.4.52 口径）",
+        "tests/test_v1295_diagnostics.py::test_target_store_prune_is_readable_in_the_bundle 判包内 JSON 键名；tests/test_v1460_review_fixes.py::StorePruneIsAudibleOutsideTheLog 判内容"
+      ],
+      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 14:51:11+08:00",
+      "locate_unknown_reason": null,
+      "source": "全方位复核 F7；sf_config.py:437-438/452-483（仅 WARNING 一行）；tests/test_v1459_targets_per_code.py:96-108 只断言有日志",
+      "evidence": "verified"
+    },
+    {
+      "id": "S47",
+      "symptom": "日历用例的 tearDown 等不到在飞线程也只打印不判红，随后照常撤掉网络桩——在飞请求真的走外网；根因是某条用例手填 _inflight 模拟在飞，而 addCleanup 排在 tearDown 之后等于没收，全量每轮白等 5 秒",
+      "component": "关卡可信度",
+      "channel": "gate_liar",
+      "introduced_version": "1.3.68",
+      "introduced_note": "v1.3.68 把手写轮询换成统一 wait_for 时，只加了「超时会打印现场」，没人接那个返回值",
+      "found_version": "1.4.60",
+      "fixed_version": "1.4.60",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "超时值被当成提示信息而不是判据；种状态的人与收状态的人不在同一个函数里，纪律扫描也不管这条",
+      "defense_added": [
+        "tearDown 改为「等到才撤桩、等不到判红并把两个桩的撤除排到收尾」（停网络桩=放它走真网络，停缓存桩=让它写用户真实日历目录）",
+        "在飞标记在用例体内 finally 收干净；AGENTS §6 口径补一条：自己种下的状态必须在用例体内收，addCleanup 排在 tearDown 之后等于没收"
+      ],
+      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 14:51:12+08:00",
+      "locate_unknown_reason": null,
+      "source": "全方位复核 F14；tests/test_calendar.py:37-39 约定与 65-71 实现的矛盾，本轮实测复现（单跑 test_warm_async_skips_when_inflight 恰好 5.00s）",
+      "evidence": "verified"
+    },
+    {
+      "id": "S48",
+      "symptom": "自动更新装完之后「应用程序」里的隐藏回退包永远不清：每更一次多埋一份约 100MB 的旧版副本，而 1.4.59 的交付记录与 AGENTS 都写着「回退包只留最近一份，而且这段被测过」",
+      "component": "OTA 助手·回退包回收",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.59",
+      "introduced_note": "v1.4.59 把 prune_rollbacks 做成可抽段跑的函数并配了测试，但抽段测试自己传 parent，真实顺序里 write_result 覆盖了它",
+      "found_version": "1.4.61",
+      "fixed_version": "1.4.61",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "抽段测试自己传 parent，从没走过「先 write_result 再 prune」这个真实顺序；而 AGENTS 当时把「这段被真跑过」当成已完成项 —— 测法替被测对象预设了它本该自己算的变量，就等于没测那一段",
+      "defense_added": [
+        "write_result 的局部量改成 wr_dir/wr_tmp，外层 parent 不再被覆盖；发版链 3.6 加两条包内资源判据：forbidfile 钉住旧整句 parent=\"$(dirname \"$RESULT\")\" 必须消失、checkfile 要求 wr_dir= 在场",
+        "tests/test_update_helper.py 新增 TestHelperPositiveRoute：把真助手跑到 installed（替身载荷 ad-hoc 签名 + LSUIElement + 不 exec 的 sleep，argv 保住包路径），判据是目录树（只留最新一份回退包、被挪走的是那两份陈旧的）与进程（pgrep 按 Info.plist 的可执行名找得到）；把 HEAD 那份有 bug 的助手单独喂进去时 prune 那条当场红并报「剩下 3 份」",
+        "AGENTS §3.1 把这条教训写成规矩：能整条跑的一律整条跑，测法不许替被测对象预设它自己会算的变量"
+      ],
+      "observed_at": "2026-10-10T15:29:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 15:35:23+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户要求的正向路线实机复验：真助手跑到 installed 后 ls 出三份回退包、prune 目录为空；sh -x trace 第 261 行显示扫的是 result.json 所在目录（/tmp/sf_ota_trace_152921）",
+      "evidence": "verified"
+    },
+    {
+      "id": "G17",
+      "symptom": "链上那条「每个 tools/*.py 都要能自证失败」的用例会把假自检当通过：render_install_guide.py 不认 --self-test，旧分支形状是「不是 --print/--check 就是写文件」，于是那次\"自检\"实际是用没设邮箱的环境把真实的 ../.sf-opensource/docs/INSTALL.md 重写了一遍（已设好的求助邮箱被抹回占位符），而它 rc=0、用例报通过",
+      "component": "发版链关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.58",
+      "introduced_note": "v1.4.58 加 6.1 渲染步、v1.4.59 加链上自检用例，两边各自合理但合起来是假门",
+      "found_version": "1.4.61",
+      "fixed_version": "1.4.61",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "自检这条判据只看退出码（rc==2 算没有自检），没看\"未知参数会不会落到有副作用的默认分支\"；而写文件的工具恰好把\"没匹配到只读参数\"当成默认动作",
+      "defense_added": [
+        "render_install_guide.py 补 12 项真自检（种 %s、种死路邮箱、干净文本放行、渲染产物形状、写入侧拒绝落盘），并且未知参数一律退 2、自检只碰内存与临时目录；修复在 tools/ 侧（不进 .app，不为此额外出包，下一次发版即生效）",
+        "AGENTS §3.1 写下链上工具的参数形状规矩：用 `if \"--x\" in sys.argv` 手搓分支的工具，必须①真带 --self-test ②未知参数退 2，绝不许落到默认动作"
+      ],
+      "observed_at": "2026-10-10T16:12:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-10 16:34:28+08:00",
+      "locate_unknown_reason": null,
+      "source": "另一会话的 GitHub 对账报出邮箱变占位符；本轮复核用 mtime + 分支形状取证：16:02 渲染带邮箱 → 16:08 提交钩子跑该用例后回到占位符",
+      "evidence": "verified"
+    },
+    {
+      "id": "G18",
+      "symptom": "徽标像素判据是一枚会说假话的门：test_render 三条徽标用例①取整图最大连续段（量到的是徽标内白字两侧各 4px 的背景缝，BADGE_PAD_X=4），②取整图匹配像素数（count>=150，而 FG_DIM 系灰字在任何一帧里实测有 809 个匹配像素，徽标自身只有 312px）——整图 count 那条从来没验证过徽标；停牌那条的夹具 price=0 走「--」降级路径，徽标根本没画出来，用例照样绿。云端 runner（macOS 26.6.2、1x 屏）字形略宽把 run 从 8 压到 5 才暴露，本机永远复现不了",
+      "component": "关卡会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.2.0",
+      "introduced_note": "判据随 v1.2.0 徽标功能一起进仓（当时断言方式就定了）；v1.3.53 把 min_px 从 150 校到 120 是「看到红就改数字」，没去问量的是不是徽标本身；v1.4.62 云端 CI 第一次把它逼出来",
+      "found_version": "1.4.62",
+      "fixed_version": "1.4.62",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "整图统计看不出「量的是谁」——噪点比目标多十倍时阈值照样过，换台机器又恰好差一点就翻红；本地全量永远绿，两年没人怀疑过这条判据量的是不是徽标",
+      "defense_added": [
+        "判据重写为 tests/test_render.py::assert_solid_block_found：8 连通找最大实心簇，宽高铺展与填充率全部相对 badge_width()（产品唯一实现）的期望值 —— 位置无关、1x/2x 同判；三条徽标用例统一改走它",
+        "TestBadgeBlockJudge 六条合成图用例证明判据本身可失败（全白/描边/细线/画小 -> 红，带白字洞/任意位置 -> 绿）；另用真实产品路径变异复验：badge_vertical 打成 None 时三条徽标用例全红",
+        "度量前提显式化：TestRenderBase.setUpClass 自己调 load_bundled_fonts() 并当场验 QFontInfo 真解析到 D-DIN，不再靠跨用例副作用",
+        "AGENTS §5.2 写下长期口径：像素判据不许量「由字体度量与屏幕缩放决定的绝对量」，也不许在整图上数匹配像素"
+      ],
+      "observed_at": "2026-10-11 00:05:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-11 00:30:21+08:00",
+      "locate_unknown_reason": null,
+      "source": "2026-10-11 云端 CI（2c2bb06 那一轮）的 cocoa 段红（run=5）；本地取证：整图 809 匹配像素 / 徽标 312px、badge_vertical(Y_PRICE=74) 恒返 None、合成图与真路径变异各跑一遍",
+      "evidence": "verified"
+    },
+    {
+      "id": "S49",
+      "symptom": "「价格取不到（显示 --）时的停牌徽标」自 v1.3.42 起一次都没画出来过：sf_ui_render 降级分支把 Y_PRICE 当涨跌幅行顶传给 badge_vertical()，而代码行底 69 与价格带顶 74 之间只有 6px，容不下 12+2 的徽标 -> 恒返回 None -> 那条分支是死支路。v1.2.30 立这条的目的正是让用户区分「停牌」与「断网/加载中」，现在停牌股取不到价时两者在界面上长得一样",
+      "component": "界面降级与状态标识",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.3.42",
+      "introduced_note": "bb11a9b「10 轮极端走查修复」把 fallback 也改走 badge_vertical 唯一实现（旧写法直接 Y_PRICE-H-GAP，确实会顶进代码行字形区）；改动本身是对的，但它把「涨跌幅行顶」这个入参在 fallback 里当成 Y_PRICE 传，夹紧后必撞 -> 功能静默消失",
+      "found_version": "1.4.62",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "该分支只有「停牌 + 行情取不到价」才走到，日常行情下徽标走另一条正常路径；旧用例用 price=0 夹具「覆盖」它，但判据量的是整图灰字噪点，于是死支路看起来像已被测到",
+      "defense_added": [
+        "新增纯函数 badge_in_band_top：降级态没有涨跌幅行，徽标改放价格带内垂直居中（y 87..98，上方代码行底 68、下方涨跌幅行顶 104，两头都不碰），左沿仍对齐涨跌幅区域。先拆掉挡路的判据 —— tests/test_v1342_round.py 原来用 inspect.getsource 断言源码含 badge_vertical(Y_PRICE)，它把死支路本身钉成不可改（文档给的两条修法都会让它红）且违反 §6 第 2 条，换成行为判据；像素判据 tests/test_render.py::test_suspended_badge_renders_in_degraded_price 已反向验证：把定位函数改成恒不画，它当场红"
+      ],
+      "observed_at": "2026-10-11 00:19:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-11 00:30:21+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮修 CI 红时逐像素取证：同窗口下 price=0 帧最大灰簇 48px（10x11，是别的元素），改用「停牌 + 有效价」帧得到 26x12 / 填充率 0.63 的真徽标；常量核算 BADGE_MIN_TOP=69、Y_PRICE=74",
+      "evidence": "verified"
+    },
+    {
+      "id": "G19",
+      "symptom": "首装路线核验在干净机器上会崩，而且崩得很像「产物坏了」：--self-test 里 S2 要复制本机装好的真产物，云端那台全新 runner 上 /Applications 与 dist/ 都是空的，NoFixture 直接穿出 main()（接它的 except 只罩着「跑五条路线」那段），退出码 1 被链上用例读成「发版链上的闸门自证失败」。旧实现只在正常路线里把缺夹具记成 skip，自检段没有同一套处理——口径写在文档里，代码没跟上",
+      "component": "发版链关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.58",
+      "introduced_note": "链上工具在缺夹具的机器上必须说「没跑」，不许崩、也不许算通过",
+      "found_version": "1.4.62",
+      "fixed_version": "1.4.62",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": null,
+      "defense_added": [
+        "变异判据改三态（抓到/没抓到/没跑起来）：缺夹具记没跑并大声 WARNING 点名是哪条，非前提类异常照旧记红，一条都没跑起来时拒绝给结论；锁在 tests/test_gate_clean_machine.py（8 条，其中一条真跑七种变异只抽掉真产物那步）"
+      ],
+      "observed_at": "2026-10-11 01:18:37+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-11 01:18:52+08:00",
+      "locate_unknown_reason": null,
+      "source": "2026-10-10 云端 CI（e0762bb 那一轮）的 offscreen 段注解 NoFixture: 本机没有可复制的真产物；本地 TZ/夹具两档复跑对拍",
+      "evidence": "verified"
+    },
+    {
+      "id": "G20",
+      "symptom": "分时用例的「注入时钟」其实没生效，红不红取决于跑它的那台机器在哪个时区：_today() 写的是 from targets import _beijing_now，名字在导入那一刻就绑成真实函数，而 setUp 把 patch 打在 targets 模块属性上够不着它。于是断言两侧看的不是同一个今天——产品那侧是注入的固定时钟，辅助函数那侧是真实北京墙钟。本机（北京时区）两边同一天永远绿；UTC runner 上每天 16:00~24:00 UTC 这八小时差一天，必红",
+      "component": "测法会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.16",
+      "introduced_note": "§6 第 4 条立的注入时钟规矩，在这一条上只是看起来做了",
+      "found_version": "1.4.62",
+      "fixed_version": "1.4.62",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": null,
+      "defense_added": [
+        "_today() 改为按模块属性取函数（_targets._beijing_now），两侧同受注入控制；新增不依赖当下几点的哨兵判据 tests/test_v147_minute_stale.py::test_helper_today_follows_the_injected_clock，任何时区同判；本地复现配方写进项目记忆（TZ=UTC 跑同一模块，新旧写法对拍）"
+      ],
+      "observed_at": "2026-10-11 01:19:16+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-11 01:19:16+08:00",
+      "locate_unknown_reason": null,
+      "source": "2026-10-10 云端 CI（4a65644 那一轮）offscreen 段 AssertionError 2026-10-10 != 2026-10-11；本地用 TZ=UTC 复现（同一命令换回旧写法即红、还原即绿）",
+      "evidence": "verified"
+    },
+    {
+      "id": "S50",
+      "symptom": "目标价列表里「已触发」排在行尾，而那一行按右省略截断——宽度不够时第一个被切掉的就是它。1600.00 这类四位价 + 百分比已经贴近行宽，换一台字体度量略宽的机器就切成「已触…」。用户看不见状态标记，就会以为这条还没生效、再去设一遍同价位（面板对同价位是合并保留 hit 的，重设不会再次提醒）",
+      "component": "界面降级与状态标识",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.2.81",
+      "introduced_note": "与 S49 同属「状态标识看不见」，但成因不同：S49 是恒不绘制，S50 是被截断",
+      "found_version": "1.4.62",
+      "fixed_version": "1.4.62",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": null,
+      "defense_added": [
+        "标记文字收成唯一来源 target_panel.HIT_MARKER_PREFIX 并移到行首（该被切的是百分比）；行为判据 tests/test_target_panel.py::test_hit_marker_survives_row_truncation 用极端价位撑爆行，断言截断确实发生、标记仍在、且在省略号之前；产物层特征进 release_checks.txt（check target_panel::HIT_MARKER_PREFIX）；换回旧写法该用例当场红，已验"
+      ],
+      "observed_at": "2026-10-11 01:19:29+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-11 01:19:29+08:00",
+      "locate_unknown_reason": null,
+      "source": "2026-10-10 云端 CI（e0762bb 那一轮）offscreen 段 assertIn 已触发 拿到「↑ 1600.00 (+0.0%) 已触…」；本地 TZ 不设时永远绿（行宽刚好放得下）",
+      "evidence": "verified"
+    },
+    {
+      "id": "G21",
+      "symptom": "书写纪律基线的「只降不升」只有文档没有代码：test_discipline_scan.write_baseline 不与旧值逐键比较，--update 把任何上调都静默吸收（三枚基线工具里只有这一枚漏了比较分支，static_gate 当年 322→317→323 那一幕它照样挡不住）",
+      "component": "发版链关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.33",
+      "introduced_note": "2026-10-12 全方位复核 F3",
+      "found_version": "1.4.63",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "static"
+      ],
+      "why_missed": "规矩只写在 AGENTS 与基线文件的 _note 里，代码里没有比较分支；同一族的 static_gate 修过一次，没人回头核对另外两枚",
+      "defense_added": [
+        "write_baseline 与旧基线逐键比较，上调一律拒绝并打印差值；确需上调必须显式 --allow-rise（与 static_gate 同口径）。判据 tests/test_gate_clean_machine.py::BaselineRatchetAppliesToEveryBaseline 三条：上调被拒且基线文件字节不动、--allow-rise 放行、下调无需开关"
+      ],
+      "observed_at": "2026-10-12 12:56:59+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 12:57:25+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G22",
+      "symptom": "四枚链上工具的「未知参数一律退 2」只在带 -- 的参数里成立：gate_stamp 连 -- 都不看（write --qeuet 照样落一枚关卡时间戳，而发版第 0 步的判据正是戳同源就不补跑回归）；coverage_gate 与 render_install_guide 只过滤带 -- 的，裸位置参数滑进默认动作（后者默认动作是重写仓库外那份真实对外 INSTALL.md）；pyobjc_sig_check 任何参数都不检查，--slf-test 跑成正式核验返回 0，链上用例据此报自检通过",
+      "component": "发版链关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.61",
+      "introduced_note": "2026-10-12 全方位复核 F5；v1.4.61 立过这条规矩，但只有两枚工具真的执行了它",
+      "found_version": "1.4.63",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "AGENTS §3.1 那句「未知参数一律退 2」是 v1.4.61 因 G17 事故立的，但立的时候只改了两枚工具；链上用例 test_every_chain_tool_can_prove_it_fails 判的是 rc==2（没有可用自检），对「有自检却不校验参数」的工具一律放行",
+      "defense_added": [
+        "四枚工具改成「除已知值外一律退 2」：gate_stamp 新增纯函数 unknown_args（动词多于一个也算未知）并加进自检（18 项）；coverage_gate/render_install_guide 去掉 startswith('--') 那层过滤，各在自检里种一处裸位置参数必须退 2；pyobjc_sig_check 加参数白名单（--child 内部入口除外）。判据 tests/test_gate_clean_machine.py::UnknownArgumentRefusesToAct"
+      ],
+      "observed_at": "2026-10-12 12:57:25+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 12:57:39+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G23",
+      "symptom": "两条「真产物层」核验因 dist 路径过期而恒不执行却报绿：tests/test_release_gates.py 找的是 dist/实时股价-目标价版.app，而 v1.4.55 起产物叫 Skyrocket.app，if app.exists() 恒假",
+      "component": "测法会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.55",
+      "introduced_note": "2026-10-12 全方位复核 F8；与助手包名第六处同一族：改名漏改判据，漏掉的半段永远不跑",
+      "found_version": "1.4.63",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "改名那次换了产物名，没换用例里拼路径的那两行；而这两条判据的形状是「if 产物存在: 断言」，恒假时安静通过 —— 没有任何东西要求它报告「这一层没跑」",
+      "defense_added": [
+        "路径改走 sf_constants.APP_DISPLAY_NAME 派生的 DIST_APP（与 verify_install_paths 同一来源），改名后这一层在打包机上真的会跑；全仓另加 tests/test_identity_literals.py 锁身份字面量漂移"
+      ],
+      "observed_at": "2026-10-12 12:57:25+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 12:57:39+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G24",
+      "symptom": "两处零输入被当成通过：verify_install_paths 的自检档早有「一条都没跑起来就拒绝给结论」的红线，默认档却只看 failed，五条路线全被记成没夹具时照样打印核验通过并退 0；pyobjc_sig_check 的符号层扫到 0 处引用时返回「0 处全部取得到」并放行，而 pyobjc 12 删掉 dispatch_* 那类事故正是这一层拦的",
+      "component": "发版链关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.58",
+      "introduced_note": "2026-10-12 全方位复核 F5 同族（关卡范围失效）",
+      "found_version": "1.4.63",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "「零输入不算通过」这条红线是按单档写的：自检档加了，默认档没加，而两档在同一个 main() 里相隔 30 行，看着像都覆盖了",
+      "defense_added": [
+        "verify_install_paths 默认档加 not passed 红线（结论里写明真跑几条）；pyobjc_sig_check 的 check_symbols 在 pairs 归零时直接报红并拒绝给结论，自检补一种空目录必须被抓到（六项变异）。判据 tests/test_gate_clean_machine.py::EveryRouteSkippedRefusesToConclude"
+      ],
+      "observed_at": "2026-10-12 12:57:25+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 12:57:40+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "S51",
+      "symptom": "两个双击运行的维护工具自 v1.4.55 改名起在装机机器上失效：cleanup_temp_copies.command 只认旧包名与旧包标识，于是打印「应用程序未安装本程序」后 exit 0 什么都不做（而 AGENTS §3.1 把它列为没有仓库的机器上唯一手段）；verify_responsiveness.command 按旧路径找 Info.plist，直接 exit 1",
+      "component": "维护工具与实机路线",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.55",
+      "introduced_note": "2026-10-12 全方位复核 F2，用户按必修处理；缓解事实：产品侧 sf_temp_sweep 两代名都认、自动清扫照旧工作，坏的是人工清理这条路",
+      "found_version": "1.4.63",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "这两个 .command 不在 .app 里、不进发版链、也不被任何用例 import —— 全量回归两年都是绿的。AGENTS 把「两代都认」列了七处落点，而清单本身回答不了「还有第几处没进去」",
+      "defense_added": [
+        "两代包标识/包名并列成 BUNDLE_IDS 与 APP_NAMES 两份清单，「应用程序」按清单逐个找；找不到时把认的是哪两枚名字打出来（旧写法在装机机器上说的是一句假话）。判据 tests/test_standalone_command_tools.py 七条：名单必须覆盖 sf_constants 的两代身份、退回单数写法要红、sh -n 语法关、以及两处种错必红自证"
+      ],
+      "observed_at": "2026-10-12 12:57:40+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 12:57:56+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G25",
+      "symptom": "「次要文字灰只有一个来源、样式表里不许再手写 hex」这句口径只钉住了主窗菜单一处：实测活代码里还有 15 处裸 hex 写在样式表字符串里（含一处三位的 #fff，是 grep 只查六位时漏掉的），其中两处禁用态灰 2.66:1 与 3.43:1 比本轮被判不达标并删掉的旧值 #6b7280（3.45:1）还暗 —— 文档说过头，判据没跟上",
+      "component": "测法会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.60",
+      "introduced_note": "2026-10-12 全方位复核 F6。诚实话：WCAG 1.4.3 对非活动组件豁免，所以不是无障碍违规，违规的是口径只覆盖一处而文档写成全局",
+      "found_version": "1.4.63",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "判据是「读 QMenu.styleSheet() 断言那一处」，形状上等于逐处补测；没有任何一条扫全仓的样式表字符串，所以补一处漏十四处",
+      "defense_added": [
+        "AST 扫全产品源码：样式表字符串里出现裸 hex 直接红，**硬零不留基线**（留基线等于承认还可以有下一处）；11 处颜色收进 sf_constants 具名 token，禁用态两处合成一枚 FG_DISABLED_HEX=#80899b（4.74:1）。判据 tests/test_style_hex_tokens.py 十一条，含真渲染取「画出来的字是什么颜色」，以及一条防「自检本身是空的」的判据 —— 本轮实测踩过：种样例带缩进让 ast.parse 抛错被 except 当成干净，两条自检全绿而一条都没真的看过"
+      ],
+      "observed_at": "2026-10-12 12:57:56+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 12:57:56+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G26",
+      "symptom": "特征闸门的 stale-feature 申报会被以后每一版继承：release_checks.txt 是堆叠历史，v1.4.63 那行申报没写版本，于是 1.4.64 这一轮包内五条新特征全部命中却照样被打「本轮拿不出新名字」的 WARNING；而 main 的形状是 not declared 才跑新增特征判据 —— 清单里只要躺着一条无主申报，以后任何一版都可以不填新名字过闸",
+      "component": "发版链关卡",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.63",
+      "introduced_note": "2026-10-12 v1.4.64 发版实测撞上（第一次跑链的日志）",
+      "found_version": "1.4.64",
+      "fixed_version": "1.4.64",
+      "failed_lines": [
+        "static",
+        "verify"
+      ],
+      "why_missed": "申报通道是 v1.4.63 为「正当的一轮」开的，开的时候清单还没有堆叠语义 —— 写的人按「一次发版一份清单」的心智模型做，而 release_checks.txt 实际是 release_notes 那种历史文件。自检只验了「带理由就有效」，没验「只对当前这版有效」",
+      "defense_added": [
+        "申报格式改成 stale-feature <版本号> <理由>，只有与本轮期望版本一致才生效；不写版本判无效并说明理由；别版的申报本轮不生效但在发版日志里点名。判据 release_feature_check --self-test 三种形状各种一处（无版本被拒 / 上一版申报不被继承 / 空理由仍无效），1.4.63 那行按新格式补版本号做格式迁移"
+      ],
+      "observed_at": "2026-10-12 13:13:31+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 13:13:31+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "G27",
+      "symptom": "随机顺序档（SF_RANDOM_ORDER=1 seed=1464）跑出一枚顺序相关失败：test_coverage_icons_editor.TestEditorSearchChain::test_unknown_code_is_rejected_once_the_dictionary_is_ready —— 它把 sf_universe.match_confident 打成空表期望拒绝未知代码，实际却应用了 sz123456。默认顺序 2617 例全绿、该模块单跑 60 例全绿，只有换模块顺序才红",
+      "component": "测法会说假话",
+      "channel": "gate_liar",
+      "introduced_version": "unknown",
+      "introduced_note": "2026-10-12 v1.4.64 发版后跑随机顺序档抓到；本轮对 sf_editor.py 的改动只有样式表字符串（同一批色值、零行为变化），已按 diff 排除归因",
+      "found_version": "1.4.64",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "该用例把 sf_universe.match_confident 打成空表来断言拒绝未知代码，但 do_search 里还有一条不经过 match_confident 的分支能给出代码；默认顺序下先跑的那批用例没把这条分支的入口状态准备好，换顺序才踩到 —— 也就是说红的是**夹具对全局状态的隐式依赖**，不是产品逻辑。本轮只登记复现配方（seed=1464 两次都红、单模块跑绿、默认顺序此前绿），未归因到具体污染源",
+      "defense_added": [
+        "**未修**。这一条登记的是复现配方与判据缺口，不是防线落点：① 复现 = SF_RANDOM_ORDER=1 SF_RANDOM_SEED=1464 ./run_tests.sh（两次都红同一枚）；② 归因方向 = 该用例对 sf_universe 全局状态的隐式依赖，最小复现做法是把可疑模块与该用例两两同跑；③ 下一轮起发版前随机顺序档必须绿，否则不许出包"
+      ],
+      "observed_at": "2026-10-12 13:28:43+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-12 13:36:31+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "S52",
+      "symptom": "分时图「数据暂缺 · 重试中」到恢复正常曲线要等很久，且期间整个悬浮窗被冻住（用户 2026-10-12 11:04 截图报障，生益科技 600183）",
+      "component": "分时数据链路与线程调度",
+      "channel": "online_user",
+      "introduced_version": "1.2.30",
+      "introduced_note": null,
+      "found_version": "1.4.64",
+      "fixed_version": "1.4.65",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "三处叠在一起，每一处单独看都不像缺陷：① _fetch_minute 把整段网络调用攥在 _minute_lock 上，而主线程 _maybe_cache_first_screen 对同一把锁做阻塞 acquire —— 全仓没有任何用例走过「后台持锁 + 主线程取锁」这个组合，防线二整块空白；② 一次分时尝试的真实墙钟代价没人量过（主→备串行，实测 34.3s），代码里只有 _force_fetch 的注释写过行情那一路「最坏约 35s」，分时这一路同量级却没人记账；③ MINUTE_RETRY_INTERVAL=2.5s 与展开态常规 1.0s 的倒挂，守着它的 test_v130 是把时刻序列喂进假时钟再读回来的自指断言，改任何值都不会红，所以潜伏至今",
+      "defense_added": [
+        "拆两把锁（防重入守卫 _minute_busy / 数据锁 _minute_lock）+ 分时单独超时预算 2s 不重试 + 重试间隔取 min(2.5, 当轮常规)。判据 tests/test_minute_recovery_latency.py 十二条，四处种错逐条验过必红（合回一把锁 / 超时调回默认 / 重试调回 2 / 间隔写回固定值）；新写的驱动法是假时钟按循环请求的睡眠量前进，把 test_v130 那类自指断言的空档补掉"
+      ],
+      "observed_at": "2026-10-12T11:04:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-12 13:53:41+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户截图报障 + 装机版 debug.log 现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "N04",
+      "symptom": "自动隐藏窗口的判定边界此前没有任何数据：第二个人被画面边界切掉半张脸时，正常光把握分 0.638、带一点噪点 0.587 就掉到阈值之下不收窗（人站在镜头边缘等于没保护）；反过来约 2 米外路过的人却会算第二个人（行情莫名其妙消失）",
+      "component": "人脸在场守卫（自动隐藏窗口）",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.40",
+      "introduced_note": null,
+      "found_version": "1.4.66",
+      "fixed_version": "1.4.66",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "防线二整块空白：这条功能自 v1.4.40 上线以来只有 --image 与 --curve 两档离线核验，「被边界切掉多少」与「几成画面宽等于几米」两个维度从来没有入口，也没有任何用例能回答「半张脸出画算不算第二个人」——阈值是按『清晰正脸 0.82、假框 <0.5』这一条印象定的",
+      "defense_added": [
+        "防线二：verify_face_presence 新增 --edge/--near/--lowlight 三档可重跑实测（判据调产品同一个 count_faces，工具不重算阈值），并搬进全量自检（此前只有人工调用=可以整轮不跑）；防线三：读不到检测框几何新增 geometry_failures 计数 + 限流 WARNING 进诊断包；口径侧：贴边门槛 0.55 / 尺寸闸门 6.5%（贴边按实测缩水系数 0.61 折算）/ 驻留 0.38 秒，每条各有一正一反用例，五处种错逐条验过必红"
+      ],
+      "observed_at": "2026-10-12T11:20:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-12 14:38:31+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮现场",
+      "evidence": "verified"
+    },
+    {
+      "id": "N05",
+      "symptom": "自动隐藏窗口菜单第一次点击没反应，要点第二下才生效",
+      "component": "自动隐藏窗口（人脸守卫菜单开关）",
+      "channel": "online_user",
+      "introduced_version": "1.4.50",
+      "introduced_note": "勾号口径改成「必须 state==running」是 v1.4.50（防 E02 说谎），v1.4.54 又加了 300ms 刷新 —— 于是启动窗口里刷新定时器主动把用户刚点出来的勾按回去。observed_at 取用户报障时刻的分钟级估计（会话不带精确时间戳），根因戳是真实时刻",
+      "found_version": "1.4.66",
+      "fixed_version": "1.4.67",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线二失守：tests/test_face_guard.py 的 _StubMonitor.request_start() 把「起会话」写成同步成功（state 当场落成 running），启动窗口期这条时间轴在 157 条用例里从来不存在；全量两年全绿而用户每天碰到。防线三没失守——日志每一下点击都记了「授权发起点=菜单点击」，本轮定位靠的就是它",
+      "defense_added": [
+        "防线二补两处：① 新口径 _face_guard_switch_on()（starting 也算开，needs_auth/denied 等一律不算），勾号与点击目标共用它；② tests/test_face_guard.py 新增三条按真实时序采样的用例（复现序列 [True×6, False×12]），其中「起不来时勾必须灭」是反向诚实锁。口径写进 AGENTS §5.4"
+      ],
+      "observed_at": "2026-10-12 19:50:00+08:00",
+      "observed_origin": "conversation（用户报障时刻，分钟级估计）",
+      "rootcause_at": "2026-10-13 00:04:38+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户线上报障（本机 MacBook Air，装机版 1.4.66）",
+      "evidence": "verified"
+    },
+    {
+      "id": "S53",
+      "symptom": "拿 DMG 手装时，旧版还在运行就点「一键安装」：脚本一路报成功（rc=0、打「正在打开 Skyrocket……」），而机器上活着的仍是旧一代 —— 新起那代被自家多开守卫 sys.exit(0) 静默退出，被移进废纸篓的旧版仍在运行；用户看到的就是「按指引装了新版，问题怎么还在」",
+      "component": "首装/升级链路（DMG 卷内一键安装）",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.58",
+      "introduced_note": "observed_at 取本轮第一次前台实测的时刻（与同分钟的前台探针产物同时钟）；rootcause 戳打在台账登记时，所以这一族的定位时长要读成「同一轮会话内」，不是精确分钟数。潜伏 1.4.58→1.4.68 共 11 版；OTA 包里不含 .command，所以只伤害拿 DMG 手装的人（新装、≤1.4.58 必须手动装的机器、以及人工转发 DMG 的场合）",
+      "found_version": "1.4.68",
+      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线二整块空白：R2 把安装目录永远建成空目录，「旧版在跑」这条时间轴在任何用例/核验里都不存在；替身夹具也不实现多开守卫，所以「新起又退出」这一侧在测法里天然看不见。防线三没失守——脚本 rc 与 ps 载荷一比对就能定位，本轮就是这么抓到的",
+      "defense_added": [
+        "防线二：R2c 新路线（旧版在跑必须停下且什么都没动）+ tests/test_installer_script_branches 两条（停下不动 / 用户退出后自动接着装）；产品侧改法：认包→验源包→验可写→验没有在跑的实例（只等不杀，SF_INSTALL_WAIT_SEC 默认 60 秒）→才动旧版；口径进 AGENTS §5.6 第三条"
+      ],
+      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-13 09:01:07+08:00",
+      "locate_unknown_reason": null,
+      "source": "DELIVERY_CHECKLIST.md 2026-10-13「一键安装加固批」；探针 installer/一键安装.command 真跑 + ps 载荷代际比对",
+      "evidence": "verified"
+    },
+    {
+      "id": "S54",
+      "symptom": "DMG 包体坏了或目标目录权限不足时，脚本第 5 步的完整性校验排在「把旧版 mv 进废纸篓」之后：失败现场是「应用程序」里躺着坏的那一份、能用的旧版在废纸篓，用户手上没有可用程序",
+      "component": "首装/升级链路（失败时序）",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.58",
+      "introduced_note": "同 S53 的时刻口径。校验对源包做实测只要 0.072 秒，前置没有代价",
+      "found_version": "1.4.68",
+      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线二：坏包/权限异常这一整类失败现场从没被造过（核验只测正当输入），所以「校验排在破坏之后」这个顺序问题在纸面上看不出来；写脚本时它是照抄「先拷再验」的直觉",
+      "defense_added": [
+        "防线二：R2d 新路线（坏包只报「什么都没动」：旧版原位未动 + 废纸篓为空）+ 分支用例；产品侧：codesign 前置到源包（实测 0.072 秒），破坏之后的每条失败路径把坏那份 mv 进废纸篓、旧版 mv 回原位；口径进 AGENTS §5.6 第二条"
+      ],
+      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-13 09:01:07+08:00",
+      "locate_unknown_reason": null,
+      "source": "DELIVERY_CHECKLIST.md 2026-10-13「一键安装加固批」；探针用改掉 Info.plist 的包真跑一次安装脚本后读目录树",
+      "evidence": "verified"
+    },
+    {
+      "id": "S55",
+      "symptom": "「一键安装」的错误分支在用户终端里当场崩成 shell 报错：那句「旧版本来在 ，但没能移到废纸篓（…）」被 bash 3.2 在 UTF-8 locale 下把全角逗号首字节 0xEF 吞进变量名，set -u 直接 unbound variable 终止（rc 127）—— 撞上它的正是标准用户/别人装过的机器最常见的一屏，脚本自己的 FR-12「失败必须打印下一步」当场失效",
+      "component": "首装/升级链路（错误指引本身）",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.58",
+      "introduced_note": "开发机 shell 没设 LANG → 永远不复现；用户终端 LANG=zh_CN.UTF-8（AppleLocale=zh_CN）→ 必现。同批全仓 7 处（含 build_release.sh 四处与两枚 tools/*.command），那些是开发侧不进产物",
+      "found_version": "1.4.68",
+      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线一没有这一层（static_gate 只管 Python），防线二跑在「locale 未设」的开发环境里 = 机制的安全一侧，与来历标签、PyObjC 元数据同一族：开发者永远复现不了用户那一侧。真正的原因要读 bash 3.2 的变量名扫描规则才能说出来，而这句话在代码里没有任何地方提示",
+      "defense_added": [
+        "防线一新落点：tools/shell_cjk_scan.py（$NAME 紧跟非 ASCII = 硬零、不留基线、含 MIN_SHELL_FILES 范围红线），tests/test_shell_cjk_scan.py 里 TestMechanism 三条钉机制本身仍成立；同批收掉全仓 7 处写法；防线二：九条路线全部改在 LANG=zh_CN.UTF-8 下跑 + 变异 S10「关卡退回 C locale 必须红」"
+      ],
+      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-13 09:01:07+08:00",
+      "locate_unknown_reason": null,
+      "source": "DELIVERY_CHECKLIST.md 2026-10-13；机制由 locale 矩阵实测（/bin/sh 与 /bin/bash 在 en_US.UTF-8 / zh_CN.UTF-8 炸、C 与未设正常、zsh 免疫）",
+      "evidence": "verified"
+    },
+    {
+      "id": "S56",
+      "symptom": "「来历标签已清（只清这一个 bundle）」这句话可以说假：清除用 xattr -dr（递归），核验却只看包根（xattr -l），标签残留在包内某个文件上时核验读不出来、脚本照报成功",
+      "component": "首装/升级链路（放行核验）",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.58",
+      "introduced_note": "低危：正常路径下递归清除会成功，所以是「动作与核验范围不一致」这一族，不是每次都咬人",
+      "found_version": "1.4.68",
+      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "防线二：核验语句与清除语句各写各的（dr vs l），而 R2 的断言本身也只看包根 —— 判据与被测对象瞎在同一处，所以既没报成功假象也没报错",
+      "defense_added": [
+        "产品侧核验改 xattr -rl（递归读回）；防线二：R2 源包内层先贴标签、装完断言递归读回为空，变异 S9（清除不递归）与 S9b（核验只看包根 + chflags uchg 让标签真清不掉）两处都必须红；实测事实：uchg 与 quarantine 都能活着穿过 ditto + HFS+/UDZO 造卷"
+      ],
+      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-13 09:01:07+08:00",
+      "locate_unknown_reason": null,
+      "source": "DELIVERY_CHECKLIST.md 2026-10-13；把标签只贴在包内文件上实测：xattr -l 看不见、xattr -rl 看得见",
+      "evidence": "verified"
+    },
+    {
+      "id": "G28",
+      "symptom": "发版链 3.8 那道安装路线核验自己说假话：它宣称「首装与更新路线核验通过」，但 R2 永远把安装目录建成空目录 —— 对外说明里写给老用户的主用途「有旧版 → 移废纸篓 → 装新版」一次都没被执行过；而且它从 Python 起子进程时继承的是「locale 未设」的环境，恰好站在缺陷的反面一侧，所以 ①②③ 三条全都测不到",
+      "component": "安装路线核验（verify_install_paths）",
+      "channel": "gate_liar",
+      "introduced_version": "1.4.58",
+      "introduced_note": "与 verify_dmg_pyz 无脑 PASS 五十多版同一族：闸门宣称覆盖面大于实际覆盖面。修法是路线 5→9 条 + 九条全在 zh_CN.UTF-8 下跑 + 变异 S10「关卡退回 C locale 必须红」",
+      "found_version": "1.4.68",
+      "fixed_version": "1.4.68（关卡侧本轮即生效，不依赖出包）",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "这道闸门自己的覆盖面从来没被核验过：它打印「核验通过」时说的是跑过的几条，而不是宣称覆盖的场景。空目录夹具 + 继承开发机环境两个巧合叠在一起，让老用户主用途与 locale 这一族缺陷同时脱账",
+      "defense_added": [
+        "路线 5→9 条（R2b/R2c/R2d/R2e）且名单提到模块级 ROUTES 表、存函数名而非对象（判据 patch 模块属性才打得到，实测旧写法红在「R0 ✓ 其余八条 TypeError」）；自检档改用几 KB 签名替身造卷（light_signed_app），15 处种错并发 19 秒 —— 串行 48 秒会撞 test_release_gates 那条 60 秒单用例上限，第一次就撞上了；新增 tests/test_install_path_routes.py 把九条路线挪进主进程，每次提交与 CI 都跑"
+      ],
+      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-13 09:01:07+08:00",
+      "locate_unknown_reason": null,
+      "source": "读码 + 本轮三条新路线（R2b/R2c/R2d）落地后立刻抓到 S55 那处崩溃，反证旧判据是空转",
+      "evidence": "verified"
+    },
+    {
+      "id": "N06",
+      "symptom": "浏览器全屏时主窗口看得见、右键却弹不出菜单：菜单那块窗其实建出来了（WindowServer 里 layer 101、bounds 152x173、距点击 6~9ms），但在屏窗口列表 0/97 次查不到，三秒内一次都没合成；同一场景下目标价面板同样不显示。用户看到的『右键没反应』既不是丢事件也不是没建窗",
+      "component": "弹层 Space 补齐（右键菜单 / 目标价面板 / 编辑器 / 气泡）",
+      "channel": "online_user",
+      "introduced_version": "1.3.76",
+      "introduced_note": "补齐从 v1.3.76 起只覆盖主窗与玻璃层两处（sf_glass 手工设 273 + 私有 CGS），Qt 自己建出来的弹层从未列入范围。这一族在补齐之前不可见：那时主窗本身也不在第三方全屏 Space 里",
+      "found_version": "1.4.70",
+      "fixed_version": "1.4.70",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "三道防线没有一道覆盖『Qt 建出来的弹层在不在这块 Space 上』：静态层看不见（代码没有错，Qt 给 258 是它的默认行为）；验证层没有这一问（产物核验只查字节码符号与主窗/玻璃层的合成顺序，从没查过弹层在不在 OnScreenOnly）；定位层零痕迹（菜单开、关、被谁吃掉，日志里一个字都没有）。更早一轮的根因判断还错过一次：先按『只缺一位 CanJoinAllSpaces』下结论，量到 258/101 的窗在第三方全屏 Space 里 0/15 在屏就以为定了，直到把窗改成『全屏期间现建』才发现它照样看得见 —— 说明差异不在那一位，而在补齐的时机与范围",
+      "defense_added": [
+        "补齐动作收进一处应用级 Show 钩子（sf_glass.watch_active_space / join_active_space / popup_space_tick），一处实现覆盖菜单、目标价面板、编辑器、气泡四类，不再四处各写一行；按节拍续补到 isOnActiveSpace 为真（Show 那一刻补不上是实测：第 9 拍才落地，右键到看见 0.27 秒）。判据 tests/test_popup_fullscreen_space.py 18 条，四层：纯函数扫全区间查非法组合 / 假 NSWindow 问改没改、CGS 调没调、失败留没留痕 / 续补节拍三条 / 接线两条含建主窗那条；九处种错逐个实测必红。口径进 AGENTS §5.9（含三条否证：只改公开那一步不够、那一位只能替换不能或上、加密节拍不会更快）"
+      ],
+      "observed_at": "2026-10-13T09:51:19+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-13 12:24:51+08:00",
+      "locate_unknown_reason": null,
+      "source": "负责人 2026-10-13 报障 + 三进程取证（合成全屏 host + 真实 HID 右键 + WindowServer 在屏列表 + 截图取色）",
+      "evidence": "verified"
+    },
+    {
+      "id": "N07",
+      "symptom": "朋友电脑悬浮窗拖不动：分时图区手势只切换收展，不移动窗口",
+      "component": "指针手势",
+      "channel": "second_machine",
+      "introduced_version": null,
+      "introduced_note": "朋友机器未拿到诊断包，已确认代码缺陷但尚不能排除其他触发原因",
+      "found_version": "1.4.70",
+      "fixed_version": "1.4.71",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "旧拖动测试只从顶部按下；分时热区只有点击断言，从未断言其拖动位移。朋友现场暂无诊断包，确认机制与反馈相符但不宣称复现该机器全部原因。",
+      "defense_added": [
+        "tests/test_float_drag_top.py：展开/收起两态分时图区真事件拖动位移、短点击、大位移松开不误收展"
+      ],
+      "observed_at": "2026-10-13 14:32:35+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-13 14:33:53+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户本轮转述朋友反馈；本机事件复现分时图区无拖动路径",
+      "evidence": "verified"
+    },
+    {
+      "id": "N08",
+      "symptom": "朋友电脑切换应用后悬浮窗不置顶：Qt 工具窗失活隐藏，稳态看门狗漏查隐藏属性",
+      "component": "原生窗口置顶",
+      "channel": "second_machine",
+      "introduced_version": null,
+      "introduced_note": "确认失效机制，本机已复现属性漂移；朋友电脑的最终验证待更新后反馈",
+      "found_version": "1.4.70",
+      "fixed_version": "1.4.71",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "Qt 工具窗默认 hidesOnDeactivate=True；旧体检只验层级、可见、Space、几何，完全漏验失活隐藏与输入穿透，原生属性恢复隐藏后仍判稳态且不修复。",
+      "defense_added": [
+        "tests/test_float_drag_top.py：Qt失活策略、真NSWindow漂移修复、稳态零写、最小化不复活与诊断字段；sf_glass原生属性失败留痕"
+      ],
+      "observed_at": "2026-10-13 14:32:58+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-13 14:34:15+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户本轮反馈；本机真 QNSPanel hides=True 时稳态仍=True 且下一拍不修复",
+      "evidence": "verified"
+    },
+    {
+      "id": "N09",
+      "symptom": "更新下载分片失败后，已完成的其余分片被重复下载",
+      "component": "更新下载重试",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "未把模拟请求数等同于朋友网络速度；现场没有下载失败日志",
+      "found_version": "1.4.71",
+      "fixed_version": "1.4.74",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "原分片回归只模拟整批失败，没有混合成功/失败且先取到失败 future 的序列；future.result 首错退出后，其余成功下载没有入完成表，下一档全部重下。",
+      "defense_added": [
+        "tests/test_update_download_reuse.py: mixed successful/failed futures preserve completed parts; verified URL reuse and retry coverage"
+      ],
+      "observed_at": "2026-10-13 15:16:55+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-13 15:22:04+08:00",
+      "locate_unknown_reason": null,
+      "source": "本轮用户提速需求；16片中1片失败离线复现32次请求而非17次",
+      "evidence": "verified"
+    },
+    {
+      "id": "N10",
+      "symptom": "右键检查更新需要多次点击才看见弹窗",
+      "component": "update-dialog",
+      "channel": "online_user",
+      "introduced_version": null,
+      "introduced_note": "起点为本会话登记时刻，非用户首次遭遇时刻。普通桌面三次 Qt 菜单首击正常；全屏实测旧 NSAlert visible=True 但初始不在屏并触发桌面切换。",
+      "found_version": "1.4.71",
+      "fixed_version": "1.4.74",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "旧探针只统计 show_alert 调用次数，未核验 NSAlert 是否在当前 Space/在屏；取消用例仅覆盖全新请求，未覆盖取消后复用在飞检查。真全屏复现旧窗可见但不在屏，公开行为单独修补仍不在屏；共享 CGS 续补后 0.17 秒在屏且不切桌面。",
+      "defense_added": [
+        "tests/test_update_dialog_visibility.py：真实菜单首击、复用/闭窗重建、取消复查、Space续补有界与真AppKit属性；三处退化断言验证与包内特征"
+      ],
+      "observed_at": "2026-10-13 15:17:09+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-13 15:27:51+08:00",
+      "locate_unknown_reason": null,
+      "source": "用户本会话报障；本机全屏 NSAlert 在屏检测",
+      "evidence": "verified"
+    },
+    {
+      "id": "N11",
+      "symptom": "共享临时下载地址刷新后仍被403拒绝时未回到签名入口，整包下载失败",
+      "component": "update-download",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "额外线上复验发现，不是新的用户报障；URL原串与编码串的短请求均206，不能把403直接归因于编码或过期。",
+      "found_version": "1.4.74",
+      "fixed_version": "1.4.75",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "原专项只测试刷新后临时地址恢复成功，没有刷新后仍被拒但签名原入口可用的路线；实际线上整包两次403，有界回源对照完整27836457字节SHA256通过。",
+      "defense_added": [
+        "tests/test_update_download_reuse.py: rejected refreshed asset falls back once to signed origin; unsafe redirect/hash remain rejected; bounded shared refresh negative control and live full ZIP SHA256 verification"
+      ],
+      "observed_at": "2026-10-13 16:56:07+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-13 16:58:00+08:00",
+      "locate_unknown_reason": null,
+      "source": "已发布1.4.74客户端真实整包下载两次403；有界回源对照27836457字节SHA256通过",
+      "evidence": "verified"
+    }
+  ],
+  "rounds": [
+    {
+      "version": "1.4.45",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "zero_reason": "v1.4.45 发布后没有新的「用户可观测」逃逸报回（--from-log 扫真日志复核：最近 3 天只有 1 条盲区锚点、1 行，无 glass above main）。本轮做的是一次全量逃逸复盘：91 条事件 → 台账 46 条（凌晨 44 条 + 早上补 G07/G08 两条关卡会说假话）。复盘记录见 outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md",
+      "defense_added": [
+        "发版链 3.7 逃逸复盘闸门（无本轮声明拒绝出包）",
+        "quality_trend --from-log 日志锚点：数字二第一次有真实数据源",
+        "verify_bottom_gap_px 判据去自指 + 9 类变异自检",
+        "dist_version_check 9 类变异自检"
+      ],
+      "other_channels_this_round": {
+        "shipped_unnoticed": [
+          "S33（NSAlert 降级无留痕，修在 v1.4.45）",
+          "G07/G08 本轮发现，尚未收口（fixed_version=null）"
+        ],
+        "说明": "这两个渠道不计入「线上逃逸数」，但要在复盘声明里看得见，别让 0 变成遮羞布"
+      },
+      "reviewed_at": "2026-10-09 07:52",
+      "open_next_round": [
+        "玻璃层的用户侧现场回传通路：本机日志能给到 482 行/1278 秒的强度，但用户机器的 debug.log 没有回传路径，D-04/D-31 的触发链仍无法复现",
+        "台账 8 条历史线上逃逸没有防线落点（A03/A04/A12/A15/A26/A27/A30/D08），逐条判「同类还会不会再来」",
+        "发版链上 5 个无 --self-test 的核验器目前只靠 tests/ 一层保护，待评估是否定规矩「链条上的工具必须自带自检」"
+      ]
+    },
+    {
+      "version": "1.4.46",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "防线三：诊断包 glass.json（合成顺序/真实错位/盲区/每种失效最后一次/最近 30 分钟锚点）",
+        "防线三：quality_trend --from-diag 读回传包，起点时刻直接可开条",
+        "防线二：11 条取证链不变量用例（含产品侧与工具侧 needle 同步断言）",
+        "防线二：修掉一处「随开机时长乱红」的用例基线（_long_ago 恒正），台账 G09",
+        "防线二：发版链 12 个工具全部自带可用 --self-test（verify_dmg_pyz 11 类、test_runner 判定层、publish/asset/sweep 各离线变异、bundle_closure 两层且可无产物运行）",
+        "防线二：新增关卡 test_every_chain_tool_can_prove_it_fails —— 真跑每个链条工具的自检",
+        "AGENTS §6 第 4 条补『不得依赖单调时钟基线』（台账 G09 的教训）"
+      ],
+      "zero_reason": "本轮是新增可观测性（诊断包带现场），没有修任何已发布的用户可见缺陷；线上逃逸报回为 0（--from-log 复核近 3 天真日志：仅 1 条盲区锚点、1 行，无倒序检出）",
+      "ship_status": "备料完成、**未出包**：build_release.sh 第 3 步 PyInstaller 报 Errno 28 无空间（本机 /System/Volumes/Data 462G/494G 满）。线上仍是 v1.4.45，OTA 清单未动。腾出磁盘后重跑 ./build_release.sh。"
+    },
+    {
+      "version": "1.4.47",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "防线一：AGENTS §6 第 4 条补「不得依赖单调时钟基线」+ 链条工具必须自带 --self-test 的关卡（12 个脚本真跑自检）",
+        "防线二：授权发起点收敛为唯一入口 request_access_once()，并由 4 条用例锁住「除菜单点击外任何路径都不许弹系统框」",
+        "防线三：未授权状态 needs_auth 进状态行与 face_guard_diagnostics，远程可读"
+      ],
+      "zero_reason": "本版是用户当场指出的一处交互问题（启动即弹系统授权框），属于体验/打扰修正，不是此前逃逸台账里的线上缺陷；报回渠道是开发者本人机器的现场观察，非新增逃逸"
+    },
+    {
+      "version": "1.4.48",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "吸附判定改带符号距离 + 落点钳回可用区（不盖 Dock）",
+        "防线二补 5 条吸附回归用例"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.49",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "防线二：4 条按真实 PyObjC 返回形状的会话用例；先复现（同机 PyObjC 实测同一句 NSException）再修",
+        "防线三：会话建立失败带系统原因，实机不再只看到空话"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.50",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "补防线二：一条不依赖摄像头与系统授权的 Vision 离线核验（--image），加 5 条覆盖'配置开着+未授权'组合的守卫用例",
+        "补防线三：frames/detect_errors 两个整数 + 首帧锚点进日志与诊断包；performRequests:error: 返回值不再丢弃",
+        "补防线一：菜单项文案单一来源，界面不再指向不存在的入口"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.51",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "合入 30 轮走查补丁并逐条实测：ETF/基金/债券录入恢复（判据从字典自身推导，实测 covers_segment(510300)=False 而 fetch_quote 正常返回名字）、未授权提醒补发、两处\"关卡自己会说假话\"的守卫（mypy 层静默归零、棘轮可无声上调）与纪律关卡的范围红线",
+        "按用户看图要求撤掉右键菜单两行灰字提示；守卫是否 in 保护改由勾号单独承担，那句人话移进诊断包 face_guard.json 的 status_text（新增 face_guard_field_evidence，避开诊断→文案→诊断的递归）",
+        "补防线二 G14：锚点用例的参照时刻从写死的整点改为贴着真实时钟；产品侧锚点窗口补上界（future_lines 记账），把\"时钟超前的行永远算最近\"这条一起修掉",
+        "另修一枚自证永真的测试：test_v1444 那条\"菜单说明由常量现推\"是自己拼字符串断言自己，产品一行都没碰 —— 改为量真定时器的间隔（test_face_guard 新增一条）"
+      ],
+      "zero_reason": "本轮 0 条新的线上逃逸：S06/S07 是 30 轮走查在已发布产物里查出来的（shipped_unnoticed，不占线上逃逸数），G11~G14 是关卡自己会说假话那一族（gate_liar）"
+    },
+    {
+      "version": "1.4.52",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "按用户看图要求删掉首次开启人脸守卫那次\"代价说明\"框（_show_face_guard_notice 整个方法连同它的字符串常量一起消失），并把判据反过来钉住：test_toggle_persists_pref_and_never_pops_a_dialog 断言开启路径上弹框次数为 0",
+        "发版链 3.6 的特征清单这一轮用的是 forbid 而不是 check —— 删东西只能验\"它确实不在包里\"，check 证明不了这件事"
+      ],
+      "zero_reason": "本轮是 UI 撤除（用户两次看图要求），没有缺陷修也没有新线上逃逸；守卫是否在保护仍由勾号承担（v1.4.50 的 _face_guard_protecting），那句话改由诊断包 status_text 与日志承载"
+    },
+    {
+      "version": "1.4.53",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "本轮是文案改名（守卫项 →「自动隐藏窗口」、版本行去掉「版本」两个字），没有缺陷修也没有新线上逃逸；触发条件与功能一字未动",
+        "判据侧留了一条硬线：tests/test_face_guard.py 里 GUARD_MENU_TEXT 继续写死用户可见的字面量而不是 import 产品常量 —— 下次再改名，用例必须红一次，逼着人确认所有\"指路\"的文案（状态行、last_error）有没有同步",
+        "发版特征这一轮走值核验而不是符号核验：改的是字符串字面量，co_names 查不到，只有 tools/verify_bundle_consts.py 能读出包内实际文案"
+      ],
+      "zero_reason": "文案轮：0 条新线上逃逸；两个数字不变（线上逃逸 22.50 条/30 天，定位时长 4 条样本、中位 16.4 分钟）"
+    },
+    {
+      "version": "1.4.54",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "功耗画像先实测再动：离线实测两人照在 480x360 下置信度仍 0.82/0.81（分辨率不是检测质量的瓶颈）→ 采集档位 640x480；本机实测设备只支持 15~30fps、1/10s 被系统当场拒绝 → 帧率上限取区间下限 15fps；两条都 fail-open（设备拒绝只记 WARNING 照旧跑），并当场抓到一次 lockForConfiguration 的 (BOOL, error) 元组形状（v1.4.49 同族）",
+        "灵敏度与恢复速度：节拍 1.0s → 0.5s（Vision 单帧实测 12.1ms@640x480，占空比约 2.4%），收起约 1.0s（原 2~3s）、恢复约 2.5s（原 5s）；hide/restore 命中次数不动（迟滞口径不变，只是时间轴减半）",
+        "菜单勾号实时刷新（300ms 从 _face_guard_protecting() 校准真值，关菜单连定时器一起收）+ 位置：离屏像素实测净空 18px → 4px（QSS relative 左移 14px，margin-left 几种写法实测无效）",
+        "菜单顺序按用户看图重排：立即刷新 → 自动隐藏窗口 → 检查更新 → 导出诊断信息 → 版本号",
+        "用户永久规则「OTA 更新说明不超过 100 字」进闸门：require_own_section 加第二道判据（本版那一节去空白 >100 字拒绝出包），自检 4 类→6 类，其中一条就是 300 字必须被拦；本版实测 90 字",
+        "本轮自己的四处错全被关卡抓到并真修：常量忘 import（新用例抓到，随后变异测试证明 F821 对这类确实有门）、新增 except:pass 被静默棘轮拦（76→77 改 log_swallow）、mypy 从 QTimer/None 推出矛盾类型（显式 Optional 注解，不用 type: ignore）、两处私有访问没写理由（补 discipline-ok）"
+      ],
+      "zero_reason": "本轮 0 条新线上逃逸：四问全部落地或给出取舍；\"长时间 0 脸停摄像头\"与\"非交易时段停摄\"涉及保护语义（无人时停摄=别人来了也不收窗），未经用户拍板不做"
+    },
+    {
+      "version": "1.4.55",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "全局改名 Skyrocket（含 bundle id）：身份字段收在 sf_constants 一处，旧名以 LEGACY_BUNDLE_IDS / LEGACY_APP_DISPLAY_NAMES 继续被认 —— 临时副本清扫、崩溃报告、诊断导出、run_tests 守卫、更新助手五处逐一改，漏一处就是\"两个程序并存\"或\"旧崩溃记录突然翻不到\"",
+        "数据目录刻意不动（用户选\"改 id、数据不动\"）：目标价/窗口位置/证券字典缓存全在 ~/Library/Application Support/StockFloatTargetPrice，换目录等于让用户重录",
+        "OTA 通道分叉点写进代码注释：清单里带 bundle_id+app_name 且客户端拿自己那两个值比对，一份清单喂不了两代程序 —— 新清单 Skyrocket-update.json，旧清单冻结在 1.4.54，已装旧版需要手动装一次新 DMG",
+        "修掉一处测试设计缺陷：test_run_tests_guard 用假 pgrep 真起 run_tests.sh，模式串一改桩就不匹配，脚本往下把整轮回归再跑一遍（实测 112 秒并嵌套跑挂）—— 加 SF_GUARD_PROBE=1 短路，用例从 112 秒降到 1.4 秒，且改成四代名字各验一条",
+        "测试里三处写死的身份字面量（导出文件名、清单 bundle_id/app_name、QSettings org）改为从 sf_constants 现推，下次改名不再整批红"
+      ],
+      "zero_reason": "改名轮：0 条新线上逃逸。本轮全量 2385 条绿、覆盖率 85%，A 级 0、B 级 323 = 基线；改名过程中两次真错（忘 import sf_constants、shell 多写一个 fi）都被 A 级 F821 与 bash -n 当场拦下"
+    },
+    {
+      "version": "1.4.56",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "灵敏度：事件驱动加急复检 —— 计数一变化就把下一次检测提前到 ~0.08 秒（15fps 下约一帧），收起延迟从均值 ~0.75 秒压到 ~0.4 秒，稳态节拍不变所以功耗不涨；每秒最多加急 3 次的预算防的是\"两人来回走动\"把占空比顶满，三条用例分别钉住\"变化会加急 / 稳态不加急 / 有预算上限\"",
+        "阈值这一项**实测后决定不动**：--curve 把同一张两人照从 1024px 缩到 192px，脸宽 427→69px 时置信度始终 0.81~0.83，全程在 0.6 之上 —— 远处小脸不是被阈值挡掉的，降阈值只会放进海报与屏幕人像。结论与跑法写进 AGENTS，防止下一轮\"顺手调低灵敏度\"",
+        "省电：屏幕锁定或主显示器休眠时暂停采集（此时屏幕上没有可暴露的内容），唤醒后 ≤2 秒自动重新武装；判定 fail-open —— 框架缺失/查询抛错/读不到键一律当作没锁，另有两条用例分别验\"锁了会停 + 唤醒会恢复\"与\"探测失败不许停保护\"",
+        "观测面：诊断包新增 screen_off 与 expedited 两个字段，\"这段时间为什么没在看守\"能一句话回答（屏幕锁着，不是功能坏了）"
+      ],
+      "zero_reason": "本轮 0 条新线上逃逸：两项是用户点的性能与灵敏度优化，全部先实测再动（曲线、帧率区间、占空比都有数字）"
+    },
+    {
+      "version": "1.4.57",
+      "date": "2026-10-09",
+      "reviewed": true,
+      "escapes_this_round": 2,
+      "defense_added": [
+        "防线一新增 tools/pyobjc_sig_check.py（run_tests.sh 第 0.3 关）：真实顺序登记的 ObjC 编码 vs 框架元数据权威编码，分两个进程比（同进程会被产品侧的 registerMetaDataForSelector 污染成一面镜子，实测过）；外加全仓 pyobjc 符号可用性核对",
+        "防线二新增 tests/test_reopen_signature.py + tests/_reopen_child.py（ctypes 按 v@:@B 真发消息，cold_bad 档必须 rc=-11）与 tests/test_coverage_notify_update.py::TestUnRouteWithRealFramework（不用替身跑真 UserNotifications）",
+        "防线二收窄一条老判据：授权去重从「进程级永久」改成「冷却 3 秒内」，配一条到点必须能重问的用例（变异自检：改回永久就红）"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.58",
+      "date": "2026-10-10",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "防线二新增 7 条数字定宽判据（tests/test_digit_tabular.py），并给关卡补一条反向用例防止断言变空",
+        "防线三补随包资源的可取证面：NOTICE.md 字体段含 sha256 + 许可原文随包 + 发版链 3.6 步两条产物级核验（值核验与 fonts/ 目录清单）",
+        "判据本体：量宽与绘制统一到一个口径（digit_cell_width / tabular_advance / _glyph_slot），并把 test_v124 里为旧口径背书的那条断言改到新口径"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.59",
+      "date": "2026-10-10",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "本轮把「防线是否真的在链路上」当成一等目标：新增 tools/gate_stamp.py（回归关卡时间戳，11 项变异自检）+ run_tests.sh 落戳 + build_release.sh 第 0 步核验并自动补跑 —— S7-② 那条「发版可以完全不跑回归」的洞闭合（G15）",
+        "OTA 助手第一次被端到端测到：tests/test_update_helper.py 16 条真跑这个 shell 脚本（正当包/三种软链接/穿越与绝对条目名/哈希不符/含空格与中文条目名），判据是助手停在 result.json 的哪一站；顺带抓到同族第二处改名漏改（存活复核写死旧可执行文件名 → 装好的新版会被回滚，S37）与两处依赖/堆积缺陷（S36 助手依赖 Command Line Tools 的 python3、S38 回退包在 /Applications 永不回收）",
+        "把一条会说假话的判据收紧：首装核验 R4 原先只排除 archive_layout_invalid，助手在任何包上都解不动时它照样绿（G16）；现改为「必须停在签名校验那一站」，--self-test 由五处错增到七处，其中一条先断言「种错本身种得成」防止变异空跑",
+        "S4 的彻底解（用户拍板）：目标价按 code 分桶存储与读取，切走的股票进休眠而不是删除、切回自动接管；旧配置无 code 的条目对任何股票都可见，存储上限 12 只/120 条并在剪枝时留日志",
+        "S8 视觉项四条各带能失败的判据：底部两行放不下改为逐级缩数字字号（S39，实测把「最低点 1666.66」从 476→887 个像素找回来，并用子类化 QPainter 记录 setFont 真入参——像素口径抓不到「按 8pt 排、按 9pt 画」）；涨跌色收拢到 sf_constants 一处、折线渐变终点回到 token（S40）；弱化灰 FG_DIM 对面板底 3.45:1→4.98:1、对纯黑 4.34:1→6.27:1（AA 小字下限 4.5:1）；右上按钮图标按设备像素出图并标 DPR（实测与直渲逐像素差 255/平均 34.9 → 0）",
+        "失守防线分布：本轮 7 条全部落在 verify（第二道·验证层）或闸门自身，没有一条是静态层能拦的 —— 印证下一轮的补法仍是「让链路自己证明它跑过」，而不是加用例数量"
+      ],
+      "zero_reason": "数字一口径（线上用户 / 第二台实机 / 装机版现场三类）本轮 0 条：没有新的用户报障，iMac 那台仍停在需要装到 1.4.57+ 并重新允许摄像头权限。另有 7 条走查与关卡自审发现（S36-S40、G15、G16）按 shipped_unnoticed / gate_liar 登记，它们不计入这个数字，只进失守防线分布"
+    },
+    {
+      "version": "1.4.60",
+      "date": "2026-10-10",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "两处必须修收在数据与守卫上：S41 无 code 目标价的归属改为 config 顶层那只股票（写侧同时补齐 owner，切股→设一条→切回这条真实序列有专门用例）；S42 锁屏停摄不再停 0.5 秒轮询表，并第一次用 QTimer.isActive() 当判据",
+        "失守防线分布：入账 6 条里 verify 4 条（S41 同时归 verify+locate）、locate 3 条、不该指望防线 0 条 —— 没有一条是静态层能拦的。另有 3 条文档类发现（对外安装说明占位符、NOTICE 旧名号、交付记录字号口径）经复核**没有进过任何对外产物**（StockFloat.spec 的 datas 只有字体/updater/图标，.sf-opensource 三个快照目录都没配 remote），按台账口径不入账，改记 DELIVERY v1.4.60 那节。下一轮的补法仍然是「让链路与判据自己去证明它跑过」，而不是加用例数量",
+        "闸门自身补两处不说假话：对外安装说明的渲染器从 0 用例到有 8 条（含种错必红），字面 %s 直接拒绝出稿、联系邮箱未设判红；日历用例的超时从「只打印」改成「判红且不撤桩」，顺带查出真根因是一条用例自己种的在飞标记没人收，全量因此白等的 5 秒一并消失",
+        "本机可再生构建产物里那份侵权字体已移入废纸篓（dist 的 1.4.57 整包与 onedir、build/_prev、四份 _rollback 旧 app），工作树内 find D-DIN-PRO*.ttf 现为 0；公开快照生成器的字体判据本轮实测在位（build_public_snapshot.py:291 出现 D-DIN-PRO 即阻断）。git 历史与两个同源旧工作树（.sf-audit30 / .sf-opensource/public-snapshot-org，快照提交 9e0b593）里的旧件不改写历史，作为未勾选项留在交付记录",
+        "口径提醒（数字二）：本轮 S41-S45、S47 六条是同批开条、同批盖 rootcause_at 的（observed_at 统一取复核会话开始 13:16，rootcause_at 取登记台账那一刻 ~14:50），所以这六条的定位时长都是 ~94 分钟，代表**一次复核会话的跨度**，不代表单条 bug 的诊断耗时。数字二会因此抬高一截，读的时候按「本轮是批量登记」理解，不要当成防线变慢；下一轮起用户报障类条目仍走 --from-log 拿真实现场时刻"
+      ],
+      "zero_reason": "数字一口径（线上用户 / 第二台实机 / 装机版现场三类）本轮 0 条：没有新的用户报障，iMac 与朋友那台仍未装到 1.4.59（那两台必须先手动装一次 DMG，自动更新链才恢复）。本轮 9 条全部来自一次只读全方位复核（基线 762074f→ebca6ff，改名起算的 v1.4.55~1.4.59 共 16 笔提交），按 shipped_unnoticed（S41-S46、S48-S49）与 gate_liar（S47）登记，不计入这个数字，只进失守防线分布"
+    },
+    {
+      "version": "1.4.61",
+      "date": "2026-10-10",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "本轮唯一的产品改动就是 S48 那枚变量覆盖：它让 v1.4.59 声称的「回退包只留最近一份」从未生效。修法一行（wr_dir/wr_tmp），但真正的收获是判据形态 —— 从「抽段跑函数体」升级到「把助手跑到 installed」，并给出可失败的产物判据（forbidfile 整句旧写法 + checkfile 新写法）",
+        "失守防线分布：本轮入账 2 条 —— S48（已上线但用户看不见：回退包永远不清）与 G17（关卡自己说假话：链上自检用例把假自检当通过，还顺手把对外文档抹回占位符）；都归 verify（防线二）。v1.4.60 那 6 条（S41-S45、S47）已随上一号发布并线上读回一致",
+        "v1.4.60 那 6 条（S41-S45、S47）已随上一号发布并线上读回一致；本号只带 S48 一条，避免把无关改动混进同一次外发"
+      ],
+      "zero_reason": "数字一口径本轮 0 条：没有新的用户报障。S48 与 G17 是用户要求的「正向路线实机复验」跑出来的（已上线但用户看不见），按 shipped_unnoticed 登记，不占逃逸数；iMac 与朋友那台仍未手动装，仍算未验证项"
+    },
+    {
+      "version": "1.4.62",
+      "date": "2026-10-11",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "本轮入账 4 条，全部由云端复检机逼出（本机全量两年都是绿的）：G18 徽标像素判据量的是整图噪点不是徽标（已修，判据重写为相对量+合成图可失败自检）；G19 首装路线核验在缺真产物的干净机器上崩成「闸门自证失败」（三态判据+8 条锁）；G20 分时用例的注入时钟从未生效，UTC runner 上每天八小时必红（改按模块属性取函数+哨兵判据）；S50 目标价「已触发」排在右省略的尾部，字体略宽就被吃掉（标记移到行首+撑爆行的行为判据+产物特征）"
+      ],
+      "zero_reason": "本轮 0 条新的用户报障逃逸：S50 与 G18 属已上线但用户看不见（shipped_unnoticed / gate_liar），按台账口径不占逃逸数；S49（降级态停牌徽标恒不绘制）仍待拍板未修，继续挂账不带出"
+    },
+    {
+      "version": "1.4.63",
+      "date": "2026-10-12",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "run_tests.sh 的用户数据红线（本轮实测有效：两次判红都点名 debug.log 的大小与 mtime 变化）；新增 tools/apply_installer_icon.py 的读回比像素判据 + verify_install_paths R2/S7（忘了贴图标必须让路线红）"
+      ],
+      "zero_reason": "本轮改动全在打包资产与链上工具（卷内脚本改名「一键安装.command」、给它加自绘图标、图标判据、以及 release_checks 的 stale-feature 申报通道），产品代码只动 APP_VERSION 与 RELEASE_STAGE 两个字符串，无用户可见行为变化，也没有新的线上逃逸。唯一新发现是测试隔离的一枚非确定性红线：某用例的后台线程在 patch 撤销之后仍发真实请求（一次 17 秒超时），把三行日志写进用户目录下的 debug.log —— run_tests.sh 的「用户数据未改动」当场抓到并判红，第三次整轮全绿。它是测试侧卫生问题，没进包、用户看不见，所以按口径不计逃逸。"
+    },
+    {
+      "version": "1.4.64",
+      "date": "2026-10-12",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "同上，另加防线一的一处：静态闸门当场拦下我改坏的类型标注（stale_declaration 返回清单却仍标 tuple[bool,...]），mypy:return-value 0→1 被判新增 —— 棘轮这次是往回挡的"
+      ],
+      "zero_reason": "本轮 0 条用户报障逃逸：G21-G26 六条防线自身说谎类与 S49/S51 两条已上线但用户看不见，全部由一次只读全方位复核对全仓体检逼出（G26 是发版第一次跑链时日志里现形的）；按 ESCAPE_CHANNELS 口径都不占线上逃逸数"
+    },
+    {
+      "version": "1.4.65",
+      "date": "2026-10-12",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "防线二补两处：新增 tests/test_minute_recovery_latency.py（十二条，四处种错逐条验过必红），其中驱动法改成「假时钟按循环自己请求的睡眠量前进」，观察到的节奏由代码算出来而不是夹具喂进去——这一形同时把 test_v130 那类自指断言的空档标在原地；防线三：一次分时尝试的墙钟上限落成可推导判据（MinuteBudgetIsBounded 那条 34.3s→8s 的算式），以后调超时/重试会当场红，不用再靠人去量"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.66",
+      "date": "2026-10-12",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "防线二：verify_face_presence 新增 --edge/--near/--lowlight 三档可重跑实测（判据调产品同一个 count_faces），并搬进全量自检；防线一：读不到检测框几何新增 geometry_failures 计数 + 限流 WARNING 进诊断包；口径侧：贴边门槛 0.55 / 尺寸闸门 6.5%（贴边按实测缩水系数 0.61 折算）/ 驻留 0.38 秒，每条各有一正一反用例，五处种错逐条验过必红"
+      ],
+      "zero_reason": "本轮没有任何一条是线上用户或实机现场报上来的缺陷：改动只在开发分支与复核里落地，装机版仍是 1.4.65。但**不是零问题** —— N04（渠道 shipped_unnoticed：已上线两年、没人报也没人量）记的就是这件事：自动隐藏窗口的边缘与距离两个维度自 v1.4.40 起从来没有数据，站在镜头边缘半张脸出画的人在暗光下不收窗、约 2 米外路过的人却会收窗，两种都算『用户能看见但说不清规则』。它不进『线上逃逸』那一列是台账自己的口径（只算 online_user / second_machine / installed_field），不是我在给它降级"
+    },
+    {
+      "version": "1.4.67",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "本轮逃逸 1 条（N05，线上用户报障：自动隐藏窗口首点无反馈）。补的防线：菜单开关的显示与点击目标收进同一个口径 _face_guard_switch_on()，并按真实时序采样勾号补三条用例（含反向诚实锁）；AGENTS §5.4 写下两条通用口径（后台排队才变真值的开关必须把中间态算进显示；替身把异步起会话写成同步成功就等于整类缺陷测不到）。同轮带出包外改动：DMG 卷内「一键安装」隐藏 .command 后缀，判据在发版链第 4 步挂载复验与 verify_install_paths R2/S8"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.68",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "防线二第一次可用：随机顺序档（SF_RANDOM_ORDER=1）此前在这台机器上必然 SIGABRT，两个种子（20261012/20261013）各 2899／0／0 是该档历史上第一次跑到底；合入主线后主树复跑 2905／0／0。这一档能跑意味着「顺序相关缺陷」从不可检测变成可检测，比本轮任何一条新用例都值钱。",
+        "防线二补判据并逐条反向验过：tests/test_review_fixes_20261012.py（7 条，含子进程真跑裸解释器，证明没有 bundle 身份时取通知中心不崩）、test_window_poll_message_routing 三条批末收尾判据、test_panel_and_editor_gap_paths 的脏条目那条；六件修复加通知守卫各处种一次错，7 处全部当场判红。",
+        "防线三的账要能读出年龄：coverage_gate --update 写的 updated 改成当天（原先是写死的 2026-10-10），quality_trend 找不到日志时不再报「取不到 git 历史」——那是把人带去查仓库的假线索。",
+        "口径沉淀：AGENTS §5.5 三条（ObjC 异常只能「不碰」、守卫要窄到单个调用且用对象身份判定；兜异常的作用域就是链路语义、批末收尾排在守卫之外；受版本控制的基线里日期这类元数据不许写死）。"
+      ],
+      "zero_reason": "本轮 0 条线上逃逸：六件全部由 2026-10-12 覆盖率轮复核当场抓到、当场修掉，没有一条是线上用户、第二台机器或装机现场报上来的，按 ESCAPE_CHANNELS（online_user/second_machine/installed_field）口径不占逃逸数。但**不是零问题** —— 其中两件已经随产物发出去过：`_poll` 的批末调用长期在兜异常之外（任一 OTA handler 抛错就跳过本拍重绘，表现是「点了检查更新没反应」），`target_panel._as_slot` 遇非 dict 的遗留条目会从构造函数抛 AttributeError（表现是「点铃铛没反应」）。之所以没有用户报上来：前者要队列里恰好有一条写错的 handler，后者要 config.json 里真躺着脏条目 —— 两件都属于「发生了也不一定看得见、看见了也说不清是谁」，与 N04 同一族。另两件是防线自己说谎（`--allow-stale-feature` 把整张问题表清空，实测连 .app 不存在都退 0；`coverage_gate --update` 往基线写死日期），本轮不重复登记，全文记在 outputs/复核批五件待修与随机序崩溃-实测-2026-10-13.md 与 AGENTS §5.5。"
+    },
+    {
+      "version": "1.4.69",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "本轮是产品要求（负责人看图提的两件事：菜单行首加图标、「导出诊断信息」改名「导出诊断包」），没有新逃逸；补的防线是三层可失败的判据 tests/test_menu_row_icons.py（出图层：五张图两两不同 + 边长与 DPR 成对；行为层：四行有图、版本行没图、眼睛图标取自 _face_guard_switch_on() 这一个口径、菜单开着时 300ms 刷新跟着换、取不到图时退回「无图标 + 勾号」而不是留空格；像素层：真帧里图标落在文字左边，且开关两态画的不是一张图）。像素列的右界**取自同一帧版本行文字的起点**而不是写死像素数，换 DPR/换字体不会把判据变成在量别的东西。五处种错全部实测判红：忘贴图 / 眼睛不换图 / 文案退回旧名 / 出图不标 DPR / 整体取不到图。",
+        "一条 Qt 机制实测进代码与 AGENTS §5.8：**同一个菜单行有图标时 Qt 不画勾选框**（离屏量得：无图标时勾在 x10..16、文字 x32；加图标后图标占 x8..24、文字 x43、勾那一整列空白）。所以 v1.4.67 那条「显示与点击目标共用同一个口径」的约束换了载体——状态由两枚眼睛表达，取值函数与刷新回调一个都不许另写。"
+      ],
+      "zero_reason": "本轮 0 条线上逃逸：改动来自负责人 2026-10-13 看菜单截图提的产品要求，不是 online_user / second_machine / installed_field 三条通道里的任何一条。"
+    },
+    {
+      "version": "1.4.70",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "本轮逃逸 1 条（N06，负责人实机报障：浏览器全屏时右键弹不出菜单）。补的防线：弹层 Space 补齐收进一处应用级 Show 钩子 + 按节拍续补，判据 18 条含九处种错必红，口径与三条否证进 AGENTS §5.9。定位 153.5 分钟里有一次改道值得记账：第一轮取证只量到『258 的窗在全屏 Space 里 0/15 在屏』就下了『缺一位』的结论，第二轮换成立即新建的窗照样看得见 —— 差别的时机不在那一位，而在补齐要持续到窗口完成上屏。教训通用：**用一次对照实验就锁定根因，等于把'相关'当'因果'**；这类缺陷要按'同一种窗、不同建立时机'两形都量一遍才许写进对外文案"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.71",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 2,
+      "defense_added": [
+        "分时区拖动位移与短点击分流；Qt失活策略与原生隐藏/输入漂移修复；真NSWindow测试及诊断属性"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.74",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "本版包含待发 N10 更新弹窗显示修复（online_user，计 1 逃逸），以及 N09 下载复用修复（shipped_unnoticed，不计用户逃逸）。72/73 为待发预留号，本次统一实际交付为 74。",
+        "macOS 兼容核查新增真 Mach-O 系统门槛/架构/外部依赖门禁及四处种错自检；Qt wheel/SIP 精确锁定；部分摄像头会话失败解绑停机、Vision 返回形状、CF 空指针和 CGS 降级留痕负向判据。26 本轮无实机，不冒称通过。"
+      ],
+      "zero_reason": null
+    },
+    {
+      "version": "1.4.75",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "拒绝刷新后的临时地址时仅有界回到签名原入口，负向验证不放宽重定向/哈希；沿用1.4.74全部更新弹窗专项。"
+      ],
+      "zero_reason": "没有新的用户报障，N11为1.4.74发布后额外客户端整包复验发现的shipped_unnoticed，真实回源对照全包SHA256已通过。"
+    },
+    {
+      "version": "1.4.76",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "诊断自动采集 state.json 与发版链 3.9 诊断覆盖闸门：改过的产品模块必须有 curated/auto 现场或明确申报。",
+        "人脸守卫、毛玻璃与退出清理的失败路径补强：锁竞态、线程创建失败、资源释放和晚到回调均有行为测试。",
+        "Qt 翻译资源精简限定在三种语言，资源完整性、闭包、冻结冒烟和真实产物版本核验。"
+      ],
+      "zero_reason": "本轮没有 online_user、second_machine 或 installed_field 新报障；诊断自动采集、资源精简与 native failure cleanup 均来自发布前复核/覆盖率补强，已由完整回归、产物闭包和失败路径专项验证。"
+    },
+    {
+      "version": "1.4.77",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "一键安装脚本拒绝非法等待参数，并在搬动旧版前确认目标目录与废纸篓可用。",
+        "一键安装脚本增加按安装目录计算的 mkdir 原子锁，重复双击只允许一场安装继续；两条路径均由真实脚本夹具覆盖。"
+      ],
+      "zero_reason": "本轮没有 online_user、second_machine 或 installed_field 新报障；修复来自最近30版复盘中对首装并发与参数边界的补查，已由3366条全量回归、安装路线和产物冒烟验证。"
+    },
+    {
+      "version": "1.4.78",
+      "date": "2026-10-13",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "一键安装流程改为暂存包先完成递归标签清理与签名校验，再切换正式路径；暂存失败不触碰旧版，切换失败尝试把旧版恢复到原位。",
+        "补齐等待时间为零、非法等待值、重复双击、内层标签清理失败和暂存包残留等异常路径；安装专项、安装路线和15项变异自检均覆盖。"
+      ],
+      "zero_reason": "本轮没有 online_user、second_machine 或 installed_field 新报障；本轮改动来自发布前一键安装极端场景走查，已由3367条全量回归、安装路线、产物冒烟和DMG真挂载核验。"
+    },
+    {
+      "version": "1.4.79",
+      "date": "2026-10-14",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "置顶复核看门狗改用 Qt CoarseTimer，保留 250ms 响应上限并减少 macOS 无效唤醒；行情刷新、价格动画和拖拽路径保持精确定时。",
+        "专项性能/动画/输入测试与3367条全量回归通过；产物闭包、真产物冒烟、macOS兼容性、安装路线和诊断覆盖闸门均已纳入发布链。"
+      ],
+      "zero_reason": "本轮没有 online_user、second_machine 或 installed_field 新报障；改动来自发布前性能功耗专项优化，已由完整回归、定向交互测试和产物级发布关卡验证。"
+    },
+    {
+      "version": "1.4.80",
+      "date": "2026-10-14",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "tests/test_auction.py 六项行为测试覆盖竞价轮询、阶段边界、09:15唤醒、休市排除、停牌误判与真实绘制；正式发布必须通过完整回归及产物链。"
+      ],
+      "zero_reason": "本轮是用户新增集合竞价刷新和标识需求，无新增线上用户或第二台机器报障；未验证实际竞价虚拟撮合价，已明确记入发布说明。"
+    },
+    {
+      "version": "1.4.81",
+      "date": "2026-10-14",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [],
+      "zero_reason": "承接已验证的集合竞价修复，提升版本避免覆盖线上1.4.80同名资产；本轮未发现新增线上逃逸。"
+    },
+    {
+      "version": "1.4.82",
+      "date": "2026-10-14",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "自动检查发现新版后后台完成更新包下载与校验，避免用户先确认再等待下载。",
+        "下载完成后的更新内容、暂不更新、更新并重启应用均由系统弹窗行为测试覆盖；暂不更新保留已校验包并支持后续复用。"
+      ],
+      "zero_reason": "本轮为用户新增自动更新交互需求，未发现新的线上逃逸；自动下载、延后安装、重启交接及更新说明展示均由专项回归覆盖。"
+    },
+    {
+      "version": "1.4.83",
+      "date": "2026-10-14",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "诊断 ZIP 完整关闭后通过排他硬链接原子发布，重名与符号链接均不覆盖；失败清理临时文件并留痕。",
+        "统一诊断快照、日志、崩溃报告、失败摘要和自动采集异常的凭据/家目录脱敏；非有限数、对象上限、取值失败均留下可读证据。",
+        "大日志按有上限的尾部读取，脱敏快路径和低成本压缩减少主线程导出耗时；修复主屏标记和方法回调形式的诊断覆盖漏判。",
+        "补齐 Basic/Digest Authorization、查询凭据后缀和 JSON signature 脱敏矩阵；合并搜索放大镜图标，正常/禁用/降级路径均由真实像素测试守护。"
+      ],
+      "zero_reason": "本轮完成导出诊断包完整走查并补齐失败路径测试，未发现新增线上逃逸；本轮风险全部落到原子导出、隐私脱敏、严格 JSON 与 export_issues/truncated 反向门禁。"
+    },
+    {
+      "version": "1.4.84",
+      "date": "2026-10-14",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "搜索输入意图、后台代码核验、报价来源时间和目标价逐笔判断均有行为回归。",
+        "诊断凭据统一脱敏、用户 API 凭据钥匙串读回确认、网络响应上限与 HTTPS 跳转、进程锁和更新残留回收均有负向测试。",
+        "App Nap 改为允许系统闲置休眠，诊断导出、首屏缓存和摄像头退出收尾不再阻塞用户数据保存。"
+      ],
+      "zero_reason": "本轮只做本机质量修复，不以电池续航、双设备或物理断电作为发布验收；这些项目按用户明确要求跳过，不计入通过结论。"
+    },
+    {
+      "version": "1.4.85",
+      "date": "2026-10-14",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "公开文档版本及内容硬闸门；对应源码全部可达历史秘密与个人信息扫描；公开CI与匿名下载实测"
+      ],
+      "zero_reason": "本轮补齐公开交付资料；未报告新增线上运行故障，不把文档缺漏虚记为已验证运行逃逸"
+    }
+  ]
+}

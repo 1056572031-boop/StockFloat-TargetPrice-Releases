@@ -1,0 +1,486 @@
+# -*- coding: utf-8 -*-
+"""OTA 更新助手（updater/update_helper.sh）的端到端用例（v1.4.59 起，S6）。
+
+为什么这一层非补不可
+--------------------
+AGENTS §3 记着一条实测事实：v1.4.55 改名漏改了助手里的包内顶层名，**1.4.55 起已装用户
+一次都没能自更新成功，而全量回归一直是绿的** —— 原因是从来没有任何用例跑过这个 shell
+助手。改一个包内脚本却全绿，这就是"防线盲区"本身。本轮补 S6（去掉 /usr/bin/python3
+依赖、回退包只留一份）时同一条盲区又抓到一处：助手装完之后用来确认新进程存活的
+`new_exec` 写死了旧的可执行文件名，改名后**必然**判 restart_new_app_failed 并回滚掉
+装好了的新版；它一直没露头，只是因为更早的 archive_layout_invalid 先把流程挡住了。
+
+判据口径
+--------
+不验"装成功"（那会真的在用户屏幕上拉起 app），验**它停在哪一站**：助手每一步都把
+状态写进 result.json，停在预期那一站就是那条路线的证据。夹具 app 一律**故意不签名**，
+于是所有正当输入都停在 new_app_signature_invalid —— 这恰好证明解包、命名、软链接边界、
+哈希、磁盘预检全过了；而缺陷输入必须停在更早的那一站。
+"""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+try:
+    from _base import SFCase                  # noqa: E402
+except ImportError:                           # 以包形式被 discover 导入时
+    from tests._base import SFCase            # noqa: E402
+
+HELPER = ROOT / "updater" / "update_helper.sh"
+BUNDLE_ID = "com.skyrocket.app"
+APP_NAME = "Skyrocket.app"
+
+# 助手在每一站的"停站理由"（result.json 的 message）。测试断言的是站名，不是行号。
+STATION_OK_UNTIL_SIGNATURE = "new_app_signature_invalid"
+
+
+def _make_app(parent: pathlib.Path, name: str = APP_NAME, version: str = "9.9.9") -> pathlib.Path:
+    """最小可辨识的 .app 替身，**故意不签名**（见模块 docstring 的判据口径）。"""
+    app = parent / name
+    (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
+    stem = name[:-4]
+    (app / "Contents" / "Info.plist").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0"><dict>'
+        '<key>CFBundleIdentifier</key><string>%s</string>'
+        '<key>CFBundleShortVersionString</key><string>%s</string>'
+        '<key>CFBundleName</key><string>%s</string>'
+        '<key>CFBundleExecutable</key><string>%s</string>'
+        '<key>CFBundlePackageType</key><string>APPL</string>'
+        '</dict></plist>\n' % (BUNDLE_ID, version, stem, stem), encoding="utf-8")
+    (app / "Contents" / "MacOS" / stem).write_bytes(b"\0\0\0\0")
+    return app
+
+
+def _zip(app: pathlib.Path, out: pathlib.Path) -> pathlib.Path:
+    """ditto -c -k --keepParent：真实 OTA 包就是这么打的，软链接也按链接条目存。"""
+    p = subprocess.run(["/usr/bin/ditto", "-c", "-k", "--keepParent",
+                        str(app), str(out)], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise AssertionError("造 zip 失败：" + (p.stderr or p.stdout)[-200:])
+    return out
+
+
+class _HelperCase(SFCase):
+    """公共夹具：一个临时"应用程序"目录 + 一份旧版 + 一次助手调用。"""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="sf_helper_"))
+        self.applications = self.tmp / "Applications"
+        self.applications.mkdir()
+        self.old = _make_app(self.applications, version="1.0.0")
+        self.work = self.tmp / "work"
+        self.work.mkdir()
+
+    def build_archive(self, mutate=None):
+        """造一份 OTA zip；mutate(app) 在被打包前改内容（加软链接/改plist）。"""
+        stage = self.work / "stage"
+        stage.mkdir()
+        app = _make_app(stage)
+        if mutate:
+            mutate(app)
+        return _zip(app, self.work / "ota.zip")
+
+    def run_helper(self, archive, target=None):
+        """跑**真助手**，返回它停在的那一站（result.json 的 message）。
+
+        --pid 用一个必然不存在的号，助手立刻认为主程序已退出，不等 20 秒。
+        """
+        target = target or self.old
+        result = self.work / "result.json"
+        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
+                             capture_output=True, text=True).stdout.split()[0]
+        proc = subprocess.run(["/bin/sh", str(HELPER),
+                               "--pid", "2147483646", "--archive", str(archive),
+                               "--sha256", sha, "--version", "9.9.9",
+                               "--target", str(target), "--result", str(result)],
+                              capture_output=True, text=True, errors="replace",
+                              timeout=120)
+        if not result.is_file():
+            raise AssertionError("助手没写 result.json（rc=%s）：%s" % (
+                proc.returncode, (proc.stderr or proc.stdout)[-300:]))
+        payload = json.loads(result.read_text(encoding="utf-8"))
+        return str(payload.get("message", "")), payload
+
+    def station(self, archive, target=None):
+        return self.run_helper(archive, target)[0]
+
+
+class TestHelperAcceptsGoodArchive(_HelperCase):
+    """正当输入：解包/命名/软链接/预检这一整段必须一路走到签名那一站。"""
+
+    def test_plain_app_reaches_signature_check(self):
+        got = self.station(self.build_archive())
+        self.assertEqual(got, STATION_OK_UNTIL_SIGNATURE,
+                         "正常包没走到签名步，说明解包之前的某一步被误拒：" + got)
+
+    def test_relative_symlink_inside_app_is_allowed(self):
+        """PyInstaller 用相对软链接承载 dylib —— 一刀切禁链接会把真包拒了。"""
+        def add_link(app):
+            lib = app / "Contents" / "Frameworks"
+            lib.mkdir(parents=True, exist_ok=True)
+            (lib / "libreal.dylib").write_bytes(b"\0\0\0\0")
+            os.symlink("libreal.dylib", str(lib / "libalias.dylib"))
+        got = self.station(self.build_archive(add_link))
+        self.assertEqual(got, STATION_OK_UNTIL_SIGNATURE,
+                         "包内合法相对软链接被误拒（S6 换实现时最容易改过头的一处）：" + got)
+
+    def test_spaces_and_chinese_names_survive(self):
+        """条目名里有空格/中文时，预检不能把名字切错而误判成穿越路径。"""
+        def add_odd_names(app):
+            d = app / "Contents" / "Resources" / "两个 名字"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "a b.txt").write_text("x", encoding="utf-8")
+            (d / "说明 文档.txt").write_text("x", encoding="utf-8")
+        got = self.station(self.build_archive(add_odd_names))
+        self.assertEqual(got, STATION_OK_UNTIL_SIGNATURE,
+                         "含空格与中文的条目名被预检误拒：" + got)
+
+
+class TestHelperRejectsBadArchive(_HelperCase):
+    """缺陷输入：必须停在对应那一站，且不许走到替换动作（旧包原位还在）。"""
+
+    def _old_untouched(self):
+        return (self.old / "Contents" / "MacOS" / "Skyrocket").read_bytes() == b"\0\0\0\0"
+
+    def test_symlink_escaping_the_bundle_is_rejected(self):
+        def escape(app):
+            d = app / "Contents" / "MacOS"
+            os.symlink("../../../../etc/hosts", str(d / "sneaky"))
+        got = self.station(self.build_archive(escape))
+        self.assertEqual(got, "archive_symlink_invalid",
+                         "逃出 app 的软链接没被拒（zip slip 类缺陷）：" + got)
+
+    def test_absolute_symlink_target_is_rejected(self):
+        def absolute(app):
+            d = app / "Contents" / "MacOS"
+            os.symlink("/etc/hosts", str(d / "abs"))
+        got = self.station(self.build_archive(absolute))
+        self.assertEqual(got, "archive_symlink_invalid",
+                         "指向绝对路径的软链接没被拒：" + got)
+
+    def test_dangling_relative_link_inside_bundle_still_passes(self):
+        """包内悬空相对链接放行：目标解析后仍在 app 里，拒它只会误伤真包。
+
+        旧 Python 版（os.path.realpath）就是放行；换实现时要的是**边界**这条不变量，
+        不是顺手收紧。这条是那条不变量的反向对照，少了它就分不清"检查写对了"和
+        "检查写死了全拒"。
+        """
+        def dangling(app):
+            d = app / "Contents" / "MacOS"
+            os.symlink("根本没有这个目标", str(d / "broken"))
+        got = self.station(self.build_archive(dangling))
+        self.assertEqual(got, STATION_OK_UNTIL_SIGNATURE,
+                         "包内悬空相对链接被误拒：" + got)
+
+    def test_wrong_top_level_name_is_rejected(self):
+        got = self.station(self._wrong_name_archive())
+        self.assertEqual(got, "archive_layout_invalid", "第三种顶层名竟然被接受：" + got)
+
+    def _wrong_name_archive(self):
+        stage = self.work / "wrong"
+        stage.mkdir()
+        app = _make_app(stage, name="Whatever.app")
+        return _zip(app, stage / "wrong.zip")
+
+    def test_traversal_entry_name_is_rejected_before_extract(self):
+        """条目名里带 ..：预检必须在**解压之前**拒掉，否则 ditto 会往工作区外写东西。"""
+        archive = self._zip_with_names([("../evil.txt", b"x"),
+                                        (APP_NAME + "/Contents/Info.plist",
+                                         b"<plist></plist>")])
+        got = self.station(archive)
+        self.assertEqual(got, "archive_preflight_failed",
+                         "穿越路径条目没被预检拦下：" + got)
+        self.assertFalse((self.tmp / "evil.txt").exists(),
+                         "既然拦下了，夹具目录外就不该出现被写出来的文件")
+
+    def test_absolute_entry_name_is_rejected(self):
+        archive = self._zip_with_names([("/etc/evil.txt", b"x"),
+                                         (APP_NAME + "/Contents/Info.plist",
+                                          b"<plist></plist>")])
+        self.assertEqual(self.station(archive), "archive_preflight_failed")
+
+    def test_hash_mismatch_is_rejected(self):
+        """改一个字节 → 哈希对不上，绝不该动用户已装的 app。"""
+        archive = self.build_archive()
+        before = self.old / "Contents" / "Info.plist"
+        keep = before.read_bytes()
+        tail = archive.read_bytes()[-1:]
+        archive.write_bytes(archive.read_bytes()[:-1] + (b"\n" if tail != b"\n" else b" "))
+        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
+                             capture_output=True, text=True).stdout.split()[0]
+        result = self.work / "result.json"
+        subprocess.run(["/bin/sh", str(HELPER), "--pid", "2147483646",
+                        "--archive", str(archive), "--sha256", "0" * 64,
+                        "--version", "9.9.9", "--target", str(self.old),
+                        "--result", str(result)], capture_output=True, timeout=120)
+        payload = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(payload.get("message"), "archive_hash_mismatch")
+        self.assertEqual(before.read_bytes(), keep, "哈希不对却把用户的 app 换了")
+
+    def _zip_with_names(self, entries):
+        """用 zipfile 造**任意名字**的条目（ditto 造不出穿越/绝对路径，那是被测前提）。"""
+        import zipfile
+        archive = self.work / ("crafted%d.zip" % len(entries))
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in entries:
+                zf.writestr(name, data)
+        return archive
+
+
+class TestHelperNeedsNoDevTools(_HelperCase):
+    """S6 的初衷：装机版那条自动更新通路不许依赖 Command Line Tools。
+
+    口径：这两条断言查的是**依赖本身**（写不存在的绝对解释器路径 = 在没装开发者工具的
+    机器上必失败），不是措辞。为什么不用行为断言代替：无法在不装 CLT 的机器上复现，
+    而助手用的是绝对路径，PATH 屏蔽不掉；能观测到的只有"引用了哪些绝对命令"。
+    行为面由上面那批用例覆盖同一条代码路径 —— 两边合起来才是完整证据。
+    """
+
+    def _helper_text(self):
+        return HELPER.read_text(encoding="utf-8")
+
+    def _code_lines(self):
+        """只留会被 shell 执行的行：注释里必然提到 /usr/bin/python3（那是本轮改掉的说明），
+        按整份文本扫会把围栏变成永远红的关。"""
+        return [ln for ln in self._helper_text().splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+
+    def test_helper_does_not_call_python(self):
+        offenders = [ln.strip()[:80] for ln in self._code_lines()
+                     if any(tok in ln for tok in ("/usr/bin/python", "/usr/local/bin/python",
+                                                  "/opt/homebrew/bin/python"))]
+        self.assertEqual(offenders, [],
+                         "助手又依赖开发者工具里的解释器（那是 Command Line Tools 的桩，"
+                         "没装 CLT 的机器上一执行就失败，OTA 会伪装成包本身有问题）：\n  "
+                         + "\n  ".join(offenders))
+
+    def test_every_absolute_command_the_helper_calls_exists(self):
+        """助手点名的每个绝对路径命令都得是系统件（拼错/被删掉都当场红）。"""
+        import re
+        text = self._helper_text()
+        cmds = set(re.findall(r"(?<![\w./-])(/(?:usr|bin|sbin)/[\w./-]+)", text))
+        self.assertGreaterEqual(len(cmds), 8, "一条命令都没扫到，正则或脚本结构变了")
+        missing = sorted(c for c in cmds if not os.path.exists(c))
+        self.assertEqual(missing, [], "助手引用了本机不存在的命令：" + "、".join(missing))
+
+
+class TestRollbackPrune(_HelperCase):
+    """回退包只留最近一份（S6 第一项）：判据是目录树，不是脚本措辞。
+
+    v1.4.61 起这条**不再是唯一的覆盖**：下面的 TestHelperPositiveRoute 会把助手整条跑到
+    installed。那件新测法补的是"真顺序"（先写 result 再清盘），这个抽段法补的是
+    "多份、顺序、边界"（三份里留哪一份、只有一份时不许动、目的地不存在要能建出来）——
+    两件事各管一段，都留着。抽段法的红线：**只喂助手对外该有的输入**（TARGET/prune_dir），
+    替函数把 parent/base 算好就等于把它自己那一步跳过了（上一版正是这样遮住了缺陷）。
+    """
+
+    def _load_prune_function(self):
+        text = HELPER.read_text(encoding="utf-8")
+        begin, end = "# BEGIN prune_rollbacks", "# END prune_rollbacks"
+        self.assertIn(begin, text, "助手的 prune_rollbacks 起始标记没了 —— 这条路线又没人测了")
+        self.assertIn(end, text, "助手的 prune_rollbacks 结束标记没了")
+        body = text.split(begin, 1)[1].split(end, 1)[0]
+        self.assertIn("prune_rollbacks()", body, "标记之间不再是那个函数，测试前提变了")
+        return body
+
+    def _run(self, names, prune_dir):
+        # v1.4.61：这里只喂 TARGET（助手 externally 就该有的输入），不再替函数把
+        # parent/base 算好 —— 上一版这么写恰好把「parent 被别人覆盖」那枚真缺陷遮住了。
+        target = self.applications / APP_NAME
+        script = ("TARGET='%s'\nprune_dir='%s'\n%s\nprune_rollbacks\n"
+                  % (target, prune_dir, self._load_prune_function()))
+        proc = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                              timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+
+    def _make_rollbacks(self, epochs):
+        names = []
+        for e in epochs:
+            d = self.applications / (".Skyrocket.app.rollback-%d" % e)
+            d.mkdir()
+            (d / "marker").write_text(str(e), encoding="utf-8")
+            names.append(d.name)
+        return names
+
+    def _left(self):
+        return sorted(p.name for p in self.applications.glob(".Skyrocket.app.rollback-*"))
+
+    def test_keeps_only_the_newest(self):
+        prune = self.tmp / "prune"
+        prune.mkdir()
+        self._make_rollbacks([100, 200, 300])
+        self._run([], prune)
+        self.assertEqual(self._left(), [".Skyrocket.app.rollback-300"],
+                         "该只留最新那份（epoch 最大）")
+        moved = sorted(p.name for p in prune.iterdir())
+        self.assertEqual(moved, [".Skyrocket.app.rollback-100",
+                                 ".Skyrocket.app.rollback-200"],
+                         "更早的两份应当被**挪走**（不是删除）到临时目录")
+
+    def test_single_rollback_survives(self):
+        """只有一份时它就是当前版本的回退路径，一份都不许动。"""
+        prune = self.tmp / "prune"
+        prune.mkdir()
+        self._make_rollbacks([500])
+        self._run([], prune)
+        self.assertEqual(self._left(), [".Skyrocket.app.rollback-500"])
+        self.assertEqual(list(prune.iterdir()), [], "没有多余的回退包，就不该挪走任何东西")
+
+    def test_no_rollbacks_and_no_target_dir_is_harmless(self):
+        prune = self.tmp / "prune"
+        prune.mkdir()
+        self._run([], prune)
+        self.assertEqual(list(prune.iterdir()), [],
+                         "没有回退包时不该凭空造出内容（目的地目录可以建，但里面必须空）")
+
+    def test_prune_dir_created_when_missing(self):
+        """目的地不存在时函数要能把它建出来 —— 装机版第一次跑到这里就是这种情况。"""
+        prune = self.tmp / "prune_not_there"
+        self._make_rollbacks([100, 200])
+        self._run([], prune)
+        self.assertTrue(prune.is_dir(), "临时目的地没建 → mv 全部失败，回退包照样堆在 /Applications")
+        self.assertEqual(self._left(), [".Skyrocket.app.rollback-200"])
+
+
+class TestHelperPositiveRoute(_HelperCase):
+    """整条正向路线：真助手 → 装完 → 真把新版拉起来 → 真把陈旧回退包挪走。
+
+    上面那个类把函数体抽出来单独跑，它能证明"剪枝算法本身对"，**证明不了"跑到剪枝
+    那一刻，parent 还指着安装目录"**。v1.4.61 就是被这一层放过的真缺陷：
+    `write_result()` 里那句 `parent="$(dirname "$RESULT")"` 把外层的全局 parent 覆盖成
+    result.json 所在目录，于是写完 installed 之后的剪枝扫的是临时目录，三份回退包一条
+    都没挪走、一声不吭（实测 trace：`ls -1d '/tmp/.../.Skyrocket.app.rollback-*'`）。
+    所以这里必须把助手**跑到 installed**，判据回到目录树与进程本身。
+
+    载荷是最小可启动替身：ad-hoc 签名 + LSUIElement + `/bin/sh` 里跑 sleep（**不用 exec**，
+    否则 argv 变成 /bin/sleep，助手的存活复核 pgrep 就认不出它 —— 这件事我第一次手工
+    复现时就踩过）。绝不在用户屏幕开窗口，绝不碰 /Applications。
+    签名或 LaunchServices 不可用时整体跳过并打印理由（跳过要说为什么，不假装通过）。
+    """
+
+    def _stub_app(self, parent, version):
+        app = parent / APP_NAME
+        (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
+        (app / "Contents" / "Info.plist").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0"><dict>'
+            '<key>CFBundleIdentifier</key><string>%s</string>'
+            '<key>CFBundleShortVersionString</key><string>%s</string>'
+            '<key>CFBundleName</key><string>Skyrocket</string>'
+            '<key>CFBundleExecutable</key><string>Skyrocket</string>'
+            '<key>CFBundlePackageType</key><string>APPL</string>'
+            '<key>LSUIElement</key><true/>'
+            '</dict></plist>\n' % (BUNDLE_ID, version), encoding="utf-8")
+        # 不 exec：让 argv 一直是 <包路径>/Contents/MacOS/Skyrocket，pgrep -f 才认得
+        (app / "Contents" / "MacOS" / "Skyrocket").write_text(
+            "#!/bin/sh\n/bin/sleep 90\n", encoding="utf-8")
+        os.chmod(app / "Contents" / "MacOS" / "Skyrocket", 0o755)
+        sign = subprocess.run(["/usr/bin/codesign", "-s", "-", "--force", "--deep", str(app)],
+                              capture_output=True, text=True)
+        return app, sign
+
+    def test_installed_route_launches_and_prunes_old_rollbacks(self):
+        stub_dir = self.tmp / "probe"
+        stub_dir.mkdir()
+        probe, sign = self._stub_app(stub_dir, "0.0.1")
+        if sign.returncode != 0:
+            self.skipTest("这台机器不能 ad-hoc 签名（codesign 不可用）：正向路线跑不了 —— %s"
+                          % (sign.stderr or "")[-120:])
+        opener = subprocess.run(["/usr/bin/open", str(probe)], capture_output=True, text=True)
+        import time
+        alive = None
+        for _ in range(20):                       # 最多等 4 秒，用轮询代替固定 sleep
+            alive = subprocess.run(["/usr/bin/pgrep", "-f", str(probe / "Contents" / "MacOS" / "Skyrocket")],
+                                   capture_output=True, text=True).stdout.strip()
+            if alive:
+                break
+            time.sleep(0.2)
+        subprocess.run(["/usr/bin/pkill", "-f", str(probe / "Contents" / "MacOS" / "Skyrocket")],
+                       capture_output=True)
+        if opener.returncode != 0 or not alive:
+            self.skipTest("这台机器没有可用的 LaunchServices（open/pgrep 起不了替身）："
+                          "正向路线不判，rc=%s" % opener.returncode)
+
+        # 现场：旧版已装 + 两份陈旧回退包（epoch 比本次运行早）
+        now = int(time.time())
+        seeded = []
+        for back in (90000, 80000):
+            d = self.applications / (".Skyrocket.app.rollback-%d" % (now - back))
+            d.mkdir()
+            seeded.append(d.name)
+        stage = self.work / "stage"
+        stage.mkdir()
+        candidate, cs = self._stub_app(stage, "9.9.9")
+        self.assertEqual(cs.returncode, 0, cs.stderr[-200:])
+        archive = _zip(candidate, self.work / "ota.zip")
+        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
+                             capture_output=True, text=True).stdout.split()[0]
+        target = self.applications / APP_NAME
+        result = self.work / "result.json"          # 故意放在安装目录之外：与生产一致
+        env = dict(os.environ, TMPDIR=str(self.tmp))
+        proc = subprocess.run(["/bin/sh", str(HELPER), "--pid", "2147483646",
+                               "--archive", str(archive), "--sha256", sha,
+                               "--version", "9.9.9", "--target", str(target),
+                               "--result", str(result)],
+                              capture_output=True, text=True, env=env, timeout=180)
+        self.addCleanup(subprocess.run, ["/usr/bin/pkill", "-f",
+                                         str(target / "Contents" / "MacOS" / "Skyrocket")],
+                        capture_output=True)
+        payload = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else {}
+        self.assertEqual(payload.get("status"), "installed",
+                         "正向路线没走到底（rc=%s）：%s / %s" % (
+                             proc.returncode, payload, (proc.stderr or "")[-200:]))
+
+        left = sorted(p.name for p in self.applications.glob(".Skyrocket.app.rollback-*"))
+        self.assertEqual(len(left), 1,
+                         "装完之后「应用程序」里只该留最近一份回退包，实际剩下：%s" % left)
+        self.assertEqual(sorted(seeded),
+                         sorted(p.name for p in self.tmp.glob("sf_update_rollbacks/*")),
+                         "被挪走的必须是那两份陈旧的，而且只许挪走不许删")
+
+    def test_installed_target_is_the_new_version_and_running(self):
+        """同一批判据里最容易漏的另一半：替换后的那份得真是新版、且真的活着。"""
+        target = self.applications / APP_NAME
+        stage = self.work / "stage"
+        stage.mkdir()
+        candidate, cs = self._stub_app(stage, "9.9.9")
+        if cs.returncode != 0:
+            self.skipTest("codesign 不可用，正向路线不判")
+        archive = _zip(candidate, self.work / "ota.zip")
+        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
+                             capture_output=True, text=True).stdout.split()[0]
+        result = self.work / "result.json"
+        env = dict(os.environ, TMPDIR=str(self.tmp))
+        subprocess.run(["/bin/sh", str(HELPER), "--pid", "2147483646",
+                        "--archive", str(archive), "--sha256", sha, "--version", "9.9.9",
+                        "--target", str(target), "--result", str(result)],
+                       capture_output=True, text=True, env=env, timeout=180)
+        self.addCleanup(subprocess.run, ["/usr/bin/pkill", "-f",
+                                         str(target / "Contents" / "MacOS" / "Skyrocket")],
+                        capture_output=True)
+        payload = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else {}
+        if payload.get("status") != "installed":
+            self.skipTest("本机起不了替身（status=%s），这条跟着正向路线一起跳过"
+                          % payload.get("status"))
+        plist = (target / "Contents" / "Info.plist").read_text(encoding="utf-8")
+        self.assertIn("<string>9.9.9</string>", plist, "装完的还是旧版")
+        got = subprocess.run(["/usr/bin/pgrep", "-f", str(target / "Contents" / "MacOS" / "Skyrocket")],
+                             capture_output=True, text=True).stdout.strip()
+        self.assertTrue(got, "助手说装好了，但按 Info.plist 里的可执行名找不到进程")
+
+
+if __name__ == "__main__":
+    import unittest
+    unittest.main(verbosity=2)
