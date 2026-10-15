@@ -58,6 +58,7 @@ import verify_dmg_pyz as VD          # noqa: E402  复用 Info.plist / 可执行
 MARK_STARTUP = "STARTUP v"
 MARK_FIRST_FRAME = "first-frame painted"
 MARK_UNCAUGHT = "UNCAUGHT"
+POST_FRAME_OBSERVATION_SECONDS = 3.0
 # 本工具**自己**用 terminate() 收尾，所以"干净退出"只有两种可能：
 #   0    产品自己处理了退出并正常返回；
 #   -15  被 SIGTERM 直接杀死（Python 的 returncode 用**负信号号**表示）。
@@ -135,18 +136,25 @@ def run_smoke(app: pathlib.Path, platform: str = "offscreen",
                                 stderr=subprocess.STDOUT)
         report["started"] = True
         deadline = time.time() + timeout
+        first_frame_at = None
         markers = scan_markers("")
         while time.time() < deadline:
             text = log_path.read_text(encoding="utf-8", errors="replace") \
                 if log_path.exists() else ""
             markers = scan_markers(text)
-            if markers["first_frame"] and not markers["uncaught"]:
-                break
+            if markers["first_frame"] and first_frame_at is None:
+                first_frame_at = time.monotonic()
+                deadline = max(deadline, time.time() + POST_FRAME_OBSERVATION_SECONDS)
             if proc.poll() is not None:          # 进程提前退出：等再久也不会有首帧
+                break
+            if (first_frame_at is not None and not markers["uncaught"]
+                    and time.monotonic() - first_frame_at >= POST_FRAME_OBSERVATION_SECONDS):
                 break
             time.sleep(0.2)
         report.update(markers)
         report["crashed_early"] = proc.poll() is not None
+        report["post_frame_seconds"] = (time.monotonic() - first_frame_at
+                                        if first_frame_at is not None else 0.0)
         # 收口：只杀自己拉起的这个 pid
         if proc.poll() is None:
             proc.terminate()
@@ -202,6 +210,8 @@ def _judge(report: dict, allow_swallow: bool = False) -> int:
          "一行都没有 = 进程没进到主流程（缺 Qt 插件/签名被拒/导入期崩溃）"),
         ("日志出现 first-frame painted", bool(report.get("first_frame")),
          "起来了但没画完首帧 = 用户看到的『只有背景/一片空白』"),
+        ("首帧后进程持续存活", not report.get("crashed_early"),
+         "进程在观察期内自行退出，首帧不能证明启动完成"),
         ("无 UNCAUGHT 未捕获异常", not report.get("uncaught"),
          "; ".join((report.get("uncaught") or [])[:2])),
         ("退出码在干净集合内", exit_code_ok(report.get("returncode")),

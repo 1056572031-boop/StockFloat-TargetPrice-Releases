@@ -2,21 +2,21 @@
 
 Mac 桌面上的股票行情小窗口。查看价格、涨跌幅和分时图，为股票设置目标价，到价时接收系统通知。它不连接券商账户，也不能下单。
 
-当前版本：**v1.4.87 Beta**。更新日期：2026-10-15。
+当前版本：**v1.4.88 Beta**。更新日期：2026-10-15。
 
 ## 这版改了什么
 
-支持的系统采用原生暗黑玻璃，保留95%玻璃层与164暗化；不支持或创建失败自动回退，文字和图表布局不变。保留主窗口职责拆分与旧数据兼容。
+修复 macOS 后台调度回调导致的启动闪退；补齐原生桥接回归和首帧后存活检查，保留原生玻璃、自选和目标价设置。
 
 ## 下载与安装
 
 适用于 **Apple 芯片的 Mac**，要求 **macOS 13 或更高版本**；不提供 Intel、Windows 或 Linux 安装包。macOS 27 已在本机核验，macOS 26 和其他版本仍需实机验收，最低版本要求不代表全部版本均已测试。
 
-1. 打开[官方下载页面](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)，下载 `Skyrocket-V1.4.87.dmg`，不要下载页面底部 GitHub 自动生成的 Source code 作为安装包。
+1. 打开[官方下载页面](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)，下载 `Skyrocket-V1.4.88.dmg`，不要下载页面底部 GitHub 自动生成的 Source code 作为安装包。
 2. 双击打开 DMG，再双击磁盘里的「一键安装」。它会将程序安装到「应用程序」，旧版移到废纸篓保留，失败时显示原因。
 3. 安装后打开 `Skyrocket`。若被系统拦截，先阅读[完整安装说明](docs/INSTALL.md)，核对来源和文件校验值。
 
-发行页同时提供 `Skyrocket-1.4.87-SHA256SUMS.txt`，列出本版 DMG、应用 ZIP 和源码 ZIP 的 SHA-256。完整安装说明有校验命令；无法确认来源或校验不一致时不要运行。
+发行页同时提供 `Skyrocket-1.4.88-SHA256SUMS.txt`，列出本版 DMG、应用 ZIP 和源码 ZIP 的 SHA-256。完整安装说明有校验命令；无法确认来源或校验不一致时不要运行。
 
 **未签名、未公证：本项目没有 Apple Developer ID 开发者签名，也没有 Apple 公证。** 包内只有本地临时签名（ad-hoc），用于完整性检查，不能证明开发者身份或通过 Apple 安全审查。首次打开可能出现「身份不明的开发者」或「已损坏」提示；不要因此盲目放行，校验不一致或来源不明时应停止安装。
 
@@ -51,7 +51,7 @@ Mac 桌面上的股票行情小窗口。查看价格、涨跌幅和分时图，�
 
 本项目源码采用 **GPL-3.0-only**，全文见 [LICENSE](LICENSE)。可以按许可使用、修改和再分发软件；分发修改版或程序时，需要履行对应源码、许可告知等义务。第三方组件和字体按各自许可使用，见 [NOTICE.md](NOTICE.md) 与 [fonts/OFL-D-DIN.txt](fonts/OFL-D-DIN.txt)。
 
-[公开对应源码](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/tree/public-source)包含程序、测试和构建配置；发行页另附本版 `Skyrocket-1.4.87-source.zip`。内部个人资料、运行数据和更新签名私钥不随源码提供。
+[公开对应源码](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/tree/public-source)包含程序、测试和构建配置；发行页另附本版 `Skyrocket-1.4.88-source.zip`。内部个人资料、运行数据和更新签名私钥不随源码提供。
 
 ## 反馈与安全问题
 

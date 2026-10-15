@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-14",
+  "updated": "2026-10-15",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -2372,6 +2372,30 @@
       "locate_unknown_reason": null,
       "source": "已发布1.4.74客户端真实整包下载两次403；有界回源对照27836457字节SHA256通过",
       "evidence": "verified"
+    },
+    {
+      "id": "N12",
+      "symptom": "Skyrocket 1.4.86 启动后后台调度回调抛 TypeError 并 SIGABRT",
+      "component": "native_scheduler",
+      "channel": "online_user",
+      "introduced_version": "1.4.84",
+      "introduced_note": null,
+      "found_version": "1.4.86",
+      "fixed_version": "1.4.88",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "PyObjC 12.2.2 将 scheduleWithBlock: 的嵌套 completion block 元数据错展平为 NSInteger；原用例只调用 Mock completion；冻结冒烟首帧即退出，没有继续观察原生后台回调。",
+      "defense_added": [
+        "tests/test_quality_maintenance.py + tests/_maintenance_child.py: compiled Objective-C nested completion block, actual installed PYZ execution, and unpinned mutation; callback/complete errors logged and contained",
+        "tools/smoke_frozen_app.py + tests/test_frozen_smoke_lifecycle.py: observe process at least 3 seconds after first frame; reject early exit"
+      ],
+      "observed_at": "2026-10-15T06:49:25+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-10-15 07:12:38+08:00",
+      "locate_unknown_reason": null,
+      "source": "DiagnosticReports/Skyrocket-2026-10-15-064925.ips；直接执行 /Applications/Skyrocket.app/Contents/MacOS/Skyrocket，退出 134，OC_PythonException: int object is not callable",
+      "evidence": "verified"
     }
   ],
   "rounds": [
@@ -2842,6 +2866,17 @@
       "zero_reason": "本轮补齐公开交付资料；未报告新增线上运行故障，不把文档缺漏虚记为已验证运行逃逸"
     },
     {
+      "version": "1.4.86",
+      "date": "2026-10-15",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "主窗口消息路由、更新后台、诊断后台、行情线程、展示状态、目标价、人脸守卫、几何与生命周期拆分模块及对应单测",
+        "发版链完整回归与覆盖率门禁、产物特征核验、诊断覆盖核对和安装/OTA路线回读"
+      ],
+      "zero_reason": "本轮为主窗口职责拆分与发布回归轮；上线前完整回归、静态、诊断覆盖、产物闭包和安装路线均已核验，未发现已发布逃逸。"
+    },
+    {
       "version": "1.4.87",
       "date": "2026-10-15",
       "reviewed": true,
@@ -2850,6 +2885,16 @@
         "原生玻璃创建与配置失败回退、上屏后失败无残窗、尺寸同步及层级自愈均有行为回归；诊断记录实际材质及回退原因。"
       ],
       "zero_reason": "本轮为视觉材质增强；本机源码原生功能和短时资源对照已验，未将其他机器、GPU能耗或长期耐久写成通过。"
+    },
+    {
+      "version": "1.4.88",
+      "date": "2026-10-15",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "Installed 1.4.87 PYZ fails real nested native callback; pinned completion metadata, compiled Objective-C and unpinned mutation tests; post-first-frame survival gate"
+      ],
+      "zero_reason": null
     }
   ]
 }

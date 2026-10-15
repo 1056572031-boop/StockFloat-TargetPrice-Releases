@@ -25,6 +25,9 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.88
+# sf_maintenance 的失败计数由 runtime.maintenance 导出，异常写入 debug.log；保留已发布原生玻璃诊断。
+
 version 1.4.81
 # 本轮 sf_quote 已由 curated 诊断导出闭包覆盖，无新增常驻运行态。
 
@@ -77,3 +80,8 @@ version 1.4.86
 version 1.4.87
 # Main-window material backend, dimming and fallback reason are included in glass.json.
 # 本轮发布主窗职责拆分；新控制器的现场已通过 runtime.json 的 controllers 分组或既有日志通路外发。
+skip sf_diagnostics_controller transient export worker only; completion and failures are reported by the existing diagnostics signal and log
+skip sf_window_geometry pure coordinate calculations; no machine-specific state is held
+skip sf_window_message_router stateless queue coalescing; it owns no persistent runtime state
+skip sf_window_state plain value containers whose fields are exported through the host runtime snapshot
+skip sf_quote_runtime thread-handle owner; worker liveness is exported by the host runtime and no separate payload exists
