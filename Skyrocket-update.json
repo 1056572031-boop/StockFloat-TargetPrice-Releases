@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.91",
-  "published_at": "2026-10-15T09:30:20Z",
+  "version": "1.4.92",
+  "published_at": "2026-10-15T15:27:50Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 修复启动时反复要求钥匙串密码，默认行情无需授权\n2. 自动修复旧版默认接口引用，保留自选与目标价\n3. 私人接口无法安全读取时回退默认源，不再反复弹窗",
+  "notes": "1. 换股新增0.8秒渐进模糊过渡，按钮与回车一致\n2. 缓存模糊层并平滑插值，保留清晰边框与按钮\n3. 统一弹窗材质与圆角，保留钥匙串修复和原有设置",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.91-macos.zip",
-    "size": 26155677,
-    "sha256": "582cacc0bf0dd99c7f05fb834b9bb5c8c72d40a4809c6e9e40c76d08998705f3"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.92-macos.zip",
+    "size": 26172474,
+    "sha256": "fc9b00cd1cacdd3a7a0421850f732f5e8b1f877b0e313797ac6a948b0faf8375"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "lCj8O+BEEsYe5g0jTJTf+dxpk3ARBNAkwwoQ7rJtrRFoID4ehV9FdgKl/USN+GyrSJnFma0jJwjzRlDJbkGCAQ=="
+    "value": "SRsQxlodVKuXKhdYym4tl+uH1eBH9IBng2C1mlcgOFXJ3XdgxYFJqUMZlWcliFbZQek0s/gelocfHNizgiLZAw=="
   }
 }
