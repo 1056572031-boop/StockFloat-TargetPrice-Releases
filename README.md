@@ -2,23 +2,25 @@
 
 Mac 桌面上的股票行情小窗口。查看价格、涨跌幅和分时图，为股票设置目标价，到价时接收系统通知。它不连接券商账户，也不能下单。
 
-当前版本：**v1.4.91 Beta**。更新日期：2026-10-15。
+当前版本：**v1.4.92 Beta**。更新日期：2026-10-15。
+
+本版为 Beta 发行版，安装包、自动更新和对应源码经发布流程同步提供。
 
 ## 这版改了什么
 
-1. 修复启动时反复要求钥匙串密码，默认行情无需授权
-2. 自动修复旧版默认接口引用，保留自选与目标价
-3. 私人接口无法安全读取时回退默认源，不再反复弹窗
+1. 换股新增0.8秒渐进模糊过渡，按钮与回车一致
+2. 缓存模糊层并平滑插值，保留清晰边框与按钮
+3. 统一弹窗材质与圆角，保留钥匙串修复和原有设置
 
 ## 下载与安装
 
 适用于 **Apple 芯片的 Mac**，要求 **macOS 13 或更高版本**；不提供 Intel、Windows 或 Linux 安装包。macOS 27 已在本机核验，macOS 26 和其他版本仍需实机验收，最低版本要求不代表全部版本均已测试。
 
-1. 打开[官方下载页面](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)，下载 `Skyrocket-V1.4.91.dmg`，不要下载页面底部 GitHub 自动生成的 Source code 作为安装包。
+1. 打开[官方下载页面](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)，下载 `Skyrocket-V1.4.92.dmg`，不要下载页面底部 GitHub 自动生成的 Source code 作为安装包。
 2. 双击打开 DMG，再双击磁盘里的「一键安装」。它会将程序安装到「应用程序」，旧版移到废纸篓保留，失败时显示原因。
 3. 安装后打开 `Skyrocket`。若被系统拦截，先阅读[完整安装说明](docs/INSTALL.md)，核对来源和文件校验值。
 
-发行页同时提供 `Skyrocket-1.4.91-SHA256SUMS.txt`，列出本版 DMG、应用 ZIP 和源码 ZIP 的 SHA-256。完整安装说明有校验命令；无法确认来源或校验不一致时不要运行。
+发行页同时提供 `Skyrocket-1.4.92-SHA256SUMS.txt`，列出本版 DMG、应用 ZIP 和源码 ZIP 的 SHA-256。完整安装说明有校验命令；无法确认来源或校验不一致时不要运行。
 
 **未签名、未公证：本项目没有 Apple Developer ID 开发者签名，也没有 Apple 公证。** 本地签名用于完整性与版本身份检查：历史发行包使用临时 ad-hoc，后续固定签名发行包使用项目自签名证书；两者均不代表 Apple 已确认开发者身份或审核程序。首次打开可能出现「身份不明的开发者」或「已损坏」提示；不要因此盲目放行，校验不一致或来源不明时应停止安装。固定签名的摄像头授权延续方案与迁移边界见[专项说明](docs/STABLE_CAMERA_AUTH.md)。
 
@@ -54,7 +56,7 @@ Mac 桌面上的股票行情小窗口。查看价格、涨跌幅和分时图，�
 
 本项目源码采用 **GPL-3.0-only**，全文见 [LICENSE](LICENSE)。可以按许可使用、修改和再分发软件；分发修改版或程序时，需要履行对应源码、许可告知等义务。第三方组件和字体按各自许可使用，见 [NOTICE.md](NOTICE.md) 与 [fonts/OFL-D-DIN.txt](fonts/OFL-D-DIN.txt)。
 
-[公开对应源码](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/tree/public-source)包含程序、测试和构建配置；发行页另附本版 `Skyrocket-1.4.90-source.zip`。内部个人资料、运行数据和更新签名私钥不随源码提供。
+[公开对应源码](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/tree/public-source)包含发行版本的程序、测试和构建配置，与本版安装包同步提供。内部个人资料、运行数据和更新签名私钥不随源码提供。
 
 ## 反馈与安全问题
 
