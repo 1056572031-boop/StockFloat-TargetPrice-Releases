@@ -114,7 +114,7 @@ class TestRenderPerformance(SFCase):
     def test_rim_is_cached_but_color_is_live(self):
         host = RenderHost()
         image_for(host, draw_background)
-        with mock.patch.object(render, "smooth_round_rect_path", wraps=render.smooth_round_rect_path) as paths:
+        with mock.patch.object(render, "liquid_glass_dim_path", wraps=render.liquid_glass_dim_path) as paths:
             first = image_for(host, draw_background)
             vars(host)["_glass_surface_rim"] = lambda: (126, 145, 173, 64)
             second = image_for(host, draw_background)

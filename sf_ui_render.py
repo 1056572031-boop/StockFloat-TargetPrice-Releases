@@ -5,12 +5,14 @@ import math
 import os
 import sys
 import time
+from typing import cast
+from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QFontInfo, QFontMetrics, QPainter,
                          QPainterPath, QPen, QBrush, QLinearGradient, QImage)
 from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer
-from sf_constants import (R, GLASS_INSET, LIQUID_GLASS_INSET, FG_DIM, UP_RED_HEX, DOWN_GREEN_HEX,
+from sf_constants import (R, GLASS_INSET, LIQUID_GLASS_INSET, BG_ALPHA_DEFAULT, FG_DIM, UP_RED_HEX, DOWN_GREEN_HEX,
                          BTN_ICON_PT)
-from renderer import smooth_round_rect_path, liquid_glass_dim_path, _bottom_layout, price_pct_layout
+from renderer import liquid_glass_dim_path, _bottom_layout, price_pct_layout
 from sf_utils import fmt_pct
 from sf_quote import quote_status
 from sf_logging import log_line, log_line_throttled, log_swallow, feature_enabled
@@ -742,7 +744,6 @@ def bottom_rows_fitting(width, row1, row2, fm_label, fm_num_at, pad_x, inner_gap
     return last
 
 
-BG_ALPHA_DEFAULT = 0.82       # translucent 模式不透明度（0~1，越大越不透明）
 
 STATUS_BADGE_H = 12   # v1.2.70：从 16 缩小
 
@@ -815,8 +816,8 @@ FLASH_DROP_COLOR = FLASH_PRICE  # v1.2.58：涨跌幅提醒统一用白色，不
 class RenderMixin:
         """主窗绘制一族的宿主 mixin：paintEvent 主体、价格/涨跌幅排版、底部两行、徽标、分时条带。
 
-        组合方只有 `FloatWindow(GlassMixin, RenderMixin, QWidget)` 一处 —— 两个编辑弹窗走的是
-        `sf_glass.paint_popup_surface` 那条独立的弹窗材质路，不共用这里的绘制。
+        FloatWindow 组合本 mixin；两个编辑弹窗经 `sf_glass.paint_popup_surface`
+        直接共用 `_paint_background`，其余行情内容绘制仍只属于主窗。
         和 GlassMixin 同样的契约：本类不带任何 Qt 构造，成员全挂在宿主实例上（`self.width()`、
         `self._disp_price`、`self.minute_points` 等），所以它**不能被单独实例化**，
         离屏像素核验也只能通过真 FloatWindow 或按 AGENTS §3.1 的方式直调 `_paint_bottom`。
@@ -903,7 +904,9 @@ class RenderMixin:
             er = e.rect()
             # v1.2.45：命中局部重绘前先做 partial 类型/长度/数值防御校验，
             # 脏数据一律退回完整重绘，防止下标/QRect 构造异常逃逸（曾致整 app 崩溃）。
-            if partial is not None and valid_price_partial(partial) \
+            transition = getattr(self, "_stock_transition", None)
+            transitioning = transition is not None and transition.active
+            if not transitioning and partial is not None and valid_price_partial(partial) \
                     and is_price_partial_redraw(
                     (er.x(), er.y(), er.width(), er.height()), partial):
                 self._partial_price = None
@@ -926,44 +929,73 @@ class RenderMixin:
             try:
                 p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-                # 20.1 v1.2.27：paintEvent 拆分为语义子方法（背景/头部/按钮/价格/休市/
-                # 分时/底部），绘制顺序与坐标保持拆分前完全一致，渲染结果零变化
+                # Keep native material and controls sharp while stock content changes.
                 self._paint_background(p, w)
-                self._paint_header(p, w)
-                self._paint_stale_label(p, w)
+                if transitioning and transition is not None:
+                    p.save()
+                    try:
+                        p.setClipPath(liquid_glass_dim_path(w, cast(QWidget, self).height(), R, 0))
+                        widget = cast(QWidget, self)
+                        content_key = (widget.width(), widget.height(), widget.devicePixelRatioF(),
+                                       tuple(getattr(self, field, None) for field in (
+                                           "code", "_line_ver", "_disp_price", "_disp_pct",
+                                           "_pct_unknown", "_minute_stale", "_last_ok_time", "_net_ok")),
+                                       id(getattr(self, "quote", None)))
+                        p.drawImage(0, 0, transition.frame_from(self._stock_content_image, content_key))
+                    except Exception as exc:
+                        log_swallow("sf_ui_render.stock_transition", exc)
+                        transition.stop()
+                        self._paint_stock_content(p, w)
+                    finally:
+                        p.restore()
+                else:
+                    self._paint_stock_content(p, w)
                 self._paint_buttons(p, w)
-                self._paint_price(p, w)
-                # 不再显示“已收盘”等市场状态，也不预留顶部占位；行情与分时图照常绘制。
-                # v1.2.43 第4项：分时图只在行情数据/窗口几何变化后的整窗重绘中重画；
-                # 价格动画 tick 期间经上方局部路由，图表区域不参与任何一帧。数据/尺寸
-                # 更新由 _chart_changed 标记，在下次整窗重绘中一次性重画，图表与价格不错帧。
-                self._paint_chart(p, w)
                 self._chart_changed = False
-                self._paint_bottom(p, w)
                 # 目标价提示由 stock_float_window 的系统气泡承载，不再绘制在主卡片内部。
             finally:
                 # paintEvent 的外层虽会吞异常，但不能依赖它来结束 Qt 原生 painter。
                 p.end()
 
+        def _paint_stock_content(self, painter, width):
+            self._paint_header(painter, width)
+            self._paint_stale_label(painter, width)
+            self._paint_price(painter, width)
+            self._paint_chart(painter, width)
+            self._paint_bottom(painter, width)
+
+        def _stock_content_image(self):
+            widget = cast(QWidget, self)
+            scale = widget.devicePixelRatioF()
+            image = QImage(round(widget.width() * scale), round(widget.height() * scale),
+                           QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(scale)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            try:
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                self._paint_stock_content(painter, widget.width())
+            finally:
+                painter.end()
+            return image
+
         def _paint_background(self, p, w):
-            """缓存背景轮廓；新玻璃用原生圆角，旧玻璃与非玻璃仍用超椭圆。"""
+            """主窗、两代玻璃和编辑弹窗共用同心普通圆角。"""
             h = self.height()
             if self._bg_path is None or self._bg_path_wh != (w, h):
-                self._bg_path = smooth_round_rect_path(0, 0, w, h, R)
+                self._bg_path = liquid_glass_dim_path(w, h, R, 0)
                 self._bg_path_wh = (w, h)
             path = self._bg_path
             if self._bg_effect:
                 liquid = getattr(self, "_glass_backend", "legacy") == "liquid"
                 key = (w, h, "liquid") if liquid else (w, h)
-                # 暗化轮廓必须跟随实际材质：新玻璃的原生圆弧与旧版超椭圆不能混用，
-                # 否则暗化层会越过原生玻璃四角，露出第二张卡片的交叉轮廓。
+                # 各材质只保留不同的内缩量，曲线与外轮廓保持同心。
                 if self._bg_path_ins is None or self._bg_path_ins_wh != key:
                     if liquid:
                         self._bg_path_ins = liquid_glass_dim_path(w, h, R, LIQUID_GLASS_INSET)
                     else:
                         ins = GLASS_INSET
-                        self._bg_path_ins = smooth_round_rect_path(
-                            ins, ins, max(w - 2 * ins, 1), max(h - 2 * ins, 1), R)
+                        self._bg_path_ins = liquid_glass_dim_path(w, h, R, ins)
                     self._bg_path_ins_wh = key
                 p.fillPath(self._bg_path_ins, QColor(0, 0, 0, self._glass_dim()))
                 if liquid:
@@ -972,10 +1004,7 @@ class RenderMixin:
                 # 暖冷色仍由原生 NSVisualEffectView 负责，避免人为染色干扰行情可读性。
                 rim_key = (w, h, GLASS_RIM_INSET, R)
                 if self._bg_rim_cache is None or self._bg_rim_cache[0] != rim_key:
-                    rim = smooth_round_rect_path(
-                        GLASS_RIM_INSET, GLASS_RIM_INSET,
-                        max(w - 2 * GLASS_RIM_INSET, 1),
-                        max(h - 2 * GLASS_RIM_INSET, 1), R)
+                    rim = liquid_glass_dim_path(w, h, R, GLASS_RIM_INSET)
                     self._bg_rim_cache = (rim_key, rim)
                 rim = self._bg_rim_cache[1]
                 p.setBrush(Qt.BrushStyle.NoBrush)

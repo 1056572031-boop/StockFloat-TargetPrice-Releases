@@ -452,6 +452,9 @@ class TargetPanelGateCase(SFCase):
         def prepare_surface(self):
             self.surfaces += 1
 
+        def set_surface_owner(self, owner):
+            self.surface_owner = owner
+
         def show(self):
             self.shown.append("show")
             self.visible = True

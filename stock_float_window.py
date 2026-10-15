@@ -84,6 +84,7 @@ from sf_quote_loop import (QuoteLoopSchedule, minute_retry_state, next_poll_back
 # 主窗消息路由：只负责队列消费与行情合批，业务应用仍留在主线程。
 from sf_window_message_router import WindowMessageRouter
 from sf_update_controller import UpdateController
+from sf_update_flow import UpdateFlowController
 from sf_diagnostics_controller import DiagnosticsExportController
 from sf_window_state import UpdateFlowState
 from sf_window_geometry import keep_on_screen_position
@@ -97,6 +98,7 @@ from sf_face_guard_controller import FaceGuardController
 from sf_runtime import RuntimeState, restore_ui_interval
 from sf_maintenance import BackgroundMaintenance
 from sf_anim_driver import AnimDriver
+from sf_stock_transition import StockTransition
 
 # ---- 模块化拆分 sf_network：显式导入（含私有名） ----
 from sf_network import QuoteDataError
@@ -147,7 +149,6 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
                           BETA_SUFFIX,
                           LAST_QUOTE_MIN_WRITE_INTERVAL, UPDATE_INITIAL_DELAY_MS,
                           TEMP_SWEEP_DELAY_MS, STAGING_PRUNE_DELAY_MS,
-                          UPDATE_CHECK_STALE_SEC,
                           UPDATE_PERIODIC_MS, UPDATE_RESUME_MIN_GAP_SEC,
                           UPDATE_RETRY_FIRST_MS, UPDATE_RETRY_LATER_MS)
 
@@ -386,6 +387,11 @@ def _ensure_update_controller(owner):
     controller = UpdateController(enqueue, _bundle_version)
     owner._update_controller = controller
     return controller
+
+
+_UPDATE_FLOW = UpdateFlowController(
+    _ensure_update_controller, lambda *args: log_line(*args),
+    lambda *args: log_swallow(*args))
 
 
 def _normalize_code_6(code):
@@ -855,6 +861,22 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
     _face_guard_fed_ts = _face_value_property("_face_guard_fed_ts")
     _face_guard_last_stop = _face_value_property("_face_guard_last_stop")
 
+    @staticmethod
+    def _face_session_property(name):
+        def getter(self):
+            return getattr(_lazy_attr(
+                self, "_face_guard_controller", FaceGuardController), name)
+
+        def setter(self, value):
+            setattr(_lazy_attr(
+                self, "_face_guard_controller", FaceGuardController), name, value)
+
+        return property(getter, setter)
+
+    _face_guard_monitor = _face_session_property("monitor")
+    _face_guard_arbiter = _face_session_property("arbiter")
+    _face_guard_pending_stop = _face_session_property("pending_stop")
+
     @property
     def _diagnostics_exporting(self):
         return self._diagnostics_controller.exporting
@@ -1031,6 +1053,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 下方经 property（_anim_*/_price_flash_*/_flash_drop_*/_layout_anim_*）
         # 读写委托到 driver 字段，主窗其余代码零改动、对外行为 100% 不变。
         self._anim_driver = AnimDriver()
+        self._stock_transition = StockTransition(self)
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._anim_tick)
         self._anim_timer.setInterval(16)
@@ -1346,7 +1369,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 补停跑在 daemon 线程上，进程一退就被硬杀 → 会话永远没停、绿灯不灭，
         # 而诊断包会报 camera_held=false（说谎）。所以这类未完成的停必须留个名字，
         # 退出收尾时逐个 stop(wait=True) 兑现。
-        self._face_guard_pending_stop: list = []
+        self._face_guard_pending_stop = []
         # v1.4.54：菜单开着时刷新勾号的定时器与动作引用。显式注解 Optional ——
         # mypy 会从「先赋 QTimer/QAction、后赋 None」推出两个互相矛盾的属性类型
         # （本轮被静态闸门抓到 assignment 9→11，注解是正解而不是 # type: ignore）。
@@ -2201,80 +2224,10 @@ QMenu::separator {
             log_line("center update dialog failed: %r" % (exc,), "WARNING")
 
     def _check_updates_background(self, manual=False):
-        """检查更新只占用独立线程，绝不与行情轮询共用连接池或阻塞界面。
-
-        v1.4.43：手动点击【必须有可见反馈】，并把「能立刻答复的」排到守卫之前。
-        为什么要改（离屏探针按真实分支实测）：右键悬浮窗的那一下就把应用切成了
-        活跃，而「变为活跃」本身就会触发一次静默补查 —— 用户接着点「检查更新」时
-        几乎必然撞上那次还在飞的检查。旧代码在这里直接 return，连「正在检查」的框
-        都不给；5 秒后那次检查又按静默处理什么都不弹。用户看到的就是「点了没反应」，
-        而日志里一行都不留。
-        """
-        # ① 已知有新版本：手动检查直接弹确认框，不看任何在飞状态。自动检查发现的
-        #    新版则会在回包后自动下载，下载完成再提示用户，避免让用户先确认一次、
-        #    下载结束又确认一次。
-        pending = getattr(self, "_update_pending", None)
-        if manual and pending is not None:
-            if getattr(self, "_update_downloading", False):
-                self._show_update_message("更新进行中", "正在下载更新，请稍候。")
-                return
-            self._prompt_update(pending)
-            return
-        if getattr(self, "_threads_stopped", False):
-            return
-        in_flight = bool(self._update_checking
-                         or getattr(self, "_update_transition_pending", False))
-        if in_flight and self._update_check_stale():
-            # v1.4.44：在飞太久就当它已经死了。回包是有界队列（32 格，满时丢最旧）里的
-            # 一次性事件，一旦被丢掉，这两个标记会**永久锁真**：此后任何检查都起不来，
-            # 那张「正在检查更新」也永远关不掉，只能重启程序。放开重来比从此不问好。
-            self._update_checking = False
-            self._update_transition_pending = False
-            self._update_manual_wait = False
-            # 只收这张「正在检查」框：整包收口会连带关掉下载进度框，那是另一件事。
-            self._dispose_update_dialog(getattr(self, "_update_check_dialog", None))
-            log_line("update check stale over %ds, state reset"
-                     % UPDATE_CHECK_STALE_SEC, "WARNING")
-            # 诊断留痕：复位过一次就说明有一轮检查的回包被丢掉过（那正是"点了没
-            # 反应、框永远关不掉"的成因）。此前只有一行会被挤掉的 WARNING。
-            self._update_stale_resets = int(getattr(self, "_update_stale_resets", 0)) + 1
-            in_flight = False
-        if in_flight:
-            # ② 已有一次检查在飞：不再另起第二个请求，但这次点击要记在账上，由那次
-            #    检查的回包按「用户主动要求」兑现（见 _handle_update_check）。
-            if manual:
-                self._update_manual_wait = True
-                # A new explicit click renews the request, even after cancelling its wait box.
-                self._update_check_aborted = False
-                self._show_checking_dialog()
-                log_line("update check click reused in-flight check")
-            return
-        if self._update_downloading:
-            # ③ 正在下载：更新已经在跑，说清楚在跑什么，别让人以为这次点击无效。
-            if manual:
-                self._show_update_message("更新进行中", "正在下载更新，请稍候。")
-            return
-        self._update_checking = True
-        self._update_transition_pending = True
-        # 上一次「取消」只作废它那一次，不许跟着下一次检查一路走下去。
-        self._update_check_aborted = False
-        # 墙钟：既用于激活补查的节流，也用于回包时算出这次检查实际花了多久。
-        self._update_last_check_at = time.time()
-        # 只有手动检查才弹「正在检查」：启动后 15 秒的自检、切回程序的补查、
-        # 6 小时复查与失败退避都必须是静默的 —— 系统弹窗会把应用带到最前，
-        # 看盘时抢一次焦点比慢一点更糟。（加强后的既有用例当场逮到过这个。）
-        if manual:
-            self._show_checking_dialog()
-
-        _ensure_update_controller(self).check(manual)
+        return _UPDATE_FLOW.check(self, manual)
 
     def _update_check_stale(self):
-        """这一次在飞检查是不是已经过期（起算时刻 + UPDATE_CHECK_STALE_SEC）。
-
-        单独成方法是为了让调用点只问一句"它还活着吗"，也便于用例直接驱动时间。
-        """
-        started = getattr(self, "_update_last_check_at", 0.0) or 0.0
-        return (time.time() - started) > UPDATE_CHECK_STALE_SEC
+        return _UPDATE_FLOW.check_stale(self)
 
     def _show_checking_dialog(self):
         """「正在检查更新」框：只在还没有这张框时新建，重复点击不叠框。
@@ -2422,89 +2375,10 @@ QMenu::separator {
             log_line("dispose download progress box failed: %r" % (exc,), "WARNING")
 
     def _handle_update_check(self, manual, update, error):
-        self._update_checking = False
-        self._update_transition_pending = False
-        # v1.4.43：点击撞上在飞检查时记的账，由这里兑现 —— 结果按「用户主动要求」
-        # 汇报（该弹确认框/该说「已是最新」/该说失败都照常弹）。销账放在最前面：
-        # 一次点击只兑一次，不许隔几个小时后再莫名弹出一个框。
-        manual = bool(manual) or bool(getattr(self, "_update_manual_wait", False))
-        self._update_manual_wait = False
-        # v1.4.44：用户在这一次结束前按了「取消」→ 状态、日志、退避照常走，
-        # 但界面不再弹任何东西（销账在这里，不留到下一次检查）。
-        if getattr(self, "_update_check_aborted", False):
-            self._update_check_aborted = False
-            manual = False
-        # v1.4.43：每一次检查都留一行结果。此前**只有失败**才写日志，成功与
-        # 「点击被复用」全是空白 —— 于是「今天到底查了几次、查没查到」无法回答，
-        # 本轮这个 bug 就是这么被藏住的。
-        started = getattr(self, "_update_last_check_at", 0.0) or 0.0
-        log_line("update check done: asked=%s result=%s elapsed=%.1fs"
-                 % ("manual" if manual else "auto",
-                    "error" if error is not None else
-                    ("new" if update is not None else "latest"),
-                    (time.time() - started) if started else -1.0))
-        # 诊断留痕（runtime.json 的 update_last_result）：asked/result/elapsed 与
-        # 远端版本、阶段此前只活在上面这行会被轮转挤掉的日志里 —— "点了没反应"
-        # "还停在 Beta""已是最新但通道没推上去"三件事在包里全部同形。
-        try:
-            self._update_last_result = {
-                "asked": "manual" if manual else "auto",
-                "outcome": ("error" if error is not None
-                            else ("new" if update is not None else "latest")),
-                "elapsed_sec": round(time.time() - started, 1) if started else None,
-                "remote_version": (getattr(update, "version", "") or ""
-                                   if update is not None else ""),
-                "remote_stage": (getattr(update, "stage", "") or ""
-                                 if update is not None else ""),
-                "error": (str(error)[:200] if error is not None else ""),
-                "at": time.time(),
-            }
-        except Exception as _rec_exc:
-            # 记账失败不影响更新回包，但必须留痕（AGENTS §6 第 9 条）
-            log_swallow("stock_float_window._update_last_result", _rec_exc)
-        if getattr(self, "_quitting", False):
-            self._close_update_flow_box()
-            return
-        if error is not None:
-            self._close_update_flow_box()
-            self._update_failure_count = getattr(self, "_update_failure_count", 0) + 1
-            log_line("update check failed: %r" % (error,), "WARNING")
-            self._schedule_update_retry()
-            if manual:
-                self._show_update_message("检查更新失败",
-                                          "暂时无法检查更新。", "当前版本不受影响。")
-            return
-        self._close_update_flow_box()
-        self._update_failure_count = 0
-        timer = getattr(self, "_update_retry_timer", None)
-        if timer is not None:
-            timer.stop()
-        if update is None:
-            if manual:
-                self._show_update_message("检查更新", "当前已是最新版本。")
-            return
-        self._update_prompted_version = update.version
-        self._update_pending = update
-        if manual:
-            self._prompt_update(update)
-        elif self._ready_update_archive(update) is None:
-            # 自动检查不抢焦点：下载在后台完成，成功后再弹一次包含更新内容的确认框。
-            self._download_update_background(update, prompt_when_ready=True,
-                                             show_progress=False)
+        return _UPDATE_FLOW.checked(self, manual, update, error)
 
     def _ready_update_archive(self, update):
-        """返回仍存在的已校验更新包；版本变化或文件消失时清掉旧状态。"""
-        archive = getattr(self, "_update_ready_archive", None)
-        if (not archive or getattr(self, "_update_ready_version", None) != update.version
-                or not os.path.isfile(archive)):
-            if getattr(self, "_update_ready_version", None) != update.version:
-                self._update_ready_archive = None
-                self._update_ready_version = None
-            elif archive and not os.path.isfile(archive):
-                self._update_ready_archive = None
-                self._update_ready_version = None
-            return None
-        return archive
+        return _UPDATE_FLOW.ready_archive(self, update)
 
     def _prompt_update(self, update):
         """新版确认改用 macOS 系统弹窗。
@@ -2544,26 +2418,7 @@ QMenu::separator {
             on_result=lambda button: self._q_put(("update_prompt_answer", button)))
 
     def _handle_update_prompt_answer(self, button):
-        """主线程处理系统确认框的按钮结果；只认“立即更新”，其余视为放弃。"""
-        dialog = getattr(self, "_update_prompt_dialog", None)
-        self._update_prompt_dialog = None
-        # 弹窗已随用户点击自行结束；这里只兜底收口异常未退出的子进程。
-        self._dispose_update_dialog(dialog)
-        if button == "暂不更新" or getattr(self, "_quitting", False):
-            return
-        update = getattr(self, "_update_pending", None)
-        if update is None:
-            return
-        ready_archive = self._ready_update_archive(update)
-        if button == "更新并重启应用":
-            if ready_archive is not None:
-                self._launch_downloaded_update(update, ready_archive)
-            else:
-                # 包被外部清理后，回到自动下载流程；不把旧路径交给安装助手。
-                self._download_update_background(update, prompt_when_ready=True,
-                                                 show_progress=False)
-        elif button == "立即更新":
-            self._accept_update_prompt(None, update)
+        return _UPDATE_FLOW.answered(self, button)
 
     def _accept_update_prompt(self, box, update):
         """先完成检查提示框的关闭和销毁，再启动唯一的下载提示框。"""
@@ -2571,16 +2426,7 @@ QMenu::separator {
         QTimer.singleShot(0, lambda info=update: self._download_update_background(info))
 
     def _download_update_background(self, update, prompt_when_ready=False, show_progress=True):
-        if self._update_downloading or getattr(self, "_quitting", False):
-            return
-        self._update_downloading = True
-        self._update_cancel = threading.Event()
-        self._update_prompt_when_ready = bool(prompt_when_ready)
-        # 检查提示已在 _prompt_update 中结束并释放后，才允许进入下载阶段。
-        if show_progress:
-            self._open_download_progress_box()
-
-        _ensure_update_controller(self).download(update, self._update_cancel)
+        return _UPDATE_FLOW.download(self, update, prompt_when_ready, show_progress)
 
     def _open_download_progress_box(self):
         """下载进度框：优先 macOS 原生弹窗 + 系统进度条，不可用时退回 Qt 自绘框。
@@ -2631,9 +2477,7 @@ QMenu::separator {
             self._cancel_update_download()
 
     def _cancel_update_download(self):
-        cancel = getattr(self, "_update_cancel", None)
-        if cancel is not None:
-            cancel.set()
+        return _UPDATE_FLOW.cancel_download(self)
 
     def _handle_update_progress(self, pct, downloaded, total):
         box = getattr(self, "_update_flow_box", None)
@@ -2669,25 +2513,7 @@ QMenu::separator {
         self.quit()
 
     def _handle_update_download(self, update, archive, error):
-        prompt_when_ready = bool(getattr(self, "_update_prompt_when_ready", False))
-        self._update_prompt_when_ready = False
-        self._update_downloading = False
-        self._update_cancel = None
-        self._close_update_flow_box()
-        if getattr(self, "_quitting", False):
-            return
-        if error is not None:
-            log_line("update download failed: %r" % (error,), "WARNING")
-            if not prompt_when_ready:
-                self._show_update_message("更新未完成",
-                                          "下载或校验失败。", "当前版本未受影响。")
-            return
-        if prompt_when_ready:
-            self._update_ready_archive = archive
-            self._update_ready_version = update.version
-            self._prompt_update(update)
-            return
-        self._launch_downloaded_update(update, archive)
+        return _UPDATE_FLOW.downloaded(self, update, archive, error)
 
     def _face_guard_screen_off(self, now=None):
         """屏幕锁定/休眠判定，2 秒才向系统问一次（守卫轮询是 250ms 一拍）。
@@ -2866,430 +2692,50 @@ QMenu::separator {
         out = None
         temp_out = None
         try:
-            from sf_diagnostics import DiagnosticArchive, write_attachments as write_diagnostic_attachments
-            import sf_diag
-            started = time.monotonic()
+            from sf_diagnostic_capture import DiagnosticSources, prepare_diagnostics
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             requested = os.path.expanduser("~/Desktop/%s-诊断-%s.zip" %
                                            (APP_DISPLAY_NAME, ts))
             output_dir = os.path.dirname(requested)
             os.makedirs(output_dir, exist_ok=True)
-
-            # Final names only become visible once the ZIP is closed successfully.
             fd, temp_out = tempfile.mkstemp(
                 prefix=".%s-" % os.path.basename(requested), suffix=".tmp", dir=output_dir)
             os.close(fd)
-            diag_issues: list[str] = []
-            needles = sf_diag.identity_needles(diag_issues)
-            with DiagnosticArchive(temp_out) as z:
-                # 运行时快照：只记录状态和计数，不记录接口地址、令牌或行情明细。
-                def _public_text(text):
-                    return sf_diag.scrub_text(str(text), needles)
-
-                def _public_error(exc):
-                    return _public_text(exc)
-
-                def _clean_json(value, path):
-                    """把 Python 允许但标准 JSON 不允许的非有限数变成 null。"""
-                    if isinstance(value, float) and not math.isfinite(value):
-                        diag_issues.append("%s: non-finite number written as null" % path)
-                        return None
-                    if isinstance(value, dict):
-                        result = {}
-                        for key, item in value.items():
-                            name = _public_text(key)
-                            base = name
-                            slot = 2
-                            while name in result:
-                                name = "%s#%d" % (base, slot)
-                                slot += 1
-                            if sf_diag.is_secret_name(str(key)) and str(key) not in (
-                                    "_secret_keys_dropped", "skipped_secret_named"):
-                                result[name] = "<REDACTED>"
-                            else:
-                                result[name] = _clean_json(item, "%s.%s" % (path, name))
-                        return result
-                    if isinstance(value, (list, tuple)):
-                        return [_clean_json(item, "%s[%d]" % (path, index))
-                                for index, item in enumerate(value)]
-                    if isinstance(value, str):
-                        return _public_text(value)
-                    return value
-
-                def _xy(pos):
-                    """QPoint / 坐标差 → [x, y]；取不到就 None（包里只收可序列化形状）。"""
-                    if pos is None:
-                        return None
-                    try:
-                        return [int(pos.x()), int(pos.y())]
-                    except Exception:
-                        return None
-
-                def _chart_press_now():
-                    """分时热区那一次按下：全局起点 + 相对窗口左上角的偏移，一次取全。
-
-                    写成一个 getter 而不是两条 lambda：偏移只在"起点存在"时才算得出，
-                    拆成两条就等于把同一个判空写两遍（两遍迟早会漂成两套口径）。
-                    """
-                    origin = getattr(self, "_chart_press_global", None)
-                    if origin is None:
-                        return {"origin": None, "offset": None}
-                    return {"origin": _xy(origin),
-                            "offset": _xy(origin - self.frameGeometry().topLeft())}
-
-                def _json_entry(name, value):
-                    try:
-                        value = _clean_json(value, name)
-                        data = json.dumps(value, ensure_ascii=False, indent=2,
-                                          sort_keys=True, allow_nan=False).encode("utf-8")
-                        if len(data) > 256 * 1024:
-                            raise ValueError("snapshot exceeds 256KB")
-                    except Exception as exc:
-                        diag_issues.append("%s: %s" % (name, _public_error(exc)))
-                        return
-                    z.writestr(name, data)
-
-                def _snapshot(name, fn, **kw):
-                    """取一份现场再写包：取不到值**必须**进 export_issues，不许静默缺键。
-
-                    为什么单独一个入口（本轮新增的十几个现场全靠它）：这些值来自
-                    十几个模块的 getter，装机版里任何一处抛错都可能发生；如果让它
-                    悄悄缺一个文件，"这一项没跑成"和"这一项一切正常"在包里就同形了
-                    —— 正是台账 G11/G24 那一族"闸门自己说假话"的形状。
-                    """
-                    try:
-                        value = fn(**kw) if kw else fn()
-                    except Exception as exc:
-                        diag_issues.append("%s: %s" % (name, _public_error(exc)))
-                        return
-                    _json_entry(name, value)
-
-                def _field(key, fn, default=None, bucket="runtime"):
-                    """同一个 JSON 里**逐字段**取数：失败照常记账后用 default 占位。
-
-                    缺键与取不到在包里必须是两种长相（后者留下 default 加一行
-                    export_issues）—— 否则"这台机器读不出分时状态"会被读成
-                    "分时一切正常"，正是台账 G11/G24 那一族说假话的形状。
-                    `bucket` 只是让留痕写清是哪一份 JSON。
-                    """
-                    try:
-                        value = fn()
-                        return default if value is None else value
-                    except Exception as exc:
-                        diag_issues.append("%s.%s: %s" % (bucket, key, _public_error(exc)))
-                        return default
-
-                def _text_entry(name, text, max_bytes=256 * 1024, tail=False):
-                    """写文本附件并给异常输入设上限，避免单个附件撑爆诊断包。"""
-                    try:
-                        data = str(text).encode("utf-8", "replace")
-                        if len(data) > max_bytes:
-                            data = data[-max_bytes:] if tail else data[:max_bytes]
-                            if tail:
-                                data = data.partition(b"\n")[2]
-                            # UTF-8 截断点可能落在多字节字符中。
-                            data = data.decode("utf-8", "ignore").encode("utf-8")
-                            diag_issues.append("%s: text truncated to %d bytes" %
-                                               (name, max_bytes))
-                    except Exception as exc:
-                        diag_issues.append("%s: %s" % (name, _public_error(exc)))
-                        return
-                    z.writestr(name, data)
-
-                def _read_text(src, name, max_bytes=256 * 1024, tail=False):
-                    with open(src, "rb") as stream:
-                        stream.seek(0, os.SEEK_END)
-                        size = stream.tell()
-                        offset = max(0, size - max_bytes) if tail else 0
-                        stream.seek(offset)
-                        raw = stream.read(max_bytes)
-                    if size > max_bytes:
-                        diag_issues.append("%s: source truncated, %d bytes, kept %s %d" %
-                                           (name, size, "tail" if tail else "head", len(raw)))
-                        if offset:
-                            # Do not expose a credential suffix from a cut log line.
-                            raw = raw.partition(b"\n")[2]
-                    return raw.decode("utf-8", "replace")
-
-                network = {
-                    "monitor": _field("monitor", _NET_MONITOR.snapshot, {}, "network"),
-                    "last_http_status": _field("last_http_status",
-                                                 lambda: get_last_http_status(), "", "network"),
-                    "quote_source": _field("quote_source",
-                                            lambda: get_last_quote_source(), "", "network"),
-                    # v1.4.59（S3）：连续多少次靠备源拿到行情。非零就说明主源坏了
-                    # 而界面看不出差别 —— 涨跌停徽标与越界拦截此刻是失效的。
-                    "degraded_streak": _field("degraded_streak",
-                                                degraded_source_streak, 0, "network"),
-                    # v1.4.59（S4）：存储里替别的股票留着多少条目标价（切回来还在）
-                    "dormant_targets": _field(
-                        "dormant_targets",
-                        lambda: max(0, len(load_alerts()) - len(load_alerts(self.code))),
-                        0, "network"),
-                }
-                _json_entry("network.json", network)
-                alerts = _field("alerts", self._safe_alerts, [], "targets")
-                now = _beijing_now()
-                target_counts = {"pending": 0, "hit": 0, "expired": 0, "invalid": 0}
-                for alert in alerts:
-                    if not isinstance(alert, dict):
-                        target_counts["invalid"] += 1
-                    elif expired(alert, now):
-                        target_counts["expired"] += 1
-                    elif alert.get("state") == STATE_HIT:
-                        target_counts["hit"] += 1
-                    else:
-                        target_counts["pending"] += 1
-                targets_payload: dict = {
-                    "enabled": _field("enabled", self._targets_enabled, False, "targets"),
-                    "total": len(alerts),
-                }
-                targets_payload.update(target_counts)
-                targets_payload.update({
-                    # v1.4.60（复核 F7）：存储超上限被剪掉休眠条目的现场。界面不加弹窗
-                    # （v1.4.52 口径），但"我某天设的目标价怎么不见了"必须问得出来：
-                    # stored_total = 存储里总条数（含别的股票留着的），
-                    # store_prune = 最近一次剪枝的时间/条数/被剪掉的 code，没剪过就是 {}。
-                    "stored_total": _field("stored_total", lambda: len(load_alerts()),
-                                            0, "targets"),
-                    "store_prune": _field("store_prune", store_prune_report,
-                                           {}, "targets"),
-                    # 诊断补全：这些条目各归属于哪只股票（"" = 无主，按顶层股票算）。
-                    # v1.4.59/60 那串"切股之后目标价整片消失"的根因就是归属串味，
-                    # 而包里此前只有总条数 —— 分不清"被我设没了"还是"被盖章走了"。
-                    "codes": _field("codes", self._alert_code_histogram, {}, "targets"),
-                })
-                _json_entry("targets.json", targets_payload)
-                runtime: dict = {
-                    "power": _field("power", lambda: self._runtime.diagnostics(), {}),
-                    "maintenance": _field("maintenance", lambda: self._update_maintenance.diagnostics(), {}),
-                    "net_ok": bool(getattr(self, "_net_ok", False)),
-                    "quote_failures": _field("quote_failures",
-                                               lambda: int(getattr(self, "_quote_fail", 0) or 0)),
-                    "minute_failures": _field("minute_failures",
-                                                lambda: int(getattr(self, "_minute_fail", 0) or 0)),
-                    "quote_thread_alive": _field("quote_thread_alive", lambda: bool(
-                        getattr(self, "_quote_thread", None) and self._quote_thread.is_alive())),
-                    "minute_thread_alive": _field("minute_thread_alive", lambda: bool(
-                        getattr(self, "_minute_thread", None) and self._minute_thread.is_alive())),
-                    "minimized": bool(getattr(self, "_minimized", False)),
-                    "trading_time": _field("trading_time", lambda: bool(self._is_trading_time())),
-                    "update_checking": bool(getattr(self, "_update_checking", False)),
-                    "update_failures": _field("update_failures",
-                                                lambda: int(getattr(self, "_update_failure_count", 0) or 0)),
-                    "update_cached_version": getattr(getattr(self, "_update_pending", None), "version", ""),
-                    "window": _field("window", lambda: {
-                        "x": self.x(), "y": self.y(), "width": self.width(), "height": self.height()}),
-                    # v1.4.40：人脸守卫的现场（含"到底在不在跑"与全部阈值）。
-                    # 单列一份是因为这类"看不见的保护"最需要被远程确认：
-                    # 用户报"没生效"时不必让他复现，诊断包里就有状态与失败原因。
-                    # v1.4.51：菜单里的灰字提示撤掉之后，`status_text` 是这句话
-                    # 唯一的外发通路，所以走 field_evidence（内含同一份诊断，不重复算）。
-                    "face_guard": _field("face_guard", self.face_guard_field_evidence),
-                }
-                # ---- 诊断补全：分时恢复现场（台账 S52 那一族的远程取证）----
-                # 此前只有 minute_failures / minute_thread_alive 两个数，答不出
-                # "现在是不是停在重试中、曲线是不是昨天的、数据多旧、请求还在不在飞、
-                # 走的是主源还是备源" —— 而用户报的正是"重试中挂了半小时"。
-                runtime["minute"] = {
-                    "stale": _field("minute.stale", lambda: bool(self._minute_stale), None),
-                    "day": _field("minute.day", lambda: self._minute_day, None),
-                    "in_flight": _field("minute.in_flight",
-                                         lambda: bool(self._minute_busy.locked()), None),
-                    "points": _field("minute.points", lambda: len(self.minute_points), None),
-                    "last_ok_age_sec": _field(
-                        "minute.last_ok_age",
-                        lambda: (round(max(0.0, time.time() - float(self._minute_last_ok_at)), 1)
-                                 if float(getattr(self, "_minute_last_ok_at", 0.0) or 0.0) > 0.0
-                                 else None), None),
-                    "interval_sec": _field("minute.interval", lambda: float(self._minute_interval), None),
-                    "retry_left": _field("minute.retry_left", lambda: int(self._minute_retry_left), None),
-                    "retry_hot": _field("minute.retry_hot", lambda: bool(self._minute_retry_hot), None),
-                    "source": _field("minute.source", lambda: get_last_minute_source(), None),
-                }
-                # ---- 诊断补全：更新链路的末态与身份（改名/OTA 分叉那一族）----
-                # diagnostics.txt 此前只有 APP_VERSION：Beta 还是 stable、读的是哪份
-                # 清单、这台机器的 bundle id 是哪一代，包里一律看不出来。
-                import sf_constants as _C
-                runtime["identity"] = {
-                    "app_version": _C.APP_VERSION,
-                    "bundle_id": _C.BUNDLE_ID,
-                    "display_name": _C.APP_DISPLAY_NAME,
-                    "release_stage": _C.RELEASE_STAGE,
-                    "manifest_url": _field("identity.manifest",
-                                           lambda: _C.UPDATE_MANIFEST_URL, None),
-                    "running_bundle_id": _field("identity.running",
-                                                 lambda: _running_bundle_id(), None),
-                }
-                runtime["update"] = {
-                    "downloading": _field("update.downloading",
-                                          lambda: bool(self._update_downloading), None),
-                    "transition_pending": _field("update.transition",
-                                                 lambda: bool(self._update_transition_pending), None),
-                    "manual_wait": _field("update.manual_wait",
-                                          lambda: bool(self._update_manual_wait), None),
-                    "last_check_at": _field("update.last_check_at",
-                                            lambda: float(self._update_last_check_at), None),
-                    "stale_resets": _field("update.stale_resets",
-                                           lambda: int(self._update_stale_resets), None),
-                    "last_result": _field("update.last_result",
-                                          lambda: self._update_last_result, None),
-                    "install_result": _field("update.install_result",
-                                             lambda: _peek_install_result(), None),
-                }
-                # 控制器自身只外发生命周期计数，不触发任何业务动作；显式引用类名让
-                # 诊断覆盖闸门把这两个新模块记入 curated 闭包，而不是误判为未接线。
-                runtime["controllers"] = {
-                    "update": _field(
-                        "controllers.update",
-                        lambda: (bool(UpdateController),
-                                  self._update_controller.diagnostics())[1], None),
-                    "lifecycle": _field(
-                        "controllers.lifecycle",
-                        lambda: (bool(WindowLifecycleController),
-                                  self._lifecycle_controller.diagnostics())[1], None),
-                    "presentation": _field(
-                        "controllers.presentation",
-                        lambda: (bool(QuotePresentationController),
-                                  self._quote_presentation.diagnostics())[1], None),
-                    "targets": _field(
-                        "controllers.targets",
-                        lambda: (bool(TargetController),
-                                  self._target_controller.diagnostics())[1], None),
-                    "face_guard": _field(
-                        "controllers.face_guard",
-                        lambda: (bool(FaceGuardController),
-                                  self._face_guard_controller.diagnostics())[1], None),
-                }
-                # ---- 诊断补全：功能开关此刻的实际生效值（1.4.37 那一族）----
-                # system_drag 之类过去只在 STARTUP 行里，被轮转挤掉就等于没说。
-                runtime["features"] = _field("features", lambda: feature_snapshot(), None)
-                # ---- 诊断补全：渲染降级末态（S35 / S39 / S49）----
-                runtime["render"] = {
-                    "fonts": _field("render.fonts", lambda: font_diagnostics(), None),
-                    "paint": _field("render.paint", lambda: paint_diagnostics(), None),
-                    # 近两天核对补的一条（v1.4.69 菜单行首图标）：那一版的失效形状是
-                    # "行首一片空白"或"静默退回无图标 + 勾号"，而包里此前只说字体与绘制
-                    # 降级，说不清"图标到底出图了没有、是哪一行没出"。读的是缓存本身，
-                    # **不调 menu_images()** —— 取诊断不该顺手把图标全建一遍（那是跑业务）。
-                    "menu_icons": _field("render.menu_icons", _menu_icon_evidence, None),
-                }
-                # ---- 诊断补全：手势粘滞与工具窗/屏幕几何 ----
-                # 这一族的投诉都是"位置错"而不是异常：面板留在原地、弹窗落在看不见
-                # 的副屏、吸附够不着就静默不动 —— log_swallow 天生抓不到它们。
-                runtime["gesture"] = {
-                    "drag": _field("gesture.drag", lambda: bool(self._drag), None),
-                    "sys_drag": _field("gesture.sys_drag", lambda: bool(self._sys_drag), None),
-                    "resizing": _field("gesture.resizing", lambda: bool(self._resizing), None),
-                    # 近两天核对补的一条（v1.4.71 修"分时区拖不动"留下的现场）：
-                    # 那次投诉在朋友机器上，包里没有"按下到底落在哪个分支"这一问，
-                    # 于是"是热区判定错了、还是拖窗分支没进去"只能靠复现来分。
-                    # press_chart = 按下命中了分时热区（还没过移动阈值前的待判定态）；
-                    # chart_press = 那一刻的全局起点；offset = 起点减窗口左上角，
-                    # 非零却 drag 为假 = "按下了、拖了、窗口没动"这一类的直接证据。
-                    "press_chart": _field("gesture.press_chart", lambda: bool(self._press_chart), None),
-                    "chart_press": _field("gesture.chart_press", _chart_press_now, None),
-                }
-                runtime["tools"] = _field("tools", lambda: self._tool_window_geometries(), None)
-                # 拉伸/收展动画的在飞现场（1.4.34 那一族：把手能拖到 0 高、动画与手势
-                # 抢同一根高度轴）。"窗口被压没了"往往在用户开口时已经自愈，只剩结果
-                # 没有原因 —— 而 minimumHeight 被改到多少、动画在往哪儿走，只有此刻知道。
-                runtime["stretch"] = {
-                    "anim_from": _field("stretch.from",
-                                        lambda: int(getattr(self._anim_driver,
-                                                            "layout_anim_from", 0) or 0), None),
-                    "anim_to": _field("stretch.to",
-                                      lambda: int(getattr(self._anim_driver,
-                                                          "layout_anim_to", 0) or 0), None),
-                    "min_height": _field("stretch.min_height",
-                                         lambda: int(self.minimumHeight()), None),
-                    "height_now": _field("stretch.height_now", lambda: int(self.height()), None),
-                }
-                runtime["screens"] = _field("screens", lambda: self._screen_geometries(), None)
-                runtime["snap_margin"] = _field("snap_margin", lambda: int(SNAP_MARGIN), None)
-                _json_entry("runtime.json", runtime)
-                # v1.4.46：玻璃层现场 + 最近 30 分钟的失效锚点，单独一份 glass.json。
-                # 为什么单独列：「只剩背景 / 内容看不见」这一类 8 条线上逃逸的共同点是
-                # **现场只在用户那台机器上** —— 本机日志能给到"一次 1278 秒 / 482 行倒序
-                # 检出"的强度，但用户机器上的 debug.log 过去没有任何回传通路，D-04/D-31
-                # 因此至今写着"未确认，需现场取证"，这一类的定位时长也永远记不到。
-                # 诊断包是已有且唯一的外发通路，所以走它，而不是新加菜单项或偷偷上传。
-                # 时刻口径由 sf_glass.glass_diagnostics 自己写在返回值里，不靠这里补注释。
-                # 本轮补两件玻璃层自己答不出的：**拖拽期间掉过多少像素**（1.4.31/37
-                # 那条"背景慢半拍"的量化证据，只在跟随会话内累计），以及
-                # `_force_top_forced` 有没有泄漏成真（真值时每一拍都全量置顶，
-                # 表现只有卡顿、没有任何痕迹）。
-                _glass_diag = _field("snapshot", lambda: dict(self.glass_diagnostics()), {}, "glass")
-                _glass_diag["follow_lag_px"] = _field("follow_lag_px", lambda: round(
-                    float(getattr(self, "_glass_follow_lag_px", 0.0) or 0.0), 1), None, "glass")
-                _glass_diag["force_top_forced"] = bool(getattr(self, "_force_top_forced", False))
-                # 近两天核对补的一条（v1.4.70 修"浏览器全屏时右键弹不出菜单"）：
-                # 那条链的判据是"补到 isOnActiveSpace 为真为止，最多 50 拍"，可当时
-                # 到底补了几拍、有没有弹层卡在名单里、表停没停 —— 包里一处都读不出来，
-                # 于是"这台机器上到底补齐了没有"只能让用户再复现一次。
-                # 取的是 sf_glass 公开的那两问（popup_space_pending / …_timer_running），
-                # 不在这里重算形状：名单与上限只有一份实现。
-                def _popup_space():
-                    import sf_glass
-                    pending = sf_glass.popup_space_pending()
-                    return {
-                        "pending": len(pending),
-                        "tries": [[type(w).__name__, int(n)] for w, n in pending][:8],
-                        "timer_running": bool(sf_glass.popup_space_timer_running()),
-                        "tick_ms": sf_glass.POPUP_SPACE_TICK_MS,
-                        "max_ticks": sf_glass.POPUP_SPACE_MAX_TICKS,
-                    }
-                _glass_diag["popup_space"] = _field("glass.popup_space", _popup_space, None, "glass")
-                _json_entry("glass.json", _glass_diag)
-                # ---- 诊断补全：三份"此前只能靠用户复现"的现场，各成一份文件 ----
-                # notify.json：到价提醒到底发出去没、走的哪条通道（台账 S34 ——
-                #   整条 UN 路线静默坏死几十个版本，现场只有一行会被挤掉的 WARNING）。
-                # universe.json：本地证券字典是否可用/过期/报过什么错，加编辑器的
-                #   拒绝计数（1.4.51 的"510300 加不进去"至今分不清三种原因）。
-                # calendar.json：休市日历各月的同步状态 —— runtime.trading_time 只给
-                #   结论，日历拉不到时"该不该刷新"判错了没有依据可查。
-                _snapshot("notify.json", _notify_delivery_stats)
-                def _universe_snapshot():
-                    import sf_universe
-                    data = dict(sf_universe.stats())
-                    # path 含家目录（里面有用户名）：诊断包要发给别人，只把前缀换成 ~，
-                    # 目录结构照留 —— "落在哪个代的数据目录"本身就是排障信息。
-                    _home = os.path.expanduser("~")
-                    _p = str(data.get("path") or "")
-                    data["path"] = ("~" + _p[len(_home):]) if _home and _p.startswith(_home) else _p
-                    data["index_ready"] = sf_universe.index_ready()
-                    return data
-                _snapshot("universe.json", _universe_snapshot)
-                _snapshot("calendar.json", calendar_sync_status)
-                # state.json：自动采集层（sf_diag）。上面那些文件都是**人工立意**的现场
-                # —— 每项回答"这项坏了用户会说什么"。这一份不同：它按命名约定把产品
-                # 模块与实例字典里的状态位扫进包，所以新加一个 `self._xxx_fail_count`
-                # 不必回来接线。立意那一半由发版链第 3.9 关
-                # （tools/diag_coverage_check.py）硬拦，见 AGENTS §5.10。
-                def _auto_state():
-                    import sf_diag
-                    return sf_diag.collect(self)
-                _snapshot("state.json", _auto_state)
-                paths = {"config": CONFIG_PATH, "backup": CONFIG_BACKUP_PATH,
-                         "last_quote": LAST_QUOTE_PATH, "log": LOG_PATH,
-                         "failures": last_failures_path(),
-                         "crashes": os.path.expanduser("~/Library/Logs/DiagnosticReports")}
-                metadata = {"version": APP_VERSION, "code": self.code,
-                            "last_ok_time": self._last_ok_time or "",
-                            "quote_source": network["quote_source"],
-                            "http_status": network["last_http_status"],
-                            "stage": RELEASE_STAGE, "bundle_id": BUNDLE_ID,
-                            "version_label": _field("version_label", lambda: "v" + _bundle_version()
-                                + (BETA_SUFFIX if RELEASE_STAGE == "beta" else ""), "", "diagnostics"),
-                            "running_bundle_id": _field("running_bundle_id", _running_bundle_id, "", "diagnostics"),
-                            "log_keep": LOG_ROTATE_KEEP, "log_max": LOG_MAX_BYTES,
-                            "started": started}
-                helpers = {"json_entry": _json_entry, "text_entry": _text_entry,
-                           "read_text": _read_text, "public_text": _public_text, "field": _field,
-                           "inventory": _update_inventory, "is_crash": is_crash_report_name,
-                           "select_crashes": select_crash_reports,
-                           "extract_crash": extract_crash_key_sections}
-                z.defer(lambda: write_diagnostic_attachments(z, paths, metadata, diag_issues, helpers))
+            sources = DiagnosticSources(
+                config_path=CONFIG_PATH,
+                config_backup_path=CONFIG_BACKUP_PATH,
+                last_quote_path=LAST_QUOTE_PATH,
+                log_path=LOG_PATH,
+                net_monitor=_NET_MONITOR,
+                get_last_http_status=get_last_http_status,
+                get_last_quote_source=get_last_quote_source,
+                degraded_source_streak=degraded_source_streak,
+                load_alerts=load_alerts,
+                beijing_now=_beijing_now,
+                expired=expired,
+                store_prune_report=store_prune_report,
+                get_last_minute_source=get_last_minute_source,
+                running_bundle_id=_running_bundle_id,
+                bundle_version=_bundle_version,
+                peek_install_result=_peek_install_result,
+                menu_icon_evidence=_menu_icon_evidence,
+                feature_snapshot=feature_snapshot,
+                font_diagnostics=font_diagnostics,
+                paint_diagnostics=paint_diagnostics,
+                notify_delivery_stats=_notify_delivery_stats,
+                calendar_sync_status=calendar_sync_status,
+                last_failures_path=last_failures_path,
+                update_inventory=_update_inventory,
+                is_crash_report_name=is_crash_report_name,
+                select_crash_reports=select_crash_reports,
+                extract_crash_key_sections=extract_crash_key_sections,
+                snap_margin=SNAP_MARGIN,
+                json=json,
+                log_max=LOG_MAX_BYTES,
+                log_keep=LOG_ROTATE_KEEP,
+                bundle_id=BUNDLE_ID,
+            )
+            z = prepare_diagnostics(self, temp_out, sources)
             if background:
                 worker = self._diagnostics_controller.start(
                     z, temp_out, requested, self.diagnostics_ready.emit)
@@ -3369,9 +2815,10 @@ QMenu::separator {
                     pass
                 self._editor = None
             ed = EditorWindow(self.code, self.apply_stock, self.pos(), self.width())
+            ed.set_surface_owner(self)
             self._editor = ed
 
-            def _clear(obj=ed):
+            def _clear(_destroyed=None, obj=ed):
                 # 身份校验：仅当当前引用仍是该弹窗时才清空，避免误清新对象
                 if self._editor is obj:
                     self._editor = None
@@ -3398,7 +2845,19 @@ QMenu::separator {
         切走再切回来，那几条还在；因此也不需要确认框了 —— 没有东西被删，
         弹框只是噪音（本 app 的规矩：不加解释性弹窗）。
         """
-        return self._apply_stock_now(code)
+        transition = self._stock_transition
+        content = None
+        if self.isVisible() and code != self.code:
+            try:
+                content = transition.frame(self._stock_content_image())
+            except Exception as exc:
+                log_swallow("stock_float_window.stock_transition.capture", exc)
+        result = self._apply_stock_now(code)
+        if result and content is not None:
+            transition.start(content)
+            self._partial_price = None
+            self.update()
+        return result
 
 
     def _apply_stock_now(self, code):
@@ -5757,6 +5216,7 @@ QMenu::separator {
                                 # 输入限制只使用行情源明确给出的涨跌停价。无官方字段时
                                 # 仍可设置目标价，避免新股等特殊规则被本地估算误拦截。
                                 limits_fn=lambda: official_limit_prices(self.quote))
+            panel.set_surface_owner(self)
             self._target_panel = panel
             for status in self._prefetch_calendar().values():
                 if status in ("syncing", "degraded"):
@@ -5765,7 +5225,7 @@ QMenu::separator {
             # M4 配套：面板带 WA_DeleteOnClose，销毁后必须同步清引用，
             # 否则 self._target_panel 指向已删除的 C++ 对象，后续 isVisible()
             # 会抛 RuntimeError（虽被 try 兜住，但会误判为 stale 而重建）。
-            def _clear_tp(obj=panel):
+            def _clear_tp(_destroyed=None, obj=panel):
                 if self._target_panel is obj:
                     self._target_panel = None
             panel.destroyed.connect(_clear_tp)
@@ -6172,128 +5632,16 @@ QMenu::separator {
             on_sample=self.face_guard_wakeup.emit)
 
     def _sync_face_guard(self, reason="", stop_wait=True):
-        """把"该不该看守"落到现实上。幂等，可以在任何状态变化后调用。
-
-        开摄的两个条件（v1.4.41 复核后定下来的口径，改动前先想清楚再动）：
-          ① 窗口可见 —— 有东西需要保护；
-          ② 因第二张脸被自动收起、且此刻确实不在屏上 —— 必须继续看着，否则
-             "脸变回一张就自动恢复"永远等不到数据来源（用户已确认接受这个取舍：
-             自动收起期间摄像头继续运行）。
-        **手动**缩小不在其列：那时摄像头立刻停，绿灯灭、不耗电，恢复由用户点 Dock。
-        `stop_wait=False` 给交互路径用：主线程绝不等一个正在后台拉起会话的锁。
-        """
-        if not self._face_guard_available() or not self._face_guard_pref:
-            self._stop_face_guard(reason or "off", wait=stop_wait)
-            return
-        # 退出中的窗口一律不再拉起采集：`_sync_face_guard` 会被延迟排队的 singleShot
-        # 与轮询表反复调用，而"进程都要走了还把摄像头打开"既点绿灯，又会在 Qt 析构期
-        # 把 ObjC 会话留在一个还在回调的飞线程上（本仓在退出收尾上踩过同类坑）。
-        if getattr(self, "_quitting", False):
-            self._stop_face_guard("quitting", wait=True)
-            return
-        a = self._face_guard_arbiter
-        # 复核 F1：必须**同时**满足"因第二张脸收起"和"现在不在屏上"。只看前半个标志位
-        # 会漏掉一条真实操作序列 —— 自动收起后用户自己点了 Dock 图标恢复，
-        # hidden_by_guard 还留着 True，于是下一次他手动缩小窗口时摄像头不停，
-        # 约 5 秒后程序还会把窗口替他弹回来，等于推翻他刚做的操作。
-        watching = bool(a is not None and a.hidden_by_guard and not self.isVisible())
-        if self._face_guard_paused:
-            self._stop_face_guard("paused", wait=stop_wait)
-            return
-        if not (self.isVisible() or watching):
-            self._stop_face_guard(reason or "window hidden", wait=stop_wait)
-            return
-        if a is None:
-            a = self._face_guard_arbiter = sf_presence.PresenceArbiter()
-        if self._face_guard_monitor is None:
-            self._face_guard_monitor = self._face_guard_new_monitor()
-        state = self._face_guard_monitor.request_start()
-        timer = getattr(self, "_guard_timer", None)
-        try:
-            if timer is not None and not timer.isActive():
-                timer.start()
-        except Exception as exc:
-            log_swallow("stock_float_window._sync_face_guard", exc)
-        # 只在状态**变化**时写一条：本函数会被轮询表按重试节拍反复调用，
-        # 每次都写就会让 debug.log 挤满 "start requested"，反而看不出什么时候真起来了。
-        if state != self._face_guard_logged_state:
-            self._face_guard_logged_state = state
-            log_line("face_guard state=%s (%s)" % (state, reason or "-"))
+        return FaceGuardController.sync(
+            _lazy_attr(self, "_face_guard_controller", FaceGuardController), self, reason, stop_wait)
 
     def _stop_face_guard(self, reason="", wait=True, stop_timer=True):
-        """停摄像头 + 停轮询 + 清计数。绿灯随采集停止而灭，所以这条也必须保证被调到。
-
-        `wait` 透传给 monitor.stop()：交互路径（缩小、关功能）传 False，避免主线程
-        等后台首次拉起；退出路径传 True，进程走之前必须真停。
-
-        `stop_timer`（v1.4.60，复核 F2）：屏幕锁定/休眠这一支**只停采集、不停轮询表**。
-        那张 0.5 秒的表既是判定循环、也是"解锁后重新武装"的唯一驱动 —— 一起停掉就等于
-        把报警器交给一个已经被关掉的东西去按：守卫从此不再工作，直到用户手动开关一次菜单
-        或重启程序。代价是锁屏期间每 0.5 秒空转两次比较，实测可忽略。
-
-        v1.4.59（S1 第二处）：`stop()` 返回 False 的含义是"**还没停**"，补停跑在 daemon
-        线程上，进程一退就被硬杀 → 会话永远没停、绿灯不灭，而诊断包会报
-        `camera_held=false`（说谎）。所以这里不许就地丢弃未停完的 monitor：挂进
-        `_face_guard_pending_stop`，任何一次 wait=True 的收口先把它兑现。
-        """
-        # 诊断留痕：停会话的理由（缩小/关功能/中断/锁屏/退出）就地落账，
-        # face_guard.last_stop 读取 —— state 归 off 后远程唯一的"为什么停了"。
-        self._face_guard_last_stop = {"reason": reason or "", "at": time.time()}
-        if wait:
-            self._drain_pending_guard_stops(reason)
-        mon = self._face_guard_monitor
-        if mon is not None:
-            try:
-                if not mon.stop(wait=wait):
-                    self._face_guard_pending_stop.append(mon)
-                    log_line("face_guard 停未兑现，挂起等退出收口 (%s)" % (reason or "-"))
-            except Exception as exc:
-                log_line("face_guard stop failed (%s): %r" % (reason or "-", exc), "WARNING")
-            self._face_guard_monitor = None
-        a = self._face_guard_arbiter
-        if a is not None:
-            # 复核 F1：中断（采不到画面）不是用户改了主意，窗口还收在 Dock 里等自动恢复。
-            # 这里若一起 reset 掉 hidden_by_guard，30 秒后重试时就会被判成"用户自己收的、
-            # 不用看守"而再次停表 —— 自动恢复从此死掉，而菜单上写的还是"等它松开"。
-            if reason == "stalled":
-                a.clear_streaks()
-            else:
-                a.reset()
-        self._face_guard_logged_state = ""
-        self._face_guard_next_retry = 0.0
-        self._face_guard_last_fresh = 0.0
-        # reason=="stalled" 时**不清** stalled：那正是我们停下来的原因，状态行要留着说。
-        if reason != "stalled":
-            self._face_guard_stalled = False
-        try:
-            if (stop_timer and self._guard_timer is not None
-                    and self._guard_timer.isActive()):
-                self._guard_timer.stop()
-        except Exception as exc:
-            log_swallow("stock_float_window._stop_face_guard", exc)
+        return FaceGuardController.stop(
+            _lazy_attr(self, "_face_guard_controller", FaceGuardController), self, reason, wait, stop_timer)
 
     def _drain_pending_guard_stops(self, reason=""):
-        """把之前"没停完"的 monitor 逐个同步停掉（退出收尾、以及任何 wait=True 的收口）。
-
-        每个都单独 try：一个停不掉不影响其余，也不许把退出流程打断 —— 但必须留痕，
-        否则"绿灯为什么还亮着"这件事事后无从回答（§6 第 9 条）。
-        """
-        pending = self._face_guard_pending_stop
-        if not pending:
-            return
-        self._face_guard_pending_stop = []
-        deadline = time.monotonic() + 0.25
-        for mon in pending:
-            if time.monotonic() >= deadline:
-                self._face_guard_pending_stop.append(mon)
-                continue
-            try:
-                if not mon.stop(wait=True):
-                    self._face_guard_pending_stop.append(mon)
-                    log_line("face_guard 退出收口仍未停完 (%s)" % (reason or "-"),
-                             "WARNING")
-            except Exception as exc:
-                log_line("face_guard pending stop error: %r" % (exc,), "WARNING")
+        return FaceGuardController.drain_pending(
+            _lazy_attr(self, "_face_guard_controller", FaceGuardController), self, reason)
 
     def _on_face_guard_tick(self):
         """守卫的判定入口：采集线程数完新样本立刻进来一次，另有同拍看门狗兜底。
@@ -6585,6 +5933,7 @@ QMenu::separator {
         if getattr(self, "_exit_persisted", False):
             return
         self._exit_persisted = True
+        self._stock_transition.stop()
         try:
             self.running = False
         except Exception:

@@ -20,12 +20,22 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.91
+version 1.4.92
+check sf_stock_transition::StockTransition
+check sf_stock_transition::profile
+check sf_stock_transition::blur_weights
+check sf_stock_transition::frame_from
+check stock_float_window::_stock_transition
+check sf_ui_render::frame_from
 check sf_credentials::_noninteractive
 check sf_credentials::SecKeychainSetUserInteractionAllowed
 check sf_credentials::_PUBLIC_REFERENCES
 # 本轮统一收纳 1.4.89 之后的分时、弹窗及发布链修改。
 check sf_glass::POPUP_BG_ALPHA
+check sf_glass::PopupGlassSurface
+check sf_glass::set_surface_owner
+check sf_editor::hideEvent
+check target_panel::hideEvent
 check sf_quote_loop::QuoteLoopSchedule
 check sf_http::remaining_budget
 check sf_http::read_chunk
@@ -74,9 +84,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.91 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.92 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.91
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.92
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code
@@ -520,9 +530,9 @@ check sf_logging::recent_log_anchors
 check sf_logging::GLASS_ANCHORS
 # 玻璃层现场（合成顺序 / 真实错位 / 盲区 / 每种失效最后一次）：
 check sf_glass::glass_diagnostics
-# 导出诊断信息真的引用了这条方法（writestr 的 "glass.json" 是字符串字面量，
-# co_names 查不到，所以查使用点符号 —— 本文件开头那条边界规则的同款用法）：
-check stock_float_window::glass_diagnostics
+# 导出诊断信息真的引用了这条方法；v1.4.92 职责拆分后使用点迁至独立采集模块。
+# co_names 不含 glass.json 字符串，所以检查实际调用符号：
+check sf_diagnostic_capture::glass_diagnostics
 
 # ---- v1.4.45：复核 A2/A3/A4/B1 —— 零帧说实话、失败给人话、授权进程级、降级留痕 ----
 check sf_constants::FACE_GUARD_FIRST_FRAME_SEC

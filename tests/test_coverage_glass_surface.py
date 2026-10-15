@@ -87,10 +87,11 @@ def _pixel(img, x, y):
     return (c.red(), c.green(), c.blue(), c.alpha())
 
 
-class _Box:
-    """只带 width()/height() 的绘制面（`paint_popup_surface` 只要这两个）。"""
+class _Box(GlassMixin):
+    """Surface host with the same initialized render state as both popups."""
 
     def __init__(self, w=SURFACE_W, h=SURFACE_H):
+        _init_state(self)
         self.size = (w, h)
 
     def width(self):
@@ -290,15 +291,16 @@ class PopupSurfaceTest(SFCase):
     def test_rim_hugs_the_inner_edge_and_never_the_outer_border(self):
         """受光边只画在表面内侧 1pt，不画到外缘 —— 画到外缘就是「双层轮廓」那次反馈。"""
         rec = _Recorder()
-        sf_glass.paint_popup_surface(_Box(), rec)
+        host = _Box()
+        vars(host).update(_bg_effect=True, _glass_backend="legacy")
+        sf_glass.paint_popup_surface(host, rec)
         self.assertEqual(len(rec.filled), 1, "表面只铺一次")
         self.assertEqual(len(rec.drawn), 1, "受光边只描一圈")
-        outer = rec.filled[0][0].boundingRect()
         inner = rec.drawn[0].boundingRect()
-        self.assertAlmostEqual(inner.left() - outer.left(), 1.0, delta=0.5)
-        self.assertLess(inner.width(), outer.width())
+        self.assertAlmostEqual(inner.left(), 1.0, delta=0.5)
+        self.assertLess(inner.width(), host.width())
         self.assertEqual(rec.pens[-1].color().alpha(),
-                         sf_glass.POPUP_SURFACE_HIGHLIGHT_ALPHA,
+                         host._glass_surface_rim()[3],  # discipline-ok(R5): The shared native rim has no public token.
                          "受光边强度只有一个来源，不能悄悄画成实线")
         self.assertEqual(rec.brushes[-1], Qt.BrushStyle.NoBrush,
                          "描边那一步不能带填充刷，否则会把刚铺好的表面盖掉")
@@ -530,10 +532,12 @@ class GlassLifecycleTest(SFCase):
         self.assertEqual(host.mask_calls, [])
         self.assertEqual(host.moves, [])
 
-    def test_inject_downgrades_the_child_window_to_qt_translucency(self):
-        """v1.2.90：子窗不再建 NSVisualEffectView（现场连续崩在 objc_release）。"""
-        host = _GlassHost(_glass_window=_Win(), _glass_view=_View())
-        _inject(host)
+    def test_offscreen_inject_uses_qt_without_creating_a_background_window(self):
+        host = _GlassHost()
+        _init_state(host)
+        host.isVisible = lambda: True
+        with mock.patch.object(sf_glass, "content_ns_window", return_value=None):
+            _inject(host)
         self.assertFalse(host._bg_effect)                    # discipline-ok(R5): 这条降级标记没有公开出口，只能直接读
         self.assertIsNone(getattr(host, "_glass_window", "还在"))
         self.assertIsNone(getattr(host, "_glass_view", "还在"))

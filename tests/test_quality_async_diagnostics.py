@@ -60,9 +60,16 @@ class AsyncDiagnosticsQualityTests(SFCase):
 
     def test_background_failure_leaves_no_visible_or_partial_archive(self):
         case = self.fixture()
-        with mock.patch.object(sf_diagnostics.DiagnosticArchive, "finish", side_effect=OSError("disk full")):
+        with mock.patch.object(sf_diagnostics.DiagnosticArchive, "finish", side_effect=OSError("disk full")) as finish:
             case.win._export_diagnostics(background=True)  # discipline-ok(R5): exercise the actual threaded error path, not a mocked completion
             worker = member(case.win, "_diagnostics_thread")
-            worker.join(5)
-            QApplication.processEvents()
+            if worker is not None:
+                worker.join(5)
+
+            def completed():
+                QApplication.processEvents()
+                return not member(case.win, "_diagnostics_exporting")
+
+            self.assertTrue(wait_for(completed))
+            finish.assert_called_once()
         self.assertEqual(list((Path(case.home) / "Desktop").iterdir()), [])

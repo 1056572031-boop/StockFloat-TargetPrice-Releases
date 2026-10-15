@@ -50,8 +50,10 @@ import sys
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import sf_diag            # 状态词表只有一份实现，闸门不许自己再抄一份（AGENTS §7）
+from diagnostic_closure import diagnostic_modules
 
 MIN_PRODUCT_MODULES = 15      # 少于这个数＝扫描范围失效，拒答（与 test_discipline_scan.min_files 同族）
 MIN_CURATED = 3               # 导出面一个模块都读不到＝尺子坏了，拒答（主窗必然读 sf_constants）
@@ -108,85 +110,18 @@ def alias_table(tree: ast.Module) -> dict[str, str]:
     return table
 
 
-def _module_functions(trees: dict[str, ast.Module]) -> dict[str, list[tuple[str, ast.FunctionDef]]]:
-    out: dict[str, list[tuple[str, ast.FunctionDef]]] = {}
-    for stem, tree in trees.items():
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                out.setdefault(node.name, []).append((stem, node))
-    return out
-
-
 def curated_modules(root: pathlib.Path) -> set[str]:
-    """`_export_diagnostics` 的符号闭包能读到的产品模块（curated 档）。
-
-    刻意**偏严**：`self.X` 只在本文件里解析方法体（不跟着 mixin 栈到处跑）。
-    偏严只会多要一条申报，偏松会放过一整轮没接的现场 —— 两侧代价不对称。
-    """
-    names = product_modules(root)
-    trees: dict[str, ast.Module] = {}
-    for name in names:
-        tree = module_tree(root, name)
-        if tree is not None:
-            trees[name] = tree
-    entry = trees.get("stock_float_window")
-    if entry is None:
-        return set()
-    table = alias_table(entry)
-    # `self.X` 不只住在主窗文件里：GlassMixin（sf_glass）等基类的方法同样被导出面调用。
-    # 不跟着基类走，实测会把已经在包里写了 glass.json 的 sf_glass 判成"读不到"，
-    # 于是每轮向人要一条毫无意义的申报 —— 判据报假警与报假平安一样要修。
-    scope_files = {"stock_float_window": entry}
-    for node in ast.walk(entry):
-        if isinstance(node, ast.ClassDef) and node.name == "FloatWindow":
-            for base in node.bases:
-                base_name = str(getattr(base, "id", "") or getattr(base, "attr", ""))
-                origin = table.get(base_name)
-                if origin and origin in trees and origin not in scope_files:
-                    scope_files[origin] = trees[origin]
-    funcs = _module_functions(scope_files)
-    reached: set[str] = set()
-    visiting: set[int] = set()
-
-    def scan(fn: ast.FunctionDef, depth: int) -> None:
-        if id(fn) in visiting or depth > 8:
-            return
-        visiting.add(id(fn))
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                base = node.value.id
-                if base in table:
-                    reached.add(table[base])
-                elif base.startswith("sf_") or base in ("renderer",):
-                    reached.add(base)
-                elif base == "self" and isinstance(node.ctx, ast.Load):
-                    # Bound-method callbacks passed to _field/_snapshot are references,
-                    # not Call nodes, but their diagnostics still belong to the closure.
-                    for _stem, sub in funcs.get(node.attr, []):
-                        scan(sub, depth + 1)
-        for node in ast.walk(fn):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Name):
-                if func.id in table:
-                    reached.add(table[func.id])
-                for stem, sub in funcs.get(func.id, []):
-                    scan(sub, depth + 1)
-            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
-                    and func.value.id == "self":
-                for _stem, sub in funcs.get(func.attr, []):
-                    scan(sub, depth + 1)
-        # 引用形式传出去的 getter：`_snapshot("notify.json", _notify_delivery_stats)`
-        # 里那个名字不是 Call 节点，只读 walk 出来的 Name 才收得到。
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in table:
-                reached.add(table[node.id])
-
-    for stem, fn in funcs.get("_export_diagnostics", []):
-        scan(fn, 0)
-    # 主窗自己的运行态当然在包里（导出器就是它，`self.*` 与 sf_diag.collect(self) 都读它）
-    return {m for m in (reached | {"stock_float_window"}) if m in set(product_modules(root))}
+    """Resolve actual diagnostic helpers, callbacks and FloatWindow methods."""
+    sources = {}
+    for name in product_modules(root):
+        path = root / (name + ".py")
+        try:
+            source = path.read_text(encoding="utf-8")
+            ast.parse(source)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        sources[name] = source
+    return diagnostic_modules(sources)
 
 
 def imported_modules(root: pathlib.Path) -> set[str]:
@@ -610,7 +545,7 @@ def base_fixture() -> dict[str, str]:
     files["sf_utils.py"] = "VALUE = 3\n"            # 无状态形状：两档都不沾
     files["stock_float_window.py"] = (
         'from sf_notify import delivery_stats as _stats_ref\n'
-        "import sf_glass\n\n\n"
+        "import sf_glass\nimport sf_calendar\n\n\n"
         "class FloatWindow:\n"
         "    def _export_diagnostics(self):\n"
         "        _snapshot(\"notify.json\", _stats_ref)\n"

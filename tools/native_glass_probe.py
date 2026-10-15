@@ -64,6 +64,7 @@ def main():
     parser.add_argument("--exercise", action="store_true")
     parser.add_argument("--fullscreen", action="store_true")
     parser.add_argument("--corners", action="store_true")
+    parser.add_argument("--popups", action="store_true")
     parser.add_argument("--fullscreen-host", action="store_true")
     parser.add_argument("--seconds", type=float, default=15)
     parser.add_argument("--snapshot", type=Path)
@@ -194,6 +195,9 @@ def main():
             check("native_surface_ready", wait(lambda: bool(getattr(win, "_bg_effect", False))))
             check("surface_backend", win.glass_diagnostics()["surface"]["backend"] == result["backend_requested"])
             check("initial_alignment", wait(aligned))
+            if args.popups:
+                from popup_material_probe import verify_popups
+                verify_popups(win, app, args.out, check, wait, observe)
             if args.fullscreen:
                 normal_space = active_space_id()
                 if normal_space is None:
@@ -216,6 +220,9 @@ def main():
                     check("entered_distinct_fullscreen_space", wait(lambda:
                         (space := active_space_id()) is not None and space != normal_space, 10))
                     check("glass_and_content_visible_in_fullscreen", wait(aligned, 10))
+                    if args.popups:
+                        from popup_material_probe import verify_fullscreen_popups
+                        verify_fullscreen_popups(win, args.out, check, wait)
                     host.stdin.write("leave\n")
                     host.stdin.flush()
                     check("exit_fullscreen_transition_completed", wait(lambda: acknowledged("left"), 10))
@@ -298,10 +305,13 @@ def main():
 
                 backdrop = WhiteBackdrop()
                 backdrop.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
-                backdrop.setGeometry(win.x() - 40, win.y() - 40, win.width() + 80, win.height() + 80)
+                backdrop.setGeometry(int(bounds["X"]) - 40, int(bounds["Y"]) - 40,
+                                     int(bounds["Width"]) + 80, int(bounds["Height"]) + 80)
                 backdrop.show()
                 native = content_ns_window(backdrop)
                 native.setHasShadow_(False)
+                native.setHidesOnDeactivate_(False)
+                native.setCollectionBehavior_(main_window.collectionBehavior())
                 native.setLevel_(int(glass_window().level()) - 1)
                 native.orderFront_(None)
                 observe(0.25)

@@ -4,6 +4,7 @@
 # 用法（工程根目录）：
 #     ./build_release.sh              # 打包 + 生成 DMG + 安装到 /Applications
 #     ./build_release.sh --no-install # 只打包 + 生成 DMG，不动 /Applications
+#     ./build_release.sh --local-only # 完整门禁 + DMG + 本机安装，不发布 OTA/源码
 #
 # 约定（用户 2026-09-02 明确要求，长期生效）：
 #   **新程序默认安装到访达「应用程序」/Applications**，而不是桌面。
@@ -37,13 +38,20 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 DO_INSTALL=1
 DO_BUILD=1
 SKIP_TESTS=0
+LOCAL_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --no-install) DO_INSTALL=0 ;;
+    --local-only) LOCAL_ONLY=1 ;;
     # 跳过 PyInstaller，只重做 DMG + 安装（dist/ 已有产物时用，便于重试 DMG 阶段）
     --skip-build) DO_BUILD=0 ;;
     # 跳过回归关卡（唯一用途：拿同一份代码重做 DMG/OTA 的应急重试）
     --skip-tests) SKIP_TESTS=1 ;;
+    *)
+      echo "!! 未知参数：$arg" >&2
+      echo "用法：$0 [--no-install] [--local-only] [--skip-build] [--skip-tests]" >&2
+      exit 2
+      ;;
   esac
 done
 
@@ -84,6 +92,13 @@ for precheck_log in "$PRECHECK_DIR"/*.log; do
 done
 if [ "$PRECHECK_FAILED" -ne 0 ]; then
   echo "!! 发版前置核验未通过，未移动旧产物" >&2
+  exit 1
+fi
+if [ "$LOCAL_ONLY" -eq 1 ]; then
+  "$VENV_PY" tools/render_install_guide.py --local-only --check \
+    || { echo "!! 本机版安装说明未同源或误写线上下载，拒绝打包" >&2; exit 1; }
+elif grep -q '本构建仅用于本机覆盖安装' "$PROJ/README.md"; then
+  echo "!! 当前文档标为本机版；公开发版须先更新 README 并重渲染完整安装说明" >&2
   exit 1
 fi
 
@@ -396,6 +411,7 @@ else
   echo "== 跳过 /Applications 安装（--no-install）=="
 fi
 
+if [ "$LOCAL_ONLY" -eq 0 ]; then
 # ---- 6) 自动更新发布资产（⚠ 本步会调 publish_update_release.py **直接对外发布**：
 #      上传版本 ZIP + 切换线上清单指针。跑本脚本 = 发版，执行前必须确认已获授权。
 #      2026-09-22 更正：原注释写作"只本地生成，上传须人工确认"，与实际不符，
@@ -473,6 +489,10 @@ else
   SYNC_NOTE="源码未同步"
 fi
 
+else
+  echo "== 本机模式：不生成/发布 OTA，不发布公开源码，不推送开发分支 =="
+fi
+
 # ---- 8) 发版最后一步：最终应用冷启动复验（永久规则）----
 # 这一步必须排在 OTA、公开资料和源码同步等动作之后：前面的成功不能替代"用户拿到的
 # 最终包确实能正常启动"。默认检查刚安装到 /Applications 的 bundle；--no-install
@@ -486,7 +506,9 @@ echo "== 8) 最终启动复验：$FINAL_APP =="
   || { echo "!! 最终启动复验未过：本版不能报告为完整交付" >&2; exit 1; }
 
 echo
-if [ -n "$SYNC_NOTE" ]; then
+if [ "$LOCAL_ONLY" -eq 1 ]; then
+  echo "== 本机覆盖完成 v${VERSION}（未发布 GitHub/OTA）=="
+elif [ -n "$SYNC_NOTE" ]; then
   echo "== 发版完成 v${VERSION}，但遗留一项：${SYNC_NOTE} =="
   echo "   修好后手工执行：git push origin $SRC_BRANCH"
 else

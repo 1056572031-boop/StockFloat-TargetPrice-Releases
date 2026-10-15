@@ -150,6 +150,13 @@ class PublicReleaseCase(SFCase):
         self.assertEqual(public.privacy_problems(public.REPO.encode(), "unused"), [])
         self.assertTrue(public.privacy_problems(number, "unused"))
 
+    def test_only_approved_support_mailbox_is_public(self):
+        self.assertEqual(public.privacy_problems(b"1056572031@qq.com", "unused"), [])
+        other_mail = b"someone" + b"@" + b"qq.com"
+        self.assertIn("personal contact", public.privacy_problems(other_mail, "unused"))
+        number = public.REPO.split("/", 1)[0].split("-", 1)[0].encode()
+        self.assertTrue(public.privacy_problems(number, "unused"))
+
     def test_public_push_uses_only_the_existing_public_parent(self):
         calls = []
 

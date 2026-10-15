@@ -162,7 +162,33 @@ def lint_placeholders(text: str, allow_unset_contact: bool = False) -> list[str]
     return problems
 
 
-def render() -> str:
+def render(local_only: bool = False) -> str:
+    if local_only:
+        return "\n".join([
+            "# Skyrocket v%s 本机安装说明" % APP_VERSION,
+            "",
+            "本构建仅用于本机覆盖安装，未发布 GitHub/OTA，不提供不存在的线上下载命令。",
+            "",
+            "## 安装与核验",
+            "",
+            "1. 使用本机生成的 `Skyrocket-V%s.dmg`，双击磁盘里的「一键安装」。" % APP_VERSION,
+            "2. 应用安装到 `/Applications/Skyrocket.app`，原有股票、目标价与窗口设置保留。",
+            "3. 核对本地交付记录中的 SHA-256；来源不明或校验失败时停止安装。",
+            "",
+            "```sh",
+            "shasum -a 256 ~/Desktop/Skyrocket-V%s.dmg" % APP_VERSION,
+            "```",
+            "",
+            "## 签名与隐私边界",
+            "",
+            "未签名、未公证：本项目没有 Apple Developer ID 开发者签名，也没有 Apple 公证。",
+            "固定项目自签名用于版本身份核验；历史包使用 ad-hoc，均不表示 Apple 已审核。",
+            "不会关闭全系统 Gatekeeper，不清空个人配置，不修改用户钥匙串 ACL。",
+            "行情查询仍会向第三方发送股票代码或搜索词；更新和使用边界见随包 README。",
+            "需要排障时主动导出诊断包，发送前检查个人信息；诊断包不会自动上传。",
+            "漏洞按 SECURITY.md 私下报告，完整许可见 LICENSE 与 NOTICE.md。",
+            "",
+        ])
     digest = manifest_sha256()
     ver = APP_VERSION
     lines = [
@@ -357,7 +383,7 @@ def self_test() -> int:
 
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
-    known = ("--print", "--check", "--allow-unset-contact", "--self-test")
+    known = ("--print", "--check", "--allow-unset-contact", "--self-test", "--local-only")
     # 不看前缀（2026-10-12 全方位复核 F5）：旧写法只挑带 -- 的参数来判未知，
     # 于是 `render_install_guide.py check`（漏两个横杠）会被当成"没匹配到 --print/--check
     # 就是写文件"，直接重写仓库外那份真实对外 INSTALL.md —— 与 G17 那枚假门同一形状，
@@ -375,7 +401,7 @@ def main(argv=None) -> int:
     if "--self-test" in argv:
         return self_test()
     if "--print" in argv:
-        print(render())
+        print(render(local_only=True) if "--local-only" in argv else render())
         return 0
     out = OUT_DEFAULT
     if "--check" in argv:
@@ -383,6 +409,15 @@ def main(argv=None) -> int:
             print("!! 安装说明不存在：%s（发版前必须渲染一次）" % out, file=sys.stderr)
             return 1
         body = out.read_text(encoding="utf-8")
+        if "--local-only" in argv:
+            problems = lint_commands(body) + lint_placeholders(body)
+            if body != render(local_only=True):
+                problems.append("本机说明与当前版本不同源，或混入未发布的线上下载步骤")
+            if problems:
+                print("!! " + "; ".join(problems), file=sys.stderr)
+                return 1
+            print("== 本机安装说明同源：v%s，不提供未发布下载链接 ==" % APP_VERSION)
+            return 0
         problems = lint_commands(body) + lint_placeholders(
             body, allow_unset_contact="--allow-unset-contact" in argv)
         for token, why in ((download_url(), "那行 curl 命令的下载地址不是本轮版本"),
@@ -411,7 +446,7 @@ def main(argv=None) -> int:
               % (APP_VERSION, "已写" if digest else "本轮无清单，未写"))
         return 0
     out.parent.mkdir(parents=True, exist_ok=True)
-    text = render()
+    text = render(local_only=True) if "--local-only" in argv else render()
     # v1.4.60（复核 F3）：写入这一侧也过占位符判据 —— 字面 %s 属于"写出去就是错的"，
     # 直接拒绝写入；联系渠道占位允许先写出来（下面照旧提示），但 `--check` 会判红，
     # 所以它进不了发版链第 6.1 步之后的任何一次核验。

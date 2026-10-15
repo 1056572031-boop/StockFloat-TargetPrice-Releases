@@ -16,6 +16,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -43,6 +44,46 @@ def _run_tool(script, *args):
     cp = subprocess.run([sys.executable, str(ROOT / "tools" / script)] + list(args),
                         capture_output=True, text=True, cwd=str(ROOT), timeout=180)
     return cp.returncode, cp.stdout + cp.stderr
+
+
+def stale_source_module(bundle, root=ROOT):
+    """A matching version does not make a pre-edit dist bundle current."""
+    from verify_card_corners import code_shape
+    from verify_dmg_pyz import CORE_MODULES
+    required = {"stock_float_window", *CORE_MODULES}
+    paths = [*root.glob("sf_*.py"), root / "stock_float_window.py", root / "renderer.py"]
+    for path in paths:
+        packaged = bundle.code(path.stem)
+        if packaged is None and path.stem not in required:
+            continue  # Developer-only modules need not be part of the application.
+        current = compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        if packaged is None or code_shape(packaged) != code_shape(current):
+            return path.stem
+    return None
+
+
+class BundleSourceFreshness(SFCase):
+    def current_code(self, name):
+        path = ROOT / (name + ".py")
+        return compile(path.read_text(encoding="utf-8"), "packaged/" + path.name, "exec")
+
+    def test_identical_executable_source_is_current_despite_build_paths(self):
+        self.assertIsNone(stale_source_module(types.SimpleNamespace(code=self.current_code)))
+
+    def test_changed_function_body_is_stale_without_needing_a_version_change(self):
+        def code(name):
+            return compile("def changed(): return None", "old", "exec") if name == "sf_glass" else self.current_code(name)
+        self.assertEqual(stale_source_module(types.SimpleNamespace(code=code)), "sf_glass")
+
+    def test_required_source_module_missing_from_the_bundle_is_stale(self):
+        def code(name):
+            return None if name == "sf_constants" else self.current_code(name)
+        self.assertEqual(stale_source_module(types.SimpleNamespace(code=code)), "sf_constants")
+
+    def test_unpackaged_developer_module_does_not_make_a_current_bundle_stale(self):
+        def code(name):
+            return None if name == "sf_camera_check" else self.current_code(name)
+        self.assertIsNone(stale_source_module(types.SimpleNamespace(code=code)))
 
 
 class TestGatesTellTheTruth(unittest.TestCase):
@@ -77,6 +118,14 @@ class TestGatesTellTheTruth(unittest.TestCase):
             if dist_version(app) != C.APP_VERSION:
                 self.skipTest("dist/ 产物是旧版本 %r，等待本轮构建后再验真产物层"
                               % dist_version(app))
+            from verify_dmg_pyz import Bundle
+            bundle = Bundle(app)
+            try:
+                stale = stale_source_module(bundle)
+            finally:
+                bundle.dispose()
+            if stale:
+                self.skipTest("dist/ 同版本但 %s 与当前源码不同，等待重建后再验真产物层" % stale)
             rc2, out2 = _run_tool("bundle_closure_check.py", str(app), "--self-test")
             self.assertEqual(rc2, 0, "打包闭包自检（含真产物层）失败：\n%s" % out2)
             self.assertIn("真产物层", out2, "有产物却没跑到真产物层，等于少验一层")

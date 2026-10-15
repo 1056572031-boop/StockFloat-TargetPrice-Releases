@@ -120,6 +120,8 @@ class MainCloseButton(QPushButton):
 
 
 class EditorWindow(GlassMixin, QWidget):
+    _prefer_liquid_glass = True
+
     def __init__(self, code, on_apply, anchor, anchor_w):
         super().__init__()
         self._init_glass_state()    # v1.2.87：复用毛玻璃（非 macOS 自动降级）
@@ -146,7 +148,7 @@ class EditorWindow(GlassMixin, QWidget):
             % FG_TEXT_HEX))
         self._build()
         self._move_near()
-        # 窗口尚未显示，此时截到的是真实桌面/后方应用，不会把弹窗自己截进去。
+        # Only configure the native shadow here; no desktop capture is needed.
         self.prepare_surface()
 
     def prepare_surface(self):
@@ -262,6 +264,13 @@ class EditorWindow(GlassMixin, QWidget):
         super().moveEvent(e)
         self._sync_glass_frame(force_mask=True)
 
+    def hideEvent(self, e):
+        try:
+            self._close_glass()
+        except Exception as exc:
+            log_swallow("sf_editor.hideEvent", exc)
+        super().hideEvent(e)
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._sync_glass_frame(force_mask=True)
@@ -272,8 +281,7 @@ class EditorWindow(GlassMixin, QWidget):
         p = QPainter(self)
         try:
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            # 短生命周期子窗禁用独立原生玻璃层，统一使用主窗 translucent 同款材质。
-            # 不额外叠加边框/阴影，避免出现与主界面不一致的双层轮廓。
+            # Native material lives below Qt in this same window; dimming is shared.
             paint_popup_surface(self, p)
         finally:
             # v1.4.18 建议#6：与主窗 sf_ui_render 同样用 try/finally 收口 ——

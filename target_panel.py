@@ -120,6 +120,8 @@ class AddIconButton(QPushButton):
 
 
 class TargetPanel(GlassMixin, QWidget):
+    _prefer_liquid_glass = True
+
     def __init__(self, code, name, on_apply, on_clear,
                  current_code_fn=None, current_price_fn=None,
                  parent=None, width=None, apply_blocked_fn=None,
@@ -562,13 +564,11 @@ class TargetPanel(GlassMixin, QWidget):
         prepare_popup_surface(self)
 
     def paintEvent(self, event):
-        """v1.2.84：自定义绘制圆角背景，与主窗超椭圆 R=26 保持一致；
-        v1.2.87：毛玻璃生效时仅压一层暗化露出 frosted 背景，否则降级为近不透明深蓝卡。"""
+        """Paint the same native dimming or fallback surface as the main window."""
         self._glass_mask_flush()    # 同帧 flush 玻璃层圆角 mask（pending 时）
         p = QPainter(self)
         try:
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            # 与替换股票窗口统一使用主窗 translucent 同款半透明黑材质。
             paint_popup_surface(self, p)
         finally:
             # v1.4.18 建议#6：paint_popup_surface 抛错也要收口 QPainter，
@@ -579,6 +579,13 @@ class TargetPanel(GlassMixin, QWidget):
     def moveEvent(self, event):
         super().moveEvent(event)
         self._sync_glass_frame(force_mask=True)
+
+    def hideEvent(self, event):
+        try:
+            self._close_glass()
+        except Exception as exc:
+            log_swallow("target_panel.hideEvent", exc)
+        super().hideEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

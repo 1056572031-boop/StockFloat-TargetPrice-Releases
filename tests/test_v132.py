@@ -136,9 +136,9 @@ class TestBug1GlassTransaction(_WinBase):
         fake_q.CATransaction = tx = MagicMock()
         fake_q.CAShapeLayer = cs = MagicMock()
         fake_q.CGRectMake = MagicMock(side_effect=lambda x, y, w, h: (x, y, w, h))
+        fake_q.CGPathCreateWithRoundedRect = MagicMock(return_value=object())
 
-        with patch.object(sf_glass, "_glass_squircle_cgpath", return_value=object()) as _mk_path, \
-             patch.dict(sys.modules, {"Quartz": fake_q}):
+        with patch.dict(sys.modules, {"Quartz": fake_q}):
             cs.layer.return_value = mask_layer
             mix._set_glass_mask(fake_vev, 240, 120)
 

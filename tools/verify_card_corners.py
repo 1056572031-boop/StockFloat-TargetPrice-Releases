@@ -16,21 +16,21 @@ sys.path.insert(0, str(ROOT))
 
 
 def native_corner_problems(image, backend, scale, radius, inset=0):
-    """Independent circular/superellipse oracle; never derive it from a product path."""
+    """Independent circular oracle; never derive it from a product path."""
     if image.isNull() or scale <= 0 or radius <= 0 or backend not in ("liquid", "legacy"):
         return ["invalid native corner evidence"]
     background = image.pixelColor(0, 0)
     center = image.pixelColor(image.width() // 2, image.height() // 2)
     if max(abs(a - b) for a, b in zip(center.getRgb()[:3], background.getRgb()[:3])) < 30:
         return ["blank or insufficiently contrasted native capture"]
-    power = 2 if backend == "liquid" else 4
+    radius = max(0, radius - inset)
     center_at = radius + inset
     overflow = [0, 0, 0, 0]
     samples = 0
     for y in range(math.ceil(center_at * scale)):
         for x in range(math.ceil(center_at * scale)):
             px, py = (x + 0.5) / scale, (y + 0.5) / scale
-            distance = ((center_at - px) ** power + (center_at - py) ** power) ** (1 / power)
+            distance = math.hypot(center_at - px, center_at - py)
             # One logical pixel excludes antialiasing and the native material edge.
             if distance <= radius + 1:
                 continue
@@ -156,7 +156,7 @@ def find_code(code, path):
 def bundle_problems(bundle):
     import renderer
     import sf_constants
-    from sf_glass import GlassMixin, create_glass_surface
+    from sf_glass import GlassMixin, PopupGlassSurface, create_glass_surface, paint_popup_surface
     from sf_ui_render import RenderMixin
     from verify_dmg_pyz import top_level_literal
 
@@ -164,6 +164,10 @@ def bundle_problems(bundle):
     targets = (("renderer", "liquid_glass_dim_path", renderer.liquid_glass_dim_path),
                ("sf_ui_render", "RenderMixin._paint_background", RenderMixin._paint_background),
                ("sf_glass", "create_glass_surface", create_glass_surface),
+               ("sf_glass", "paint_popup_surface", paint_popup_surface),
+               ("sf_glass", "PopupGlassSurface.attach", PopupGlassSurface.attach),
+               ("sf_glass", "PopupGlassSurface.close", PopupGlassSurface.close),
+               ("sf_glass", "GlassMixin._inject_glass", GlassMixin._inject_glass),
                ("sf_glass", "GlassMixin._set_glass_mask", GlassMixin._set_glass_mask))
     for module, path, function in targets:
         code = bundle.code(module)
@@ -173,7 +177,8 @@ def bundle_problems(bundle):
         except ValueError as exc:
             problems.append(str(exc))
     constants = bundle.code("sf_constants")
-    for name in ("APP_VERSION", "R", "GLASS_INSET", "LIQUID_GLASS_INSET", "BG_LIQUID_GLASS_DIM", "LIQUID_GLASS_OPACITY"):
+    for name in ("APP_VERSION", "R", "GLASS_INSET", "LIQUID_GLASS_INSET", "BG_ALPHA_DEFAULT",
+                 "BG_LIQUID_GLASS_DIM", "LIQUID_GLASS_OPACITY"):
         if constants is None or top_level_literal(constants, name) != getattr(sf_constants, name):
             problems.append(f"packaged corner/material constant differs: {name}")
     return problems
@@ -190,7 +195,7 @@ def native_problems(out):
         print("Native Liquid Glass API unavailable; legacy is the required backend on this host")
     for backend in backends:
         command = [sys.executable, str(ROOT / "tools/native_glass_probe.py"), "--corners",
-                   "--exercise", "--seconds", "1", "--out", str(out / backend)]
+                   "--exercise", "--popups", "--seconds", "1", "--out", str(out / backend)]
         if backend == "legacy":
             command.append("--legacy")
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=90)
@@ -215,6 +220,9 @@ def main(argv=None):
         print("Packaged geometry: NOT CHECKED (no --app)")
     if not args.native:
         print("Native compositor: NOT CHECKED (no --native)")
+    if not args.app or not args.native:
+        print("Card corner gate: INCOMPLETE (provide --app and --native)")
+        return 2
     problems = oracle_self_test_problems()
     problems.extend(render_problems())
     if args.app:

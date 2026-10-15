@@ -530,5 +530,61 @@ class TestTestWritingDiscipline(SFCase):
 
 
 
+class TestLocalReleaseBoundaries(SFCase):
+    # This is a shell control-flow contract. Execute only the publication/final
+    # blocks with a failing interpreter, never a real installer or publisher.
+    def source(self):
+        return (ROOT / "build_release.sh").read_text()
+
+    def run_block(self, block, root, local, interpreter="/usr/bin/false"):
+        import os
+        import subprocess
+        env = dict(os.environ, LOCAL_ONLY=str(local), PROJ=str(root), VERSION="fixture",
+                   APP_BUNDLE="Skyrocket.app", DO_INSTALL="1", INSTALL_DIR=str(root / "app"),
+                   VENV_PY=interpreter)
+        return subprocess.run(["/bin/bash", "-c", "set -eu\n" + block], env=env,
+                              capture_output=True, text=True, timeout=10)
+
+    def test_local_mode_has_no_publication_side_effects_and_default_still_enters_publish(self):
+        import tempfile
+        source = self.source()
+        start = source.index('if [ "$LOCAL_ONLY" -eq 0 ]; then\n# ---- 6)')
+        end = source.index("# ---- 8)", start)
+        with tempfile.TemporaryDirectory(prefix="sf_local_release_") as directory:
+            root = pathlib.Path(directory)
+            notes = root / "release_notes.txt"
+            notes.write_text("fixture notes")
+            local = self.run_block(source[start:end], root, 1)
+            self.assertEqual(local.returncode, 0, local.stderr)
+            self.assertEqual(list(root.iterdir()), [notes])
+            public = self.run_block(source[start:end], root, 0)
+            self.assertNotEqual(public.returncode, 0, "Default publication must reach its failing asset tool")
+
+    def test_local_mode_still_fails_when_final_startup_check_fails(self):
+        import tempfile
+        source = self.source()
+        block = source[source.index("# ---- 8)"):]
+        with tempfile.TemporaryDirectory(prefix="sf_local_smoke_") as directory:
+            root = pathlib.Path(directory)
+            failed = self.run_block(block, root, 1)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertNotIn("本机覆盖完成", failed.stdout)
+            passed = self.run_block(block, root, 1, "/usr/bin/true")
+            self.assertEqual(passed.returncode, 0, passed.stderr)
+            self.assertIn("本机覆盖完成", passed.stdout)
+
+    def test_local_argument_does_not_enable_gate_or_build_skips(self):
+        import subprocess
+        source = self.source()
+        start = source.index("\nDO_INSTALL=1\n")
+        end = source.index("\nVENV_PY=", start)
+        block = source[start:end] + '\nprintf "%s:%s:%s:%s" "$LOCAL_ONLY" "$SKIP_TESTS" "$DO_BUILD" "$DO_INSTALL"'
+        for flags, expected in (([], "0:0:1:1"), (["--local-only"], "1:0:1:1")):
+            result = subprocess.run(["/bin/bash", "-c", block, "fixture", *flags],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, expected)
+
+
 if __name__ == "__main__":
     unittest.main()

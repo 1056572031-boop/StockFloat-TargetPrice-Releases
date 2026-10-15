@@ -101,3 +101,6 @@ version 1.4.90
 skip sf_quote_loop pure scheduling and retry calculations; worker-local timing has no separate persistent diagnostic payload, host runtime and network logs report observable outcomes
 version 1.4.91
 skip sf_quote_loop pure scheduling and retry calculations inherited from the preceding v1.4.90 closeout; host runtime and network logs report observable outcomes
+version 1.4.92
+skip sf_quote_loop pure scheduling and retry calculations; host runtime and network logs report observable outcomes
+skip sf_editor transient editor and search workers expose search rejects through universe diagnostics and native surface state through glass.json; no additional permanent business state is owned

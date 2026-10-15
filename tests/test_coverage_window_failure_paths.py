@@ -164,6 +164,7 @@ class ExitPersistenceFailures(SFCase):
         self.target = host(running=True, code="sh600519", x=lambda: WINDOW_X, y=lambda: WINDOW_Y,
                            height=lambda: WINDOW_HEIGHT, _exit_persisted=False, _bg_cfg="glass",
                            _bg_effect=True, _glass_window=self.surface, _runtime=self.runtime,
+                           _stock_transition=host(stop=mock.Mock()),
                            _close_update_flow_box=mock.Mock(), _stop_face_guard=self.camera,
                            timer=self.timer, findChildren=lambda cls: [self.child_timer])
 

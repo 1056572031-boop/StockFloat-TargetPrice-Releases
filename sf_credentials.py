@@ -26,6 +26,10 @@ class KeychainError(OSError):
     pass
 
 
+class KeychainItemUnavailable(KeychainError):
+    """The requested item is absent, not a global storage failure."""
+
+
 class MacKeychain:
     @staticmethod
     def _framework():
@@ -105,9 +109,11 @@ class MacKeychain:
             status = self._status(result)
             if status == 0 and isinstance(result, tuple):
                 return bytes(result[1]).decode("utf-8")
+            if not protected and status == -25300:
+                break
             if not protected or status not in (-34018, -50, -25300):
                 raise KeychainError("Keychain read failed (%d)" % status)
-        raise KeychainError("Keychain item is unavailable")
+        raise KeychainItemUnavailable("Keychain item is unavailable (-25300)")
 
     def delete(self, account):
         with self._noninteractive():
@@ -162,6 +168,8 @@ def resolve_config_urls(path, config, *, keychain=None):
             raise KeychainError("Keychain unavailable; no further attempts this startup")
         try:
             result = seal_url(value, keychain) if seal else keychain.get(value)
+        except KeychainItemUnavailable:
+            raise
         except Exception:
             storage_failed = True
             raise

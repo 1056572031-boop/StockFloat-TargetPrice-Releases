@@ -3,15 +3,17 @@
 
 import time
 import traceback
-from sf_constants import (ACCENT_BLUE_HEX, APP_VERSION, BG_GLASS_DIM, BG_GLASS_DIM_LIGHT,
+import weakref
+from typing import cast
+from sf_constants import (ACCENT_BLUE_HEX, APP_VERSION, BG_ALPHA_DEFAULT, BG_GLASS_DIM, BG_GLASS_DIM_LIGHT,
                           BG_LIQUID_GLASS_DIM, LIQUID_GLASS_OPACITY,
                           GLASS_INSET, GLASS_MASK_THROTTLE, R,
                           FG_BRIGHT_HEX, FG_TEXT_HEX, FG_HINT_HEX, FG_DISABLED_HEX)
 from sf_logging import feature_enabled, log_line, log_swallow, recent_log_anchors, RUN_ID
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, Qt, QRectF, QTimer
 from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PyQt6.QtWidgets import QLineEdit, QWidget
-from renderer import _glass_squircle_cgpath, smooth_round_rect_path
 from sf_icons import _objc_deps
 
 # 本模块的 pyobjc / AppKit / Quartz 全部下沉到方法内延迟 import：非 macOS、未装
@@ -206,15 +208,9 @@ def _cgs_libs():
         _CGS_LIBS = (ctypes, cg, cf)
     return _CGS_LIBS
 
-# 子窗与主窗共用的视觉令牌。子窗不再自创深蓝不透明卡；由于短生命周期子窗
-# 禁用独立 NSVisualEffectView（避免历史 objc_release 崩溃），用主窗 translucent
-# 模式同款 82% 半透明黑模拟统一材质，并复用同一超椭圆圆角与透明边缘。
-POPUP_BG_ALPHA = 0.82
-# 弹窗材质沿用主窗的中性深色玻璃基调，仅加极弱蓝灰高光；不读取桌面像素，
-# 因此不会泄露或把背后内容带进输入/目标价界面。
-POPUP_SURFACE_RGB = (29, 30, 32)
-POPUP_SURFACE_HIGHLIGHT_RGB = (151, 170, 196)
-POPUP_SURFACE_HIGHLIGHT_ALPHA = 15
+# Popup controls share tokens; the surface itself uses the main-window renderer.
+POPUP_BG_ALPHA = BG_ALPHA_DEFAULT
+POPUP_SURFACE_RGB = (0, 0, 0)  # Compatibility reference for contrast checks; no separate tint.
 POPUP_INPUT_BG = "rgba(255,255,255,0.08)"
 POPUP_INPUT_BORDER = "rgba(154,163,181,0.30)"
 POPUP_INPUT_FOCUS_BORDER = "rgba(174,190,212,0.70)"
@@ -356,25 +352,51 @@ def prepare_popup_surface(widget):
 
 
 def paint_popup_surface(widget, painter):
-    """绘制与主窗统一的半透明深色玻璃表面；不读取屏幕、不新增外圈阴影。
+    """Use exactly the main card's dimming, geometry, rim and fallback colors."""
+    from sf_ui_render import RenderMixin
+    RenderMixin._paint_background(widget, painter, widget.width())
 
-    子窗不能安全地持有独立的 AppKit 背景窗，因此这里必须保留 Qt 侧的材质
-    fallback。关键是沿用主窗的半透明强度，而不是铺一层不透明深色卡片；这样
-    目标价和替换股票两个窗口在主窗口上方时仍能透出后方内容。
-    """
-    path = smooth_round_rect_path(0, 0, widget.width(), widget.height(), R)
-    painter.fillPath(path, QColor(*POPUP_SURFACE_RGB,
-                                   int(POPUP_BG_ALPHA * 255)))
-    # 仅在表面内侧增加一条极弱的冷色受光边，给编辑面板与主窗相同的玻璃层次；
-    # 不画到外缘，避免重新出现历史上的双层轮廓。
-    inset = 1.0
-    inner = smooth_round_rect_path(inset, inset,
-                                   max(widget.width() - 2 * inset, 1),
-                                   max(widget.height() - 2 * inset, 1), R)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.setPen(QPen(QColor(*POPUP_SURFACE_HIGHLIGHT_RGB,
-                               POPUP_SURFACE_HIGHLIGHT_ALPHA), 1.0))
-    painter.drawPath(inner)
+
+class PopupGlassSurface:
+    """One native view below Qt content, with no independent background NSWindow."""
+
+    def __init__(self, window, content, view):
+        self.window = window
+        self.content = content
+        self.view = view
+        self.appearance = window.appearance()
+
+    def attach(self, appkit, backend):
+        parent = self.content.superview()
+        if parent is None:
+            raise RuntimeError("popup content has no native container")
+        if backend == "liquid":
+            self.window.setAppearance_(appkit.NSAppearance.appearanceNamed_(
+                appkit.NSAppearanceNameDarkAqua))
+        self.view.setFrame_(self.content.frame())
+        self.view.setAutoresizingMask_(appkit.NSViewWidthSizable | appkit.NSViewHeightSizable)
+        parent.addSubview_positioned_relativeTo_(self.view, appkit.NSWindowBelow, self.content)
+        self.window.setHasShadow_(False)
+
+    def sync(self):
+        if self.view is not None:
+            self.view.setFrame_(self.content.frame())
+
+    def close(self, *_unused):
+        # Strong references keep the view alive until it is detached. Never manually
+        # release/close Qt's NSWindow, or let AppKit and PyObjC release the same owner.
+        if self.view is None:
+            return
+        try:
+            self.view.removeFromSuperview()
+            self.window.setAppearance_(self.appearance)
+        except Exception as exc:
+            log_swallow("sf_glass.PopupGlassSurface.close", exc)
+        finally:
+            self.view = None
+            self.content = None
+            self.window = None
+            self.appearance = None
 
 
 # v1.2.43 第3项：玻璃层圆角 mask 重建判定（目标尺寸缓存复用 + 节流合并）纯函数。
@@ -667,6 +689,8 @@ def popup_space_tick():
     kept = []
     for entry in _SPACE_WATCH["widgets"]:
         widget, tries = entry
+        if isinstance(widget, QObject) and sip.isdeleted(widget):
+            continue
         try:
             if not widget.isVisible():
                 continue                       # 已经关了（菜单本来就短命），不留引用
@@ -791,8 +815,8 @@ class GlassMixin:
         非 macOS、或 Qt 的 cocoa 平台没真起来时（`native_cocoa_active()` 为假）整族自动降级为
         Qt 侧半透明绘制：这条收口是 v1.4.33 那次"把 offscreen 的 winId() 当 NSView 指针用 →
         几秒内 SIGSEGV"之后加的，别绕开它直接从 Qt 伸手进 AppKit。
-        短生命周期子窗（编辑器/目标价面板）**刻意不起独立 NSVisualEffectView**，走主窗同款
-        半透明材质 —— 历史事故是 objc_release 崩溃，见本文件 POPUP_* 那段注释。
+        编辑器和目标价面板把原生材质嵌入自己的 NSWindow，不创建第二个背景窗；
+        关闭先移除 view，再释放 Python 强引用，避免历史双重释放和层级遮挡。
 
         ⚠ 类体缩进是 8 空格（历史如此），往里加类属性必须跟齐，否则整类语法错。
         """
@@ -938,6 +962,11 @@ class GlassMixin:
             self._glass_fallback_reason = ""
             self._glass_view = None
             self._glass_window = None        # 独立毛玻璃 NSWindow（置于本窗下层）
+            self._popup_surface = None
+            self._surface_owner_ref = None
+            self._bg_mode = "translucent"
+            self.__dict__.update(_bg_path=None, _bg_path_wh=None, _bg_path_ins=None,
+                                 _bg_path_ins_wh=None, _bg_rim_cache=None)
             self._glass_mask_layer = None    # 玻璃层圆角裁剪 CAShapeLayer
             self._glass_mask_pending = False  # 是否有待同帧 flush 的 mask 重建
             self._glass_mask_w = 0           # 最近一次重建 mask 的目标宽（尺寸复用判定）
@@ -1161,30 +1190,76 @@ class GlassMixin:
             except Exception as exc:
                 log_swallow("sf_glass._glass_follow_end", exc)
 
+        def set_surface_owner(self, owner):
+            """Follow the main window's actual backend rather than an unrelated theme."""
+            self._surface_owner_ref = weakref.ref(owner)
+
         def _inject_glass(self):
-            """子窗统一使用 Qt 半透明面板，不再创建独立 NSVisualEffectView。
-
-            v1.2.90 现场连续崩溃均为 NSVisualEffectView/objc_release；同一独立原生
-            背景窗还会在层级切换时盖住 Qt 控件，形成“只有面板、没有内容”的空壳。
-            主行情窗覆盖了本方法，仍保留系统毛玻璃；这里只影响目标价与替换股票弹窗。
-            """
+            """Attach a material below Qt content inside the popup's existing NSWindow."""
+            widget = cast(QWidget, self)
+            if not widget.isVisible() or self._popup_surface is not None:
+                self._glass_pending = self._popup_surface is None
+                return
             self._bg_effect = False
-            self._glass_window = None
-            self._glass_view = None
-            self._glass_mask_layer = None
-
             self._glass_backend = "none"
             self._glass_pending = False
-            self.update()
+            surface = None
+            try:
+                owner = self._surface_owner_ref() if self._surface_owner_ref else None
+                if owner is not None:
+                    self._bg_mode = owner._bg_mode
+                    if not owner._bg_effect:
+                        self._glass_fallback_reason = "owner_has_no_native_surface"
+                        return
+                    self._prefer_liquid_glass = owner._glass_backend == "liquid"
+                window = content_ns_window(self)
+                if window is None:
+                    self._glass_fallback_reason = "native_window_unavailable"
+                    return
+                import AppKit
+                content = window.contentView()
+                view, backend, reason = create_glass_surface(
+                    AppKit, content.frame(), self._prefer_liquid_glass)
+                surface = PopupGlassSurface(window, content, view)
+                self._glass_backend = backend
+                self._glass_fallback_reason = reason
+                surface.attach(AppKit, backend)
+                self._glass_view = view
+                self._set_glass_mask(view, widget.width(), widget.height())
+                self._glass_mask_w = widget.width()
+                self._glass_mask_h = widget.height()
+                widget.destroyed.connect(surface.close)
+                self._popup_surface = surface
+                self._bg_effect = True
+                log_line("popup glass ok, backend=%s, fallback=%s" % (backend, reason or "none"))
+            except Exception as exc:
+                if surface is not None:
+                    surface.close()
+                self._popup_surface = None
+                self._glass_view = None
+                self._glass_mask_layer = None
+                self._glass_backend = "none"
+                self._bg_effect = False
+                self._glass_fallback_reason = "popup_setup_failed:" + type(exc).__name__
+                log_swallow("sf_glass.popup_glass", exc)
+            finally:
+                widget.update()
 
         def _close_glass(self):
-            """安全隐藏子窗毛玻璃，避免 PyObjC/AppKit 双重释放。
+            """Detach embedded popup material; only hide legacy independent windows.
 
-            macOS 现场崩溃报告连续落在 NSVisualEffectView 的 objc_release：原实现
-            `gw.close()` 会让 AppKit 释放 contentView/NSWindow，随后 Python 包装对象
-            在自动释放池清理时再次 release，形成 EXC_BAD_ACCESS。子窗本身关闭后只需
-            orderOut 隐藏背景窗；保留 Python 强引用，由实例销毁时统一自然回收。
+            Never close or manually release Qt's native window. Strong references
+            protect the embedded view until it has been removed from its container.
             """
+            surface = getattr(self, "_popup_surface", None)
+            if surface is not None:
+                try:
+                    cast(QWidget, self).destroyed.disconnect(surface.close)
+                except (TypeError, RuntimeError) as exc:
+                    log_swallow("sf_glass.popup_disconnect", exc)
+                surface.close()
+                self._popup_surface = None
+                self._glass_view = None
             gw = getattr(self, "_glass_window", None)
             if gw is not None:
                 try:
@@ -1212,15 +1287,15 @@ class GlassMixin:
                 vev.setCornerRadius_(float(R))
                 return
             try:
-                from Quartz import CGRectMake, CAShapeLayer, CATransaction
+                from Quartz import CGRectMake, CGPathCreateWithRoundedRect, CAShapeLayer, CATransaction
                 # 内缩 GLASS_INSET：玻璃层边缘材质自带 1~3px 描边，整体内缩后由主窗
                 # 透明边缘接管，描边被裁掉，窗口四周不再出现细线/亮边
                 ins = GLASS_INSET
-                # 圆角曲线必须与主窗 Qt 侧 smooth_round_rect_path（超椭圆 squircle）
-                # 完全一致；用标准圆弧(CGPathCreateWithRoundedRect)会与超椭圆弧线
-                # 不重合，四角出现"大圆角套小圆角"的双层圆角重叠
-                path = _glass_squircle_cgpath(ins, ins, max(w - 2 * ins, 1),
-                                              max(h - 2 * ins, 1), R)
+                # 与新玻璃、Qt 暗化层及编辑弹窗共用同心普通圆角。
+                radius = max(0.0, R - ins)
+                path = CGPathCreateWithRoundedRect(
+                    CGRectMake(ins, ins, max(w - 2 * ins, 1), max(h - 2 * ins, 1)),
+                    radius, radius, None)
                 # v1.2.32(BUG1)：CAShapeLayer 的 frame/path 属 CALayer 可动画属性，
                 # 不加抑制时 CoreAnimation 会对每次变更做约 0.25s 隐式插值追赶——
                 # 拉伸时玻璃层从旧圆角向新圆角平滑过渡，而主窗 Qt 圆角瞬时重绘，
@@ -1270,6 +1345,18 @@ class GlassMixin:
             尺寸不跟服务端走，是因为 mask 圆角用 `self.width()/height()` 构建，
             两者必须同源，否则拉伸动画里会出现"背景尺寸与圆角尺寸不一致"的错位。
             """
+            surface = getattr(self, "_popup_surface", None)
+            if surface is not None:
+                try:
+                    surface.sync()
+                    widget = cast(QWidget, self)
+                    if (widget.width(), widget.height()) != (self._glass_mask_w, self._glass_mask_h):
+                        self._set_glass_mask(self._glass_view, widget.width(), widget.height())
+                        self._glass_mask_w = widget.width()
+                        self._glass_mask_h = widget.height()
+                except Exception as exc:
+                    log_swallow("sf_glass.popup_sync", exc)
+                return
             gw = getattr(self, "_glass_window", None)
             if gw is None:
                 return
@@ -1827,10 +1914,24 @@ class GlassMixin:
                    "glass_present": getattr(self, "_glass_window", None) is not None,
                    "follow_timer_active": getattr(self, "_glass_follow_timer", None) is not None}
             backend = getattr(self, "_glass_backend", "none")
+            embedded = getattr(self, "_popup_surface", None) is not None
+            out["glass_present"] = out["glass_present"] or embedded
             out["surface"] = {"backend": backend,
                               "fallback_reason": getattr(self, "_glass_fallback_reason", ""),
+                              "attachment": "embedded" if embedded else
+                                  "separate_window" if out["glass_present"] else "none",
                               "opacity": LIQUID_GLASS_OPACITY if backend == "liquid" else 1.0,
                               "dim_alpha": self._glass_dim()}
+            out["popup_surfaces"] = {}
+            for name in ("_editor", "_target_panel"):
+                popup = getattr(self, name, None)
+                if popup is not None:
+                    out["popup_surfaces"][name.removeprefix("_")] = {
+                        "backend": getattr(popup, "_glass_backend", "none"),
+                        "effective": bool(getattr(popup, "_bg_effect", False)),
+                        "embedded": getattr(popup, "_popup_surface", None) is not None,
+                        "fallback_reason": getattr(popup, "_glass_fallback_reason", ""),
+                    }
             if not out["native_cocoa"]:
                 out["real_state"] = None
                 out["real_state_note"] = ("非 cocoa 进程（offscreen/minimal）不碰 AppKit，"
@@ -1846,7 +1947,10 @@ class GlassMixin:
                             "level": int(win.level()),
                             "collection_behavior": int(win.collectionBehavior()),
                         }
-                    if gw is None or win is None:
+                    if embedded:
+                        out["real_state"] = None
+                        out["real_state_note"] = "Native popup material shares the Qt content window"
+                    elif gw is None or win is None:
                         out["real_state"] = None
                         out["real_state_note"] = ("取不到玻璃层或内容窗的 NSWindow"
                                                   "（玻璃层未建/已降级）")

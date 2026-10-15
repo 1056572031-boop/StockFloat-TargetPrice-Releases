@@ -96,6 +96,19 @@ class PublicURLTests(SFCase):
         self.assertEqual(resolved, {"quote": url, "minute": url})
         get.assert_called_once()
 
+    def test_missing_reference_does_not_block_a_different_valid_account(self):
+        vault = mock.Mock()
+        url = "https://example.invalid/CANARY"
+        vault.get.side_effect = [C.KeychainItemUnavailable("missing (-25300)"), url]
+        entries = {"quote": C.REFERENCE_PREFIX + "a" * 64,
+                   "minute": C.REFERENCE_PREFIX + "b" * 64}
+        with mock.patch.object(C, "log_line"):
+            resolved, files = self.resolve(entries, vault)
+        self.assertEqual(resolved, {"minute": url})
+        self.assertEqual(vault.get.call_args_list, [mock.call("a" * 64), mock.call("b" * 64)])
+        vault.put.assert_not_called()
+        self.assertTrue(all(p["api_urls"] == entries for p in files))
+
     def test_first_denial_stops_main_and_backup_retries_but_recovers_defaults(self):
         vault = mock.Mock()
         vault.get.side_effect = C.KeychainError("denied")
@@ -206,11 +219,23 @@ class SecurityBackendTests(SFCase):
         self.assertTrue(self.allowed)
 
 
+    def test_final_missing_item_has_a_specific_error(self):
+        for first_status in (-25300, -34018, -50):
+            with self.subTest(first_status=first_status):
+                copy = mock.Mock(side_effect=[self.checked((first_status, None)),
+                                              self.checked((-25300, None))])
+                self.security.SecItemCopyMatching = lambda *args: copy(*args)(*args)
+                with self.assertRaises(C.KeychainItemUnavailable):
+                    self.vault.get("account")
+                self.assertEqual(copy.call_count, 2)
+                self.assertTrue(self.allowed)
+
     def test_login_denial_does_not_retry_or_relax_policy(self):
         copy = mock.Mock(side_effect=[self.checked((-25300, None)), self.checked((-25308, None))])
         self.security.SecItemCopyMatching = lambda *args: copy(*args)(*args)
-        with self.assertRaisesRegex(C.KeychainError, "-25308"):
+        with self.assertRaisesRegex(C.KeychainError, "-25308") as raised:
             self.vault.get("account")
+        self.assertNotIsInstance(raised.exception, C.KeychainItemUnavailable)
         self.assertEqual(copy.call_count, 2)
         self.assertTrue(self.allowed)
 

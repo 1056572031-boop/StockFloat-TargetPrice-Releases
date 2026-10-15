@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.91'
+APP_VERSION = '1.4.92'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -472,7 +472,7 @@ UNIVERSE_MIN_ROWS = 5000          # 少于此条数视为残缺不落盘（正�
 # （表现为"跑测试时界面莫名退出"或"app 起不来"）。不设时行为完全不变。
 SINGLE_SOCK = os.environ.get('SF_SINGLE_SOCK') or os.path.join(APP_SUPPORT_DIR, 'stock_float.sock')
 DEFAULT_STOCK = 'sh600519'
-R = 30  # 主窗与两个编辑弹窗统一圆角；文字与数字样式不变
+R = 16  # 窗口统一普通圆角，视觉大小以替换股票弹窗为准（逻辑像素）
 W, H = 184, 192  # 主界面宽度为原始 200px 的 92%；高度保持不变
 MIN_H = 224
 MAX_H = 420
@@ -533,6 +533,7 @@ BG_MODE_DEFAULT = 'glass'
 # v1.2.35：毛玻璃暗化加深 —— 用户反馈太透光。调大玻璃层上叠加的黑色 alpha
 # （数值越大越暗、透过桌面内容越少；暗色系统 150、浅色系统 185 兼顾白字对比度）
 BG_GLASS_DIM = 150
+BG_ALPHA_DEFAULT = 0.82
 BG_GLASS_DIM_LIGHT = 185
 GLASS_INSET = 3
 BG_LIQUID_GLASS_DIM = 164

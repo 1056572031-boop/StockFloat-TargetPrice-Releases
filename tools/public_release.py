@@ -63,7 +63,9 @@ def privacy_problems(data: bytes, home: str, secrets=()) -> list[str]:
         bad.append("release signing secret")
     if CREDENTIALS.search(data):
         bad.append("credential")
-    if PERSONAL_MAIL.search(data):
+    # The explicitly approved support mailbox is public; do not exempt other contacts.
+    public_data = data.replace(b"1056572031@qq.com", b"public-support-mailbox")
+    if PERSONAL_MAIL.search(public_data):
         bad.append("personal contact")
     if PHONE.search(data):
         bad.append("personal phone number")
@@ -74,7 +76,7 @@ def privacy_problems(data: bytes, home: str, secrets=()) -> list[str]:
     # An existing download namespace is necessary. Do not grant a blanket number exemption.
     owner = REPO.split("/", 1)[0].encode()
     number = owner.split(b"-", 1)[0]
-    if number.isdigit() and number in data.replace(owner, b"maintainer"):
+    if number.isdigit() and number in public_data.replace(owner, b"maintainer"):
         bad.append("personal numeric identifier outside GitHub namespace")
     return bad
 

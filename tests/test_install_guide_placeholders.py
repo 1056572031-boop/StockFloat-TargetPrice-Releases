@@ -126,6 +126,26 @@ class ContactPlaceholderIsCaughtBeforeItShips(_GuideCase):
                 self.assertEqual(self.g.main(), 0, "显式放行要有出口，与 --skip-tests 同口径")
 
 
+class LocalOnlyGuide(_GuideCase):
+    def test_local_write_and_check_do_not_probe_or_offer_unpublished_downloads(self):
+        with patch.object(self.g, "probe_asset", side_effect=AssertionError("must stay offline")):
+            self.assertEqual(self.g.main(["guide", "--local-only"]), 0)
+            self.assertEqual(self.g.main(["guide", "--local-only", "--check"]), 0)
+            body = self.g.OUT_DEFAULT.read_text()
+            self.assertNotIn("curl ", body)
+            self.assertNotIn("releases/download", body)
+            self.assertEqual(body, self.g.render(local_only=True))
+            self.assertIn("未发布 GitHub/OTA", body)
+
+    def test_local_check_rejects_stale_or_public_download_instructions(self):
+        self.assertEqual(self.g.main(["guide", "--local-only", "--check"]), 1)
+        self.assertEqual(self.g.main(["guide", "--local-only"]), 0)
+        body = self.g.OUT_DEFAULT.read_text()
+        for broken in (body.replace(self.g.APP_VERSION, "0.0.0"), body + "\ncurl unpublished\n"):
+            self.g.OUT_DEFAULT.write_text(broken)
+            self.assertEqual(self.g.main(["guide", "--local-only", "--check"]), 1)
+
+
 class SelfTestIsReal(SFCase):
     """链上那条"每个工具都要能自证失败"的用例是**起子进程**跑的，覆盖率看不见它。
 

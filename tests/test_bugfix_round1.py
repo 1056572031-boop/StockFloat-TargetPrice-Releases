@@ -17,6 +17,7 @@
     python3 -m unittest discover -s tests -v
 """
 import inspect
+import json
 import os
 import sys
 import unittest
@@ -31,6 +32,7 @@ import sf_editor
 import sf_glass
 import sf_quote
 import sf_ui_render
+from tests._base import SFCase
 
 
 # =====================================================================
@@ -51,16 +53,21 @@ class TestQuoteSourceGetter(unittest.TestCase):
 # =====================================================================
 # R1-2：诊断导出经 getter 实时读取（源码级）
 # =====================================================================
-class TestDiagnosticsMetaGetters(unittest.TestCase):
+class TestDiagnosticsMetaGetters(SFCase):
     def test_export_diagnostics_uses_getters(self):
         import stock_float_window as m
-        src = inspect.getsource(m.FloatWindow._export_diagnostics)
-        self.assertIn("get_last_quote_source()", src,
-                      "诊断导出必须经 getter 实时读取行情来源")
-        self.assertIn("get_last_http_status()", src,
-                      "诊断导出必须经 getter 实时读取 HTTP 状态")
-        self.assertNotIn("_LAST_QUOTE_SOURCE or", src,
-                         "不得再使用导入时快照变量")
+        from tests.test_coverage_window_diagnostics import DiagnosticsBranchCase
+        case = DiagnosticsBranchCase()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        self.addCleanup(case.tearDown)
+        export = case._export  # discipline-ok(R5): isolated real-widget diagnostic fixture, not a source-text assertion
+        with patch.object(m, "get_last_quote_source", side_effect=["first", "second"]), \
+                patch.object(m, "get_last_http_status", side_effect=[201, 503]):
+            first = json.loads(export()["network.json"])
+            second = json.loads(export()["network.json"])
+        self.assertEqual([first["quote_source"], second["quote_source"]], ["first", "second"])
+        self.assertEqual([first["last_http_status"], second["last_http_status"]], [201, 503])
 
     def test_main_module_no_snapshot_import(self):
         import stock_float_window as m
