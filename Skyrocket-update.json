@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.87",
-  "published_at": "2026-10-14T23:10:51Z",
+  "version": "1.4.88",
+  "published_at": "2026-10-15T00:00:56Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "支持的系统采用原生暗黑玻璃，保留95%玻璃层与164暗化；不支持或创建失败自动回退，文字和图表布局不变。保留主窗口职责拆分与旧数据兼容。",
+  "notes": "修复 macOS 后台调度回调导致的启动闪退；补齐原生桥接回归和首帧后存活检查，保留原生玻璃、自选和目标价设置。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.87-macos.zip",
-    "size": 26141394,
-    "sha256": "d59e52342ea47261af8545fb0f69c2cd38e38255bd16f26e8ea005b75b029c3b"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.88-macos.zip",
+    "size": 26141964,
+    "sha256": "f770b5d6b486ff06ebc94e6ab1fe0bed509e08f105c148c95bf7a89dd600391c"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "LVUpYv9TwACrf2mnkzHoT0J6ppbLPYe4dT+fQkINFYxQXwUA4CrpioNFp1LFKmvbrnH3Kf0s7qGZLoBrltK/AQ=="
+    "value": "JY/RyFgo2cBtQA7677f6Yk4PTYArDnz5zgDb0h1+aFvVrATCL/O5ZFlQQ+YQ4VHg0cKxXV48t1HuheBCVrvxCA=="
   }
 }
