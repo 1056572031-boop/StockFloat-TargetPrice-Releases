@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.88",
-  "published_at": "2026-10-15T00:00:56Z",
+  "version": "1.4.89",
+  "published_at": "2026-10-15T05:00:07Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "修复 macOS 后台调度回调导致的启动闪退；补齐原生桥接回归和首帧后存活检查，保留原生玻璃、自选和目标价设置。",
+  "notes": "1. 修复配置、凭据、行情和分时恢复的并发及陈旧数据\n2. 优化渲染、性能、诊断与资源审计，补齐圆角检查\n3. 固定签名延续摄像头授权，收紧更新与 CI 门禁",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.88-macos.zip",
-    "size": 26141964,
-    "sha256": "f770b5d6b486ff06ebc94e6ab1fe0bed509e08f105c148c95bf7a89dd600391c"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.89-macos.zip",
+    "size": 26153262,
+    "sha256": "14914159cfe4fd839acc68768bc63a930cc7ea8c7ac62980590b748225c11831"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "JY/RyFgo2cBtQA7677f6Yk4PTYArDnz5zgDb0h1+aFvVrATCL/O5ZFlQQ+YQ4VHg0cKxXV48t1HuheBCVrvxCA=="
+    "value": "FurPCIP2cBJhM4h3yuWZJh7mMxAQowCcUt3K799bt+ufQh9z+2pIL5Gs0bgCixXtlQKw/FD16sDoLlgvtqtLAw=="
   }
 }
