@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.89",
-  "published_at": "2026-10-15T05:00:07Z",
+  "version": "1.4.90",
+  "published_at": "2026-10-15T08:14:22Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 修复配置、凭据、行情和分时恢复的并发及陈旧数据\n2. 优化渲染、性能、诊断与资源审计，补齐圆角检查\n3. 固定签名延续摄像头授权，收紧更新与 CI 门禁",
+  "notes": "1. 修复分时接口受阻与开机后首拉延迟，区分分时滞后和股价刷新\n2. 恢复目标价与换股弹窗的半透明效果\n3. 补强签名与发布检查，保留完整验证与故障留痕",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.89-macos.zip",
-    "size": 26153262,
-    "sha256": "14914159cfe4fd839acc68768bc63a930cc7ea8c7ac62980590b748225c11831"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.90-macos.zip",
+    "size": 26153105,
+    "sha256": "8c207b0d79103f5d4854fe111e36c872e51176c9a37d5a9e21fc3127d534c8fc"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "FurPCIP2cBJhM4h3yuWZJh7mMxAQowCcUt3K799bt+ufQh9z+2pIL5Gs0bgCixXtlQKw/FD16sDoLlgvtqtLAw=="
+    "value": "pYfxku0fHi4amXZl7wEf2MKFL4c2oCXwsXprjp3EFzzzlKG4GTNnlcpFh7tcd1V8MWu1o66NXLqeGDTwF+TNAg=="
   }
 }
