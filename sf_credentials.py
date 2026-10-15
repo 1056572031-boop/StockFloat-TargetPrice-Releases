@@ -1,9 +1,11 @@
 """Private API URLs in the system Keychain; JSON contains only opaque references."""
 import hashlib
 import re
+import threading
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 
-from sf_constants import CONFIG_SCHEMA_VERSION
+from sf_constants import API_URLS_DEFAULT, CONFIG_SCHEMA_VERSION
 from sf_logging import log_line
 
 SERVICE = "com.skyrocket.private-api-urls"
@@ -12,6 +14,12 @@ _REFERENCE = re.compile(r"keychain://skyrocket/api/([a-f0-9]{64})\Z")
 _failure_count = 0
 _last_error = ""
 _last_storage_mode = "unused"
+_interaction_lock = threading.RLock()
+# Also recognize the public minute endpoint saved before the Tencent route change.
+_PUBLIC_URLS = {url: url for url in API_URLS_DEFAULT.values()}
+_PUBLIC_URLS["https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=%s"] = API_URLS_DEFAULT["minute"]
+_PUBLIC_REFERENCES = {REFERENCE_PREFIX + hashlib.sha256(url.encode("utf-8")).hexdigest(): current
+                      for url, current in _PUBLIC_URLS.items()}
 
 
 class KeychainError(OSError):
@@ -28,6 +36,26 @@ class MacKeychain:
     def _status(result):
         return int(result[0] if isinstance(result, tuple) else result)
 
+    @contextmanager
+    def _noninteractive(self):
+        security = self._framework()
+        # kSecUseAuthenticationUIFail only covers the data-protection backend.
+        # The login-keychain fallback needs this process-wide legacy switch too.
+        with _interaction_lock:
+            result = security.SecKeychainGetUserInteractionAllowed(None)
+            if not isinstance(result, tuple) or self._status(result) != 0:
+                raise KeychainError("Cannot read Keychain interaction policy")
+            allowed = bool(result[1])
+            status = self._status(security.SecKeychainSetUserInteractionAllowed(False))
+            if status != 0:
+                raise KeychainError("Cannot disable Keychain interaction (%d)" % status)
+            try:
+                yield
+            finally:
+                status = self._status(security.SecKeychainSetUserInteractionAllowed(allowed))
+                if status != 0:
+                    raise KeychainError("Cannot restore Keychain interaction (%d)" % status)
+
     def _query(self, account, protected):
         security = self._framework()
         query = {security.kSecClass: security.kSecClassGenericPassword,
@@ -38,6 +66,10 @@ class MacKeychain:
         return query
 
     def put(self, account, value):
+        with self._noninteractive():
+            self._put(account, value)
+
+    def _put(self, account, value):
         from Foundation import NSData
         security = self._framework()
         data = value.encode("utf-8")
@@ -60,6 +92,10 @@ class MacKeychain:
                 raise KeychainError("Keychain store failed (%d)" % status)
 
     def get(self, account):
+        with self._noninteractive():
+            return self._get(account)
+
+    def _get(self, account):
         security = self._framework()
         for protected in (True, False):
             query = self._query(account, protected)
@@ -74,6 +110,10 @@ class MacKeychain:
         raise KeychainError("Keychain item is unavailable")
 
     def delete(self, account):
+        with self._noninteractive():
+            self._delete(account)
+
+    def _delete(self, account):
         security = self._framework()
         for protected in (True, False):
             status = self._status(security.SecItemDelete(self._query(account, protected)))
@@ -82,10 +122,10 @@ class MacKeychain:
 
 
 def needs_keychain(url):
-    """All custom HTTPS destinations are private, regardless of credential syntax."""
+    """Only exact built-in public URLs are exempt; custom URLs remain private."""
     try:
         parts = urlsplit(url)
-        return (parts.scheme == "https" and bool(parts.hostname)
+        return (url not in _PUBLIC_URLS and parts.scheme == "https" and bool(parts.hostname)
                 and not any(char.isspace() or ord(char) < 32 for char in url))
     except (TypeError, ValueError):
         return False
@@ -111,17 +151,40 @@ def resolve_config_urls(path, config, *, keychain=None):
     stored, resolved = dict(entries), {}
     may_write = not (isinstance(config.get("version"), int)
                      and config["version"] > CONFIG_SCHEMA_VERSION)
+    cache: dict[str, str] = {}
+    storage_failed = False
+
+    def access(value, *, seal=False):
+        nonlocal storage_failed
+        if value in cache:
+            return cache[value]
+        if storage_failed:
+            raise KeychainError("Keychain unavailable; no further attempts this startup")
+        try:
+            result = seal_url(value, keychain) if seal else keychain.get(value)
+        except Exception:
+            storage_failed = True
+            raise
+        cache[value] = result
+        return result
+
     for key, value in entries.items():
         if not isinstance(value, str):
             continue
         try:
             reference = _REFERENCE.fullmatch(value)
-            if reference:
-                resolved[key] = keychain.get(reference.group(1))
+            if value in _PUBLIC_REFERENCES:
+                resolved[key] = _PUBLIC_REFERENCES[value]
+                stored[key] = resolved[key]
+            elif value in _PUBLIC_URLS:
+                resolved[key] = _PUBLIC_URLS[value]
+                stored[key] = resolved[key]
+            elif reference:
+                resolved[key] = access(reference.group(1))
             elif needs_keychain(value):
                 resolved[key] = value
                 if may_write:
-                    stored[key] = seal_url(value, keychain)
+                    stored[key] = access(value, seal=True)
         except Exception as exc:
             global _failure_count, _last_error
             _failure_count += 1
@@ -144,9 +207,13 @@ def resolve_config_urls(path, config, *, keychain=None):
                          and backup["version"] > CONFIG_SCHEMA_VERSION)):
             backup_api = dict(backup["api_urls"])
             for key, value in backup_api.items():
-                if isinstance(value, str) and needs_keychain(value):
+                if isinstance(value, str) and value in _PUBLIC_REFERENCES:
+                    backup_api[key] = _PUBLIC_REFERENCES[value]
+                elif isinstance(value, str) and value in _PUBLIC_URLS:
+                    backup_api[key] = _PUBLIC_URLS[value]
+                elif isinstance(value, str) and needs_keychain(value):
                     try:
-                        backup_api[key] = seal_url(value, keychain)
+                        backup_api[key] = access(value, seal=True)
                     except Exception as exc:
                         _failure_count += 1
                         _last_error = type(exc).__name__

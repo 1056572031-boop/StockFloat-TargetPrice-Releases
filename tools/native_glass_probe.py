@@ -86,7 +86,7 @@ def main():
 
     import Quartz
     from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt, QTimer
-    from PyQt6.QtGui import QImage, QMouseEvent
+    from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPainter
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -288,10 +288,17 @@ def main():
             bounds = window_info[0]["kCGWindowBounds"]
             backdrop = None
             if args.corners:
-                backdrop = QWidget()
+                class WhiteBackdrop(QWidget):
+                    def paintEvent(self, event):
+                        painter = QPainter(self)
+                        try:
+                            painter.fillRect(self.rect(), QColor(245, 245, 245))
+                        finally:
+                            painter.end()
+
+                backdrop = WhiteBackdrop()
                 backdrop.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
                 backdrop.setGeometry(win.x() - 40, win.y() - 40, win.width() + 80, win.height() + 80)
-                backdrop.setStyleSheet("background-color: rgb(245, 245, 245);")
                 backdrop.show()
                 native = content_ns_window(backdrop)
                 native.setHasShadow_(False)

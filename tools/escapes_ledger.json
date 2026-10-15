@@ -2417,9 +2417,39 @@
       "locate_unknown_reason": "本轮汇总前已完成专项修复；仅保留现场日志时段与探针证据，不回填估算定位时刻。",
       "source": "docs/MINUTE_WAF_FIX_2026-10-15.md；outputs/minute-waf-20261015/live-probe.json",
       "evidence": "verified"
+    },
+    {
+      "id": "N14",
+      "symptom": "Skyrocket 反复要求访问 com.skyrocket.private-api-urls，输入登录密码并始终允许后仍连续弹框",
+      "component": "keychain-startup",
+      "channel": "online_user",
+      "introduced_version": "1.4.84",
+      "introduced_note": "sf_credentials 首次随 1.4.84 加入，后续版本保留所有 HTTPS 地址自动迁移；不能仅由截图证明每次提示属于同一 account。",
+      "found_version": "1.4.90",
+      "fixed_version": "1.4.91",
+      "failed_lines": ["verify", "locate"],
+      "why_missed": "迁移测试只有内存钥匙串，没有真实传统钥匙串 ACL；未覆盖内置默认值和旧引用；把新后端无交互参数当作两个后端的统一保证。",
+      "defense_added": [
+        "tests/test_keychain_no_prompt.py: public defaults and old default references require zero Keychain calls; exact exemption only, future schema preserved, main/backup deduplicated, first denial stops retries",
+        "tests/test_keychain_no_prompt.py: real isolated login Keychain with foreign ACL returns denied without interaction; Security API guard applies to read/add/update/delete and restores original policy",
+        "release_checks.txt: require _noninteractive, SecKeychainSetUserInteractionAllowed and _PUBLIC_REFERENCES in the frozen package"
+      ],
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "本轮先完成代码定位与专项验证后才登记，未在初始报障时盖时间戳，不回填估算定位时长。",
+      "source": "2026-10-15 用户密码框截图；sf_credentials.py；tests/test_keychain_no_prompt.py 的真实独立钥匙串验证",
+      "evidence": "verified"
     }
   ],
   "rounds": [
+    {
+      "version": "1.4.91",
+      "date": "2026-10-15",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": ["N14: exact public-default recovery without Keychain; guarded noninteractive access on both macOS backends; native foreign-ACL denial and bounded per-startup retries"],
+      "zero_reason": null
+    },
     {
       "version": "1.4.45",
       "date": "2026-10-09",
