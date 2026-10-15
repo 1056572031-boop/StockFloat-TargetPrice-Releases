@@ -184,20 +184,34 @@ class GlassSetupChainTest(SFCase):
             self.assertIn("Dark", markers["appearance"])
         else:
             self.assertEqual(markers["backend"], "legacy")
-            self.assertEqual(markers["reason"], "liquid_api_unavailable")
+            self.assertTrue(markers["api_missing"], "Unsupported API needs independent evidence")
+            self.assertEqual(markers["reason"], markers["expected_fallback_reason"])
         self.assertEqual(markers["resize_aligned"], "True")
         self.assertEqual(markers["hidden_after_close"], "True")
 
     def test_mapped_liquid_failure_retries_legacy_without_an_orphan(self):
         _proc, markers = self._run("liquid_late_failure")
         if markers["api_available"] == "False":
-            self.skipTest("Native Liquid Glass API is unavailable on this machine")
+            self.assertTrue(markers["api_missing"], "Do not skip an unexplained native failure")
+            self.skipTest("Native Liquid Glass API is incomplete: " + markers["api_missing"])
         self.assertEqual(markers["setup"], "True")
         self.assertEqual(markers["backend"], "legacy")
         self.assertEqual(markers["reason"], "liquid_window_setup_failed")
         self.assertEqual(markers["created"], "2")
         self.assertEqual(markers["failed_window_hidden"], "True")
         self.assertEqual(markers["fallback_visible"], "True")
+
+    def test_partial_native_api_really_falls_back_and_closes_cleanly(self):
+        _proc, markers = self._run("liquid_partial_api")
+        if markers["api_missing"] == "NSGlassEffectView":
+            self.skipTest("Partial API injection requires the native class")
+        self.assertEqual(markers["api_available"], "False")
+        self.assertIn("NSGlassEffectViewStyleRegular", markers["api_missing"])
+        self.assertEqual(markers["setup"], "True")
+        self.assertEqual(markers["backend"], "legacy")
+        self.assertEqual(markers["reason"], "liquid_create_failed:AttributeError")
+        self.assertEqual(markers["resize_aligned"], "True")
+        self.assertEqual(markers["hidden_after_close"], "True")
 
     def test_liquid_z_order_self_heals_and_returns_to_idle(self):
         _proc, markers = self._run("liquid_force_top")

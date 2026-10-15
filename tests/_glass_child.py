@@ -43,6 +43,7 @@ import AppKit                                        # noqa: E402
 
 import sf_glass                                      # noqa: E402
 from sf_glass import GlassMixin                      # noqa: E402
+from tests._glass_capabilities import liquid_api_gaps  # noqa: E402
 
 MAIN_W, MAIN_H = 184, 224
 
@@ -378,6 +379,7 @@ def run_force_top(liquid=False):
 
 
 def run_liquid_setup():
+    gaps = liquid_api_gaps(AppKit)
     host = _quiet_host(liquid=True)
     ok = host._setup_glass()  # discipline-ok(R5): Native lifecycle entry is the behavior under test.
     window = sf_glass.content_ns_window(host)
@@ -386,7 +388,10 @@ def run_liquid_setup():
     _hide(window, glass)
     _app().processEvents()
     surface = host.glass_diagnostics()["surface"]
-    _marker("api_available", getattr(AppKit, "NSGlassEffectView", None) is not None)
+    _marker("api_available", not gaps)
+    _marker("api_missing", ",".join(gaps))
+    _marker("expected_fallback_reason", "liquid_api_unavailable"
+            if "NSGlassEffectView" in gaps else "liquid_create_failed:AttributeError")
     _marker("setup", ok)
     _marker("backend", surface["backend"])
     _marker("reason", surface["fallback_reason"])
@@ -406,9 +411,11 @@ def run_liquid_setup():
 
 
 def run_liquid_late_failure():
+    gaps = liquid_api_gaps(AppKit)
     host = _quiet_host(liquid=True)
-    if getattr(AppKit, "NSGlassEffectView", None) is None:
+    if gaps:
         _marker("api_available", False)
+        _marker("api_missing", ",".join(gaps))
         return 0
     _marker("api_available", True)
     factory = _WindowFactory()
@@ -442,9 +449,26 @@ def run_liquid_late_failure():
     return 0
 
 
+def run_liquid_partial_api():
+    """Reproduce a class-present/constant-missing bridge on a real native window."""
+    global AppKit
+    real_appkit = AppKit
+
+    class PartialAppKit:
+        def __getattr__(self, name):
+            if name == "NSGlassEffectViewStyleRegular":
+                raise AttributeError(name)
+            return getattr(real_appkit, name)
+
+    AppKit = PartialAppKit()
+    sys.modules["AppKit"] = AppKit
+    return run_liquid_setup()
+
+
 MODES = {"probe": run_probe, "setup": run_setup, "setup_fail": run_setup_fail,
          "force_top": run_force_top, "liquid_setup": run_liquid_setup,
          "liquid_late_failure": run_liquid_late_failure,
+         "liquid_partial_api": run_liquid_partial_api,
          "liquid_force_top": lambda: run_force_top(liquid=True)}
 
 
