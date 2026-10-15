@@ -36,9 +36,9 @@ import argparse
 import copy
 import datetime
 import json
+import math
 import os
 import resource
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,6 +57,51 @@ ANCHOR = {
     "off": datetime.datetime(2026, 9, 22, 16, 30, 0,
                              tzinfo=datetime.timezone(datetime.timedelta(hours=8))),
 }
+
+
+def prepare_probe_config(directory, source):
+    """Copy geometry only; a benchmark must never inherit camera/alert/API settings."""
+    config = {}
+    try:
+        with open(source, encoding="utf-8") as stream:
+            stored = json.load(stream)
+        if isinstance(stored, dict):
+            config = {key: stored[key] for key in ("code", "x", "y", "h", "bg")
+                      if key in stored}
+    except (OSError, ValueError):
+        pass
+    config.update(face_guard=False, alerts=[])
+    path = os.path.join(directory, "config.json")
+    with open(path, "w", encoding="utf-8") as stream:
+        json.dump(config, stream)
+    return path
+
+
+def mock_response(url, tick, vary, anchor):
+    """Provider-shaped, timestamped data that passes the normal freshness checks."""
+    import re
+    match = re.search(r"[a-z]{2}\d{6}", url)
+    code = match.group(0) if match else "sh600519"
+    price, previous = 20 + (tick % 40) * (0.01 if vary else 0), 19.8
+    if "web.ifzq.gtimg.cn" in url:
+        minutes = list(range(570, 691)) + list(range(781, 901))
+        rows = ["%02d%02d %.2f %d %.2f" % (*divmod(minute, 60),
+                20 + 0.1 * math.sin(index / 13), (index + 1) * 100,
+                (index + 1) * 100 * 100 * 20)
+                for index, minute in enumerate(minutes)]
+        return json.dumps({"data": {code: {"data": {"date": anchor.date().isoformat(),
+                                                   "data": rows}}}})
+    if "qt.gtimg.cn" in url:
+        fields = [""] * 49
+        values = {0: "1", 1: "Benchmark", 2: code[2:], 3: "%.2f" % price,
+                  4: "%.2f" % previous, 30: anchor.strftime("%Y%m%d%H%M%S"),
+                  31: "%.2f" % (price - previous),
+                  32: "%.4f" % ((price - previous) / previous * 100),
+                  33: "20.40", 34: "19.80", 36: "1000", 47: "21.78", 48: "17.82"}
+        for index, value in values.items():
+            fields[index] = value
+        return 'v_%s="%s";' % (code, "~".join(fields))
+    raise ValueError("Unexpected request in isolated benchmark")
 
 
 # ---------------------------------------------------------------- 子进程侧
@@ -78,14 +123,13 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
     # ---- 落盘物隔离：必须在 import sf_constants 之前设置 ----
     tmp = tempfile.mkdtemp(prefix="sf_power_")
     real_cfg = os.path.expanduser("~/Library/Application Support/StockFloatTargetPrice/config.json")
-    if os.path.exists(real_cfg):
-        # 用用户真实配置，测出来的背景模式/尺寸才代表线上形态
-        shutil.copy2(real_cfg, os.path.join(tmp, "config.json"))
-    os.environ["SF_CONFIG_PATH"] = os.path.join(tmp, "config.json")
+    os.environ["SF_CONFIG_PATH"] = prepare_probe_config(tmp, real_cfg)
     os.environ["SF_LAST_QUOTE_PATH"] = os.path.join(tmp, "last_quote.json")
     os.environ["SF_LOG_PATH"] = os.path.join(tmp, "debug.log")
     os.environ["SF_SINGLE_SOCK"] = os.path.join(tmp, "stock_float.sock")
     os.environ["SF_UNIVERSE_PATH"] = os.path.join(tmp, "securities.json")
+    os.environ["SF_UNIVERSE_DISABLE"] = "1"
+    os.environ["SF_SEED_FIRST_SCREEN"] = "0"
 
     import stock_float_window as M                       # noqa: E402
     from PyQt6.QtCore import QTimer                      # noqa: E402
@@ -136,41 +180,14 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
 
     # ---- 网络：real=走真接口；mock=固定回包（只测调度与绘制，不测网络）----
     if net == "mock":
-        import re as _re
         tick = [0]
-        BASE = 20.00          # 回包基准价：贴近 A 股常见价位（0.01 元 tick ≈ 0.05%）
-
-        def _code_of(url):
-            """从请求 URL 里取回被请求的代码，并原样写进回包。
-
-            这是本工具早期版本量不到动画的**真正原因**：回包里代码写死 600519，
-            而用户自选是别的股票，`_apply_quote` 会按代码把"旧股票的迟到回包"
-            整条丢弃 —— 行情确实每秒应用 9.7 次，却在动画分支之前 just return，
-            于是 _anim_tick / paint 计数全为 0，看起来像"动画没开销"。
-            """
-            m = _re.search(r"[a-z]{2}\d{6}", url)
-            return m.group(0) if m else "sh600519"
+        sf_quote._beijing_now = lambda: anchor
+        M._beijing_now = lambda: anchor
 
         def _fake_http_get(url, **kw):
-            code = _code_of(url)
-            digits = code[2:]
-            # 步进一个最小变动价位 0.01 元：必须不小于 ANIM_TINY_PRICE(0.01)，
-            # 否则走「微小变动直落」分支、不起滚动动画，量不到逐帧重绘的真实频率。
-            i = tick[0] % 40
+            result = mock_response(url, tick[0], vary, anchor)
             tick[0] += 1
-            p = BASE + i * (0.01 if vary else 0.0)
-            pre = BASE - 0.20
-            chg = p - pre
-            pct = chg / pre * 100.0
-            if "hq.sinajs.cn" in url:
-                return ('var hq_str_%s="贵州茅台,%.2f,%.2f,%.2f,%.2f,%.2f";'
-                        % (code, pre, p, p, p, p))
-            if "web.ifzq.gtimg.cn" in url:
-                return ('{"data":{"%s":{"data":{"date":"20260922",'
-                        '"data":["0930 %.2f 100 1000", "1000 %.2f 200 2000"]}}}}'
-                        % (code, p, p))
-            return ('v_%s="1~贵州茅台~%s~%.2f~%.2f~%.2f~%.2f~%.2f~%.2f";'
-                    % (code, digits, p, pre, chg, pct, p, pre))
+            return result
         sf_quote.http_get = _fake_http_get
 
     app = QApplication.instance() or QApplication([])
@@ -179,7 +196,12 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
     # ---- 计时/计数钩子必须在 FloatWindow() 之前挂上 ----
     # QTimer.timeout.connect(self._poll) 在 __init__ 里就把**绑定方法**存进了连接表，
     # 之后再改类属性也拦不到那些调用；所以所有 wrap 都要在构造前完成。
-    stubbed = []
+    M.start_icon_worker = lambda: None
+    for name in ("_setup_reopen_handler", "_show_previous_update_result", "_sync_face_guard", "_prefetch_calendar",
+                 "_check_updates_background", "_sweep_temp_copies", "_prune_update_staging"):
+        setattr(M.FloatWindow, name, lambda self, *a, **k: None)
+    stubbed = ["camera", "notifications(settings cleared)", "updates", "calendar prefetch",
+               "icon worker", "reopen handler", "maintenance cleanup"]
     if not native:
         # offscreen 没有真实 NSWindow/NSView，玻璃层与置顶的 objc 调用会直接 SIGSEGV。
         # 退化为"只数次数"：这两路的真实开销改由 --native 模式量。
@@ -340,6 +362,11 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
             "thread_cpu_seconds": {k: round(v, 4) for k, v in thread_cpu.items()},
             "poll_state": win._poll_state,
             "poll_fail": win._poll_fail,
+            "minute_points": len(win.minute_points),
+            "has_quote": bool(win.quote),
+            "window_visible": win.isVisible(),
+            "first_frame_painted": bool(win._sf_first_frame_logged),
+            "timing_semantics": "inclusive wall time per wrapped call; nested totals must not be added",
             "net_snapshot": None,
             "stubbed": stubbed,
             "anim_branches": dict(branches),
@@ -351,6 +378,19 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
                                        if win._anim_timer.isActive() else None),
             "tmp": tmp,
         }
+        valid = net != "mock" or (bool(win.quote) and bool(win.minute_points)
+                                    and win._poll_fail == 0 and win._poll_state == 0
+                                    and out["window_visible"] and out["first_frame_painted"])
+        if native:
+            screenshot = os.path.join(tmp, "native-frame.png")
+            try:
+                if not win.grab().save(screenshot):
+                    raise OSError("Native frame could not be saved")
+                out["native_frame"] = screenshot
+            except Exception as exc:
+                out["native_frame_error"] = repr(exc)
+                valid = False
+        out["probe_valid"] = valid
         try:
             from sf_network import _NET_MONITOR
             out["net_snapshot"] = _NET_MONITOR.snapshot()
@@ -365,7 +405,7 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
         print(json.dumps(out, ensure_ascii=False, indent=2))
         sys.stdout.flush()
         # 离屏插件下窗口析构会 SIGSEGV（见 coldstart_bench 同注释），测量已完成，直接退出
-        os._exit(0)
+        os._exit(0 if valid else 2)
 
     if profile:
         import cProfile
@@ -396,6 +436,9 @@ def run_child(args):
     else:
         env.pop("QT_QPA_PLATFORM", None)
     p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=PROJ)
+    if p.returncode != 0:
+        print("测量子进程失败 exit=%d\n%s" % (p.returncode, p.stderr), file=sys.stderr)
+        return None
     if not p.stdout.strip():
         print(p.stderr, file=sys.stderr)
         return None

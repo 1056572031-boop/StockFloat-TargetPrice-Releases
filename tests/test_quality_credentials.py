@@ -27,7 +27,7 @@ class CredentialQualityTests(SFCase):
     def test_encoded_secret_and_userinfo_require_secure_storage(self):
         for url in ("https://example.invalid/?%74oken=secret", "https://user:pass@example.invalid/q"):
             self.assertTrue(sf_credentials.needs_keychain(url))
-        self.assertFalse(sf_credentials.needs_keychain("https://example.invalid/?code=%s"))
+        self.assertTrue(sf_credentials.needs_keychain("https://example.invalid/?code=%s"))
 
     def test_main_and_backup_are_sealed_without_changing_runtime_url(self):
         with tempfile.TemporaryDirectory() as root:

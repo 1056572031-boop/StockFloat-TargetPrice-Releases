@@ -21,7 +21,9 @@ from pathlib import Path
 from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 from sf_logging import log_line
-from sf_http import RestrictedRequest, safe_urlopen
+from sf_http import (ResponseCancelledError, ResponseDeadlineError, ResponsePolicyError,
+                     RestrictedRequest, read_chunk, read_limited, remaining_budget,
+                     safe_urlopen)
 
 from sf_constants import (APP_DISPLAY_NAME, APP_VERSION,
                           BUNDLE_ID, STAGING_PRUNE_GRACE_SEC, UPDATE_ARCHIVE_MAX_BYTES,
@@ -129,6 +131,36 @@ def notes_for_version(notes, version):
     return text
 
 
+def require_numbered_notes(notes):
+    """发布正文必须逐行从 1 连续编号；显示兼容不能替代源文案规范。"""
+    lines = [line.strip() for line in notes.splitlines() if line.strip()]
+    if not lines:
+        raise UpdateError("更新说明不能为空，须按 1. 2. 3. 顺序逐行列出")
+    for number, line in enumerate(lines, 1):
+        if not re.fullmatch(r"%d\. \S.*" % number, line):
+            raise UpdateError("更新说明第 %d 项须以 '%d. ' 开头并填写内容，每项独占一行"
+                              % (number, number))
+
+
+def numbered_notes_for_display(notes, version):
+    """只展示本版；旧清单按句/分号分项，不拆版本号、小数或下载地址。"""
+    text = notes_for_version(notes, version).strip()
+    if not text:
+        return "1. 包含稳定性与体验改进。"
+    try:
+        require_numbered_notes(text)
+        return text
+    except UpdateError:
+        log_line("update notes use legacy numbering", "DEBUG")
+    items: list[str] = []
+    for line in text.splitlines():
+        line = re.sub(r"^\s*(?:\d+\.\s+|\d+[、)]\s*|[-*•]\s+)", "", line).strip()
+        items.extend(part.strip() for part in re.split(r"(?<=[。；;])", line)
+                     if part.strip())
+    return "\n".join("%d. %s" % (number, item)
+                     for number, item in enumerate(items, 1)) or "1. 包含稳定性与体验改进。"
+
+
 def _canonical_payload(manifest):
     payload = dict(manifest)
     payload.pop("signature", None)
@@ -207,6 +239,7 @@ def _request_url(url):
 def _open_limited(url, max_bytes, timeout):
     _check_release_url(url)
     request = RestrictedRequest(_request_url(url), allowed_hosts=_ALLOWED_HOSTS,
+                                deadline=time.monotonic() + timeout,
                                 headers={"User-Agent": "Skyrocket-Updater"})
     try:
         response = safe_urlopen(request, timeout=timeout)
@@ -240,11 +273,14 @@ def fetch_manifest(timeout=UPDATE_MANIFEST_TIMEOUT_SEC):
     体积上限走 UPDATE_MANIFEST_MAX_BYTES：读多 1 字节就整包判为超限并拒绝，
     避免被人塞一个巨型清单把客户端拖死。
     """
-    with _open_limited(UPDATE_MANIFEST_URL, UPDATE_MANIFEST_MAX_BYTES, timeout) as response:
-        raw = response.read(UPDATE_MANIFEST_MAX_BYTES + 1)
-    if len(raw) > UPDATE_MANIFEST_MAX_BYTES:
-        raise UpdateError("更新清单超过安全上限")
-    return raw
+    deadline = time.monotonic() + timeout
+    try:
+        with _open_limited(UPDATE_MANIFEST_URL, UPDATE_MANIFEST_MAX_BYTES, timeout) as response:
+            return read_limited(response, deadline, UPDATE_MANIFEST_MAX_BYTES)
+    except ResponsePolicyError as exc:
+        raise UpdateError("更新清单超过安全上限或响应无效") from exc
+    except OSError as exc:
+        raise UpdateError("更新清单读取失败或超过总时限") from exc
 
 
 def check_for_update(current_version=APP_VERSION, attempts=UPDATE_MANIFEST_ATTEMPTS):
@@ -314,28 +350,40 @@ def _download_ranges(size, parts=_PART_COUNT):
     return ranges
 
 
-def resolve_download_url(info, cancel_event, timeout):
+def _update_remaining(deadline, cancel_event=None):
+    try:
+        return remaining_budget(deadline, cancel_event)
+    except ResponseCancelledError as exc:
+        raise UpdateError("下载已取消") from exc
+    except ResponseDeadlineError as exc:
+        raise UpdateError("更新请求超过总时限") from exc
+
+
+def resolve_download_url(info, cancel_event, timeout, deadline=None):
     """Resolve the official asset once; unavailable HEAD falls back to the signed URL."""
-    if cancel_event is not None and cancel_event.is_set():
-        raise UpdateError("下载已取消")
+    deadline = deadline if deadline is not None else time.monotonic() + timeout
+    _update_remaining(deadline, cancel_event)
     _check_release_url(info.archive_url)
     if urllib.parse.urlparse(info.archive_url).hostname != "github.com":
         return info.archive_url
     request = RestrictedRequest(
         _request_url(info.archive_url), method="HEAD",
         allowed_hosts=_ALLOWED_HOSTS,
+        deadline=min(deadline, time.monotonic() + UPDATE_MANIFEST_TIMEOUT_SEC),
+        cancel_event=cancel_event,
         headers={"User-Agent": "Skyrocket-Updater", "Cache-Control": "no-cache"})
     try:
-        response = safe_urlopen(request, timeout=min(timeout, UPDATE_MANIFEST_TIMEOUT_SEC))
+        response = safe_urlopen(request, timeout=min(_update_remaining(deadline, cancel_event),
+                                                     UPDATE_MANIFEST_TIMEOUT_SEC))
     except (urllib.error.URLError, OSError) as exc:
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()
-        if cancel_event is not None and cancel_event.is_set():
-            raise UpdateError("下载已取消") from exc
+        _update_remaining(deadline, cancel_event)
         log_line("update asset resolution unavailable; using signed origin (%s)" %
                  type(exc).__name__, "WARNING")
         return info.archive_url
     with response:
+        _update_remaining(deadline, cancel_event)
         resolved = response.geturl()
         _check_release_url(resolved)
         declared = response.headers.get("Content-Length")
@@ -353,12 +401,13 @@ def resolve_download_url(info, cancel_event, timeout):
 class _DownloadSource:
     """A per-download URL shared by workers, with at most one expiry refresh."""
 
-    def __init__(self, info, cancel_event, timeout):
+    def __init__(self, info, cancel_event, timeout, deadline=None):
         self.info = info
         self.cancel_event = cancel_event
         self.timeout = timeout
+        self.deadline = deadline if deadline is not None else time.monotonic() + timeout
         self.lock = threading.Lock()
-        self.url = resolve_download_url(info, cancel_event, timeout)
+        self.url = resolve_download_url(info, cancel_event, timeout, deadline=self.deadline)
         self.refreshed = False
 
     def get_url(self):
@@ -367,6 +416,7 @@ class _DownloadSource:
 
     def refresh(self, failed_url):
         with self.lock:
+            _update_remaining(self.deadline, self.cancel_event)
             if self.url != failed_url:
                 return True
             if self.url == self.info.archive_url:
@@ -377,7 +427,8 @@ class _DownloadSource:
                          "WARNING")
                 return True
             self.refreshed = True
-            self.url = resolve_download_url(self.info, self.cancel_event, self.timeout)
+            self.url = resolve_download_url(self.info, self.cancel_event, self.timeout,
+                                            deadline=self.deadline)
             return True
 
 
@@ -391,20 +442,21 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
     把 8 路打到只剩单路）。取消请求不属于失败，立即上抛。"""
     offset = start
     last_error = None
+    deadline = source.deadline if source is not None else time.monotonic() + timeout
     for _ in range(max(1, attempts)):
-        if cancel_event is not None and cancel_event.is_set():
-            raise UpdateError("下载已取消")
+        _update_remaining(deadline, cancel_event)
         if source is not None:
             url = source.get_url()
         _check_release_url(url)
         request = RestrictedRequest(
             _request_url(url),
             allowed_hosts=_ALLOWED_HOSTS,
+            deadline=deadline, cancel_event=cancel_event,
             headers={"User-Agent": "Skyrocket-Updater",
                      "Range": "bytes=%d-%d" % (offset, end)},
         )
         try:
-            response = safe_urlopen(request, timeout=timeout)
+            response = safe_urlopen(request, timeout=_update_remaining(deadline, cancel_event))
         except urllib.error.HTTPError as exc:
             exc.close()
             if exc.code in (401, 403) and source is not None:
@@ -417,6 +469,7 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
             last_error = UpdateError("无法连接更新服务: %r" % (exc,))
             continue
         with response:
+            _update_remaining(deadline, cancel_event)
             _check_release_url(response.geturl())
             if response.status != 206:
                 raise UpdateError("更新服务不支持分段下载")
@@ -427,15 +480,18 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
                 with open(part_path, "r+b", buffering=0) as out:
                     out.seek(offset)
                     while offset <= end:
-                        if cancel_event is not None and cancel_event.is_set():
-                            raise UpdateError("下载已取消")
-                        chunk = response.read(min(1024 * 1024, end - offset + 1))
+                        chunk = read_chunk(response, deadline, min(65536, end - offset + 1),
+                                           cancel_event)
                         if not chunk:
                             break
                         out.write(chunk)
                         offset += len(chunk)
                         if progress_callback is not None:
                             progress_callback(len(chunk))
+            except ResponseDeadlineError as exc:
+                raise UpdateError("更新请求超过总时限") from exc
+            except ResponseCancelledError as exc:
+                raise UpdateError("下载已取消") from exc
             except OSError:
                 # 读到一半连接断了/超时：换一条连接从断点接着来。
                 last_error = UpdateError("更新分段读取中断")
@@ -486,6 +542,8 @@ def _worker_ladder(parts):
 
 def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
                        progress_callback=None):
+    # This budget is shared across HEAD, all workers, retries and fallback levels.
+    deadline = time.monotonic() + timeout
     ranges = _download_ranges(info.archive_size)
     completed = _load_resume_state(state_path, info) if part_path.is_file() else set()
     if not part_path.is_file() or part_path.stat().st_size != info.archive_size:
@@ -517,13 +575,14 @@ def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
     last_error = None
     source = None
     for workers in _worker_ladder(len(ranges)):
+        _update_remaining(deadline, cancel_event)
         pending = [(index, *ranges[index]) for index in range(len(ranges)) if index not in completed]
         if not pending:
             return
         if cancel_event is not None and cancel_event.is_set():
             raise UpdateError("下载已取消")
         if source is None:
-            source = _DownloadSource(info, cancel_event, timeout)
+            source = _DownloadSource(info, cancel_event, timeout, deadline=deadline)
         with concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(workers, len(pending)), thread_name_prefix="update-part") as pool:
             future_to_index = {
@@ -542,13 +601,16 @@ def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
                     _save_resume_state(state_path, info, completed)
         if cancel_event is not None and cancel_event.is_set():
             raise UpdateError("下载已取消")
+        _update_remaining(deadline, cancel_event)
         if len(completed) == len(ranges):
             return
     raise last_error or UpdateError("下载未完成")
 
 
-def download_update(info, cancel_event=None, timeout=60, progress_callback=None):
-    """多路分片优先、单片断点重试、失败自动降级；完整校验后才原子交付。"""
+def download_update(info, cancel_event=None, timeout=300, progress_callback=None):
+    """Bound the whole network phase; verify the archive before atomic delivery."""
+    local_cancel = cancel_event or threading.Event()
+    _update_remaining(time.monotonic() + timeout, local_cancel)
     root = Path(UPDATE_STAGING_DIR)
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
@@ -559,7 +621,6 @@ def download_update(info, cancel_event=None, timeout=60, progress_callback=None)
         return str(final_path)
     part_path = final_path.with_suffix(".zip.part")
     state_path = final_path.with_suffix(".zip.resume.json")
-    local_cancel = cancel_event or threading.Event()
     try:
         _download_adaptive(info, part_path, state_path, local_cancel, timeout,
                            progress_callback)
@@ -567,6 +628,8 @@ def download_update(info, cancel_event=None, timeout=60, progress_callback=None)
             part_path.unlink(missing_ok=True)
             state_path.unlink(missing_ok=True)
             raise UpdateError("下载文件校验失败")
+        if local_cancel.is_set():
+            raise UpdateError("下载已取消")
         os.replace(part_path, final_path)
         state_path.unlink(missing_ok=True)
         return str(final_path)

@@ -45,6 +45,12 @@ class _WindowBase(unittest.TestCase):
         cls._tmpdir = tempfile.mkdtemp(prefix="sf_v1351_")
 
     def setUp(self):
+        from tests._base import fixed_clock
+        import datetime
+        clock = fixed_clock(datetime.datetime(2026, 9, 12, 16, 30),
+                            module_names=("sf_quote", "stock_float_window"))
+        clock.__enter__()
+        self.addCleanup(clock.__exit__, None, None, None)
         self._env = {
             # 快照落到临时目录，避免污染用户真实的 last_quote.json，
             # 也避免别的用例写进去的快照让本用例串味。

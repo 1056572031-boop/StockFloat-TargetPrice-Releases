@@ -10,7 +10,7 @@ from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QFontInfo, QFontMetrics, 
 from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer
 from sf_constants import (R, GLASS_INSET, LIQUID_GLASS_INSET, FG_DIM, UP_RED_HEX, DOWN_GREEN_HEX,
                          BTN_ICON_PT)
-from renderer import smooth_round_rect_path, _bottom_layout, price_pct_layout
+from renderer import smooth_round_rect_path, liquid_glass_dim_path, _bottom_layout, price_pct_layout
 from sf_utils import fmt_pct
 from sf_quote import quote_status
 from sf_logging import log_line, log_line_throttled, log_swallow, feature_enabled
@@ -493,9 +493,24 @@ FONT_PCT = 13
 
 FONT_CHART_HINT = 10
 
-# v1.4.7：分时"数据暂缺 · 重试中"遮罩透明度（0-255，越大越暗）。
-# 曲线保留可见但明显压暗，与实时态一眼可辨。
+# v1.4.7：历史分时滞后遮罩的透明度。保留常量名以兼容诊断/外部探针；
+# 当前滞后状态改在顶部标签展示，分时曲线不再被遮罩压暗。
 CHART_STALE_MASK_ALPHA = 120
+
+STALE_LABEL_TEXT = "数据暂缺·重试中"
+STALE_LABEL_H = 16
+STALE_LABEL_FONT = 7
+STALE_LABEL_PAD_X = 5
+STALE_LABEL_RADIUS = 5
+STALE_LABEL_FG = QColor(230, 199, 148)
+STALE_LABEL_BG = QColor(255, 193, 97, 18)
+STALE_LABEL_BORDER = QColor(230, 199, 148, 55)
+
+
+def stale_label_rect(w, text_width):
+    """分时滞后标签右对齐内容边缘，位于名称行和价格行之间。"""
+    width = min(w - 2 * PAD_X, text_width + 2 * STALE_LABEL_PAD_X)
+    return QRectF(w - PAD_X - width, Y_NAME + NAME_TOP_PAD, width, STALE_LABEL_H)
 
 # v1.4.34（用户要求："文本显示不能与白色虚线贴近或重叠"）：滞后提示**底板**外沿与
 # 0% 基准白色虚线之间必须留出的最小净空（px）。判据按底板外沿算（底板又比文字矩形大），
@@ -820,6 +835,10 @@ class RenderMixin:
         # 类级默认 None —— 真正的窗口在 __init__ 里也会置 None，这里兜住未走
         # 初始化的裸对象/旧实例；方法内另有 getattr 防御，双重保险。
         _avg_path_cache = None
+        _chart_fill_cache: tuple | None = None
+        _bg_rim_cache: tuple | None = None
+        _bottom_layout_cache: tuple | None = None
+        _line_path_key: tuple | None = None
 
         def paintEvent(self, e):
             # v1.2.45：绘制路径外层兜底 —— 内部任何异常一律捕获、写 ERROR 日志后吞掉，
@@ -911,6 +930,7 @@ class RenderMixin:
                 # 分时/底部），绘制顺序与坐标保持拆分前完全一致，渲染结果零变化
                 self._paint_background(p, w)
                 self._paint_header(p, w)
+                self._paint_stale_label(p, w)
                 self._paint_buttons(p, w)
                 self._paint_price(p, w)
                 # 不再显示“已收盘”等市场状态，也不预留顶部占位；行情与分时图照常绘制。
@@ -926,8 +946,7 @@ class RenderMixin:
                 p.end()
 
         def _paint_background(self, p, w):
-            """20.1 v1.2.27：背景圆角路径缓存 + 填充（玻璃/纯黑/半透明三模式）。
-            行为与拆分前 paintEvent 背景块完全一致。"""
+            """缓存背景轮廓；新玻璃用原生圆角，旧玻璃与非玻璃仍用超椭圆。"""
             h = self.height()
             if self._bg_path is None or self._bg_path_wh != (w, h):
                 self._bg_path = smooth_round_rect_path(0, 0, w, h, R)
@@ -936,24 +955,29 @@ class RenderMixin:
             if self._bg_effect:
                 liquid = getattr(self, "_glass_backend", "legacy") == "liquid"
                 key = (w, h, "liquid") if liquid else (w, h)
-                # 玻璃已由 NSVisualEffectView 提供，仅叠加轻微暗化保证文字可读；
-                # 填充路径与玻璃层 mask 一样内缩 GLASS_INSET：边缘 3px 完全透明露出背景，
-                # 与内缩玻璃层边缘对齐，杜绝四周描边/暗边残留
+                # 暗化轮廓必须跟随实际材质：新玻璃的原生圆弧与旧版超椭圆不能混用，
+                # 否则暗化层会越过原生玻璃四角，露出第二张卡片的交叉轮廓。
                 if self._bg_path_ins is None or self._bg_path_ins_wh != key:
-                    ins = LIQUID_GLASS_INSET if liquid else GLASS_INSET
-                    radius = R - ins if liquid else R
-                    self._bg_path_ins = smooth_round_rect_path(
-                        ins, ins, max(w - 2 * ins, 1), max(h - 2 * ins, 1), radius)
+                    if liquid:
+                        self._bg_path_ins = liquid_glass_dim_path(w, h, R, LIQUID_GLASS_INSET)
+                    else:
+                        ins = GLASS_INSET
+                        self._bg_path_ins = smooth_round_rect_path(
+                            ins, ins, max(w - 2 * ins, 1), max(h - 2 * ins, 1), R)
                     self._bg_path_ins_wh = key
                 p.fillPath(self._bg_path_ins, QColor(0, 0, 0, self._glass_dim()))
                 if liquid:
                     return
                 # 玻璃材质的受光只留在内侧 1px，随系统深浅外观实时变化；背景的
                 # 暖冷色仍由原生 NSVisualEffectView 负责，避免人为染色干扰行情可读性。
-                rim = smooth_round_rect_path(
-                    GLASS_RIM_INSET, GLASS_RIM_INSET,
-                    max(w - 2 * GLASS_RIM_INSET, 1),
-                    max(h - 2 * GLASS_RIM_INSET, 1), R)
+                rim_key = (w, h, GLASS_RIM_INSET, R)
+                if self._bg_rim_cache is None or self._bg_rim_cache[0] != rim_key:
+                    rim = smooth_round_rect_path(
+                        GLASS_RIM_INSET, GLASS_RIM_INSET,
+                        max(w - 2 * GLASS_RIM_INSET, 1),
+                        max(h - 2 * GLASS_RIM_INSET, 1), R)
+                    self._bg_rim_cache = (rim_key, rim)
+                rim = self._bg_rim_cache[1]
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.setPen(QPen(QColor(*self._glass_surface_rim()), 1.0))
                 p.drawPath(rim)
@@ -985,15 +1009,43 @@ class RenderMixin:
             p.setFont(f_name)
             p.setPen(FG_DIM if net_bad else FG_NAME)
             fm = self._fm(f_name)
-            elided = fm.elidedText(name, Qt.TextElideMode.ElideRight, w - W_NAME)
+            name_w = w - W_NAME
+            if getattr(self, "_minute_stale", False):
+                label_fm = self._fm(self._font(FONT, STALE_LABEL_FONT, QFont.Weight.Medium))
+                label = stale_label_rect(w, label_fm.horizontalAdvance(STALE_LABEL_TEXT))
+                name_w = max(0, int(min(name_w, label.left() - PAD_X - 4)))
+            elided = fm.elidedText(name, Qt.TextElideMode.ElideRight, name_w)
             # v1.2.66：名称绘制矩形整体下移 NAME_TOP_PAD、高度同步减 NAME_TOP_PAD，
             # 视觉中心下移但矩形底仍落于原 Y_NAME+H_NAME，不侵入代码区（其余元素不动）。
-            p.drawText(QRectF(PAD_X, Y_NAME + NAME_TOP_PAD, w - W_NAME, H_NAME - NAME_TOP_PAD),
+            p.drawText(QRectF(PAD_X, Y_NAME + NAME_TOP_PAD, name_w, H_NAME - NAME_TOP_PAD),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
             p.setFont(self._font(FONT, FONT_CODE, QFont.Weight.Bold))
             p.setPen(FG_CODE)
             p.drawText(QRectF(PAD_X, Y_CODE, w - W_NAME, H_CODE), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, code)
             return elided
+
+        def _paint_stale_label(self, p, w):
+            """把分时滞后状态移到名称/代码右侧，以紧凑标签显示。"""
+            if not getattr(self, "_minute_stale", False):
+                return
+            text = STALE_LABEL_TEXT
+            font = self._font(FONT, STALE_LABEL_FONT, QFont.Weight.Medium)
+            fm = self._fm(font)
+            label = stale_label_rect(w, fm.horizontalAdvance(text))
+            if label.width() < fm.horizontalAdvance(text) + 2 * STALE_LABEL_PAD_X:
+                text = fm.elidedText(text, Qt.TextElideMode.ElideRight,
+                                     int(label.width() - 2 * STALE_LABEL_PAD_X))
+            p.save()
+            try:
+                p.setPen(QPen(STALE_LABEL_BORDER, 0.5))
+                p.setBrush(STALE_LABEL_BG)
+                p.drawRoundedRect(label.adjusted(0.5, 0.5, -0.5, -0.5),
+                                  STALE_LABEL_RADIUS, STALE_LABEL_RADIUS)
+                p.setFont(font)
+                p.setPen(STALE_LABEL_FG)
+                p.drawText(label, Qt.AlignmentFlag.AlignCenter, text)
+            finally:
+                p.restore()
 
         def _paint_buttons(self, p, w):
             """20.1 v1.2.27：右上角编辑 + 最小化到 Dock + 关闭按钮（SF Symbols，加粗 10px）。
@@ -1289,8 +1341,15 @@ class RenderMixin:
                         return fm_bold
                     return self._fm(self._font(NUM_FONT, FONT_CODE + delta,
                                                QFont.Weight.Bold))
-                segs_row1, segs_row2, shrink, _min_w = bottom_rows_fitting(
-                    w, row1, row2, fm, _fm_num_at, PAD_X, BOTTOM_INNER_GAP, BOTTOM_GAP)
+                layout_key = (w, tuple(row1), tuple(row2), fm, fm_bold, bottom_rows_fitting,
+                              FONT, NUM_FONT, FONT_CODE, PAD_X, BOTTOM_INNER_GAP, BOTTOM_GAP)
+                cache = self._bottom_layout_cache
+                if cache is None or cache[0] != layout_key:
+                    layout = bottom_rows_fitting(
+                        w, row1, row2, fm, _fm_num_at, PAD_X, BOTTOM_INNER_GAP, BOTTOM_GAP)
+                    cache = (layout_key, layout)
+                    self._bottom_layout_cache = cache
+                segs_row1, segs_row2, shrink, _min_w = cache[1]
                 # base=0：底部不设宽度下限（窗口最小宽由价格行布局决定）；
                 # slack=8：给抗锯齿与圆角留余量，避免末段数字贴住右缘被裁。
                 # 诊断留痕（S39 那一族的现场）：缩到第几档、放不下被放弃几段。
@@ -1841,36 +1900,31 @@ class RenderMixin:
             形状脱节的横带（老板截图实测：绿色填充带与昨收虚线重合、
             曲线下方大片留空），观感不像主流分时图。
             垂直渐变保持：图顶趋势色 → 图底透明。"""
-            xs, np_, _na = self._chart_pts_cache(rect, m)
-            top = rect.top()
-            h = rect.height()
-            path = QPainterPath()
-            path.moveTo(xs[0], top + np_[0] * h)
-            for i in range(1, m["n"]):
-                path.lineTo(xs[i], top + np_[i] * h)
-            fill = QPainterPath(path)
-            last_x = xs[m["n"] - 1]   # v1.2.2：填充截止到最新数据点，避免盘中填充占满全宽
-            # v1.3.62：填充底边改为图底（行业主流），不再锚昨收基准线。
-            fill.lineTo(last_x, rect.bottom())
-            fill.lineTo(rect.left(), rect.bottom())
-            fill.closeSubpath()
+            path = self._chart_price_path(rect, m)
             color = m["color"]
-            # 渐变锚定"填充区域自身"：起点 = 曲线最高点（填充上沿），终点 = 图底。
-            # 旧实现锚整个图表矩形（图顶→图底），最浓处落在曲线上方的空白里，
-            # 填充实际只吃到渐变最淡的尾巴 —— 观感就是"颜色太淡"。
-            grad_top = top + min(np_) * h
-            if grad_top >= rect.bottom():
-                grad_top = rect.top()
-            fill_grad = QLinearGradient(0, grad_top, 0, rect.bottom())
-            top_c = QColor(color)
-            # v1.3.64：绿色单独加浓度（红色维持 CHART_FILL_ALPHA 不动）
-            top_c.setAlpha(CHART_FILL_ALPHA_GREEN if color == GREEN else CHART_FILL_ALPHA)
-            fill_grad.setColorAt(0.0, top_c)
-            fill_grad.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+            key = (self._line_path_key, CHART_FILL_ALPHA, CHART_FILL_ALPHA_GREEN)
+            cache = self._chart_fill_cache
+            if cache is None or cache[0] != key:
+                xs, np_, _na = self._chart_pts_cache(rect, m)
+                fill = QPainterPath(path)
+                fill.lineTo(xs[m["n"] - 1], rect.bottom())
+                fill.lineTo(rect.left(), rect.bottom())
+                fill.closeSubpath()
+                grad_top = rect.top() + min(np_) * rect.height()
+                if grad_top >= rect.bottom():
+                    grad_top = rect.top()
+                fill_grad = QLinearGradient(0, grad_top, 0, rect.bottom())
+                top_c = QColor(color)
+                top_c.setAlpha(CHART_FILL_ALPHA_GREEN if color == GREEN else CHART_FILL_ALPHA)
+                fill_grad.setColorAt(0.0, top_c)
+                fill_grad.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+                cache = (key, fill, fill_grad)
+                self._chart_fill_cache = cache
+            _, fill, fill_grad = cache
             p.fillPath(fill, fill_grad)
 
-        def _draw_chart_line(self, p, rect, m):
-            """折线（横向渐变过渡，细线保证锐利），后画保证渐变可见"""
+        def _chart_price_path(self, rect, m):
+            """One bounded geometry cache shared by the line and its gradient fill."""
             pts = self.minute_points
             xs, np_, _na = self._chart_pts_cache(rect, m)
             top = rect.top()
@@ -1890,7 +1944,11 @@ class RenderMixin:
                     path.lineTo(xs[i], top + np_[i] * h)
                 self._line_path = path
                 self._line_path_key = key
-            path = self._line_path
+            return self._line_path
+
+        def _draw_chart_line(self, p, rect, m):
+            """折线（横向渐变过渡，细线保证锐利），后画保证渐变可见"""
+            path = self._chart_price_path(rect, m)
             color = m["color"]
             line_grad = QLinearGradient(rect.left(), 0, rect.right(), 0)
             # 渐变两端一律从趋势色派生，理由与"线尾必须与呼吸点同色"这条不变量
@@ -1916,7 +1974,7 @@ class RenderMixin:
             breath = (math.sin(phase * 2 * math.pi - math.pi / 2) + 1) / 2  # 0→1→0
             if getattr(self, "_minute_stale", False):
                 # v1.4.7：呼吸灯是"实时"的暗示 —— 数据滞后时冻结为最小态，
-                # 与遮罩提示共同表达"这不是最新走势，正在重连"。
+                # 与顶部状态标签共同表达"这不是最新走势，正在重连"。
                 breath = 0.0
             # 光晕 alpha 和半径在上下限之间平滑插值
             glow_alpha = int(CHART_DOT_GLOW_ALPHA_MIN + breath * (CHART_DOT_GLOW_ALPHA - CHART_DOT_GLOW_ALPHA_MIN))
@@ -1968,46 +2026,24 @@ class RenderMixin:
             self._draw_chart_line(p, rect, m)
             self._draw_chart_dot(p, rect, m)
             if getattr(self, "_minute_stale", False):
-                # v1.4.7：盘中重连中 —— 曲线保留但压暗一层并给出"重试中"提示，
-                # 既不是整幅空白闪回"加载中"，也不会把滞后走势冒充实时。
+                # v1.4.7：盘中重连中 —— 曲线保留，状态由顶部标签标识，
+                # 不再用遮罩压暗走势。
                 self._draw_chart_stale(p, rect, m)
 
         def _draw_chart_stale(self, p, rect, m=None):
-            """滞后遮罩与提示：半透明压暗整幅走势 + 提示小字，恢复后自动消失。
-
-            v1.4.34（用户 2026-09-24 要求："文本显示不能与白色虚线贴近或重叠"）：
-            提示字此前**固定**钉在 `rect.top() + 2`，而 0% 基准虚线的 y 由"昨收落在
-            当日区间的哪个位置"决定 —— 昨收高于当日最高（下跌日，截图就是 -3.71%）
-            时虚线必然贴在图带顶部，图带一矮就压进文字里。离屏实测（昨收 143.55 /
-            当日 137~142.6，窗口 184 宽）：
-
-                窗口高 224 / 240 / 260 / 280 / 300 → 净空 0.0px（虚线穿过文字带）
-                窗口高 340 / 380 / 400 / 420       → 净空 2.5 / 5.8 / 7.5 / 9.2px
-
-            现在按"离虚线更远的一侧"落字：顶部放不下（底板外沿与虚线的净空 <
-            CHART_HINT_MIN_GAP_PX）就翻到图带底部；两侧都不够（极矮图带）时取净空
-            较大的那一侧，仍比原来钉死在顶部好。判据按**底板外沿**算，不是字身。
-
-            另外给提示字补了一块与价格标注同款的半透明圆角底板：图带只有 70~266px
-            高，曲线在下跌日会扫过整幅，光靠挪位置躲不开所有东西（实测把字翻到底部
-            后，昨收 -1% 那一档底部矩形里压着 70 个曲线采样点）。底板保证"压在曲线上
-            也读得清"，位置规则保证"绝不与白色虚线贴近"，两件事各管一头。
-            """
-            p.save()
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0, CHART_STALE_MASK_ALPHA))
-            p.drawRect(rect)
-            hint_h = FONT_CHART_HINT + 8
+            """只记录顶部滞后标签与基准线的净空，不向图内绘制任何像素。"""
+            # 诊断仍记录滞后现场，但走势图本身保持原亮度和完整可见；状态标签
+            # 已由 _paint_stale_label 绘制到顶部，不再在图内重复盖住曲线。
+            hint_h = STALE_LABEL_H
             line_y = None
             if m is not None and m.get("pre_close") is not None:
                 try:
                     line_y = self._chart_y(rect, m, m["pre_close"])
                 except Exception as exc:
-                    # 这条判据只影响提示字放哪，拿不到虚线就退回原来的顶部，
-                    # 不能因为它把整条降级提示弄没（降级态"保留+标滞"是产品要求）。
+                    # 基准线缺失只影响诊断，不影响顶部标签或曲线。
                     log_swallow("sf_ui_render._draw_chart_stale.line_y", exc)
                     line_y = None
-            y = stale_hint_y(rect.top(), rect.bottom(), hint_h, line_y)
+            y = Y_NAME + NAME_TOP_PAD
             # 诊断留痕（v1.4.34 那条"文本不能与白色虚线贴近或重叠"的现场）：
             # 这一帧**实际**留出多少净空、有多少帧低于最小净空、有多少帧虚线根本取不到
             # （虚线取不到时规则退回贴顶，那是另一种"没法保证不压线"，必须分开数）。
@@ -2022,22 +2058,6 @@ class RenderMixin:
                 if _gap < CHART_HINT_MIN_GAP_PX:
                     _PAINT_DIAG["stale_hint_tight_frames"] += 1
                 _PAINT_DIAG["stale_hint_last_gap_px"] = round(_gap, 1)
-            hint = QRectF(rect.left(), y, rect.width(), hint_h)
-            # 底板只包住字本身，不铺满图带宽度：铺满会把这一段走势整条盖掉
-            # （图带只有 70~266px 高，20px 全宽底板等于抹掉一整个信息带）。
-            text = "数据暂缺 · 重试中"
-            font = self._font(FONT, FONT_CHART_HINT)
-            plate_w = QFontMetrics(font).horizontalAdvance(text) + 2 * LABEL_OUTSET_X + 4
-            plate = QRectF(rect.center().x() - plate_w / 2.0, y - LABEL_OUTSET_Y,
-                           plate_w, hint_h + 2 * LABEL_OUTSET_Y)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0, 175))
-            p.drawRoundedRect(plate, LABEL_RADIUS, LABEL_RADIUS)
-            p.setFont(font)
-            p.setPen(FG_DIM)
-            p.drawText(hint, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
-                       text)
-            p.restore()
 
         def _draw_label(self, p, rect, text, color):
             """标注文本：半透明深色圆角底板 + 彩色文字，保证任何位置都不被折线遮挡"""

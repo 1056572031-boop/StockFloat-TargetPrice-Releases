@@ -170,7 +170,8 @@ def render() -> str:
         "",
         "提供 DMG 和 ZIP 两种安装包，普通用户建议用下文的 DMG 双击安装。",
         "**未签名、未公证**：本项目没有 Apple Developer ID 开发者签名和 Apple 公证。",
-        "包内临时 ad-hoc 签名只用于完整性检查，不能证明开发者身份，也不代表 Apple 已审核。",
+        "本地签名用于完整性与版本身份检查：历史包使用临时 ad-hoc，后续固定签名包使用项目自签名证书；"
+        "两者均不代表 Apple 已确认开发者身份或审核程序。",
         "请只从[官方发行页](https://github.com/%s/releases/tag/%s)下载，"
         "核对本版文件名和 SHA-256；校验不符或来源不明时停止安装，不要盲目放行。"
         % (make_update_assets.REPO, urllib.parse.quote(make_update_assets.TAG, safe="")),

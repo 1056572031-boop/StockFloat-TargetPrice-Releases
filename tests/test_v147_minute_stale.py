@@ -70,8 +70,7 @@ class _WinBase(unittest.TestCase):
         # 同时 patch 被测模块（stock_float_window）和测试辅助函数（_today → targets）
         # 两处引用的 _beijing_now，确保断言两侧看到同一个"今天"。
         import targets as _targets_mod
-        _fixed_now = datetime.datetime.now().replace(
-            hour=10, minute=0, second=0, microsecond=0)
+        _fixed_now = datetime.datetime(2026, 1, 5, 10, 0)
         self._patches = [
             patch.object(m, "load_config",
                          return_value=("sh600519", 100, 100, 200, "translucent")),
@@ -83,6 +82,8 @@ class _WinBase(unittest.TestCase):
             patch("PyQt6.QtWidgets.QMenu.popup", lambda *a, **k: None),
             patch.object(m, "_beijing_now", return_value=_fixed_now),
             patch.object(_targets_mod, "_beijing_now", return_value=_fixed_now),
+            patch.object(sf_quote, "_beijing_now", return_value=_fixed_now),
+            patch.object(sf_quote, "is_holiday", return_value=False),
         ]
         for p in self._patches:
             p.start()
@@ -262,7 +263,7 @@ def _mean_brightness(img):
 
 
 class TestStaleRendering(_WinBase):
-    """渲染层：滞后态压暗但曲线仍在（不是白屏，也不是冒充实时）。"""
+    """滞后态保留原亮度曲线，状态在图外标签中展示。"""
 
     def setUp(self):
         super().setUp()
@@ -273,17 +274,16 @@ class TestStaleRendering(_WinBase):
         self._time_patch.start()
         self.addCleanup(self._time_patch.stop)
 
-    def test_stale_darkens_but_curve_survives(self):
+    def test_stale_preserves_chart_brightness(self):
         self.win._minute_stale = False
         fresh = _chart_image(self.win)
         self.win._minute_stale = True
         stale = _chart_image(self.win)
-        self.assertLess(_mean_brightness(stale), _mean_brightness(fresh),
-                        "滞后遮罩必须整体压暗，一眼可辨非实时")
-        # 曲线仍穿透遮罩：压暗后的图并非纯色一块，像素仍有起伏
+        # 呼吸点仍冻结为最小态，因此容许端点附近的局部差异，不能压暗整图。
+        self.assertGreaterEqual(_mean_brightness(stale), _mean_brightness(fresh) * 0.95)
         data = bytes(stale.constBits().asstring(stale.sizeInBytes()))
         lum = {data[i:i + 3] for i in range(0, len(data), 4)}
-        self.assertGreater(len(lum), 8, "遮罩下折线/渐变必须仍可见，不得变成纯色死图")
+        self.assertGreater(len(lum), 8, "折线/渐变必须仍可见，不得变成纯色死图")
 
     def test_fresh_render_untouched(self):
         """非滞后态渲染不得出现遮罩：与 stale=False 的默认路径一致（幂等）。"""

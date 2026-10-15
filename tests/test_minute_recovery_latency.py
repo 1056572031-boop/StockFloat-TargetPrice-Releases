@@ -177,7 +177,8 @@ class GuardIsNotTheDataLock(_Host):
         # sf_constants 在测试隔离态把预填整个关掉（SF_SEED_FIRST_SCREEN=0），
         # 不设回 1 的话这条用例测的是"函数直接 return"，守卫那半句会假绿。
         with patch.dict(os.environ, {"SF_SEED_FIRST_SCREEN": "1"}), \
-             patch.object(m, "load_last_quote", return_value=snap):
+             patch.object(m, "load_last_quote", return_value=snap), \
+             patch.object(self.win, "_is_trading_time", return_value=False):
             self._assert_ui_path_skips_the_guard(self.I.seed_first_screen)
         self.assertTrue(_seeded(self.win), "预填本身仍要生效")
         self.assertEqual(len(self.win.minute_points), 1, "分时曲线要预填进来")

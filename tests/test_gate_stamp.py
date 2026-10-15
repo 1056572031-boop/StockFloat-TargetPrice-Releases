@@ -143,7 +143,8 @@ class TestFingerprintScope(_Repo):
         self.assertTrue(usable, "只改文档就判过期（会逼人加 --skip-tests）：%s" % why)
 
     def test_bundled_notice_or_dependency_lock_invalidates_stamp(self):
-        for name in ("NOTICE.md", "requirements.lock"):
+        for name in ("NOTICE.md", "requirements.lock", "tools/signing_policy.json",
+                     "tools/camera_auth_probe.swift"):
             with self.subTest(name=name):
                 self.write(name, "changed build input\n")
                 usable, why = self.ok()

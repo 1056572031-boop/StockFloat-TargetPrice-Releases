@@ -502,7 +502,9 @@ class TestConfigSchemaVersion(unittest.TestCase):
         self._write({"code": "sh600000",
                      "api_urls": {"quote": "https://custom.example/q=%s",
                                   "sina_referer": "https://custom.referer/"}})
-        changed = m.load_api_urls()
+        from tests.test_quality_credentials import MemoryKeychain
+        with unittest.mock.patch("sf_credentials.MacKeychain", return_value=MemoryKeychain()):
+            changed = m.load_api_urls()
         self.assertIn("quote", changed)
         self.assertEqual(sf_quote.QUOTE_URL, "https://custom.example/q=%s")
         self.assertEqual(sf_quote.SINA_REFERER, "https://custom.referer/")

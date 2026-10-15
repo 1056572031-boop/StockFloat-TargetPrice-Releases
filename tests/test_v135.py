@@ -3,7 +3,7 @@
 
 覆盖：
 - contextMenuEvent 生成的菜单不再含「替换股票」「目标价」「最小化到 Dock」「退出」项
-  （底层功能保留，仅 UI 层不可见），保留「立即刷新」「导出诊断包」与版本行；
+  （底层功能保留，仅 UI 层不可见），保留「刷新行情」「导出诊断包」与版本行；
 - 毛玻璃暗化 alpha 加深：暗色系统 >100、浅色系统 >=170（修复用户"太透光"反馈）。
 
 运行方式（在 StockFloat 目录）：
@@ -76,7 +76,7 @@ class TestV135(unittest.TestCase):
         self.assertNotIn("退出", texts)
         self.assertFalse(any(t.startswith("目标价") for t in texts),
                          "目标价功能保留，但右键菜单入口必须隐藏")
-        self.assertIn("立即刷新", texts)
+        self.assertIn("刷新行情", texts)
         self.assertIn("导出诊断包", texts)
         self.assertIn("检查更新", texts)
         # v1.3.41：用户明确要求右键菜单不放卸载入口（危险操作不该出现在主菜单）

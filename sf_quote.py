@@ -30,6 +30,7 @@
 
 import collections
 import datetime
+from datetime import date
 import json
 import math
 import re
@@ -790,6 +791,30 @@ def quote_status(q, now=None):
         return "跌停"
     return None
 
+class MinutePoints(list):
+    """List-compatible minute points carrying the source day, not the receipt day."""
+
+    def __init__(self, points=(), day=""):
+        super().__init__(points)
+        self.day = day
+
+
+def _minute_source_day(value):
+    if not isinstance(value, str):
+        return ""
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return ""
+
+
+def _ordered_minute_points(points):
+    # Duplicate minutes use the last observation; connected lines require time order.
+    unique = {point[0].replace(":", ""): point for point in points}
+    points[:] = [unique[key] for key in sorted(unique)]
+    return points
+
+
 def fetch_minute_fallback(code):
     """备用分时源（东财 trends2）：主源异常/网络失败时降级。
     返回与 _fetch_minute_primary 同构的 points [(time, price, avg), ...]；
@@ -808,7 +833,7 @@ def fetch_minute_fallback(code):
     open_min = 9 * 60 + 30
     cur_min = now.hour * 60 + now.minute
     close_min = 15 * 60
-    points = []
+    points = MinutePoints()
     for row in trends:
         parts = row.split(",")
         if len(parts) < 8:
@@ -816,12 +841,15 @@ def fetch_minute_fallback(code):
         t_part = parts[0].strip()
         # 东财时间形如 "2026-08-21 09:30"，取 HH:MM 与主源格式对齐
         hm_part = t_part.split()[-1] if " " in t_part else t_part
+        source_day = _minute_source_day(t_part.split()[0]) if " " in t_part else ""
+        if " " in t_part and (not source_day or source_day > now.date().isoformat()):
+            continue
         # 交易时段严格校验日期为当日，防 fallback 返回昨日/缓存数据画错进度
         if cur_only and " " in t_part:
             if t_part.split()[0] not in today_strs:
                 continue
         hm = hm_part.replace(":", "")
-        if len(hm) < 4:
+        if len(hm) != 4 or not hm.isdigit() or int(hm[:2]) > 23 or int(hm[2:]) > 59:
             continue
         try:
             m = (int(hm[:2]) * 60) + int(hm[2:4])
@@ -834,17 +862,22 @@ def fetch_minute_fallback(code):
             continue
         try:
             price = float(parts[2])
-            if not math.isfinite(price):
+            if not math.isfinite(price) or price <= 0:
                 continue
             avg = float(parts[7]) if parts[7].strip() else None
-            if avg is not None and not math.isfinite(avg):
+            if avg is not None and (not math.isfinite(avg) or avg <= 0):
                 avg = None
         except Exception:
             continue
         # 时间串保持东财原始 "HH:MM" 格式（v1.2.44 数据形状约定，见 test_v144）；
         # 渲染层 _chart_minute_offset 已做去冒号防御归一，两源格式差异不影响 X 轴换算。
+        if source_day < points.day:
+            continue
+        if source_day > points.day:
+            points.clear()
+            points.day = source_day
         points.append((hm_part, price, avg))
-    return points
+    return _ordered_minute_points(points)
 
 def fetch_minute(code):
     """分时拉取：主源（腾讯）→ 异常或盘中结构性空结果自动切备用源（东财）。
@@ -865,7 +898,8 @@ def fetch_minute(code):
         pts = _fetch_minute_primary(code)
         if pts or not _is_trading_time():
             _reset_format_error("minute")
-            _LAST_MINUTE_SOURCE = "primary"
+            if pts:
+                _LAST_MINUTE_SOURCE = "primary"
             return pts
         # 主源结构完整但盘中没有点集：这是降级条件，不是接口格式坏了，不能
         # 累加 FORMAT ERROR（否则备用源正常时仍会把日志刷成"接口格式变更"）。
@@ -877,8 +911,9 @@ def fetch_minute(code):
         try:
             pts = fetch_minute_fallback(code)
             _reset_format_error("minute")
-            _LAST_MINUTE_SOURCE = "fallback"
-            log_line("minute fallback(tencent->eastmoney) ok code=%s" % code, "WARNING")
+            if pts:
+                _LAST_MINUTE_SOURCE = "fallback"
+                log_line("minute fallback(tencent->eastmoney) ok code=%s" % code, "WARNING")
             return pts
         except Exception:
             raise exc
@@ -911,6 +946,9 @@ def _fetch_minute_primary(code):
     # 数据）或把 cur_min 算成前一天的时刻，分时窗口被裁得七零八落。
     now = _beijing_now()
     today = now.date()
+    source_day = _minute_source_day(date_str)
+    if date_str and (not source_day or source_day > today.isoformat()):
+        return []
     today_strs = {today.strftime("%Y%m%d"), today.strftime("%Y-%m-%d")}
     if date_str:
         if date_str in today_strs:
@@ -939,13 +977,13 @@ def _fetch_minute_primary(code):
                     unit_factor = 1.0
             except Exception:
                 pass
-    points = []
+    points = MinutePoints(day=source_day)
     for r in rows:
         parts = r.split(" ")
         if len(parts) < 2:
             continue
         t = parts[0].replace(":", "")
-        if len(t) < 4:
+        if len(t) != 4 or not t.isdigit() or int(t[:2]) > 23 or int(t[2:]) > 59:
             continue
         try:
             hm = int(t[:4])
@@ -966,20 +1004,20 @@ def _fetch_minute_primary(code):
             continue
         try:
             price = float(parts[1])
-            if not math.isfinite(price):   # 脏数据防御：非有限价格直接丢弃该分钟
+            if not math.isfinite(price) or price <= 0:
                 continue
             if len(parts) >= 4:
                 vol = float(parts[2])      # 累计成交量（截至该分钟，非增量，勿累加）
                 amount = float(parts[3])   # 累计成交额（元）
                 avg = (amount / (vol * unit_factor)) if vol > 0 else price
-                if not math.isfinite(avg): # 均价非有限时退回现价
+                if not math.isfinite(avg) or avg <= 0:
                     avg = price
             else:
                 avg = None
             points.append((parts[0], price, avg))
         except Exception:
             continue
-    return points
+    return _ordered_minute_points(points)
 
 def eastmoney_search_bj(keyword, count=8):
     """东财 suggest 搜索兜底，仅返回北交所(京A/_TB)股票，代码统一为 bj 前缀。

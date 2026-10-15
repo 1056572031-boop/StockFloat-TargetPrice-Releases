@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
 
 def fullscreen_host():
@@ -62,6 +63,7 @@ def main():
     parser.add_argument("--legacy", action="store_true")
     parser.add_argument("--exercise", action="store_true")
     parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument("--corners", action="store_true")
     parser.add_argument("--fullscreen-host", action="store_true")
     parser.add_argument("--seconds", type=float, default=15)
     parser.add_argument("--snapshot", type=Path)
@@ -86,7 +88,7 @@ def main():
     from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt, QTimer
     from PyQt6.QtGui import QImage, QMouseEvent
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QWidget
 
     import stock_float_window as product
     from sf_glass import active_space_id, content_ns_window, glass_main_real_state
@@ -284,10 +286,32 @@ def main():
             numbers = (int(main_window.windowNumber()), int(glass_window().windowNumber()))
             window_info = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionIncludingWindow, numbers[0])
             bounds = window_info[0]["kCGWindowBounds"]
+            backdrop = None
+            if args.corners:
+                backdrop = QWidget()
+                backdrop.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+                backdrop.setGeometry(win.x() - 40, win.y() - 40, win.width() + 80, win.height() + 80)
+                backdrop.setStyleSheet("background-color: rgb(245, 245, 245);")
+                backdrop.show()
+                native = content_ns_window(backdrop)
+                native.setHasShadow_(False)
+                native.setLevel_(int(glass_window().level()) - 1)
+                native.orderFront_(None)
+                observe(0.25)
             capture = subprocess.run(["/usr/sbin/screencapture", "-x", "-o",
                 f"-R{int(bounds['X'])},{int(bounds['Y'])},{int(bounds['Width'])},{int(bounds['Height'])}",
                 str(args.out / "window.png")], capture_output=True, text=True, check=False)
             check("real_compositor_capture", capture.returncode == 0 and not QImage(str(args.out / "window.png")).isNull())
+            if args.corners:
+                from sf_constants import GLASS_INSET, R
+                from verify_card_corners import native_corner_problems
+                image = QImage(str(args.out / "window.png"))
+                backend = result["surface"]["backend"]
+                problems = native_corner_problems(image, backend, image.width() / win.width(), R,
+                                                  GLASS_INSET if backend == "legacy" else 0)
+                check("four_native_corners_have_no_second_outline", not problems, problems)
+            if backdrop is not None:
+                backdrop.close()
             win._persist_on_exit()
             win._shutdown_threads()
             win.close()

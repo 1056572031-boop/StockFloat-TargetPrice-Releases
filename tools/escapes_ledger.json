@@ -2895,6 +2895,18 @@
         "Installed 1.4.87 PYZ fails real nested native callback; pinned completion metadata, compiled Objective-C and unpinned mutation tests; post-first-frame survival gate"
       ],
       "zero_reason": null
+    },
+    {
+      "version": "1.4.89",
+      "date": "2026-10-15",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "配置原子写入、凭据保护、行情与分时陈旧数据、手动刷新及恢复路径均有行为回归和失败留痕",
+        "固定签名、摄像头授权延续、依赖审计、诊断覆盖和 CI 动作锁定纳入发布前门禁",
+        "卡片圆角像素、包内几何同源、两代原生玻璃交互及真实合成截图纳入第 3.65 关"
+      ],
+      "zero_reason": "本轮新增问题均在发布前走查中发现并由回归或产物门禁覆盖；未发现新的已发布线上逃逸。"
     }
   ]
 }

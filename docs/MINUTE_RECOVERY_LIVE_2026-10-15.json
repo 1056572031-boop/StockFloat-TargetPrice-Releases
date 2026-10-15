@@ -1,0 +1,30 @@
+{
+  "at_beijing": "2026-10-15T10:47:08.459503+08:00",
+  "samples": [
+    {
+      "code": "sh600183",
+      "source": "primary",
+      "points": 78,
+      "day": "2026-10-15",
+      "first": ["0930", 115.0, 115.0],
+      "last": ["1047", 116.66, 116.7433436646405],
+      "elapsed_ms": 224.5
+    },
+    {
+      "code": "sh600183",
+      "source": "fallback",
+      "error": "RemoteDisconnected",
+      "detail": "Remote end closed connection without response",
+      "elapsed_ms": 2145.1
+    },
+    {
+      "code": "sh510300",
+      "source": "primary",
+      "points": 78,
+      "day": "2026-10-15",
+      "first": ["0930", 4.245, 4.244999980394808],
+      "last": ["1047", 4.218, 4.230783066046913],
+      "elapsed_ms": 54.5
+    }
+  ]
+}

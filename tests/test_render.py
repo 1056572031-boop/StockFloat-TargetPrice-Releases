@@ -492,6 +492,54 @@ class TestFiredTargetPlacement(TestRenderBase):
         self.assertNotIn("badge = None if has_fired_target", src)
 
 
+class TestMinuteStaleLabel(TestRenderBase):
+    def test_label_draws_in_header_and_disappears_after_recovery(self):
+        self.win._apply_quote(QUOTE_NORMAL)  # discipline-ok(R5): quote delivery is the production setup path
+        image = QImage(self.win.width(), self.win.height(), QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        real = QPainter.drawText
+        labels = []
+        header_rects = []
+
+        def record(p, *args):
+            header_rects.append(QRectF(args[0]))
+            if args[-1] == "数据暂缺·重试中":
+                labels.append(QRectF(args[0]))
+            return real(p, *args)
+
+        try:
+            self.win._minute_stale = True  # discipline-ok(R5): inject the unavailable-minute state
+            with patch.object(QPainter, "drawText", record):
+                self.win._paint_header(painter, self.win.width())  # discipline-ok(R5): real header geometry
+                pen_before, brush_before, font_before = painter.pen(), painter.brush(), painter.font()
+                self.win._paint_stale_label(painter, self.win.width())  # discipline-ok(R5): real status label pixels
+                self.assertEqual(painter.pen(), pen_before)
+                self.assertEqual(painter.brush(), brush_before)
+                self.assertEqual(painter.font(), font_before)
+            self.assertEqual(len(labels), 1)
+            rect = labels[0]
+            self.assertGreaterEqual(rect.left(), self.win.width() / 2)
+            self.assertEqual(rect.right(), self.win.width() - sf_ui_render.PAD_X)
+            self.assertGreater(rect.top(), sf_ui_render.BTN_ICON_Y + sf_ui_render.BTN_ICON_SZ)
+            self.assertLess(rect.bottom(), sf_ui_render.Y_PRICE)
+            self.assertEqual(rect.center().y(), sf_ui_render.Y_NAME + sf_ui_render.NAME_TOP_PAD
+                             + (sf_ui_render.H_NAME - sf_ui_render.NAME_TOP_PAD) / 2)
+            self.assertLess(header_rects[0].right(), rect.left(),
+                            "股票名称必须为右侧标签留出间距")
+            self.assertTrue(any(image.pixelColor(x, y).alpha() > 0
+                                for x in range(int(rect.left()), int(rect.right()))
+                                for y in range(int(rect.top()), int(rect.bottom()))),
+                            "标签必须实际渲染出像素")
+            labels.clear()
+            self.win._minute_stale = False  # discipline-ok(R5): inject successful recovery
+            with patch.object(QPainter, "drawText", record):
+                self.win._paint_stale_label(painter, self.win.width())  # discipline-ok(R5): recovery hides status label
+            self.assertEqual(labels, [])
+        finally:
+            painter.end()
+
+
 class TestRenderNetBad(TestRenderBase):
     """断网界面表现：名称栏"网络异常" + 最近成功时间。"""
 

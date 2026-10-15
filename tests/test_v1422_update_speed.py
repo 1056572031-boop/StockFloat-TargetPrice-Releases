@@ -90,12 +90,12 @@ class TestRangeRetry(unittest.TestCase):
         return part
 
     def test_resumes_from_offset_after_connection_drop(self):
-        # 载荷必须大于 1MB 的单次读取块，断连才会落在中途而不是"还没读就断"
+        # A fixed byte boundary makes the disconnect independent of read chunk size.
         payload = bytes((index * 7) % 256 for index in range(2 * 1024 * 1024 + 777))
         start, end = 0, len(payload) - 1
         resume_at = 1024 * 1024                 # 第一条连接送满 1MB 后被掐断
         calls = []
-        responses = [_Resp(start, payload, drop_at=1),
+        responses = [_Resp(start, payload, drop_at=resume_at),
                      _Resp(resume_at, payload)]
 
         def fake_urlopen(request, timeout=None):

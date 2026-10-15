@@ -186,6 +186,7 @@ class MinuteDateBranches(SFCase):
 
     TRADING = (2026, 2, 18, 10, 30)          # 周三盘中（fixed_clock 注入，不依赖真时钟）
     CLOSED = (2026, 2, 18, 21, 30)           # 同一天的盘后
+    PREVIOUS_DAY = "20260217"
 
     def _rows(self, n=6):
         """腾讯分时的行形状：`HHMM 价 累计量 累计额`。少于 2 段或时刻不足 4 位都算脏行。"""
@@ -213,11 +214,11 @@ class MinuteDateBranches(SFCase):
                          "裁到当前时刻失效 = 把还没发生的分钟（14:00）画上线")
 
     def test_交易时段拿到非当日数据整段丢弃(self):
-        out = self._fetch("20990101", self._rows(), self.TRADING, trading=True)
+        out = self._fetch(self.PREVIOUS_DAY, self._rows(), self.TRADING, trading=True)
         self.assertEqual(out, [], "盘中接受昨天的分时 = 图上出现一段拼接的假走势")
 
     def test_休市时接受最近交易日完整分时(self):
-        out = self._fetch("20990101", self._rows(), self.CLOSED, trading=False)
+        out = self._fetch(self.PREVIOUS_DAY, self._rows(), self.CLOSED, trading=False)
         self.assertEqual(len(out), len(self._rows()),
                          "休市裁剪到当前时刻 = 晚上看盘只剩开盘几分钟")
 
@@ -232,7 +233,7 @@ class MinuteDateBranches(SFCase):
 
     def test_形状不对的分钟行被跳过而不是抛错(self):
         rows = self._rows() + ["乱七八糟", "", "093", "0936 不是数 1 1"]
-        out = self._fetch("20990101", rows, self.CLOSED, trading=False)
+        out = self._fetch(self.PREVIOUS_DAY, rows, self.CLOSED, trading=False)
         self.assertEqual(len(out), len(self._rows()),
                          "脏行把后面的好行也带没了 = 一处脏数据毁掉整条分时")
         self.assertTrue(all(isinstance(pt, tuple) and isinstance(pt[1], float)

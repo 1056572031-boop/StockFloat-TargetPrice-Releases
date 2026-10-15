@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "bundle_id": "com.skyrocket.app",
+  "certificate_sha1": "BF4480229378EEAF31022C6E377200F149F87D20",
+  "certificate_sha256": "BC91222F348F82CCE7453AA834960971C4EEB495A5E485B9F261B1DDAA77EC0B",
+  "type": "self-signed-not-developer-id"
+}

@@ -37,9 +37,12 @@ class QualitySecurityTests(SFCase):
         self.assertNotIn("PRIVATE-CANARY", value)
         self.assertNotIn("user:", value)
 
-    def test_benign_url_and_template_stay_unchanged(self):
+    def test_url_origin_and_template_hint_survive_without_opaque_values(self):
         value = "https://example.invalid/q?code=%s&fields=f1,f2&name=a+b"
-        self.assertEqual(sf_privacy.redact_url(value), value)
+        result = sf_privacy.redact_url(value)
+        self.assertTrue(result.startswith("https://example.invalid/"))
+        self.assertIn("%s", result)
+        self.assertNotIn("name=", result)
         self.assertEqual(sf_privacy.redact_url("not a URL"), "not a URL")
 
     def test_malformed_url_is_not_repeated(self):

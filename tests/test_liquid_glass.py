@@ -1,5 +1,6 @@
 """Native material selection, rollback and painting without real Cocoa windows."""
 
+import math
 import types
 from unittest import mock
 
@@ -7,7 +8,7 @@ from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import QApplication, QWidget
 
 import sf_glass
-from sf_constants import BG_LIQUID_GLASS_DIM, LIQUID_GLASS_OPACITY, R
+from sf_constants import BG_LIQUID_GLASS_DIM, LIQUID_GLASS_INSET, LIQUID_GLASS_OPACITY, R
 from sf_glass import GlassMixin, create_glass_surface
 from sf_ui_render import RenderMixin
 from tests._base import SFCase
@@ -170,6 +171,39 @@ class LiquidPaintTests(SFCase):
         self.assertEqual(center.alpha(), BG_LIQUID_GLASS_DIM)
         self.assertEqual(center.getRgb()[:3], (0, 0, 0))
         self.assertEqual(image.pixelColor(0, 0).alpha(), 0)
+
+    def test_dimming_follows_native_round_corners_at_every_size_and_scale(self):
+        host = self.track_widget(self.Host())
+        inset = LIQUID_GLASS_INSET
+        radius = R - inset
+        for width, height in ((184, 224), (184, 128), (260, 300)):
+            host.resize(width, height)
+            for scale in (1, 2):
+                with self.subTest(size=(width, height), scale=scale):
+                    image = QImage(width * scale, height * scale,
+                                   QImage.Format.Format_ARGB32_Premultiplied)
+                    image.setDevicePixelRatio(scale)
+                    image.fill(0)
+                    painter = QPainter(image)
+                    try:
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                        _paint(host, painter, width)
+                    finally:
+                        painter.end()
+                    for y in range(R * scale):
+                        for x in range(R * scale):
+                            px, py = (x + 0.5) / scale, (y + 0.5) / scale
+                            distance = math.hypot(R - px, R - py)
+                            # Ignore only the one-pixel antialiasing boundary.
+                            if min(px, py) < inset + 1 / scale or abs(distance - radius) < 1 / scale:
+                                continue
+                            expected = BG_LIQUID_GLASS_DIM if distance < radius else 0
+                            for cx, cy in ((x, y), (image.width() - 1 - x, y),
+                                           (x, image.height() - 1 - y),
+                                           (image.width() - 1 - x, image.height() - 1 - y)):
+                                self.assertAlmostEqual(
+                                    image.pixelColor(cx, cy).alpha(), expected, delta=1,
+                                    msg=f"Mismatched native corner at {(cx, cy)}; two card outlines")
 
     def test_liquid_rounding_uses_native_corner_radius(self):
         host = self.Host()

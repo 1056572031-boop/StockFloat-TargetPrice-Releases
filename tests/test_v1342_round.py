@@ -203,7 +203,9 @@ class TestRedact(unittest.TestCase):
         self.assertNotIn("SECRET", s)
 
     def test_normal_params_not_mangled(self):
-        self.assertIn("sh600519", redact_log_text("https://a.b/c?code=sh600519"))
+        result = redact_log_text("https://a.b/c?code=sh600519")
+        self.assertIn("https://a.b/", result)
+        self.assertNotIn("sh600519", result)
 
 
 class TestBadgeVertical(unittest.TestCase):

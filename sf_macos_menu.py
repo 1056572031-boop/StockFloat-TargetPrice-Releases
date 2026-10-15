@@ -20,7 +20,7 @@ def install_window_actions(owner, native_menu=False):
     commands = (
         ("replace", "替换股票", "Ctrl+E", lambda: top_button("edit")),
         ("targets", "目标价", "Ctrl+T", lambda: top_button("bell")),
-        ("refresh", "立即刷新", "Ctrl+R", owner._force_fetch),
+        ("refresh", "刷新行情", "Ctrl+R", owner._force_fetch),
         ("minimize", "收起到 Dock", "Ctrl+W", lambda: top_button("min")),
         ("restore", "显示窗口", "", owner._restore_window),
         ("update", "检查更新", "", lambda: owner._check_updates_background(manual=True)),

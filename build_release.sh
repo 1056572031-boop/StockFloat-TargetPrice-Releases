@@ -59,6 +59,11 @@ if [ ! -x "$VENV_PY" ]; then
   exit 1
 fi
 
+# A missing private identity must fail before moving old build artifacts. Never
+# generate a new certificate during a release: that would discard TCC continuity.
+"$VENV_PY" tools/stable_signing.py preflight \
+  || { echo "!! 固定签名身份不可用：请恢复原签名材料，禁止退回临时签名" >&2; exit 1; }
+
 # Public documents are mandatory even when rebuilding an existing artifact.
 "$VENV_PY" tools/public_docs_check.py || { echo "!! 公开文档未对齐，拒绝打包" >&2; exit 1; }
 "$VENV_PY" tools/public_release.py || { echo "!! 对应源码尚未提交或未通过公开扫描，拒绝打包" >&2; exit 1; }
@@ -131,6 +136,16 @@ if [ ! -d "$PROJ/dist/$APP_BUNDLE" ]; then
 fi
 echo "   产物: dist/$APP_BUNDLE ($(du -sh "$PROJ/dist/$APP_BUNDLE" | cut -f1))"
 
+# Keep the same certificate-pinned designated requirement across releases.
+# An existing --skip-build artifact must already have that identity; do not
+# silently re-sign an old app or permit an ad-hoc fallback.
+if [ "$DO_BUILD" -eq 1 ]; then
+  "$VENV_PY" tools/stable_signing.py sign --app "$PROJ/dist/$APP_BUNDLE" \
+    || { echo "!! 固定签名失败，拒绝生成 DMG、安装或发布 OTA" >&2; exit 1; }
+fi
+"$VENV_PY" tools/stable_signing.py check --app "$PROJ/dist/$APP_BUNDLE" \
+  || { echo "!! 应用签名身份已变化，不能保证升级保留授权，拒绝发布" >&2; exit 1; }
+
 # ---- 3.5) 版本闸门：dist/ 内 .app 的打包版本必须 == APP_VERSION ----
 # v1.2.95 第8轮走查：--skip-build 时 dist/ 是上一轮残留产物，若来自旧版本却仍被
 # DMG+安装，会发出"版本号对、内容旧"的安装包且零报错。此闸门在 DMG 之前硬拦：
@@ -160,6 +175,13 @@ echo "== 3.6 产物核验：本轮特征 / import 闭包 / 真产物冒烟 =="
 "$VENV_PY" tools/smoke_frozen_app.py "$PROJ/dist/$APP_BUNDLE" --timeout 30 \
   || { echo "!! 真产物冒烟未过：产物起不来/没画首帧/退出链炸，别发" >&2; exit 1; }
 echo "   产物核验三件套全部通过"
+
+# ---- 3.65) Permanent card-corner gate (2026-10-15) ----
+# Always runs, including --skip-tests/--skip-build retries; keep it before DMG/install/OTA.
+echo "== 3.65 卡片圆角：像素矩阵 / 包内几何同源 / 原生四角与交互走查 =="
+"$VENV_PY" tools/verify_card_corners.py --app "$PROJ/dist/$APP_BUNDLE" --native \
+  --out "$PROJ/build/card-corners-v$VERSION" \
+  || { echo "!! 卡片圆角门禁未过：双层轮廓、空白或原生走查失败，拒绝发布" >&2; exit 1; }
 
 # ---- 3.7) 逃逸复盘闸门（2026-10-09 起，进 DMG / 安装 / OTA 之前）----
 # 为什么放这里：负责人定的进度指标只有两个 —— 线上逃逸数、平均定位时长。要让它们真的
@@ -419,6 +441,18 @@ else
   tail -3 /tmp/sf_push_err.log >&2 || true
   SYNC_NOTE="源码未同步"
 fi
+
+# ---- 8) 发版最后一步：最终应用冷启动复验（永久规则）----
+# 这一步必须排在 OTA、公开资料和源码同步等动作之后：前面的成功不能替代"用户拿到的
+# 最终包确实能正常启动"。默认检查刚安装到 /Applications 的 bundle；--no-install
+# 时检查本轮 dist 产物。smoke_frozen_app 会隔离用户数据，只终止自己拉起的进程。
+FINAL_APP="$PROJ/dist/$APP_BUNDLE"
+if [ "$DO_INSTALL" -eq 1 ]; then
+  FINAL_APP="$INSTALL_DIR"
+fi
+echo "== 8) 最终启动复验：$FINAL_APP =="
+"$VENV_PY" tools/smoke_frozen_app.py "$FINAL_APP" --platform cocoa --timeout 30 \
+  || { echo "!! 最终启动复验未过：本版不能报告为完整交付" >&2; exit 1; }
 
 echo
 if [ -n "$SYNC_NOTE" ]; then

@@ -35,6 +35,8 @@ except ImportError:                                     # pragma: no cover
 
 # 在这里跑的 = 纯分析型自检：不 mount 卷、不装 app、不起 GUI 进程。
 IN_SUITE = (
+    "stable_signing",            # Native certificate-pinned identity and planted signature failures.
+    "verify_card_corners",       # independent corner pixels: matched / second-card / blank evidence
     "public_docs_check",        # missing/stale documents and GPL completeness
     "public_release",           # secrets in reachable old history and privacy boundaries
     "verify_macos_compat",      # real Mach-O deployment/architecture positive and negative controls

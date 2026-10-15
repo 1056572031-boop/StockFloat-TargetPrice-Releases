@@ -208,7 +208,8 @@ class TestDiagnosticsExport(_ExportCase):
         self.assertNotIn("u:pw@", log, "URL 里的用户名密码必须被抹掉")
         self.assertIn("REDACTED", log)
         # 脱敏只针对凭据，不得把整行排障信息一起吞掉
-        self.assertIn("keep=1", log)
+        self.assertIn("q.example", log)
+        self.assertNotIn("keep=1", log)
 
     def test_last_failures_summary_is_redacted_before_export(self):
         path = os.path.join(self.tmp, "last_failures.json")

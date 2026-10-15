@@ -1,6 +1,7 @@
 """Coalesced background writes for the disposable first-screen cache."""
 import threading
 import time
+from copy import copy
 
 
 class SnapshotWriter:
@@ -15,7 +16,7 @@ class SnapshotWriter:
         self.last_write_ms = 0.0
 
     def submit(self, code, quote, points, day):
-        payload = (code, dict(quote or {}), list(points), day)
+        payload = (code, dict(quote or {}), copy(points), day)
         with self._condition:
             if self._closed:
                 return

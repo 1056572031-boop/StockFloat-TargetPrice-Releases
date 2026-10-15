@@ -165,8 +165,8 @@ class GateJudgesTheRealRepo(SFCase):
         # 本轮改动集由版本锚点算，开发期算出来的是"上一轮 + 这一轮"那一份账，它要由发版时
         # 的闸门自己算，不该被钉成永久断言（这条是复核之后改的：初版正是这么写的，
         # 于是清单刚改成空段这条就红，红得与代码无关）。
-        declared, problems = gate.parse_declarations(ROOT, blocks[-1])
-        self.assertEqual(problems, [], "最新一段自身解析不过：发版时必然红")
+        declared, problems = gate.parse_declarations(ROOT, current_version)
+        self.assertEqual(problems, [], "当前版本段自身解析不过：发版时必然红")
         loaded = gate.imported_modules(ROOT)
         trees = {n: t for n in gate.product_modules(ROOT) if (t := gate.module_tree(ROOT, n)) is not None}
         auto = gate.state_bearing_modules(ROOT) | gate.instance_held_modules(
@@ -252,6 +252,26 @@ class GateSelfCheck(SFCase):
 
 class GateOnTheReleaseChain(SFCase):
     """3.9 关的位置：核验必须排在不可逆动作之前（同 TestReleaseChainCallsTheGate 的理由）。"""
+
+    def test_final_startup_probe_is_the_last_release_gate(self):
+        """发布完成前必须最后真实拉起最终 bundle，不能只验证源码或 dist。"""
+        text = (ROOT / "build_release.sh").read_text(encoding="utf-8")
+        at = text.find("最终启动复验")
+        self.assertGreater(at, 0, "发版链缺少最后的最终启动复验")
+        smoke = text.find("tools/smoke_frozen_app.py", at)
+        self.assertGreater(smoke, at, "最终启动复验没有调用真产物冒烟工具")
+        for marker, what in (("publish_update_release.py", "切换线上 OTA 清单"),
+                             ('tools/public_release.py --publish', "公开资料发布"),
+                             ('push -q origin "HEAD:', "源码同步")):
+            pos = text.find(marker)
+            self.assertGreater(pos, 0, "找不到 %s，脚本结构变了" % what)
+            self.assertLess(pos, at, "%s 必须先于最终启动复验" % what)
+        self.assertIn('FINAL_APP="$INSTALL_DIR"', text,
+                      "默认发版必须验证已安装到 /Applications 的最终 bundle")
+        self.assertIn("--platform cocoa", text,
+                      "最终启动复验必须覆盖真实 macOS 窗口启动路径")
+        tail = text[smoke:smoke + 300]
+        self.assertIn("exit 1", tail, "最终启动失败必须阻止完整交付结论")
 
     def test_diag_gate_runs_before_dmg_install_and_ota(self):
         text = (ROOT / "build_release.sh").read_text(encoding="utf-8")

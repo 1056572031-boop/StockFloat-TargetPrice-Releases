@@ -1,6 +1,6 @@
 """Credential scrubbing shared by local logs and exported diagnostics."""
 import re
-from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 _SECRET_HINTS = ("token", "secret", "password", "passwd", "apikey", "api_key",
                  "api-key", "cookie", "auth", "ticket", "session", "jwt", "sign")
@@ -23,26 +23,23 @@ def secret_query_name(name):
 
 
 def redact_url(value, marker="***REDACTED***"):
+    """Keep only the origin and a literal template hint, never opaque URL data."""
     try:
         if any(ord(char) < 32 or char in "\u200b\ufeff" for char in str(value)):
             return marker
         parts = urlsplit(value)
         if not parts.scheme or not parts.netloc:
             return value
-        pairs = parse_qsl(parts.query, keep_blank_values=True)
-        changed = any(secret_query_name(key) for key, _ in pairs)
-        query = parts.query
-        if changed:
-            # '%' is safe so the user's literal %s quote templates stay readable.
-            query = urlencode([(key, marker if secret_query_name(key) else item)
-                               for key, item in pairs], safe="%*,:/")
-        fragment = parts.fragment
-        fragment_pairs = parse_qsl(fragment, keep_blank_values=True)
-        if any(secret_query_name(key) for key, _ in fragment_pairs):
-            fragment = urlencode([(key, marker if secret_query_name(key) else item)
-                                  for key, item in fragment_pairs], safe="%*,:/")
+        if not parts.hostname or parts.port is not None and not 0 < parts.port < 65536:
+            return marker
+        # Parameter names cannot establish whether a path, query or fragment is public.
+        path = ""
+        if parts.path or parts.query or parts.fragment:
+            path = "/" + quote(marker, safe="*")
+            if "%s" in parts.path + parts.query + parts.fragment:
+                path += "/%s"
         return urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1],
-                           parts.path, query, fragment))
+                           path, "", ""))
     except (ValueError, TypeError, UnicodeError):
         return marker
 

@@ -256,7 +256,7 @@ class MakeUpdateAssetsPositiveRoute(SFCase):
             "CFBundleShortVersionString": version,
         }))
         (root / "release_notes.txt").write_text(
-            "V%s 发布说明:\n修复更新链。\n" % version, encoding="utf-8")
+            "V%s 发布说明:\n1. 修复更新链。\n" % version, encoding="utf-8")
         key = SigningKey.generate()
         key_dir = root / ".private_tools"
         key_dir.mkdir()
@@ -296,7 +296,7 @@ class MakeUpdateAssetsPositiveRoute(SFCase):
             self.assertEqual(verify_key.verify(mua.canonical(manifest), signature),
                              mua.canonical(manifest))
             self.assertEqual(manifest["archive"]["sha256"], mua.sha256(archive))
-            self.assertEqual(manifest["notes"], "修复更新链。")
+            self.assertEqual(manifest["notes"], "1. 修复更新链。")
             self.assertEqual(manifest["published_at"], "2026-10-13T08:00:00Z")
             self.assertEqual(output.stat().st_mode & 0o777, 0o700)
             self.assertEqual((output / "Skyrocket-update.json").stat().st_mode & 0o777, 0o600)

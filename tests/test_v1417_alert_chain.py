@@ -65,6 +65,8 @@ class AlertChainTest(unittest.TestCase):
 
     def test_click_on_real_alert_reaches_callback_and_closes_window(self):
         proc, m = self._run("click")
+        self.assertEqual(m.get("numbered_notes"), "True", "原生弹窗不得改写编号正文")
+        self.assertEqual(m.get("note_lines"), "4", "原生弹窗必须保留逐项换行")
         self.assertEqual(m.get("visible"), "True", "弹窗必须真的上了屏")
         self.assertEqual(m.get("titles"), "立即更新,暂不更新",
                          "默认按钮必须排第一（蓝色、位置最右/最上），与系统弹窗一致")

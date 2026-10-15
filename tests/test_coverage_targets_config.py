@@ -512,8 +512,9 @@ class TestRedaction(ConfigCase):
 
     def test_url_query_secrets_are_masked_and_structure_kept(self):
         out = sf_config._redact_url("https://api.test/q?token=abc&secid=1.600519")
-        self.assertIn("token=" + sf_config._REDACTED, out)
-        self.assertIn("secid=1.600519", out, "普通参数保留才看得出模板是否被改坏")
+        self.assertIn("https://api.test/" + sf_config._REDACTED, out)
+        self.assertNotIn("abc", out)
+        self.assertNotIn("secid=", out)
 
     def test_basic_auth_in_the_netloc_is_masked(self):
         out = sf_config._redact_url("https://user:pw@api.test/q")

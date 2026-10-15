@@ -37,7 +37,8 @@ class TestDiagnosticLogRedaction(unittest.TestCase):
         out = sf_config.redact_log_text(raw)
         for secret in ("alice", "pass", "abc", "secret-value", "xyz", "key-123"):
             self.assertNotIn(secret, out)
-        self.assertIn("keep=1", out)
+        self.assertIn("example.com", out)
+        self.assertNotIn("keep=1", out)
         self.assertIn("***REDACTED***", out)
 
 class TestLogRotation(unittest.TestCase):
@@ -151,7 +152,8 @@ class TestRedactConfig(unittest.TestCase):
         out = sf_config.redact_config(
             {"api_urls": {"quote": "https://x.com/q?token=SECRET&code=1"}})
         self.assertNotIn("SECRET", json.dumps(out, ensure_ascii=False))
-        self.assertIn("code=1", out["api_urls"]["quote"], "非敏感参数须保留")
+        self.assertIn("https://x.com/", out["api_urls"]["quote"])
+        self.assertNotIn("code=1", out["api_urls"]["quote"])
 
     def test_nested_secret_is_redacted(self):
         """嵌套认证字段也必须脱敏，不能只处理配置第一层。"""
@@ -165,11 +167,13 @@ class TestRedactConfig(unittest.TestCase):
         self.assertEqual(out["items"][0]["password"], "***REDACTED***")
 
     def test_url_template_not_corrupted(self):
-        """内置接口模板（含 %s 占位）不得被脱敏改写 —— 否则看不出模板有没有坏。"""
+        """保留来源和模板占位提示，但不凭字段名猜测第三方 URL 是否含凭据。"""
         tpl = ("https://push2his.eastmoney.com/api/qt/stock/trends2/get"
                "?secid=%s&fields1=f1&fields2=f51")
         out = sf_config.redact_config({"api_urls": {"minute": tpl}})
-        self.assertEqual(out["api_urls"]["minute"], tpl)
+        self.assertIn("push2his.eastmoney.com", out["api_urls"]["minute"])
+        self.assertIn("%s", out["api_urls"]["minute"])
+        self.assertNotIn("secid=", out["api_urls"]["minute"])
 
     def test_non_url_string_untouched(self):
         out = sf_config.redact_config({"code": "sh600519", "bg": "glass"})

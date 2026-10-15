@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from sf_constants import (BG_MODE_DEFAULT, CONFIG_BACKUP_PATH, CONFIG_PATH,
                           CONFIG_SCHEMA_VERSION, DEFAULT_STOCK, LAST_QUOTE_PATH,
@@ -95,22 +96,15 @@ def _atomic_write_json(path, payload):
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    # v1.3.47：临时文件名必须每次唯一（pid + 纳秒时间戳）。
-    # 原实现用固定名 path + ".tmp"，两次保存并发时会互相踩踏：
-    #   · 后一次 open(tmp,"w") 会截断前一次正在写的文件，前一次 os.replace
-    #     把半截内容搬到 path → 主配置被写成残缺 JSON；
-    #   · 失败清理（save_config 里 remove(path + ".tmp")）会把并发中那次的
-    #     临时文件直接抽走，导致对方 rename 时 ENOENT。
-    # 实测 60×2 并发下有 15 次保存失败，且可能把配置写坏（本次线上即由此
-    # 导致 bg 被写成 translucent、毛玻璃消失）。
-    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), time.time_ns())
+    # mkstemp atomically creates an exclusive 0600 file on the destination volume.
+    descriptor, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp",
+                                       dir=directory or ".")
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+            descriptor = -1
             json.dump(payload, f)
             f.flush()
             os.fsync(f.fileno())
-        # 0600：配置里会存用户自定义行情接口（可能带 token），不能让同机其他账户读到。
-        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
         # 目录项也要 fsync：只 sync 文件的话，断电时可能丢掉"新文件名"这条
         # 目录记录，os.replace 等于没发生过。
@@ -121,6 +115,8 @@ def _atomic_write_json(path, payload):
             finally:
                 os.close(fd)
     except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
         try:
             if os.path.exists(tmp):
                 os.remove(tmp)
@@ -232,6 +228,7 @@ def save_last_quote(code, quote, minute_points, day):
             "ts": time.time(),
             "quote": quote if isinstance(quote, dict) else {},
             "minute": [list(p) for p in (minute_points or [])],
+            "minute_day": str(getattr(minute_points, "day", day) or ""),
         }
         _atomic_write_json(_last_quote_path(), payload)
         return True

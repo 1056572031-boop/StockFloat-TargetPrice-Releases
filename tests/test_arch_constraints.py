@@ -361,6 +361,18 @@ class TestReleaseChainCallsTheGate(SFCase):
                        "tools/publish_update_release.py --assets"):
             self.assertGreater(source.find(marker), gate)
 
+    def test_card_corner_gate_is_mandatory_before_dmg_install_and_ota(self):
+        # Only shell command order can be checked without publishing an actual release.
+        source = self._text("build_release.sh")
+        command = 'tools/verify_card_corners.py --app "$PROJ/dist/$APP_BUNDLE" --native'
+        gate = source.find(command)
+        self.assertGreater(gate, 0)
+        self.assertIn('|| { echo "!! 卡片圆角门禁未过', source[gate:])
+        self.assertNotIn("SKIP_TESTS", source[gate:source.find("# ---- 3.7)", gate)])
+        for marker in ("hdiutil create", 'cp -R "$PROJ/dist/$APP_BUNDLE" "$APP_DST"',
+                       "tools/publish_update_release.py --assets"):
+            self.assertGreater(source.find(marker), gate)
+
     def test_build_release_skip_flag_prints_warning(self):
         """--skip-tests 必须大声警告，而且不许是唯一的分支。
 
@@ -453,6 +465,34 @@ class TestReleaseChainCallsTheGate(SFCase):
                         "tools/gate_stamp.py 的 --self-test 被删了")
         self.assertEqual(GS.self_test(), 0,
                          "关卡时间戳的变异自检没过：它现在可能是一条永不失败的检查")
+
+
+class TestStableSigningReleaseOrder(SFCase):
+    """The irreversible release script cannot be executed as a unit-test fixture."""
+
+    def test_identity_is_required_before_replacing_or_publishing_artifacts(self):
+        text = (ROOT / "build_release.sh").read_text()
+        preflight = text.index("tools/stable_signing.py preflight")
+        move_old = text.index('mv "$PROJ/dist"')
+        sign = text.index("tools/stable_signing.py sign")
+        check = text.index("tools/stable_signing.py check")
+        deliver = text.index("tools/release_feature_check.py")
+        self.assertLess(preflight, move_old)
+        self.assertLess(move_old, sign)
+        self.assertLess(sign, check)
+        self.assertLess(check, deliver)
+
+
+class TestCISupplyChain(SFCase):
+    def test_actions_are_pinned_and_dependency_audit_is_wired(self):
+        # Remote Actions cannot run locally; lock the workflow's dependency boundary.
+        import re
+        workflow = (ROOT / ".github/workflows/python-ci.yml").read_text()
+        actions = re.findall(r"^\s*- uses:\s+(\S+)", workflow, re.M)
+        self.assertGreaterEqual(len(actions), 5)
+        for action in actions:
+            self.assertRegex(action, r"^actions/[a-z-]+@[0-9a-f]{40}$")
+        self.assertIn(".venv/bin/python tools/dependency_audit.py", workflow)
 
 
 class TestTestWritingDiscipline(SFCase):

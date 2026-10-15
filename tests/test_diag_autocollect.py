@@ -362,7 +362,8 @@ class PureCollectorCase(SFCase):
             'https://user:pwd@example.test/q?key=query-key&sign=query-sign&keep=1', ())
         for secret in ("diagnostic-user", "user:pwd@", "query-key", "query-sign"):
             self.assertNotIn(secret, result)
-        self.assertIn("keep=1", result)
+        self.assertIn("example.test", result)
+        self.assertNotIn("keep=1", result)
 
     def test_query_credential_suffixes_and_authorization_schemes_are_scrubbed(self):
         samples = (
@@ -377,7 +378,7 @@ class PureCollectorCase(SFCase):
                 self.assertNotIn("credential-probe", result)
                 self.assertIn("REDACTED", result)
                 if "keep=1" in sample:
-                    self.assertIn("keep=1", result)
+                    self.assertNotIn("keep=1", result)
 
     def test_unsupported_dictionary_key_never_runs_its_string_conversion(self):
         calls = []

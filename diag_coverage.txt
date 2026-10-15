@@ -26,7 +26,10 @@
 # "不重要"。
 
 version 1.4.88
+skip sf_window_message_router 无持久运行态，仅按代码过滤并合并当前队列消息；最终滞后状态、分时交易日、点数及重试窗口由 runtime.json 的 minute 导出，应用异常由 debug.log 的 poll apply error 留痕。
+skip renderer 仅构造无状态绘制路径；实际玻璃后端、暗化值和回退原因由 glass.json 的 surface 导出，绘制异常沿用 debug.log 的 paintEvent error 留痕，无独立运行态需要采集。
 # sf_maintenance 的失败计数由 runtime.maintenance 导出，异常写入 debug.log；保留已发布原生玻璃诊断。
+skip sf_macos_menu 仅将菜单与快捷键绑定到主窗既有处理函数，无模块级可变业务状态；行情与分时线程存活由 runtime.json 的 quote_thread_alive/minute_thread_alive 导出，网络失败与恢复沿用 debug.log 和既有行情诊断通路。
 
 version 1.4.81
 # 本轮 sf_quote 已由 curated 诊断导出闭包覆盖，无新增常驻运行态。
@@ -85,3 +88,12 @@ skip sf_window_geometry pure coordinate calculations; no machine-specific state 
 skip sf_window_message_router stateless queue coalescing; it owns no persistent runtime state
 skip sf_window_state plain value containers whose fields are exported through the host runtime snapshot
 skip sf_quote_runtime thread-handle owner; worker liveness is exported by the host runtime and no separate payload exists
+version 1.4.88
+skip sf_http per-request HTTPS budget and bounded-read helpers; no long-lived owner, failures remain visible through network and update diagnostics
+skip sf_privacy pure URL and credential scrubbing with no mutable runtime state
+version 1.4.89
+skip renderer geometry helpers are pure and expose no machine-specific runtime state
+skip sf_http request helpers are stateless; failures remain visible through network and update diagnostics
+skip sf_macos_menu action wiring is stateless and reuses host handlers
+skip sf_privacy URL and credential scrubbing is pure with no mutable product state
+skip sf_window_message_router queue coalescing is stateless and owns no persistent business state

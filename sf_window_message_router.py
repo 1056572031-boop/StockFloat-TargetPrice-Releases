@@ -83,7 +83,8 @@ class WindowMessageRouter:
                     batch.latest_minute = points
                     batch.minute_stale_after = None
                 elif kind == "minute_stale":
-                    batch.minute_stale_after = data
+                    if data == code:
+                        batch.minute_stale_after = data
                 elif kind == "net":
                     batch.latest_net = data
                     batch.has_latest_net = True

@@ -122,7 +122,7 @@ class RenderFailureEvidence(SFCase):
         image.fill(Qt.GlobalColor.transparent)
         return image
 
-    def test_baseline_geometry_error_still_draws_hint_pixels_and_names_degradation(self):
+    def test_baseline_geometry_error_records_degradation_without_covering_chart(self):
         target = types.SimpleNamespace(
             _font=self.font, _chart_y=mock.Mock(side_effect=RuntimeError("bad baseline geometry")))
         image = self.image()
@@ -132,7 +132,7 @@ class RenderFailureEvidence(SFCase):
         before = render.paint_diagnostics()
         try:
             draw_stale(target, painter, QRectF(10, 10, 164, 80), {"pre_close": 12})
-            self.assertIn("数据暂缺 · 重试中", painter.labels)
+            self.assertEqual(painter.labels, [])
             self.assertEqual(painter.pen().color(), pen, "degraded paint must restore caller state")
         finally:
             painter.end()
@@ -140,7 +140,7 @@ class RenderFailureEvidence(SFCase):
         self.assertEqual(after["stale_hint_line_missing"], before["stale_hint_line_missing"] + 1)
         self.assertIsNone(after["stale_hint_last_gap_px"])
         self.assertIn("line_y", self.swallowed.call_args.args[0])
-        self.assertTrue(any(image.pixelColor(x, y).alpha() > 0
+        self.assertTrue(all(image.pixelColor(x, y).alpha() == 0
                             for y in range(IMAGE_HEIGHT) for x in range(IMAGE_WIDTH)))
 
     def test_collapsed_chart_is_completely_blank_and_never_reads_metrics(self):

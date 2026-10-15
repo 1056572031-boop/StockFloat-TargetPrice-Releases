@@ -63,7 +63,7 @@ from sf_icons import menu_icon   # v1.4.69：右键菜单行首图标（用户�
 from sf_icons import _ICON_QUEUE, _app_ready, _appkit_ready
 
 # ---- 模块化拆分 sf_quote：显式导入（含私有名） ----
-from sf_quote import (fetch_minute, fetch_quote, official_limit_prices,
+from sf_quote import (MinutePoints, fetch_minute, fetch_quote, official_limit_prices,
                       load_api_urls, market_status, price_decimals)
 from sf_quote import degraded_source_streak, get_last_quote_source
 from sf_quote import get_last_minute_source   # 诊断：分时这一路最近成功走的是哪个源
@@ -1005,7 +1005,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         self.minute_points = []
         # v1.4.7 分时数据容错：记录当前分时曲线所属交易日 + 是否处于"重连中"。
         # 盘中网络抖动时不再清空当日曲线（避免闪回"加载中"死白屏），而是保留
-        # 最后有效走势并置 _minute_stale，由渲染层显示"更新中…"呼吸提示；
+        # 最后有效走势并置 _minute_stale，由渲染层显示顶部重试标签；
         # 一旦重连成功即自动清除。跨日数据仍会被清空，绝不冒充当日走势。
         self._minute_day = ""       # 当前 minute_points 所属北京时间日；"" = 未知
         self._minute_stale = False  # True = 当日曲线已滞后，正在后台重连
@@ -1120,8 +1120,12 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 刷新、熔断降/升档、缩 Dock/恢复、展开/收起图表）都必须 set 本事件把它
         # 立刻叫醒，否则按需休眠会把"强制刷新"最坏拖到一个完整睡眠周期之后。
         self._resched = threading.Event()
+        # Each worker owns its wakeup: clearing a shared Event can lose the other
+        # worker's notification if that worker is still finishing a request.
+        self._quote_resched = threading.Event()
+        self._minute_resched = threading.Event()
         # v1.2.71：立即拉取标志（切股 / 手动刷新 / Dock 恢复）。置位后由常驻
-        # 行情线程与分时线程在下一个节拍（≤100ms）消费，取代原先"每次调用新建
+        # 行情线程与分时线程被叫醒后消费（在途请求先完成），取代原先"每次调用新建
         # 两条线程"的做法 —— 单次拉取最坏阻塞约 35s，连续触发会无上限堆积线程，
         # 而新建的线程仍会被防重入锁挡掉，实际拿不到任何额外收益。
         self._force_quote = False
@@ -1996,7 +2000,7 @@ QMenu::separator {
         # 再出现裸 hex，次要文字灰只有一个来源 sf_constants.FG_DIM_HEX。
         # v1.2.35：右键菜单精简 —— 移除「替换股票」「最小化到 Dock」「退出」菜单项
         # （底层功能保留：编辑仍走标题栏编辑按钮、退出仍走关闭按钮/Dock，仅 UI 层不可见）
-        # v1.4.54：菜单顺序按用户看图指定的来 —— 立即刷新、自动隐藏窗口、
+        # v1.4.54：菜单顺序按用户看图指定的来 —— 刷新行情、自动隐藏窗口、
         # 检查更新、导出诊断包、版本号。分隔线只留版本行前那一条。
         # v1.4.69（用户看图要求）：四行各加一枚行首图标，版本行不加（它是禁用项）。
         # ⚠ 一条 Qt 机制记在这里，别当 bug 查：**同一行有图标时 Qt 不画勾选框**。
@@ -2006,7 +2010,7 @@ QMenu::separator {
         #   口径 `_face_guard_switch_on()`，且与勾号挂在同一个 300ms 刷新回调上 ——
         #   "显示"与"点下去会切成什么"不许各说各话。
         #   取不到图（无 QtSvg）时不放图标，那一行自动退回"无图标 + 勾号"的老形状。
-        _set_menu_icon(m.addAction("立即刷新", self._force_fetch), "refresh")
+        _set_menu_icon(m.addAction("刷新行情", self._force_fetch), "refresh")
         # ---- v1.4.40 人脸在场守卫 ----
         # 用 triggered 而非 toggled：toggled 在 setChecked（初始化菜单）时也会发，
         # 于是"每次打开菜单"都会被当成一次用户操作，反过来又写一遍配置。
@@ -2521,9 +2525,7 @@ QMenu::separator {
         # v1.4.21：只展示**本次版本**那一段。清单里的 notes 历史上是整份
         # release_notes.txt（v1.4.20 那次一屏塞了 4 个版本），显示侧必须自己裁；
         # 发版侧同步改为只签名本次版本，两处任一生效即可，见 sf_update 说明。
-        notes = sf_update.notes_for_version(update.notes, update.version).strip()
-        if not notes:
-            notes = "包含稳定性与体验改进。"
+        notes = sf_update.numbered_notes_for_display(update.notes, update.version)
         headline = sf_update.offer_headline(update.version, getattr(update, "stage", "stable"))
         ready_archive = self._ready_update_archive(update)
         ready_to_restart = ready_archive is not None
@@ -3302,7 +3304,7 @@ QMenu::separator {
             log_line("diagnostics exported -> %s" % out)
             try:
                 import subprocess
-                subprocess.Popen(["open", "-R", out])
+                subprocess.Popen(["/usr/bin/open", "-R", out])
             except Exception:
                 pass
             try:
@@ -3341,7 +3343,7 @@ QMenu::separator {
             log_line("diagnostics exported -> %s" % output)
             try:
                 import subprocess
-                subprocess.Popen(["open", "-R", output])
+                subprocess.Popen(["/usr/bin/open", "-R", output])
             except OSError as exc:
                 log_swallow("stock_float_window.reveal_diagnostics", exc)
         QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 10)), message, self)
@@ -3450,6 +3452,8 @@ QMenu::separator {
         # v1.4.7：切股即"无当日数据"，复位当日性与滞后标记（新股票重新计时）。
         self._minute_day = ""
         self._minute_stale = False
+        self._minute_last_ok_at = 0.0
+        self._minute_fail = 0
         self._width_content_key = None
         self._width_dirty = True
         self._line_ver += 1   # 清空分时数据：驱动折线缓存失效，避免旧图残留
@@ -3491,11 +3495,9 @@ QMenu::separator {
     def _force_fetch(self):
         """v1.2.71：请求"立刻拉一次"行情与分时。
 
-        原实现每次调用新建两条线程。常驻线程本身每 0.1s 一个节拍，置位标志后
-        最多 100ms 即被消费，语义等价；但避免了连续点击「立即刷新」/ 快速连切
-        股票时无上限建线程（单次最坏阻塞约 35s，堆积的线程既打爆连接池，又会被
-        各自防重入锁挡掉而空转）。
-        兜底：常驻线程已异常退出时仍退回建线程，保证刷新能力不因线程死亡丢失。
+        置位标志并唤醒两条常驻线程；在途请求不取消，完成后再消费合并的刷新请求。
+        连续点击「刷新行情」/ 快速连切股票不会无上限建线程或堆积请求。
+        常驻线程已异常退出时重建并登记循环，保证刷新能力不因线程死亡丢失。
         """
         # 退出后不再接受排队到达的刷新请求，避免停止循环后又重建后台线程。
         if getattr(self, "_threads_stopped", False):
@@ -3503,7 +3505,7 @@ QMenu::separator {
         with self._force_lock:
             self._force_quote = True
             self._force_minute = True
-        # v1.4.10：线程现在可能睡到 5 秒之外，必须显式叫醒，否则"立即刷新"
+        # v1.4.10：线程现在可能睡到 5 秒之外，必须显式叫醒，否则"刷新行情"
         # 会真的等一个睡眠周期才生效（原实现靠 0.1s 节拍兜住）。
         self._resched_loops()
         # 锁外到重建线程前，退出信号可能刚好抵达；再次检查消除该竞态。
@@ -3577,7 +3579,7 @@ QMenu::separator {
             if self._minimized:      # v1.2.39：缩到 Dock 隐藏期间低频拉取（防后台空转耗电）
                 interval = max(interval, POLL_INTERVAL_MINIMIZED)
             fetch, backoff, _tick = sched.step(now, interval)
-            # v1.2.71：外部强制拉取（切股/立即刷新/Dock 恢复）—— 本节拍立即拉一次
+            # v1.2.71：外部强制拉取（切股/刷新行情/Dock 恢复）—— 本节拍立即拉一次
             if self._take_force("_force_quote"):
                 fetch, backoff = True, False
                 sched.mark(now)
@@ -3673,7 +3675,12 @@ QMenu::separator {
         sched = QuoteLoopSchedule()
         retry_left = 0        # >0：处于快速重试窗口，剩余可重试次数
         hot = False           # 已进入持续失败回落状态（避免耗尽窗口后反复重置快速重试）
+        retry_code = getattr(self, "code", None)
         while self.running:
+            code = getattr(self, "code", None)
+            if code != retry_code:
+                retry_left, hot, retry_code = 0, False, code
+                self._minute_retry_left, self._minute_retry_hot = 0, False
             # v1.2.71：单调时钟（理由同 _quote_loop，墙钟回拨会静默停拉）
             now = time.monotonic()
             base = self._minute_interval if self._is_trading_time() else POLL_INTERVAL_OFF_MARKET
@@ -3689,7 +3696,7 @@ QMenu::separator {
             if self._minimized:      # v1.2.39：缩到 Dock 隐藏期间低频拉取（防后台空转耗电）
                 interval = max(interval, POLL_INTERVAL_MINIMIZED)
             fetch, backoff, _tick = sched.step(now, interval)
-            # v1.2.71：外部强制拉取（切股/立即刷新/Dock 恢复）—— 本节拍立即拉一次
+            # v1.2.71：外部强制拉取（切股/刷新行情/Dock 恢复）—— 本节拍立即拉一次
             if self._take_force("_force_minute"):
                 fetch, backoff = True, False
                 sched.mark(now)
@@ -3705,6 +3712,10 @@ QMenu::separator {
                     # 诊断留痕（S52）：窗口状态留给主线程读，见 __init__ 同名注释
                     self._minute_retry_left = retry_left
                     self._minute_retry_hot = hot
+                    # Use the new retry state for this sleep, not one iteration later.
+                    interval = min(MINUTE_RETRY_INTERVAL, base) if retry_left > 0 else base
+                    if self._minimized:
+                        interval = max(interval, POLL_INTERVAL_MINIMIZED)
                     # 窗口已耗尽仍失败：保持 hot 回落常规周期，不再重复进入快速重试
             # v1.4.10：分时线程是空转最严重的一条（展开 1s / 收起 30s 的间隔，
             # 却按 0.1s 节拍轮询，实测空转 93.8%~99.7%）。改为睡到下一次真正到期，
@@ -3753,13 +3764,19 @@ QMenu::separator {
         """休眠等待：Event.wait 实现，quit 时 set _wake 立即退出（消除忙等）。
 
         v1.4.10 功耗：睡眠长度由 _nap() 按需算出（原来恒为 0.1s）。既然可能一睡
-        几十秒，就必须有第二条唤醒通道 —— 调度状态变更走 _resched。
+        几十秒，调度状态变更必须分别唤醒行情和分时；非循环调用保留 _resched 兜底。
         _shutdown_threads 会同时 set 两者，所以退出路径不会因睡得久而卡 join。
         """
         if self._wake.is_set():
             return False
-        if self._resched.wait(sec):
-            self._resched.clear()
+        cur = threading.current_thread()
+        ev = self._resched
+        if cur is getattr(self, "_quote_thread", None):
+            ev = getattr(self, "_quote_resched", ev)
+        elif cur is getattr(self, "_minute_thread", None):
+            ev = getattr(self, "_minute_resched", ev)
+        if ev.wait(sec):
+            ev.clear()
         return self.running
 
     def _resched_loops(self):
@@ -3769,12 +3786,14 @@ QMenu::separator {
         现在可能睡到 5 秒之外，所以每个改变轮询决策的动作都必须显式登记一次。
         用 getattr 兜底：构造早期/测试里替身窗口可能还没有这个事件。
         """
-        ev = getattr(self, "_resched", None)
-        if ev is not None:
+        for name in ("_resched", "_quote_resched", "_minute_resched"):
+            ev = getattr(self, name, None)
+            if ev is None:
+                continue
             try:
                 ev.set()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_swallow("FloatWindow._resched_loops", exc)
 
     def _nap(self, sched, now, interval):
         """本轮该睡多久（秒）。见 QuoteLoopSchedule.nap_seconds 的口径说明。
@@ -3876,6 +3895,8 @@ QMenu::separator {
             code = self.code          # 请求发出时的代码，用于回包校验
             try:
                 pts = fetch_minute(code)
+                if code != self.code:
+                    return None
                 if pts:
                     self._q_put(("minute", (code, pts)))
                     # v1.2.71：成功后复位连续失败计数 —— 原实现只在失败时累加、
@@ -3886,12 +3907,11 @@ QMenu::separator {
                         self._minute_fail = 0
                     return True
                 if self._is_trading_time():
-                    # 交易时段无数据：投递滞后信号而非直接清空。若屏幕上已是当日
-                    # 走势则保留并显示"更新中"，只有跨日/无当日数据时才清空（防把
-                    # 昨日全量走势画满全程误导进度）。
-                    self._q_put(("minute_stale", code))
+                    raise QuoteDataError("minute returned no valid points during trading")
                 return False          # 空返回：无有效点集，视为失败
             except Exception as exc:
+                if code != self.code:
+                    return None
                 self._minute_fail += 1
                 if self._minute_fail == 1 or self._minute_fail % 60 == 0:
                     log_line("minute fetch fail #%d: %r" % (self._minute_fail, exc), level="ERROR")
@@ -3903,32 +3923,45 @@ QMenu::separator {
             self._minute_busy.release()
 
     def _apply_minute_points(self, pts):
-        """主线程统一入口：写入分时点集并刷新当日性/滞后状态。
-
-        pts 非空即视为当日有效数据（分时接口交易时段只回传当日 9:30~当前点），
-        据此标记 _minute_day 为今天并清除滞后态；供成功回包与快照复用同一路径。
-        """
+        """Apply source-dated points; reject yesterday's late reply after the open."""
+        try:
+            today = _beijing_now().strftime("%Y-%m-%d")
+        except Exception:
+            today = ""
+        day = getattr(pts, "day", today)
+        if pts and day and today and day != today and self._is_trading_time():
+            self._handle_minute_stale(self.code)
+            return
+        was_stale = self._minute_stale
         self.minute_points = pts
         if pts:
             # 诊断留痕：最后一次写入有效分时点的墙钟时刻（数据龄的唯一来源）。
-            # 快照复用同一路径也算 —— 屏幕上确实有当日曲线，这一点是真的。
+            # 表示有效点集接收时刻，不等于最后一笔成交的时间。
             self._minute_last_ok_at = time.time()
-            try:
-                self._minute_day = _beijing_now().strftime("%Y-%m-%d")
-            except Exception:
-                self._minute_day = ""
-            self._minute_stale = False
+            self._minute_day = day
+        else:
+            self._minute_day = ""
+            self._minute_last_ok_at = 0.0
+        self._minute_stale = False
+        if was_stale:
+            self._need_redraw = True
+            self._chart_changed = True
 
     def _handle_minute_stale(self, code):
         """盘中拉取失败/空的收口：切股回包丢弃；当日曲线保留置滞后，跨日才清空。"""
         if code != self.code:
             return                     # 迟到的旧股票失败信号，不影响当前显示
+        if not self._is_trading_time():
+            if self._minute_stale:
+                self._minute_stale = False
+                self._need_redraw = True
+            return
         try:
             today = _beijing_now().strftime("%Y-%m-%d")
         except Exception:
             today = self._minute_day   # 时钟异常时按"当日"保守处理：保留但标滞后
         if self.minute_points and self._minute_day == today:
-            # 已有当日走势：保留曲线，仅标记滞后，渲染层显示"更新中…"呼吸提示。
+            # 已有当日走势：保留曲线，仅标记滞后并显示顶部重试标签。
             if not self._minute_stale:
                 self._minute_stale = True
                 self._need_redraw = True
@@ -3940,6 +3973,8 @@ QMenu::separator {
             self._chart_changed = True
             self._need_redraw = True
         self._minute_stale = False
+        self._minute_day = ""
+        self._minute_last_ok_at = 0.0
 
     # ---------- 冷启动：后台图标就绪后应用 ----------
     def _icons_pending(self):
@@ -4086,9 +4121,14 @@ QMenu::separator {
         15:01 收盘那一秒若只靠 `_poll`（盘后 1 秒一跳）停表，会多空转最多 1 秒。
         """
         try:
-            self._update_nap_policy(self._is_trading_time())
-        except Exception:
-            pass
+            trading = self._is_trading_time()
+            self._update_nap_policy(trading)
+            if not trading and self._minute_stale:
+                self._minute_stale = False
+                self._need_redraw = True
+                self._repaint_now()
+        except Exception as exc:
+            log_swallow("stock_float_window._on_session_boundary", exc)
         self._sync_dot_timer()
         self._arm_session_timer()
 
@@ -4755,7 +4795,8 @@ QMenu::separator {
         self._roll_anim = {}
         self._partial_price = None
         pts = snap.get("minute")
-        if isinstance(pts, list) and pts:
+        minute_day = str(snap.get("minute_day", snap.get("day")) or "")
+        if isinstance(pts, list) and pts and (not self._is_trading_time() or minute_day == today):
             try:
                 with self._minute_lock:
                     self.minute_points = [tuple(p) for p in pts
@@ -4764,7 +4805,8 @@ QMenu::separator {
                     self._line_ver += 1
                 # v1.4.7：快照自带交易日 —— 记录归属日，盘中首次拉取失败时
                 # 据此区分"保留当日曲线"还是"清空跨日曲线"。
-                self._minute_day = str(snap.get("day") or "")
+                self._minute_day = minute_day
+                self._minute_stale = bool(self.minute_points and self._is_trading_time())
             except Exception:
                 pass
         self._update_width_dirty()
@@ -4784,9 +4826,9 @@ QMenu::separator {
             day = ""
         try:
             with self._minute_lock:
-                pts = list(self.minute_points)
+                pts = MinutePoints(self.minute_points, day=self._minute_day)
         except Exception:
-            pts = []
+            pts = MinutePoints()
         self._snapshot_writer.submit(self.code, self.quote, pts, day)
 
     # ---- 动画驱动状态委托（v1.2.48 下沉 sf_anim_driver.AnimDriver）----
@@ -6708,10 +6750,11 @@ QMenu::separator {
                 editor_wake = getattr(editor, "_wake", None)
         except RuntimeError:
             self._editor = None
-        # v1.4.10：_sleep 现在等的是 _resched（按需休眠的提前叫醒通道），
-        # 退出时必须连它一起 set，否则线程可能正睡在一个长睡眠里，join(1.5) 必然落空。
+        # 退出时唤醒两条循环各自的调度事件及兼容事件，否则长睡会让 join 超时。
         for wake in (getattr(self, "_wake", None),
-                     getattr(self, "_resched", None), editor_wake):
+                     getattr(self, "_resched", None),
+                     getattr(self, "_quote_resched", None),
+                     getattr(self, "_minute_resched", None), editor_wake):
             if wake is None:
                 continue
             try:

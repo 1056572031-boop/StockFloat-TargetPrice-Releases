@@ -1,10 +1,10 @@
 """Private API URLs in the system Keychain; JSON contains only opaque references."""
 import hashlib
 import re
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
 from sf_constants import CONFIG_SCHEMA_VERSION
-from sf_privacy import secret_query_name
+from sf_logging import log_line
 
 SERVICE = "com.skyrocket.private-api-urls"
 REFERENCE_PREFIX = "keychain://skyrocket/api/"
@@ -82,13 +82,17 @@ class MacKeychain:
 
 
 def needs_keychain(url):
-    parts = urlsplit(url)
-    return bool(parts.username or parts.password or any(
-        secret_query_name(key) for key, _ in parse_qsl(parts.query, keep_blank_values=True)))
+    """All custom HTTPS destinations are private, regardless of credential syntax."""
+    try:
+        parts = urlsplit(url)
+        return (parts.scheme == "https" and bool(parts.hostname)
+                and not any(char.isspace() or ord(char) < 32 for char in url))
+    except (TypeError, ValueError):
+        return False
 
 
 def seal_url(url, keychain):
-    if len(url) > 8192 or urlsplit(url).scheme != "https":
+    if len(url) > 8192 or not needs_keychain(url):
         raise KeychainError("Private API URL is invalid")
     account = hashlib.sha256(url.encode("utf-8")).hexdigest()
     keychain.put(account, url)
@@ -114,25 +118,41 @@ def resolve_config_urls(path, config, *, keychain=None):
             reference = _REFERENCE.fullmatch(value)
             if reference:
                 resolved[key] = keychain.get(reference.group(1))
-            elif value.startswith("https://"):
+            elif needs_keychain(value):
                 resolved[key] = value
-                if may_write and needs_keychain(value):
+                if may_write:
                     stored[key] = seal_url(value, keychain)
         except Exception as exc:
             global _failure_count, _last_error
             _failure_count += 1
             _last_error = type(exc).__name__
-    if may_write and stored != entries:
-        payload = dict(config)
-        payload["api_urls"] = stored
-        _atomic_write_json(path, payload)
+            log_line("private API secure storage unavailable (%s); original configuration preserved"
+                     % _last_error, "WARNING")
+    if may_write:
+        if stored != entries:
+            # Preserve fields saved since the caller took its startup snapshot.
+            payload = _read_json_or_none(path)
+            if (isinstance(payload, dict) and payload.get("api_urls") == entries
+                    and not (isinstance(payload.get("version"), int)
+                             and payload["version"] > CONFIG_SCHEMA_VERSION)):
+                payload["api_urls"] = stored
+                _atomic_write_json(path, payload)
         backup_path = path + ".bak"
         backup = _read_json_or_none(backup_path)
-        if isinstance(backup, dict) and isinstance(backup.get("api_urls"), dict):
+        if (isinstance(backup, dict) and isinstance(backup.get("api_urls"), dict)
+                and not (isinstance(backup.get("version"), int)
+                         and backup["version"] > CONFIG_SCHEMA_VERSION)):
             backup_api = dict(backup["api_urls"])
             for key, value in backup_api.items():
-                if isinstance(value, str) and value.startswith("https://") and needs_keychain(value):
-                    backup_api[key] = seal_url(value, keychain)
-            backup["api_urls"] = backup_api
-            _atomic_write_json(backup_path, backup)
+                if isinstance(value, str) and needs_keychain(value):
+                    try:
+                        backup_api[key] = seal_url(value, keychain)
+                    except Exception as exc:
+                        _failure_count += 1
+                        _last_error = type(exc).__name__
+                        log_line("private API backup secure storage unavailable (%s); backup preserved"
+                                 % _last_error, "WARNING")
+            if backup_api != backup["api_urls"]:
+                backup["api_urls"] = backup_api
+                _atomic_write_json(backup_path, backup)
     return resolved

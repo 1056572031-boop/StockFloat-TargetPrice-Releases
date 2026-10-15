@@ -83,6 +83,13 @@ def require_own_section(raw_notes, version):
             "v%s 这一节说明 %d 字，超过 %d 字上限 —— 用户 2026-10-09 定的永久规则："
             "OTA 更新日志必须用最少的字说清更新内容。请删到 %d 字以内再打包。"
             % (version, n, NOTES_MAX_CHARS, NOTES_MAX_CHARS))
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root))
+    import sf_update
+    try:
+        sf_update.require_numbered_notes(sf_update.notes_for_version(raw_notes, version))
+    except sf_update.UpdateError as exc:
+        raise SystemExit("拒绝生成 OTA 资产：%s" % exc) from exc
 
 
 def self_test():
@@ -132,7 +139,7 @@ def self_test():
     except SystemExit:
         pass
     # 100 字上限（2026-10-09 用户永久规则）：这条判据自己也必须能红。
-    short = "V1.4.46 发布说明（Beta）— 短\n修了甲。\n\nV1.4.45 发布说明（Beta）— 长\n" + ("乙" * 300) + "\n"
+    short = "V1.4.46 发布说明（Beta）— 短\n1. 修了甲。\n\nV1.4.45 发布说明（Beta）— 长\n1. " + ("乙" * 300) + "\n"
     try:
         require_own_section(short, "1.4.46")
     except SystemExit as exc:
@@ -142,13 +149,19 @@ def self_test():
         bad.append("300 字的说明被放行 —— 100 字上限成了没有牙齿的文档")
     except SystemExit:
         pass
+    for broken in ("甲；乙。", "1. 甲\n3. 乙", "1. 甲\n1. 乙", "1. 甲\n乙", "1. "):
+        try:
+            require_own_section("V1.4.46 发布说明:\n" + broken, "1.4.46")
+            bad.append("未按连续编号逐行列出的更新说明被放行：" + repr(broken))
+        except SystemExit:
+            pass
     for line in bad:
         print("FAIL", line)
     if bad:
         return 1
     print("self-test 通过：canonical 3 类（键序/signature 排除/改值变字节）、"
           "sha256 3 类（一致/改字节必须变/空文件）、本版说明闸门 6 类各判对"
-          "（含 100 字上限能拦下 300 字）")
+          "（含 100 字上限能拦下 300 字），编号闸门 5 类非法正文均拒绝")
     return 0
 
 

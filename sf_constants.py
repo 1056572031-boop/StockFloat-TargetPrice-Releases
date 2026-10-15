@@ -39,7 +39,7 @@ MINUTE_URL = 'https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=%s'
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.88'
+APP_VERSION = '1.4.89'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。

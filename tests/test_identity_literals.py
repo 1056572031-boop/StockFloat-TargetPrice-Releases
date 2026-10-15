@@ -48,6 +48,8 @@ DATA_DIR = "StockFloatTargetPrice"     # 数据目录名，故意不随包改名
 SCAN_SKIP = ("backups/", "tools/archive/", ".venv/", "build/", "dist/", "tests/")
 # 拆分前的老配置文件位置：只读迁移源，有 os.path.exists 守卫，正当保留
 DATA_DIR_ALLOWED = ("StockFloat",)
+# This directory contains publisher-only keys, not the application's user data.
+BUILD_ONLY_DATA_DIRS = {"tools/stable_signing.py": {"SkyrocketBuildSigning"}}
 
 
 def read(rel: str) -> str:
@@ -124,9 +126,16 @@ class CurrentGenerationIsConsistent(SFCase):
                 continue
             for hit in data_dir_tokens(
                     path.read_text(encoding="utf-8", errors="replace")):
-                if hit != DATA_DIR and hit not in DATA_DIR_ALLOWED:
+                if (hit != DATA_DIR and hit not in DATA_DIR_ALLOWED
+                        and hit not in BUILD_ONLY_DATA_DIRS.get(rel, set())):
                     users.append("%s 用了 Application Support/%s" % (rel, hit))
         self.assertEqual(users, [], "\n".join(users))
+
+    def test_publisher_signing_keys_are_not_application_user_data(self):
+        from tools import stable_signing
+        self.assertFalse(stable_signing.STATE.resolve().is_relative_to(
+            pathlib.Path(C.APP_SUPPORT_DIR).resolve()))
+        self.assertFalse(stable_signing.STATE.resolve().is_relative_to(ROOT))
 
 
 class BothGenerationsAreRecognized(SFCase):

@@ -53,7 +53,8 @@ class TestDiagnosticCredentialCoverage(unittest.TestCase):
         text = json.dumps(out, ensure_ascii=False)
         for secret in ("name", "PASS", "SESSION", "JWT", "ACCESS", "REFRESH"):
             self.assertNotIn(secret, text)
-        self.assertIn("normal=ok", out["api_urls"]["quote"])
+        self.assertIn("https://api.example.com/", out["api_urls"]["quote"])
+        self.assertNotIn("normal=ok", out["api_urls"]["quote"])
 
 
 if __name__ == "__main__":

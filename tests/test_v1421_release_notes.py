@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import sf_system_alert
 import sf_update
+from tests._base import SFCase
 
 STACKED = """V1.4.21 发布说明（Beta）:
 1. 本次的第一条。
@@ -149,6 +150,45 @@ class TestPromptUpdateShowsCurrentVersionOnly(unittest.TestCase):
     def test_headline_still_carries_the_version(self):
         got = self._capture(STACKED)
         self.assertIn("v1.4.21", got["message"])
+
+    def test_legacy_paragraph_is_numbered_in_native_and_fallback_copy(self):
+        got = self._capture("修复闪退；保留设置。新增检查。")
+        expected = "1. 修复闪退；\n2. 保留设置。\n3. 新增检查。"
+        self.assertEqual(got["info"], expected)
+        self.assertTrue(got["text"].endswith(expected))
+
+    def test_numbered_source_is_not_double_numbered(self):
+        got = self._capture(STACKED)
+        self.assertEqual(got["info"], "1. 本次的第一条。\n2. 本次的第二条。")
+
+
+class TestNumberedNotes(SFCase):
+    fixture_version = "9.8.7"
+
+    def test_valid_numbering_including_ten_items(self):
+        notes = "\n".join("%d. 更新内容" % n for n in range(1, 12))
+        sf_update.require_numbered_notes(notes)
+        self.assertEqual(sf_update.numbered_notes_for_display(notes, self.fixture_version), notes)
+
+    def test_invalid_release_copy_is_rejected(self):
+        for notes in ("", "一大段文字", "2. 甲", "1. 甲\n3. 乙",
+                      "1. 甲\n1. 乙", "1. 甲\n未编号的正文", "1. ", "1.甲"):
+            with self.subTest(notes=notes), self.assertRaises(sf_update.UpdateError):
+                sf_update.require_numbered_notes(notes)
+
+    def test_empty_display_remains_numbered(self):
+        self.assertEqual(sf_update.numbered_notes_for_display(None, self.fixture_version),
+                         "1. 包含稳定性与体验改进。")
+
+    def test_old_bullets_and_numbers_are_renumbered(self):
+        self.assertEqual(sf_update.numbered_notes_for_display("- 甲\n* 乙\n4. 丙", self.fixture_version),
+                         "1. 甲\n2. 乙\n3. 丙")
+
+    def test_versions_prices_and_urls_remain_intact(self):
+        for text in ("兼容 v1.4.88，价格 3.14，见 https://example.com/a.zip",
+                     "1.4.88 兼容更新", "3.14 元的价格显示"):
+            with self.subTest(text=text):
+                self.assertEqual(sf_update.numbered_notes_for_display(text, self.fixture_version), "1. " + text)
 
 
 if __name__ == "__main__":

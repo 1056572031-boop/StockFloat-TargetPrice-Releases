@@ -32,13 +32,18 @@ def _titles(alert):
 
 
 def run_show_and_click():
+    import sf_update
+
+    notes = sf_update.numbered_notes_for_display("修复闪退；加快刷新。保留设置。补齐检查。", "9.9.9")
     got = []
     handle = s.show_alert(title="软件更新", text="发现新版本 v9.9.9。",
-                          message="发现新版本 v9.9.9。", info="副文案",
+                          message="发现新版本 v9.9.9。", info=notes,
                           buttons=("暂不更新", "立即更新"), default="立即更新",
                           cancel="暂不更新", on_result=got.append)
     window = handle._window
     alert = handle._alert
+    _marker("numbered_notes", str(alert.informativeText()) == notes)
+    _marker("note_lines", len(str(alert.informativeText()).splitlines()))
     _marker("visible", window.isVisible())
     _marker("titles", ",".join(_titles(alert)))
     # Esc 键等价物用码点打印（27 = ESC），直接打印不可见

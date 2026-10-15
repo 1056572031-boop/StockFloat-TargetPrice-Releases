@@ -34,6 +34,8 @@ import queue
 import sys
 import threading
 import time
+from itertools import islice
+from operator import index
 
 from sf_constants import (UNIVERSE_MAX_PAGES, UNIVERSE_MIN_INTERVAL,
                           UNIVERSE_MIN_ROWS, UNIVERSE_PAGE_GAP,
@@ -343,9 +345,14 @@ def match_confident(kw):
         full = _by_name.get(k)
         if full is not None:
             return [(full, k)]
-        hits = [(c, n) for c, n in _rows if k in n]
-        if len(hits) == 1:
-            return hits
+        hit = None
+        for code, name in _rows:
+            if k in name:
+                if hit is not None:
+                    return []
+                hit = (code, name)
+        if hit is not None:
+            return [hit]
     return []
 
 
@@ -359,10 +366,17 @@ def match_fuzzy(kw, limit=50):
     with _lock:
         if not _rows:
             return []
-        prefix = [(c, n) for c, n in _rows if n.startswith(k)]
+        count = None if limit is None else index(limit)
+        # Negative slicing remains supported for compatibility with existing callers.
+        if count is not None and count < 0:
+            prefix = [(c, n) for c, n in _rows if n.startswith(k)]
+            return prefix[:count] if prefix else [(c, n) for c, n in _rows if k in n][:count]
+        if count == 0:
+            return []
+        prefix = list(islice(((c, n) for c, n in _rows if n.startswith(k)), count))
         if prefix:
-            return prefix[:limit]
-        return [(c, n) for c, n in _rows if k in n][:limit]
+            return prefix
+        return list(islice(((c, n) for c, n in _rows if k in n), count))
 
 
 def index_ready():
@@ -396,15 +410,9 @@ def covers_segment(code):
     digits = _digits_of(code or "")
     if len(digits) != 6:
         return False
-    if not index_ready():
-        return False
     head = digits[:2]
     with _lock:
-        rows = list(_by_code.keys())
-    for full in rows:
-        if full[2:4] == head:
-            return True
-    return False
+        return bool(_rows) and any(full[2:4] == head for full in _by_code)
 
 
 # 编辑器拒绝录入的计数（诊断导出用）：1.4.51 修过"510300 加不进去"，但修完之后

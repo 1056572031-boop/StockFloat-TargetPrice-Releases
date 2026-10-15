@@ -14,10 +14,10 @@ jobs:
   test-offscreen:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.14.7"
           cache: pip
@@ -29,6 +29,8 @@ jobs:
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install --require-hashes -r requirements.lock
+      - name: 依赖锁定一致性与已知漏洞检查
+        run: .venv/bin/python tools/dependency_audit.py
       - name: 运行全量回归与覆盖率门禁（offscreen）
         env:
           QT_QPA_PLATFORM: offscreen
@@ -48,7 +50,7 @@ jobs:
       - name: 导出覆盖率报告
         # 同上：coverage 装在 .venv 里，系统解释器上没有这个模块。
         run: .venv/bin/python -m coverage xml -o coverage.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-xml
           path: coverage.xml
@@ -56,10 +58,10 @@ jobs:
   test-cocoa-native:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.14.7"
           cache: pip

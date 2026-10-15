@@ -487,7 +487,7 @@ class TestUpdateWindowLifecycle(unittest.TestCase):
         self.assertIn("修复若干问题", captured["text"])
         self.assertEqual(captured["message"], "发现新版本 v9.9.9。",
                          "原生 NSAlert 的粗体主文案单独传（v1.4.8）")
-        self.assertEqual(captured["info"], "修复若干问题",
+        self.assertEqual(captured["info"], "1. 修复若干问题",
                          "更新说明作为副文案，不混进主文案")
         self.assertNotIn("现在下载并安装吗", captured["text"])
         self.assertNotIn("测试版", captured["text"])

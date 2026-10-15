@@ -16,9 +16,19 @@
 import math
 
 from PyQt6.QtGui import QPainterPath
+from PyQt6.QtCore import QRectF
 
 # 超椭圆阶数（squircle 曲率参数），Qt 路径与 CGPath 共用，保持四角数学严格一致
 _SQUIRCLE_N = 4.0
+
+
+def liquid_glass_dim_path(w, h, r, inset):
+    """Inset circular corners concentric with NSGlassEffectView.cornerRadius."""
+    path = QPainterPath()
+    radius = max(0.0, r - inset)
+    path.addRoundedRect(QRectF(inset, inset, max(w - 2 * inset, 1),
+                               max(h - 2 * inset, 1)), radius, radius)
+    return path
 
 
 def _squircle_se_point(cx, cy, t, r):

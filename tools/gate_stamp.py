@@ -44,12 +44,12 @@ STAMP_REL = os.path.join("build", ".gate_stamp")
 
 # 会被 PyInstaller 收进包里、或被关卡自己读进判据的文件后缀。
 BUILD_INPUT_SUFFIXES = (".py", ".sh", ".spec", ".command", ".otf", ".ttf",
-                        ".yml", ".yaml", ".icns")
+                        ".yml", ".yaml", ".icns", ".swift")
 # 按后缀收不到、但确实影响构建或关卡结论的文件名。
 BUILD_INPUT_NAMES = ("requirements.txt", "requirements.lock", "NOTICE.md", "README.md",
                      "INSTALL.md", "SECURITY.md", "LICENSE", ".coveragerc",
                      "static_gate_baseline.json", "test_discipline_baseline.json",
-                     "escapes_ledger.json")
+                     "escapes_ledger.json", "signing_policy.json")
 
 NO_GIT = "no-git"
 

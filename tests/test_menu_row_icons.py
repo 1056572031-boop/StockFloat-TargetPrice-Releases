@@ -19,6 +19,7 @@
 """
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -42,7 +43,7 @@ except ImportError:                                            # 以包形式被
 
 MENU_BG = QColor(38, 43, 58)      # 菜单底色，与 contextMenuEvent 里那条 rgba(38,43,58,.97) 同值
 EYE_ON, EYE_OFF = "eye_open", "eye_closed"
-ROWS_WITH_ICON = ("立即刷新", "自动隐藏窗口", "检查更新", "导出诊断包")
+ROWS_WITH_ICON = ("刷新行情", "自动隐藏窗口", "检查更新", "导出诊断包")
 
 
 def _fake_http_get(url, **kw):
@@ -198,6 +199,97 @@ class _WindowCase(SFCase):
             if a.text() == text:
                 return a
         self.fail("菜单里没有「%s」这一行，got %r" % (text, [a.text() for a in menu.actions()]))
+
+
+class TestRefreshMenu(_WindowCase):
+    def test_menu_refresh_reaches_both_workers_and_updates_the_window(self):
+        from contextlib import ExitStack
+        price = ["101.00"]
+        requests = []
+        workers = []
+
+        def fetch_quote(code):
+            requests.append(("quote", code, threading.current_thread()))
+            return {"name": "贵州茅台", "code": "600519", "price": price[0],
+                    "pct": "1.00", "change": "1.00", "pre_close": "100.00",
+                    "high": "103.00", "low": "99.00"}
+
+        def fetch_minute(code):
+            requests.append(("minute", code, threading.current_thread()))
+            return [("09:30", float(price[0]), 100.0)]
+
+        def displayed():
+            QApplication.processEvents()
+            return (self.win.quote is not None
+                    and self.win.quote.get("price") == price[0]
+                    and self.win.minute_points
+                    and self.win.minute_points[-1][1] == float(price[0]))
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(m, "fetch_quote", side_effect=fetch_quote))
+            stack.enter_context(patch.object(m, "fetch_minute", side_effect=fetch_minute))
+            stack.enter_context(patch.object(self.win, "_poll_interval", return_value=3600.0))
+            stack.enter_context(patch.object(self.win, "_is_trading_time", return_value=False))
+            # Scheduling is off-market, but quote freshness must not follow wall-clock lunch.
+            stack.enter_context(patch.object(m, "market_status", return_value=None))
+            self.win.running = True
+            self.win._wake.clear()  # discipline-ok(R5): reactivate only the isolated fixture's workers
+            for name in ("_resched", "_quote_resched", "_minute_resched"):
+                getattr(self.win, name).clear()
+            try:
+                for slot, method in (("_quote_thread", "_quote_loop"),
+                                     ("_minute_thread", "_minute_loop")):
+                    worker = threading.Thread(target=getattr(self.win, method))
+                    setattr(self.win, slot, worker)
+                    workers.append(worker)
+                    worker.start()
+                self.assertTrue(self.wait_for(displayed), "Initial data did not reach Qt")
+                requests.clear()
+                price[0] = "102.00"
+                menu = self.open_menu()
+                self.row(menu, "刷新行情").trigger()
+                self.assertTrue(self.wait_for(displayed), "Refresh never reached the window")
+                self.assertCountEqual([(kind, code) for kind, code, _ in requests],
+                                      [("quote", "sh600519"), ("minute", "sh600519")])
+                self.assertTrue(all(worker is not threading.current_thread()
+                                    for _, _, worker in requests))
+            finally:
+                self.win._shutdown_threads()  # discipline-ok(R5): lifecycle entry ensures worker cleanup even when an assertion fails
+                for worker in workers:
+                    worker.join(2.0)
+                self.assertFalse(any(worker.is_alive() for worker in workers))
+
+    def test_context_refresh_dispatches_once(self):
+        calls = []
+
+        def refresh():
+            calls.append("refresh")
+
+        with patch.object(self.win, "_force_fetch", new=refresh):
+            menu = self.open_menu()
+            action = self.row(menu, "刷新行情")
+            self.assertTrue(action.isEnabled())
+            self.assertFalse(action.icon().isNull())
+            self.assertNotIn("立即刷新", [row.text() for row in menu.actions()])
+            action.trigger()
+            self.assertEqual(calls, ["refresh"])
+
+    def test_native_refresh_has_matching_title_shortcut_and_callback(self):
+        from sf_macos_menu import install_window_actions
+        from PyQt6.QtGui import QKeySequence
+        calls = []
+
+        def refresh():
+            calls.append("refresh")
+
+        with patch.object(self.win, "_force_fetch", new=refresh):
+            actions, bar = install_window_actions(self.win)
+            self.assertIsNone(bar)
+            action = actions["refresh"]
+            self.assertEqual(action.text(), "刷新行情")
+            self.assertEqual(action.shortcut(), QKeySequence("Ctrl+R"))
+            action.trigger()
+            self.assertEqual(calls, ["refresh"])
 
 
 class TestMenuIconSheet(SFCase):

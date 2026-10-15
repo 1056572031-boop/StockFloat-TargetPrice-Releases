@@ -20,7 +20,37 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.88
+version 1.4.89
+# 本轮统一收纳 1.4.88 之后的未发布产品、发布链与安全修改。
+check sf_http::remaining_budget
+check sf_http::read_chunk
+check sf_http::BudgetHTTPResponse
+check sf_http::BudgetHTTPSHandler
+check sf_update::_update_remaining
+check sf_credentials::needs_keychain
+check sf_config::mkstemp
+check sf_privacy::quote
+# 2026-10-15 摄像头授权延续：下一版必须提升版本，签名证据由独立门禁提供。
+stale-feature 1.4.89 固定自签名修改发布工具与外层签名，不新增产品co_names；发布链stable_signing在DMG和OTA前核验证书指纹及包内身份规则，原生升级授权实验另存result.json，不以旧符号冒充签名已验证。
+checkfile Contents/Resources/docs/README.md::固定签名
+# Performance audit: bounded shared geometry and unchanged-layout reuse.
+check sf_ui_render::_chart_price_path
+check sf_ui_render::_chart_fill_cache
+check sf_ui_render::_bg_rim_cache
+check sf_ui_render::_bottom_layout_cache
+check sf_ui_render::_paint_stale_label
+check sf_ui_render::stale_label_rect
+# 2026-10-15 分时重试专项：来源交易日必须贯穿解析、UI 和首屏缓存。
+check sf_quote::MinutePoints
+check sf_quote::_minute_source_day
+check sf_quote::_ordered_minute_points
+check stock_float_window::MinutePoints
+# 2026-10-15 圆角专项：暗化层须与原生玻璃同心，不再叠加超椭圆卡片。
+check renderer::liquid_glass_dim_path
+check sf_ui_render::liquid_glass_dim_path
+# 2026-10-15 刷新行情专项：下次发版须同时提升版本；独立唤醒事件必须进包。
+check stock_float_window::_quote_resched
+check stock_float_window::_minute_resched
 check sf_maintenance::_pin_completion_block_signature
 check sf_maintenance::_run_scheduled
 check sf_glass::create_glass_surface
@@ -37,9 +67,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.88 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.89 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.88
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.89
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

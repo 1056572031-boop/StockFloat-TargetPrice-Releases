@@ -438,7 +438,7 @@ def _deliver_osascript(title, subtitle, body):
 
     def _run():
         try:
-            result = subprocess.run(["osascript", "-e", script], check=False,
+            result = subprocess.run(["/usr/bin/osascript", "-e", script], check=False,
                                     capture_output=True, timeout=5)
             if result.returncode != 0:
                 log_line("osascript deliver failed returncode=%s stderr=%r" %
