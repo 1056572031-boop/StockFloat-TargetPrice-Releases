@@ -53,6 +53,14 @@ xattr -dr com.apple.quarantine /Applications/Skyrocket.app
 
 它只清除这一个程序路径上的来历标签，不清系统里的其他任何东西。
 
+## 想核对拿到的是不是同一份包（可选）
+
+```sh
+shasum -a 256 ~/Downloads/Skyrocket-1.4.90-macos.zip
+```
+
+期望值：`8c207b0d79103f5d4854fe111e36c872e51176c9a37d5a9e21fc3127d534c8fc`。不一致就是包在路上被换过或下坏了，重新按第一种装法来一次。
+
 ## 照做之后还是装不上
 
 不要反复试。请把以下三样发给 [GitHub 问题反馈](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/issues)：
