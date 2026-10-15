@@ -1,12 +1,13 @@
 """Class availability alone does not prove the full native material API exists."""
 
 import types
-import unittest
+
+from tests._base import SFCase
 
 from tests._glass_capabilities import LIQUID_SELECTORS, liquid_api_gaps
 
 
-class LiquidCapabilityTests(unittest.TestCase):
+class LiquidCapabilityTests(SFCase):
     def toolkit(self, missing=()):
         return types.SimpleNamespace(
             NSGlassEffectView=types.SimpleNamespace(
