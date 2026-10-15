@@ -2396,6 +2396,27 @@
       "locate_unknown_reason": null,
       "source": "DiagnosticReports/Skyrocket-2026-10-15-064925.ips；直接执行 /Applications/Skyrocket.app/Contents/MacOS/Skyrocket，退出 134，OC_PythonException: int object is not callable",
       "evidence": "verified"
+    },
+    {
+      "id": "N13",
+      "symptom": "正式应用分时主源持续 HTTP 501，旧提示易误读为股价也停止更新",
+      "component": "minute-network",
+      "channel": "installed_field",
+      "introduced_version": null,
+      "introduced_note": "现场确认旧腾讯入口返回 WAF HTML；不能确定触发规则或全部用户是否受影响。",
+      "found_version": "1.4.89",
+      "fixed_version": "1.4.90",
+      "failed_lines": ["verify", "locate"],
+      "why_missed": "离线夹具不能发现上游入口变动；网络异常被误计为格式错误，双源失败仅抛主源错误，分时标签没有限定影响范围。",
+      "defense_added": [
+        "tests/test_minute_waf_recovery.py: route/date/average parsing, error classification, dual-source exception chain, custom HTTPS and real quote pixel/stale-label recovery",
+        "docs/MINUTE_WAF_FIX_2026-10-15.md: local six-request evidence and four negative controls; bounded log retains both source failures"
+      ],
+      "observed_at": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "本轮汇总前已完成专项修复；仅保留现场日志时段与探针证据，不回填估算定位时刻。",
+      "source": "docs/MINUTE_WAF_FIX_2026-10-15.md；outputs/minute-waf-20261015/live-probe.json",
+      "evidence": "verified"
     }
   ],
   "rounds": [
@@ -2907,6 +2928,17 @@
         "卡片圆角像素、包内几何同源、两代原生玻璃交互及真实合成截图纳入第 3.65 关"
       ],
       "zero_reason": "本轮新增问题均在发布前走查中发现并由回归或产物门禁覆盖；未发现新的已发布线上逃逸。"
+    },
+    {
+      "version": "1.4.90",
+      "date": "2026-10-15",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "分时路由、HTTP与格式异常分类、双源失败链、分时滞后期间行情继续更新与恢复标签行为回归；四处负向对照见专项证据",
+        "弹窗共享透明度和四角像素回归；完整同源回归、固定签名、圆角、安装与最终启动门禁继续执行"
+      ],
+      "zero_reason": null
     }
   ]
 }

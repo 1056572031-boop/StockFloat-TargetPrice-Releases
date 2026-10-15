@@ -59,14 +59,33 @@ if [ ! -x "$VENV_PY" ]; then
   exit 1
 fi
 
-# A missing private identity must fail before moving old build artifacts. Never
-# generate a new certificate during a release: that would discard TCC continuity.
-"$VENV_PY" tools/stable_signing.py preflight \
-  || { echo "!! 固定签名身份不可用：请恢复原签名材料，禁止退回临时签名" >&2; exit 1; }
-
-# Public documents are mandatory even when rebuilding an existing artifact.
-"$VENV_PY" tools/public_docs_check.py || { echo "!! 公开文档未对齐，拒绝打包" >&2; exit 1; }
-"$VENV_PY" tools/public_release.py || { echo "!! 对应源码尚未提交或未通过公开扫描，拒绝打包" >&2; exit 1; }
+# These checks are read-only and independent. Run them together so a normal
+# release does not pay three Python startup/scan costs back-to-back. Each
+# result is still collected and every failure blocks the release.
+PRECHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/skyrocket-release-precheck.XXXXXX")"
+cleanup_prechecks() {
+  [ -d "$PRECHECK_DIR" ] || return 0
+  mv "$PRECHECK_DIR" "${TMPDIR:-/tmp}/skyrocket-release-precheck-finished.$$.${RANDOM}" 2>/dev/null || true
+}
+trap 'cleanup_prechecks; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+echo "== 发版前置核验：固定签名 / 公开文档 / 公开树（并行）=="
+"$VENV_PY" tools/stable_signing.py preflight >"$PRECHECK_DIR/signing.log" 2>&1 &
+PRECHECK_SIGNING=$!
+"$VENV_PY" tools/public_docs_check.py >"$PRECHECK_DIR/docs.log" 2>&1 &
+PRECHECK_DOCS=$!
+"$VENV_PY" tools/public_release.py >"$PRECHECK_DIR/public.log" 2>&1 &
+PRECHECK_PUBLIC=$!
+PRECHECK_FAILED=0
+wait "$PRECHECK_SIGNING" || PRECHECK_FAILED=1
+wait "$PRECHECK_DOCS" || PRECHECK_FAILED=1
+wait "$PRECHECK_PUBLIC" || PRECHECK_FAILED=1
+for precheck_log in "$PRECHECK_DIR"/*.log; do
+  cat "$precheck_log"
+done
+if [ "$PRECHECK_FAILED" -ne 0 ]; then
+  echo "!! 发版前置核验未通过，未移动旧产物" >&2
+  exit 1
+fi
 
 # ---- 0) 回归关卡（v1.4.59 起，S7-②）----
 # 为什么要把它做成打包前的第一件事，而不是文档里的一句「发版前先跑回归」：
@@ -76,15 +95,19 @@ fi
 # 现在的行为：时间戳与当前代码同源就直接过（不重跑，省两分钟）；不可用就自动补跑一整轮
 # 回归，红则中止发版。只有显式 --skip-tests 才跳过，且大声打印 WARNING。
 # 判据实现见 tools/gate_stamp.py（内容指纹而非 HEAD，带 11 项变异自检）。
+GATE_STAMP_VALID=0
 if [ "$SKIP_TESTS" -eq 1 ]; then
   echo "!! WARNING: --skip-tests 生效 —— 本轮**没有**核验回归关卡，直接进打包。" >&2
   echo "!!          这个开关只用于同一份代码重做 DMG/OTA；改了代码还用它，等于回到 S7-②。" >&2
-elif ! "$VENV_PY" tools/gate_stamp.py check; then
+elif "$VENV_PY" tools/gate_stamp.py check; then
+  GATE_STAMP_VALID=1
+else
   echo "== 关卡时间戳不可用：先补跑 ./run_tests.sh（约 2 分钟）=="
   ./run_tests.sh || {
     echo "!! 回归关卡未过 —— 中止发版（不覆盖桌面 DMG、不动 /Applications、不切 OTA）" >&2
     echo "!!   若上面写的是「检测到正在运行的正式版」：先退出 Skyrocket 再重跑。" >&2
     exit 1; }
+  GATE_STAMP_VALID=1
 fi
 
 # ---- 1) 版本号（唯一来源） ----
@@ -194,8 +217,16 @@ echo "== 3.65 卡片圆角：像素矩阵 / 包内几何同源 / 原生四角与
 # 填法：tools/quality_trend.py --round "$VERSION" --escapes N --defense "防线落点"
 #       本轮 0 逃逸也要明写 --escapes 0 --zero-reason "为什么是 0"
 echo "== 3.7 逃逸复盘：台账自洽 + 本轮复盘声明 =="
-"$VENV_PY" tools/quality_trend.py --self-test \
-  || { echo "!! 复盘闸门没过自己的变异自检：它现在可能是一条永不失败的检查" >&2; exit 1; }
+# quality_trend's mutation tests are already part of the full regression suite.
+# When the content-fingerprint gate is valid, running them again here only
+# starts another interpreter and repeats the same read-only work. Keep the
+# direct check for --skip-tests retries, where the regression proof is absent.
+if [ "$GATE_STAMP_VALID" -eq 0 ]; then
+  "$VENV_PY" tools/quality_trend.py --self-test \
+    || { echo "!! 复盘闸门没过自己的变异自检：它现在可能是一条永不失败的检查" >&2; exit 1; }
+else
+  echo "   quality_trend 自检已由同源 run_tests.sh 覆盖，跳过重复执行"
+fi
 "$VENV_PY" tools/quality_trend.py --gate "$VERSION" \
   || { echo "!! 逃逸复盘未收口：先写本轮复盘声明与防线落点，再出包" >&2; exit 1; }
 

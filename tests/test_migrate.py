@@ -135,7 +135,7 @@ class TestQuoteFallback(unittest.TestCase):
     def test_minute_fallback_on_primary_error(self):
         # 分时主源异常 -> 切东财备用源
         def fake_get(url, **kw):
-            if "web.ifzq.gtimg.cn" in url:
+            if "/appstock/app/minute/query?" in url:
                 raise IOError("primary minute down")
             # 东财 trends2：trends 行形如 "时间,开,收,高,低,量,额,均价"
             return ('{"data":{"trends":['

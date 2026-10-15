@@ -7,6 +7,7 @@ Private material lives outside the checkout; only the certificate pin is public.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -167,23 +168,40 @@ def verify(app: Path, policy: dict) -> dict:
             "camera_permission_persistence": "requires_live_upgrade_test"}
 
 
+@contextmanager
+def signing_keychain(policy: dict, state: Path):
+    """Expose the pinned keychain only while codesign resolves its private key."""
+    password = check_material(policy, state)
+    keychain = state / "identity.keychain-db"
+    current = shlex.split(run(["/usr/bin/security", "list-keychains", "-d", "user"]))
+    added = not any(Path(path) == keychain for path in current)
+    try:
+        run(["/usr/bin/security", "unlock-keychain", "-p", password, str(keychain)])
+        if added:
+            run(["/usr/bin/security", "list-keychains", "-d", "user", "-s", *current,
+                 str(keychain)])
+        yield keychain
+    finally:
+        try:
+            if added:
+                current = shlex.split(run(["/usr/bin/security", "list-keychains", "-d", "user"]))
+                wanted = [path for path in current if Path(path) != keychain]
+                if current != wanted:
+                    run(["/usr/bin/security", "list-keychains", "-d", "user", "-s", *wanted])
+        finally:
+            run(["/usr/bin/security", "lock-keychain", str(keychain)])
+
+
 def sign(app: Path, policy: dict, state: Path = STATE) -> dict:
     state = state.resolve()
-    password = check_material(policy, state)
     with (app / "Contents/Info.plist").open("rb") as stream:
         if plistlib.load(stream).get("CFBundleIdentifier") != policy["bundle_id"]:
             raise ValueError("Refusing to sign a different application")
-    keychain = state / "identity.keychain-db"
-    run(["/usr/bin/security", "unlock-keychain", "-p", password, str(keychain)])
-    # Preserve PyInstaller's nested binary signatures; only replace the outer app
-    # seal and its executable identity. No hardened runtime or library-validation
-    # changes are needed, and --deep must not be used for signing.
-    try:
+    # Preserve nested signatures and the certificate pin; never change trust settings.
+    with signing_keychain(policy, state) as keychain:
         run(["/usr/bin/codesign", "--force", "--sign", policy["certificate_sha1"],
              "--keychain", str(keychain), "--timestamp=none", "--requirements",
              "=designated => " + requirement(policy), str(app)])
-    finally:
-        run(["/usr/bin/security", "lock-keychain", str(keychain)])
     return verify(app, policy)
 
 

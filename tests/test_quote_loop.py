@@ -156,6 +156,17 @@ MINUTE_RETRY_MAX_LOCAL = 5
 class TestQuoteLoopSchedule(unittest.TestCase):
     """行情/分时线程「到期拉取/长暂停退避/基础节拍」调度骨架。"""
 
+    def test_first_fetch_does_not_depend_on_machine_uptime(self):
+        for now in (0.0, 10.0, 3599.0):
+            with self.subTest(now=now):
+                sched = QuoteLoopSchedule()
+                self.assertEqual(sched.nap_seconds(now, 3600.0), sched.tick_seconds)
+                fetch, backoff, _ = sched.step(now, 3600.0)
+                self.assertTrue(fetch)
+                self.assertFalse(backoff)
+                self.assertEqual(sched.last, now)
+                self.assertFalse(sched.step(now + 0.1, 3600.0)[0])
+
     def test_first_step_fetches_without_backoff(self):
         sched = QuoteLoopSchedule()
         fetch, backoff, sleep = sched.step(1000.0, 0.1)

@@ -132,7 +132,7 @@ def audit(scenario, seconds, native):
         chg, pct = p - pre, (p - pre) / pre * 100.0
         if "hq.sinajs.cn" in url:
             return 'var hq_str_%s="贵州茅台,%.2f,%.2f,%.2f,%.2f,%.2f";' % (code, pre, p, p, p, p)
-        if "web.ifzq.gtimg.cn" in url:
+        if "/appstock/app/minute/query?" in url:
             return ('{"data":{"%s":{"data":{"date":"20260922",'
                     '"data":["0930 %.2f 100 1000"]}}}}' % (code, p))
         return ('v_%s="1~贵州茅台~%s~%.2f~%.2f~%.2f~%.2f~%.2f~%.2f";'

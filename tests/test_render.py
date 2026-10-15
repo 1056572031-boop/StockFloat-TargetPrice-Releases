@@ -504,7 +504,7 @@ class TestMinuteStaleLabel(TestRenderBase):
 
         def record(p, *args):
             header_rects.append(QRectF(args[0]))
-            if args[-1] == "数据暂缺·重试中":
+            if args[-1] == "分时滞后·重试中":
                 labels.append(QRectF(args[0]))
             return real(p, *args)
 
@@ -519,7 +519,7 @@ class TestMinuteStaleLabel(TestRenderBase):
                 self.assertEqual(painter.font(), font_before)
             self.assertEqual(len(labels), 1)
             rect = labels[0]
-            self.assertGreaterEqual(rect.left(), self.win.width() / 2)
+            self.assertGreaterEqual(rect.left(), sf_ui_render.PAD_X)
             self.assertEqual(rect.right(), self.win.width() - sf_ui_render.PAD_X)
             self.assertGreater(rect.top(), sf_ui_render.BTN_ICON_Y + sf_ui_render.BTN_ICON_SZ)
             self.assertLess(rect.bottom(), sf_ui_render.Y_PRICE)

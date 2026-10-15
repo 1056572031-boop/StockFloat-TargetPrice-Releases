@@ -83,7 +83,7 @@ def mock_response(url, tick, vary, anchor):
     match = re.search(r"[a-z]{2}\d{6}", url)
     code = match.group(0) if match else "sh600519"
     price, previous = 20 + (tick % 40) * (0.01 if vary else 0), 19.8
-    if "web.ifzq.gtimg.cn" in url:
+    if "/appstock/app/minute/query?" in url:
         minutes = list(range(570, 691)) + list(range(781, 901))
         rows = ["%02d%02d %.2f %d %.2f" % (*divmod(minute, 60),
                 20 + 0.1 * math.sin(index / 13), (index + 1) * 100,

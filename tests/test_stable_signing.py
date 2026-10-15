@@ -97,6 +97,40 @@ class PolicyTests(SFCase):
                 S.run(command)
         self.assertNotIn("must-never-be-printed", str(caught.exception))
 
+    def test_signing_search_list_is_scoped_and_preserves_concurrent_entries(self):
+        keychain = self.root / "identity.keychain-db"
+        existing, concurrent = "/tmp/existing.keychain-db", "/tmp/concurrent.keychain-db"
+        commands = []
+
+        def run(args):
+            commands.append(args)
+            if args[-1] == "user":
+                paths = [existing] if len(commands) == 1 else [existing, str(keychain), concurrent]
+                return "\n".join(json.dumps(path) for path in paths)
+            return ""
+
+        with mock.patch.object(S, "check_material", return_value="private-password"), \
+                mock.patch.object(S, "run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "injected"):
+                with S.signing_keychain(self.policy, self.root) as selected:
+                    self.assertEqual(selected, keychain)
+                    raise ValueError("injected")
+        self.assertIn(["/usr/bin/security", "list-keychains", "-d", "user", "-s",
+                       existing, str(keychain)], commands)
+        self.assertIn(["/usr/bin/security", "list-keychains", "-d", "user", "-s",
+                       existing, concurrent], commands)
+        self.assertEqual(commands[-1], ["/usr/bin/security", "lock-keychain", str(keychain)])
+
+    def test_existing_search_list_membership_is_not_removed(self):
+        keychain = self.root / "identity.keychain-db"
+        with mock.patch.object(S, "check_material", return_value="private-password"), \
+                mock.patch.object(S, "run", return_value=json.dumps(str(keychain))) as run:
+            with S.signing_keychain(self.policy, self.root):
+                pass
+        self.assertFalse(any("-s" in call.args[0] for call in run.call_args_list))
+        self.assertEqual(run.call_args_list[-1].args[0],
+                         ["/usr/bin/security", "lock-keychain", str(keychain)])
+
     def test_cli_requires_app_and_rejects_unknown_arguments(self):
         for command in (["sign"], ["check"], ["unexpected"]):
             with self.subTest(command=command), contextlib.redirect_stderr(io.StringIO()):
@@ -191,15 +225,10 @@ class NativeSigningTests(SFCase):
 
     def test_incorrect_embedded_identity_rule_is_rejected(self):
         app = self.app("broad")
-        password = S.check_material(self.policy, self.state)
-        keychain = self.state / "identity.keychain-db"
-        S.run(["/usr/bin/security", "unlock-keychain", "-p", password, str(keychain)])
-        try:
+        with S.signing_keychain(self.policy, self.state) as keychain:
             S.run(["/usr/bin/codesign", "--force", "--sign", self.policy["certificate_sha1"],
                    "--keychain", str(keychain), "--timestamp=none", "--requirements",
                    '=designated => identifier "com.skyrocket.app"', str(app)])
-        finally:
-            S.run(["/usr/bin/security", "lock-keychain", str(keychain)])
         with self.assertRaisesRegex(ValueError, "pin both"):
             S.verify(app, self.policy)
 

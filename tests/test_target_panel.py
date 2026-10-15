@@ -1093,6 +1093,8 @@ class TestV1287Features(unittest.TestCase):
         self.assertNotIn("capture_blurred_background", glass_src)
         self.assertEqual(sf_glass.POPUP_INPUT_BG, "rgba(255,255,255,0.08)")
         self.assertEqual(sf_glass.POPUP_SURFACE_RGB, (29, 30, 32))
+        self.assertEqual(int(sf_glass.POPUP_BG_ALPHA * 255),
+                         int(sf_ui_render.BG_ALPHA_DEFAULT * 255))
         self.assertLessEqual(sf_glass.POPUP_SURFACE_HIGHLIGHT_ALPHA, 16)
         self.assertIn("setHasShadow_", inspect.getsource(sf_glass.disable_native_window_shadow))
 

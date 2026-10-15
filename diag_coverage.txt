@@ -97,3 +97,5 @@ skip sf_http request helpers are stateless; failures remain visible through netw
 skip sf_macos_menu action wiring is stateless and reuses host handlers
 skip sf_privacy URL and credential scrubbing is pure with no mutable product state
 skip sf_window_message_router queue coalescing is stateless and owns no persistent business state
+version 1.4.90
+skip sf_quote_loop pure scheduling and retry calculations; worker-local timing has no separate persistent diagnostic payload, host runtime and network logs report observable outcomes

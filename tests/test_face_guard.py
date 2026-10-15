@@ -52,7 +52,7 @@ GUARD_MENU_TEXT = "自动隐藏窗口"
 
 def _fake_http_get(url, **kw):
     """离线行情桩：恢复窗口的收尾会排一次 _poll，绝不能让它真去联网。"""
-    if "web.ifzq.gtimg.cn" in url:
+    if "/appstock/app/minute/query?" in url:
         return ('{"data":{"sh600519":{"data":{"date":"20260821",'
                 '"data":["0930 1510.0 100 1000"]}}}}')
     return 'v_sh600519="1~贵州茅台~600519~1510.0~1490.0~0.1~1.01~0.5";'

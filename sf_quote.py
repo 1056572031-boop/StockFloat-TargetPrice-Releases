@@ -45,7 +45,7 @@ from sf_constants import (CONFIG_PATH, EASTMONEY_SEARCH_URL, EASTMONEY_TOKEN_DEF
                           SEARCH_CACHE_MAX, SEARCH_CACHE_TTL, SEARCH_MAX_RESULTS,
                           SEARCH_RETRIES, SEARCH_TIMEOUT, SEARCH_URL,
                           SINA_REFERER)
-from sf_logging import log_line
+from sf_logging import log_line, log_line_throttled
 from sf_network import QuoteDataError, get_last_http_status, http_get
 # 交易所判定唯一实现在 sf_utils；它只依赖标准库，不回引行情或 Qt 模块。
 from sf_utils import market_prefix, normalize_code
@@ -906,7 +906,8 @@ def fetch_minute(code):
         primary_empty = True
         raise QuoteDataError("minute primary returned empty points during trading")
     except Exception as exc:
-        if not primary_empty:
+        if not primary_empty and isinstance(exc, (ValueError, TypeError, KeyError,
+                                                   AttributeError, QuoteDataError)):
             _bump_format_error("minute", "MINUTE", code, exc)
         try:
             pts = fetch_minute_fallback(code)
@@ -915,8 +916,12 @@ def fetch_minute(code):
                 _LAST_MINUTE_SOURCE = "fallback"
                 log_line("minute fallback(tencent->eastmoney) ok code=%s" % code, "WARNING")
             return pts
-        except Exception:
-            raise exc
+        except Exception as fallback_exc:
+            # Preserve the primary exception contract, but retain both failed sources.
+            log_line_throttled("minute_sources_failed",
+                               "minute sources failed code=%s primary=%r fallback=%r"
+                               % (code, exc, fallback_exc), "ERROR")
+            raise exc from fallback_exc
 
 
 _LAST_MINUTE_SOURCE = ""

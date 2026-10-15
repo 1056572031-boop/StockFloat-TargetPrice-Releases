@@ -29,7 +29,7 @@ from sf_constants import BG_GLASS_DIM, BG_GLASS_DIM_LIGHT
 def _fake_http_get(url, **kw):
     if "hq.sinajs.cn" in url:
         return 'var hq_str_sh600519="贵州茅台,1500.0,1490.0,1510.0,1520.0,1480.0";'
-    if "web.ifzq.gtimg.cn" in url:
+    if "/appstock/app/minute/query?" in url:
         return ('{"data":{"sh600519":{"data":{"date":"20260821",'
                 '"data":["0930 1510.0 100 1000", "1000 1511.0 200 2000"]}}}}')
     return 'v_sh600519="1~贵州茅台~600519~1510.0~1490.0~0.1~1.01~10.5~9.8";'

@@ -110,7 +110,7 @@ class QuoteLoopSchedule:
         # v1.2.71：改用单调时钟（time.monotonic）而非 Unix 时间戳。墙钟会被 NTP
         # 校时/手动改表拨回，一旦回拨则 `now - last` 为负 → 到期判定永远不成立 →
         # 行情与分时**静默停拉**，直到时钟追回原值（故障期间界面静止、无报错）。
-        self.last = 0.0                   # 上次实际拉取时刻（单调时钟秒）；0 表示从未拉取
+        self.last = None                  # None 表示从未拉取，不能把开机时长当成首拉间隔
         self.long_pause_limit = long_pause_limit   # 超过此静置时长判定"长时间暂停"（秒）
         self.backoff_seconds = backoff_seconds     # 长暂停后的首拉退避时长（秒）
         self.tick_seconds = tick_seconds           # 循环基础休眠节拍（秒）
@@ -124,12 +124,12 @@ class QuoteLoopSchedule:
         - fetch=True：到期应拉取。若 last>0 且静置超过 long_pause_limit（休眠唤醒 /
           长时间暂停后恢复，应先在循环体退避 1s 再拉取，避免请求洪峰），则
           backoff=True；随后记 last=now。
-        * 与拆分前一致：last==0（首次启动）不做长暂停判定（避免 Unix 时间戳跑到
-          now-last 必然 >120 的旧陷阱白白退避 1s）。
+        * 首次启动不等待 interval，也不做长暂停判定；单调时钟可以小于 interval，
+          甚至恰好为零，不能用时间数值兼作“已经拉过”的标记。
         """
-        if (now - self.last) < interval:
+        if self.last is not None and (now - self.last) < interval:
             return False, False, self.tick_seconds
-        backoff = self.last > 0 and (now - self.last) > self.long_pause_limit
+        backoff = self.last is not None and (now - self.last) > self.long_pause_limit
         self.last = now
         return True, backoff, self.tick_seconds
 
@@ -158,7 +158,7 @@ class QuoteLoopSchedule:
           此时不参与 min，退回纯节拍行为。
         - min(…, cap)：兜底上限，任何未登记的状态变化最迟 cap 秒后被重新评估。
         """
-        due_in = (self.last + interval) - now
+        due_in = (self.last + interval) - now if self.last is not None else 0.0
         nap = due_in if due_in > self.tick_seconds else self.tick_seconds
         if boundary_seconds and boundary_seconds > 0:
             nap = min(nap, boundary_seconds)

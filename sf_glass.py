@@ -356,9 +356,15 @@ def prepare_popup_surface(widget):
 
 
 def paint_popup_surface(widget, painter):
-    """绘制与主窗统一的深色玻璃表面；不读取屏幕、不新增外圈阴影。"""
+    """绘制与主窗统一的半透明深色玻璃表面；不读取屏幕、不新增外圈阴影。
+
+    子窗不能安全地持有独立的 AppKit 背景窗，因此这里必须保留 Qt 侧的材质
+    fallback。关键是沿用主窗的半透明强度，而不是铺一层不透明深色卡片；这样
+    目标价和替换股票两个窗口在主窗口上方时仍能透出后方内容。
+    """
     path = smooth_round_rect_path(0, 0, widget.width(), widget.height(), R)
-    painter.fillPath(path, QColor(*POPUP_SURFACE_RGB, 255))
+    painter.fillPath(path, QColor(*POPUP_SURFACE_RGB,
+                                   int(POPUP_BG_ALPHA * 255)))
     # 仅在表面内侧增加一条极弱的冷色受光边，给编辑面板与主窗相同的玻璃层次；
     # 不画到外缘，避免重新出现历史上的双层轮廓。
     inset = 1.0

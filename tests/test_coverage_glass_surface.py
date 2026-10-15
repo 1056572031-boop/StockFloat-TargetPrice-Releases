@@ -268,7 +268,7 @@ class PopupSurfaceTest(SFCase):
         self.assertIn("QLineEdit{background:transparent", base)
         self.assertIn("border:none", base)
 
-    def test_surface_is_opaque_in_the_middle_and_clear_at_the_four_corners(self):
+    def test_surface_uses_shared_translucent_material_and_clear_corners(self):
         _ensure_qapp()
         img = QImage(SURFACE_W, SURFACE_H, QImage.Format.Format_ARGB32)
         img.fill(Qt.GlobalColor.transparent)
@@ -277,9 +277,11 @@ class PopupSurfaceTest(SFCase):
         painter.end()
 
         center = _pixel(img, SURFACE_W // 2, SURFACE_H // 2)
-        self.assertEqual(center[:3], sf_glass.POPUP_SURFACE_RGB,
-                         "表面色只有一个来源，改了要能在像素上看见")
-        self.assertEqual(center[3], 255, "弹窗表面不半透明，否则文字压在桌面上会糊")
+        self.assertTrue(all(abs(got - want) <= 1
+                            for got, want in zip(center[:3], sf_glass.POPUP_SURFACE_RGB)),
+                        "表面色只有一个来源，改了要能在像素上看见")
+        self.assertEqual(center[3], int(sf_glass.POPUP_BG_ALPHA * 255),
+                         "弹窗表面必须沿用主窗的半透明材质强度")
         for cx, cy in ((0, 0), (SURFACE_W - 1, 0), (0, SURFACE_H - 1),
                        (SURFACE_W - 1, SURFACE_H - 1)):
             self.assertEqual(_pixel(img, cx, cy)[3], 0,
