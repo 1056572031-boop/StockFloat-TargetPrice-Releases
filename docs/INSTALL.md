@@ -1,15 +1,15 @@
-# Skyrocket 安装说明（v1.4.90）
+# Skyrocket 安装说明（v1.4.91）
 
 提供 DMG 和 ZIP 两种安装包，普通用户建议用下文的 DMG 双击安装。
 **未签名、未公证**：本项目没有 Apple Developer ID 开发者签名和 Apple 公证。
 本地签名用于完整性与版本身份检查：历史包使用临时 ad-hoc，后续固定签名包使用项目自签名证书；两者均不代表 Apple 已确认开发者身份或审核程序。
 请只从[官方发行页](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)下载，核对本版文件名和 SHA-256；校验不符或来源不明时停止安装，不要盲目放行。
 不会关闭全系统安全保护；以下放行方式仅在你确认信任本项目后使用。
-发行页的 `Skyrocket-1.4.90-SHA256SUMS.txt` 列出本版 DMG、应用 ZIP 和源码 ZIP 校验值。
+发行页的 `Skyrocket-1.4.91-SHA256SUMS.txt` 列出本版 DMG、应用 ZIP 和源码 ZIP 校验值。
 在终端执行下列命令，并将输出与校验清单的同名文件一行对照：
 
 ```sh
-shasum -a 256 ~/Downloads/Skyrocket-V1.4.90.dmg
+shasum -a 256 ~/Downloads/Skyrocket-V1.4.91.dmg
 ```
 装好后可自动更新；旧名客户端和 v1.4.58 及更早版本须先手动装一次当前版本。
 
@@ -19,7 +19,7 @@ shasum -a 256 ~/Downloads/Skyrocket-V1.4.90.dmg
 把下面这一整行原样粘贴进去，按回车：
 
 ```sh
-curl -fsSL -o ~/Downloads/Skyrocket-1.4.90-macos.zip 'https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0/Skyrocket-1.4.90-macos.zip' && ditto -x -k ~/Downloads/Skyrocket-1.4.90-macos.zip /Applications/ && open /Applications/Skyrocket.app
+curl -fsSL -o ~/Downloads/Skyrocket-1.4.91-macos.zip 'https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0/Skyrocket-1.4.91-macos.zip' && ditto -x -k ~/Downloads/Skyrocket-1.4.91-macos.zip /Applications/ && open /Applications/Skyrocket.app
 ```
 
 这一行只做三件事：从 github.com 下载本版安装包 → 解压到「应用程序」→ 打开它。
@@ -33,7 +33,7 @@ curl -fsSL -o ~/Downloads/Skyrocket-1.4.90-macos.zip 'https://github.com/1056572
 
 ## 二、双击安装（拿到的是 DMG，且不想碰终端）
 
-1. 双击桌面上的 `Skyrocket-V1.4.90.dmg`，它会挂载成一个白色磁盘图标；
+1. 双击桌面上的 `Skyrocket-V1.4.91.dmg`，它会挂载成一个白色磁盘图标；
 2. 打开那个磁盘，**双击 `一键安装`**（图标是一枚银灰色驱动器）；
 3. 它会把旧版本移到废纸篓（不是删除）、装入新版、清掉刚装入那一份的来历标签、
    校验包体完整性，然后自己打开。
@@ -56,10 +56,10 @@ xattr -dr com.apple.quarantine /Applications/Skyrocket.app
 ## 想核对拿到的是不是同一份包（可选）
 
 ```sh
-shasum -a 256 ~/Downloads/Skyrocket-1.4.90-macos.zip
+shasum -a 256 ~/Downloads/Skyrocket-1.4.91-macos.zip
 ```
 
-期望值：`8c207b0d79103f5d4854fe111e36c872e51176c9a37d5a9e21fc3127d534c8fc`。不一致就是包在路上被换过或下坏了，重新按第一种装法来一次。
+期望值：`582cacc0bf0dd99c7f05fb834b9bb5c8c72d40a4809c6e9e40c76d08998705f3`。不一致就是包在路上被换过或下坏了，重新按第一种装法来一次。
 
 ## 照做之后还是装不上
 
