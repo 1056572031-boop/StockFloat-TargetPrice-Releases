@@ -29,7 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sf_constants import APP_DISPLAY_NAME, APP_VERSION  # noqa: E402
+from sf_constants import APP_DISPLAY_NAME, APP_VERSION, DESKTOP_OUTPUT_DIR  # noqa: E402
 
 import make_update_assets  # noqa: E402  （REPO / TAG / APP_NAME 的唯一来源）
 from verify_install_paths import launcher_script  # noqa: E402  （卷内双击脚本：名字按 installer/*.command 发现）
@@ -80,7 +80,7 @@ def download_url(version: str = APP_VERSION) -> str:
 def manifest_sha256() -> str | None:
     """本轮包的 sha256，用来给用户一句可核对的话；拿不到就整段不写（不编数字）。"""
     for cand in (ROOT / "build" / "update_assets" / ("V%s" % APP_VERSION) / "Skyrocket-update.json",
-                 Path.home() / "Desktop" / "Skyrocket-update.json"):
+                 Path(DESKTOP_OUTPUT_DIR) / "Skyrocket-update.json"):
         if not cand.is_file():
             continue
         try:
@@ -176,7 +176,7 @@ def render(local_only: bool = False) -> str:
             "3. 核对本地交付记录中的 SHA-256；来源不明或校验失败时停止安装。",
             "",
             "```sh",
-            "shasum -a 256 ~/Desktop/Skyrocket-V%s.dmg" % APP_VERSION,
+            "shasum -a 256 ~/Desktop/Skyrocket/Skyrocket-V%s.dmg" % APP_VERSION,
             "```",
             "",
             "## 签名与隐私边界",
@@ -232,8 +232,8 @@ def render(local_only: bool = False) -> str:
         "## 二、双击安装（拿到的是 DMG，且不想碰终端）",
         "",
         # v1.4.60（复核 F3）：这一行原先少了一步 % 运算，发出去的文档里字面写着
-        # `Skyrocket-V%s.dmg`，用户对着桌面上真实的 Skyrocket-V1.4.59.dmg 找不着北。
-        "1. 双击桌面上的 `Skyrocket-V%s.dmg`，它会挂载成一个白色磁盘图标；" % ver,
+        # `Skyrocket-V%s.dmg`，用户对着桌面 Skyrocket 文件夹里的真实包找不着北。
+        "1. 打开桌面上的 `Skyrocket` 文件夹，双击其中的 `Skyrocket-V%s.dmg`，它会挂载成一个白色磁盘图标；" % ver,
         # 这一步写的是用户**看得见**的那个名字，不是磁盘上的真名：发版链第 4 步会把
         # `.command` 从显示里去掉（磁盘上的名字没变，双击仍然交给终端执行）。
         # 为什么走 AIC.volume_displayed_name 而不是在这里自己切一刀：切法与"卷里到底
@@ -278,7 +278,7 @@ def render(local_only: bool = False) -> str:
         "",
         "- 你用的是第几种装法、卡在哪一步（截图最好）；",
         "- 你的 macOS 版本（苹果菜单 → 关于本机）；",
-        "- 如果程序曾经打开过：右键悬浮窗 →「导出诊断包」，把桌面上的 zip 一并发来。",
+        "- 如果程序曾经打开过：右键悬浮窗 →「导出诊断包」，把桌面 `Skyrocket` 文件夹里的 zip 一并发来。",
         "",
         "诊断包不会自动上传，但可能有股票代码、设备信息、运行状态和脱敏后的错误日志。",
         "发送前请检查并删除不愿公开的信息，不要把完整诊断包直接贴进公开 Issue。",

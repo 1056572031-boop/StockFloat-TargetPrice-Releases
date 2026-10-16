@@ -8,6 +8,7 @@ Release 资产。V1.3.96 起的客户端从 releases 仓库 main 分支固定文
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -113,27 +114,117 @@ def load_release(token):
     return json.loads(request(release_url(), token))
 
 
-def verified_asset(release, archive):
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def quality_module():
+    # 独立 CLI 和测试按路径加载时都使用同一份真实核验器。
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "publish_quality_evidence", Path(__file__).with_name("quality_evidence.py"))
+    if spec is None or spec.loader is None:
+        raise ValueError("无法加载质量证据核验器")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def publication_snapshot(archive, manifest, notes):
+    """凭据及网络之前核验；返回之后发布所需的不可变字节。"""
+    try:
+        manifest_bytes = manifest.read_bytes()
+        metadata = json.loads(manifest_bytes)
+        if not isinstance(metadata, dict):
+            raise ValueError("更新清单必须是对象")
+        check_release_notes(notes, manifest, metadata)
+        record_ref = os.environ.get("SF_QUALITY_RECORD", "").strip()
+        if not record_ref:
+            raise ValueError("缺少 SF_QUALITY_RECORD")
+        record_path = Path(record_ref).resolve()
+        quality = quality_module()
+        record = quality.load(record_path)
+        evidence_manifest = record_path.with_suffix(".manifest.json")
+        errors = quality.verify_release_candidate(
+            SOURCE_ROOT, record, record_path.parent, evidence_manifest)
+        if errors:
+            raise ValueError("正式发布资格未通过：" + "; ".join(errors))
+        stored = quality.load(evidence_manifest)
+        matches = [item for item in stored["artifacts"]
+                   if quality.resolve_reference(record_path.parent, item["path"]) == archive.resolve()]
+        if len(matches) != 1:
+            raise ValueError("ZIP 必须唯一绑定质量 manifest 中的产物")
+        archive_bytes = archive.read_bytes()
+        # quality 摘要包含权限与目录结构，不是 OTA 的原始文件 SHA-256。
+        mode = oct(archive.stat().st_mode & 0o777)
+        raw_hash = hashlib.sha256(archive_bytes).hexdigest()
+        entries = [[".", mode, raw_hash]]
+        identity = hashlib.sha256(json.dumps(
+            entries, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+        if (matches[0].get("sha256") != identity or matches[0].get("kind") != "file"
+                or matches[0].get("entries") != 1):
+            raise ValueError("ZIP 字节与质量 manifest 不一致")
+        info = metadata.get("archive")
+        if not isinstance(info, dict):
+            raise ValueError("更新清单缺少 archive 对象")
+        if type(info.get("size")) is not int or info["size"] != len(archive_bytes):
+            raise ValueError("ZIP 原始大小与更新清单不一致")
+        if not isinstance(info.get("sha256"), str) or info["sha256"] != raw_hash:
+            raise ValueError("ZIP 原始 SHA-256 与更新清单不一致")
+        url = info.get("url")
+        expected_url = "https://github.com/%s/releases/download/%s/%s" % (REPO, TAG, archive.name)
+        if not isinstance(url, str) or urllib.parse.unquote(url) != expected_url:
+            raise ValueError("ZIP 下载地址与发布目标不一致")
+        return archive_bytes, manifest_bytes, metadata["version"]
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise SystemExit("发布前核验失败：%s" % exc) from exc
+
+
+def verified_asset(release, archive, expected_size=None):
     """返回已上传且大小匹配的版本唯一资产，否则拒绝切换清单。"""
+    if expected_size is None:
+        expected_size = archive.stat().st_size
     for asset in release.get("assets", []):
-        if asset.get("name") == archive.name and asset.get("size") == archive.stat().st_size:
+        if asset.get("name") == archive.name and asset.get("size") == expected_size:
             return asset
     raise SystemExit("上传后未验证到版本 ZIP，未更新线上清单")
 
 
-def upload_archive(token, release, archive):
+def download_asset(token, asset):
+    """读回资产原始字节；名称和大小都相同也不能替代内容核对。"""
+    url = asset.get("url") or asset.get("browser_download_url")
+    if not isinstance(url, str) or not url:
+        raise SystemExit("上传后资产缺少可读回地址，未更新线上清单")
+    headers = {
+        "Accept": "application/octet-stream",
+        "Authorization": "Basic " + base64.b64encode(
+            ("x-access-token:" + token).encode("utf-8")).decode("ascii"),
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=resolve_timeouts()[0]) as response:
+            return response.read()
+    except Exception as exc:
+        raise SystemExit("上传后资产原始字节读回失败：%r" % (exc,)) from exc
+
+
+def upload_archive(token, release, archive, archive_bytes):
     if any(asset.get("name") == archive.name for asset in release.get("assets", [])):
         raise SystemExit("固定 Release 已有同名版本 ZIP，拒绝覆盖")
     request(upload_url(release["id"], archive.name), token, method="POST",
-            data=archive.read_bytes(), content_type="application/zip",
+            data=archive_bytes, content_type="application/zip",
             timeout=resolve_timeouts()[0])
-    return verified_asset(load_release(token), archive)
+    asset = verified_asset(load_release(token), archive, len(archive_bytes))
+    downloaded = download_asset(token, asset)
+    if downloaded != archive_bytes:
+        raise SystemExit("上传后 ZIP 原始字节与本地固定快照不一致，未更新线上清单")
+    return asset
 
 
-def manifest_commit_payload(manifest, existing_sha):
+def manifest_commit_payload(manifest_bytes, existing_sha):
     payload = {
         "message": "发布更新清单指针",
-        "content": base64.b64encode(manifest.read_bytes()).decode("ascii"),
+        "content": base64.b64encode(manifest_bytes).decode("ascii"),
         "branch": "main",
     }
     if existing_sha:
@@ -141,7 +232,7 @@ def manifest_commit_payload(manifest, existing_sha):
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def publish_manifest_pointer(token, manifest):
+def publish_manifest_pointer(token, manifest_bytes):
     """通过 Contents API 单次提交固定清单，提交前的 ZIP 已可下载并经验证。"""
     url = contents_url()
     try:
@@ -151,21 +242,31 @@ def publish_manifest_pointer(token, manifest):
             raise
         existing_sha = None
     request(url, token, method="PUT",
-            data=manifest_commit_payload(manifest, existing_sha))
+            data=manifest_commit_payload(manifest_bytes, existing_sha))
+    payload = json.loads(request(url, token))
+    try:
+        read_back = base64.b64decode(payload["content"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise SystemExit("Contents 清单写入后无法读回原始字节") from exc
+    if read_back != manifest_bytes:
+        raise SystemExit("Contents 清单写入后原始字节不一致，未替换旧客户端清单")
 
 
-def publish_legacy_manifest(token, release, manifest):
+def publish_legacy_manifest(token, release, manifest_bytes):
     """迁移期仅替换旧客户端唯一依赖的 manifest；版本 ZIP 绝不删除。"""
     old = next((asset for asset in release.get("assets", [])
                 if asset.get("name") == MANIFEST_PATH), None)
     if old is not None:
         request(API_ROOT + "/releases/assets/" + str(old["id"]), token, method="DELETE")
     request(upload_url(release["id"], MANIFEST_PATH), token, method="POST",
-            data=manifest.read_bytes(), content_type="application/json")
+            data=manifest_bytes, content_type="application/json")
     refreshed = load_release(token)
-    if not any(asset.get("name") == MANIFEST_PATH and asset.get("size") == manifest.stat().st_size
-               for asset in refreshed.get("assets", [])):
+    asset = next((asset for asset in refreshed.get("assets", [])
+                  if asset.get("name") == MANIFEST_PATH), None)
+    if asset is None or asset.get("size") != len(manifest_bytes):
         raise SystemExit("旧客户端清单上传后未验证，停止发布")
+    if download_asset(token, asset) != manifest_bytes:
+        raise SystemExit("旧客户端清单上传后原始字节不一致，停止发布")
 
 
 RAW_MANIFEST_URL = ("https://raw.githubusercontent.com/" + REPO + "/main/" + MANIFEST_PATH)
@@ -199,15 +300,25 @@ def readback_verdict(repo_manifest, expected_version, raw_manifest=None):
     return ok, lines
 
 
-def _fetch_manifest_json(url, token=None):
-    """拉一份清单 JSON；拉不到返回 None（调用方按"没读到"处理，绝不当成成功）。"""
+def _fetch_manifest_bytes(url, token=None):
+    """读取清单原始字节；API Contents 与公开 raw 都走同一条判定。"""
     try:
         if url.startswith(API_ROOT):
             data = json.loads(request(url, token))
-            return json.loads(base64.b64decode(data["content"]).decode("utf-8"))
+            return base64.b64decode(data["content"])
         req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=resolve_timeouts()[1]) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return response.read()
+    except Exception as exc:
+        print("   （读回拉取失败 %s：%r）" % (url, exc), file=sys.stderr)
+        return None
+
+
+def _fetch_manifest_json(url, token=None):
+    """拉一份清单 JSON；拉不到返回 None（调用方按"没读到"处理，绝不当成成功）。"""
+    try:
+        data = _fetch_manifest_bytes(url, token)
+        return json.loads(data.decode("utf-8")) if data is not None else None
     except Exception as exc:
         # 本工具是独立 CLI，没有产品那套日志通道；读不到就说读不到（stderr + 返回 None，
         # 调用方按「没读到」判失败，绝不当成成功）。
@@ -215,10 +326,14 @@ def _fetch_manifest_json(url, token=None):
         return None
 
 
-def verify_live_manifest(token, expected_version):
+def verify_live_manifest(token, expected_version, expected_bytes=None):
     """发布后必须读回：仓库侧不过关就直接非零退出（发版链据此中止）。"""
-    repo = _fetch_manifest_json(contents_url(), token)
-    raw = _fetch_manifest_json(RAW_MANIFEST_URL)
+    repo_bytes = _fetch_manifest_bytes(contents_url(), token)
+    raw_bytes = _fetch_manifest_bytes(RAW_MANIFEST_URL)
+    repo = json.loads(repo_bytes.decode("utf-8")) if repo_bytes is not None else None
+    raw = json.loads(raw_bytes.decode("utf-8")) if raw_bytes is not None else None
+    if expected_bytes is not None and repo_bytes != expected_bytes:
+        raise SystemExit("发布读回未通过：Contents 清单原始字节不一致，不宣布发版成功")
     ok, lines = readback_verdict(repo, expected_version, raw)
     for line in lines:
         print(line)
@@ -227,7 +342,7 @@ def verify_live_manifest(token, expected_version):
     return True
 
 
-def check_release_notes(notes_path, manifest_path):
+def check_release_notes(notes_path, manifest_path, metadata=None):
     """对拍"release_notes.txt 的本次版本一节"与"即将签发的清单 notes"。
 
     原来这里只有一句 `notes = read(); if not notes or len(notes) > 4000: 拒绝`，
@@ -243,7 +358,7 @@ def check_release_notes(notes_path, manifest_path):
         或反过来；也防把整份历史塞进弹窗 —— 那是 v1.4.20 的真实事故）；
       · 长度上限按**本次版本说明**计，与客户端 sf_update.verify_manifest 同口径。
     """
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = metadata if metadata is not None else json.loads(manifest_path.read_text(encoding="utf-8"))
     version = str(manifest.get("version") or "")
     signed_notes = str(manifest.get("notes") or "")
     if not version or not signed_notes:
@@ -387,20 +502,20 @@ def main():
     manifest = assets / MANIFEST_PATH
     if len(archives) != 1 or not manifest.is_file():
         raise SystemExit("更新资产不完整或版本 ZIP 不唯一")
-    check_release_notes(args.notes, manifest)
     archive = archives[0]
+    archive_bytes, manifest_bytes, expected_version = publication_snapshot(archive, manifest, args.notes)
     token = github_token()
     release = load_release(token)
-    asset = upload_archive(token, release, archive)
+    asset = upload_archive(token, release, archive, archive_bytes)
     # 新客户端的 raw 清单先切换：一旦它可见，ZIP 已存在且已验证。
-    publish_manifest_pointer(token, manifest)
+    publish_manifest_pointer(token, manifest_bytes)
     # 旧客户端仍从固定 Release 取清单；最后才替换这一枚小清单，不触碰历史 ZIP。
-    publish_legacy_manifest(token, load_release(token), manifest)
+    publish_legacy_manifest(token, load_release(token), manifest_bytes)
     print("published_archive=%s" % asset["name"])
     print("published_manifest_pointer=main/%s" % MANIFEST_PATH)
     print("published_legacy_manifest=%s" % MANIFEST_PATH)
     # 打印不等于生效：必须绕开 CDN 读回仓库里的那一份，版本对不上就中止发版。
-    verify_live_manifest(token, json.loads(manifest.read_bytes()).get("version"))
+    verify_live_manifest(token, expected_version, manifest_bytes)
     print("   线上清单读回一致，发版可以宣布成功")
 
 

@@ -19,6 +19,7 @@
 """
 
 import contextlib
+import base64
 import io
 import json
 import marshal
@@ -326,7 +327,7 @@ class TestPublishToolGuards(unittest.TestCase):
             calls = []
             with patch.object(self.tool, "request", side_effect=calls.append):
                 with self.assertRaises(SystemExit):
-                    self.tool.upload_archive("t", self._release([{"name": "a.zip"}]), arc)
+                    self.tool.upload_archive("t", self._release([{"name": "a.zip"}]), arc, b"x")
             self.assertEqual(calls, [], "同名版本 ZIP 存在时不得发出任何上传请求")
 
     def test_upload_then_verify_roundtrip(self):
@@ -337,8 +338,9 @@ class TestPublishToolGuards(unittest.TestCase):
             with patch.object(self.tool, "request",
                               side_effect=lambda url, *a, **k: urls.append((url, k.get("method")))), \
                  patch.object(self.tool, "load_release",
-                              return_value=self._release([{"name": "a.zip", "size": 3}])):
-                got = self.tool.upload_archive("t", self._release([]), arc)
+                              return_value=self._release([{"name": "a.zip", "size": 3}])), \
+                 patch.object(self.tool, "download_asset", return_value=b"zip"):
+                got = self.tool.upload_archive("t", self._release([]), arc, b"zip")
             self.assertEqual(got["name"], "a.zip")
             self.assertEqual([m for _, m in urls], ["POST"], "只应发一次上传请求")
 
@@ -347,8 +349,8 @@ class TestPublishToolGuards(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             mf = pathlib.Path(tmp) / "m.json"
             mf.write_bytes(b"{}")
-            base = json.loads(self.tool.manifest_commit_payload(mf, None))
-            with_sha = json.loads(self.tool.manifest_commit_payload(mf, "abc123"))
+            base = json.loads(self.tool.manifest_commit_payload(mf.read_bytes(), None))
+            with_sha = json.loads(self.tool.manifest_commit_payload(mf.read_bytes(), "abc123"))
             self.assertNotIn("sha", base)
             self.assertEqual(with_sha["sha"], "abc123")
             self.assertEqual(with_sha["branch"], "main")
@@ -364,12 +366,14 @@ class TestPublishToolGuards(unittest.TestCase):
             def fake_request(url, token, method="GET", data=None, **k):
                 verbs.append(method)
                 if method == "GET":
-                    raise gone
+                    if len(verbs) == 1:
+                        raise gone
+                    return json.dumps({"content": base64.b64encode(b"{}").decode()}).encode()
                 return b"{}"
 
             with patch.object(self.tool, "request", side_effect=fake_request):
-                self.tool.publish_manifest_pointer("t", mf)
-            self.assertEqual(verbs, ["GET", "PUT"], "404 之后仍要提交清单")
+                self.tool.publish_manifest_pointer("t", mf.read_bytes())
+            self.assertEqual(verbs, ["GET", "PUT", "GET"], "404 之后仍要提交并读回清单")
 
     def test_server_error_is_not_mistaken_for_missing_manifest(self):
         import urllib.error
@@ -380,7 +384,7 @@ class TestPublishToolGuards(unittest.TestCase):
             self.addCleanup(boom.close)
             with patch.object(self.tool, "request", side_effect=boom):
                 with self.assertRaises(urllib.error.HTTPError):
-                    self.tool.publish_manifest_pointer("t", mf)
+                    self.tool.publish_manifest_pointer("t", mf.read_bytes())
 
     def test_legacy_manifest_reupload_is_verified(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -393,7 +397,7 @@ class TestPublishToolGuards(unittest.TestCase):
                               return_value=self._release([{"name": "m.json", "size": 99}])):
                 with self.assertRaises(SystemExit):
                     self.tool.publish_legacy_manifest(
-                        "t", self._release([{"id": 9, "name": self.tool.MANIFEST_PATH}]), mf)
+                        "t", self._release([{"id": 9, "name": self.tool.MANIFEST_PATH}]), mf.read_bytes())
             self.assertEqual(verbs[:2], ["DELETE", "POST"], "旧清单先删后传")
 
     def test_legacy_manifest_publishes_and_verifies_when_size_matches(self):
@@ -403,8 +407,9 @@ class TestPublishToolGuards(unittest.TestCase):
             with patch.object(self.tool, "request", return_value=b"{}"), \
                  patch.object(self.tool, "load_release",
                               return_value=self._release(
-                                  [{"name": self.tool.MANIFEST_PATH, "size": 3}])):
-                self.tool.publish_legacy_manifest("t", self._release([]), mf)
+                                  [{"name": self.tool.MANIFEST_PATH, "size": 3}])), \
+                 patch.object(self.tool, "download_asset", return_value=b"123"):
+                self.tool.publish_legacy_manifest("t", self._release([]), mf.read_bytes())
 
     # ---- 入口闸门 ----
     def _run_main(self, notes_text, zips):

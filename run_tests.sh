@@ -48,23 +48,39 @@ if [ -n "${SF_GUARD_PROBE:-}" ]; then
   exit 0
 fi
 
+# 只接受质量执行器创建的会话边界；普通环境变量不构成删除配置文件的授权。
+if [ -n "${SF_QUALITY_SESSION_DIR:-}" ]; then
+  "$PY" -c '
+import os
+from pathlib import Path
+root = Path(os.environ["SF_QUALITY_SESSION_DIR"]).resolve(strict=True)
+expected = {"SF_CONFIG_PATH": "config.json", "SF_LAST_QUOTE_PATH": "quote.json",
+            "SF_UNIVERSE_PATH": "universe.json", "SF_LOG_PATH": "debug.log",
+            "SF_SINGLE_SOCK": "single.sock"}
+for key, name in expected.items():
+    value = Path(os.environ.get(key, ""))
+    if value.is_symlink() or value.resolve() != root / name:
+        raise SystemExit("不安全的质量会话路径: " + key)
+' || exit 1
+else
+  unset SF_CONFIG_PATH SF_LAST_QUOTE_PATH SF_UNIVERSE_PATH SF_LOG_PATH SF_SINGLE_SOCK
+fi
+
 # v1.3.45：首屏数据快照（last_quote.json）重定向到临时目录。
 # 不重定向的话，用例之间会互相"预填"上一条行情：A 用例写完、B 用例构造主窗时就
 # 直接把 A 的价格填进首屏 —— 「无数据显示 --」这一整类断言会被打穿，
 # 同时测试还会往用户真实的 ~/Library/Application Support/ 里写东西。
-export SF_LAST_QUOTE_PATH="${TMPDIR:-/tmp}/sf_last_quote_test.json"
+export SF_LAST_QUOTE_PATH="${SF_LAST_QUOTE_PATH:-${TMPDIR:-/tmp}/sf_last_quote_test.json}"
 rm -f "$SF_LAST_QUOTE_PATH"
 # v1.3.50：主配置 config.json 也必须重定向到临时目录。
-# 不重定向的话，跑一次全量回归就会把**用户真实配置**改掉 —— 实测一次回归就把
-# 线上 bg 从 glass 写成 translucent，直接表现为"毛玻璃消失"，还会把排障方向
-# 带偏到渲染/并发上去（真正的元凶是测试写脏了配置）。
-export SF_CONFIG_PATH="${TMPDIR:-/tmp}/sf_config_test.json"
+# 外层 quality_evidence.run 若已提供会话目录，则必须沿用它，保证 receipt 与落盘现场同源。
+export SF_CONFIG_PATH="${SF_CONFIG_PATH:-${TMPDIR:-/tmp}/sf_config_test.json}"
 rm -f "$SF_CONFIG_PATH" "$SF_CONFIG_PATH.bak"
-# v1.3.69：测试运行器本身也显式隔离所有落盘物，避免覆盖率/子进程
+# v1.3.69：测试运行器本身也显式隔离所有落盘物；避免覆盖率/子进程
 # 尚未加载 sf_constants 时先写入真实日志或单实例 socket。
-export SF_UNIVERSE_PATH="${TMPDIR:-/tmp}/sf_securities_test.json"
-export SF_LOG_PATH="${TMPDIR:-/tmp}/sf_debug_test.log"
-export SF_SINGLE_SOCK="${TMPDIR:-/tmp}/sf_single_test.sock"
+export SF_UNIVERSE_PATH="${SF_UNIVERSE_PATH:-${TMPDIR:-/tmp}/sf_securities_test.json}"
+export SF_LOG_PATH="${SF_LOG_PATH:-${TMPDIR:-/tmp}/sf_debug_test.log}"
+export SF_SINGLE_SOCK="${SF_SINGLE_SOCK:-${TMPDIR:-/tmp}/sf_single_test.sock}"
 # 同时关掉首屏预填：否则同一进程里 A 用例写完快照、B 用例构造主窗时就被预填，
 # 「无数据显示 --」这一整类断言会互相串味。预填功能本身由 tests/test_v1345.py 单独验。
 export SF_SEED_FIRST_SCREEN=0

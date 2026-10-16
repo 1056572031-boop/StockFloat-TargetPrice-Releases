@@ -84,10 +84,10 @@ class DiagnosticsBranchCase(SFCase):
         super().setUp()
         self.tmp = tempfile.mkdtemp(prefix="sf_diag_branch_")
         self.home = os.path.join(self.tmp, "home")
-        # 真用户的 HOME 里一定有 Desktop（导出物默认落在那里）；
+        # 真用户的 HOME 里一定有 Desktop（导出物默认落在其 Skyrocket 子目录）；
         # 临时 HOME 不建它，导出会 FileNotFoundError 返回 None —— 那是夹具缺件，
         # 不是被测行为。
-        os.makedirs(os.path.join(self.home, "Desktop"), exist_ok=True)
+        os.makedirs(os.path.join(self.home, "Desktop", "Skyrocket"), exist_ok=True)
         self.cfg_path = os.path.join(self.tmp, "config.json")
         self.log_path = os.path.join(self.tmp, "debug.log")
         with open(self.cfg_path, "w", encoding="utf-8") as f:
@@ -111,6 +111,8 @@ class DiagnosticsBranchCase(SFCase):
             mock.patch.object(m, "CONFIG_BACKUP_PATH", self.cfg_path + ".bak"),
             mock.patch.object(m, "LAST_QUOTE_PATH", os.path.join(self.tmp, "last_quote.json")),
             mock.patch.object(m, "LOG_PATH", self.log_path),
+            mock.patch.object(m, "DESKTOP_OUTPUT_DIR",
+                              os.path.join(self.home, "Desktop", "Skyrocket")),
             mock.patch.object(subprocess, "Popen", _fake_popen),
             # "在访达里显示"这条路径不是被检对象，拦掉即可
             mock.patch.object(m.QToolTip, "showText", lambda *a, **k: None),
@@ -152,7 +154,7 @@ class DiagnosticsBranchCase(SFCase):
         """真导一次，返回 zip 内的 {文件名: 文本}。"""
         out = self.win._export_diagnostics()  # discipline-ok(R5): 被测对象本身就是 GlassMixin/FloatWindow 的私有入口
         self.assertIsNotNone(out, "导出必须成功（返回 zip 路径）")
-        self.assertTrue(out.startswith(os.path.join(self.home, "Desktop")),
+        self.assertTrue(out.startswith(os.path.join(self.home, "Desktop", "Skyrocket")),
                         "产物必须落在被重定向的临时 HOME 里，不许写到真桌面")
         with zipfile.ZipFile(out) as z:
             return {name: z.read(name).decode("utf-8", "replace") for name in z.namelist()}
@@ -241,7 +243,7 @@ class DiagnosticsBranchCase(SFCase):
                 self.assertIn("diagnostics.txt", archive.namelist())
 
     def test_write_failure_leaves_no_archive_or_temporary_file(self):
-        desktop = os.path.join(self.home, "Desktop")
+        desktop = os.path.join(self.home, "Desktop", "Skyrocket")
         before = set(os.listdir(desktop))
         with mock.patch.object(zipfile.ZipFile, "writestr", side_effect=OSError("disk full")):
             result = self.win._export_diagnostics()  # discipline-ok(R5): 被测对象本身就是私有入口
@@ -249,7 +251,7 @@ class DiagnosticsBranchCase(SFCase):
         self.assertEqual(set(os.listdir(desktop)), before)
 
     def test_publication_failure_preserves_an_existing_export(self):
-        desktop = os.path.join(self.home, "Desktop")
+        desktop = os.path.join(self.home, "Desktop", "Skyrocket")
         original = self.win._export_diagnostics()  # discipline-ok(R5): 被测对象本身就是私有入口
         with open(original, "rb") as stream:
             original_bytes = stream.read()

@@ -20,6 +20,8 @@ import json
 import os
 import pathlib
 import re
+import hashlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -65,6 +67,11 @@ class _State:
         self.last_headers = {}     # 最近一次请求的请求头
         self.next_asset_id = 900
         self.drop_asset_after_upload = False    # 模拟"传上去但服务端查不到"
+        self.corrupt_archive_after_upload = False
+        self.corrupt_contents_readback = False
+        self.fail_asset_download = False
+        self.manifest_name = "Skyrocket-update.json"
+        self.base = ""
 
     def add(self, method, route):
         self.log.append((method, route))
@@ -104,7 +111,15 @@ class _Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length) if length else b""
 
     def do_GET(self):
-        self.st.last_headers = {k.lower(): v for k, v in self.headers.items()}
+        headers = {k.lower(): v for k, v in self.headers.items()}
+        if "/raw/" in self.tail:
+            self.st.raw_headers = headers
+            # 模拟公开 raw URL；它只读当前 Contents 内容，不走 authenticated API。
+            entry = self.st.contents.get(self.st.manifest_name)
+            if entry is None:
+                return self._reply(404, b'{"message":"Not Found"}')
+            return self._reply(200, entry["content"])
+        self.st.last_headers = headers
         if "releases/tags/" in self.tail:
             self.st.add("GET", "release")
             return self._reply(200, json.dumps(self.st.release).encode())
@@ -114,9 +129,22 @@ class _Handler(BaseHTTPRequestHandler):
             entry = self.st.contents.get(name)
             if entry is None:
                 return self._reply(404, b'{"message":"Not Found"}')
+            content = entry["content"]
+            if self.st.corrupt_contents_readback:
+                content = b"X" + content[1:]
             return self._reply(200, json.dumps(
                 {"sha": entry["sha"],
-                 "content": base64.b64encode(entry["content"]).decode()}).encode())
+                 "content": base64.b64encode(content).decode()}).encode())
+        match = re.search(r"/releases/assets/(\d+)$", self.tail)
+        if match:
+            asset_id = int(match.group(1))
+            asset = next((item for item in self.st.release["assets"]
+                          if item.get("id") == asset_id), None)
+            if asset is None:
+                return self._reply(404, b'{"message":"Not Found"}')
+            if self.st.fail_asset_download:
+                return self._reply(503, b'{"message":"temporary failure"}')
+            return self._reply(200, self.st.blobs[asset["name"]])
         return self._reply(404, b'{"message":"Not Found"}')
 
     def do_POST(self):
@@ -127,7 +155,11 @@ class _Handler(BaseHTTPRequestHandler):
         name = urllib.parse.parse_qs(self.tail.split("?", 1)[1]).get("name", [""])[0]
         body = self._body()
         self.st.blobs[name] = body
-        asset = {"id": self.st.next_asset_id, "name": name, "size": len(body)}
+        if self.st.corrupt_archive_after_upload and name.endswith("-macos.zip"):
+            self.st.blobs[name] = b"X" * len(body)
+        asset_id = self.st.next_asset_id
+        asset = {"id": asset_id, "name": name, "size": len(body),
+                 "url": self.st.base + "/repos/test/releases/assets/%d" % asset_id}
         self.st.next_asset_id += 1
         if not self.st.drop_asset_after_upload:
             self.st.release["assets"].append(asset)
@@ -174,6 +206,9 @@ class PublishEndToEndTest(unittest.TestCase):
         self.thread.start()
         self.addCleanup(self._stop)
         base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        self.state.base = base
+        self.raw_root = base + "/raw"
+        self.state.manifest_name = self.tool.MANIFEST_PATH
         roots = (self.tool.API_ROOT, self.tool.UPLOAD_ROOT)
         self.addCleanup(setattr_chain, self.tool, roots)
         self.tool.API_ROOT = base + "/repos/" + self.tool.REPO
@@ -195,25 +230,110 @@ class PublishEndToEndTest(unittest.TestCase):
         assets.mkdir()
         if with_archive:
             (assets / ARCHIVE_NAME).write_bytes(ARCHIVE_BYTES)
-            # 真实清单（tools/make_update_assets.py 产出的）必然带 notes —— 它是签名
-            # 载荷的一部分。这里若不写，就等于拿一个生产端不可能出现的形状去喂发布
-            # 闸门，闸门只能要么放过假形状、要么把真流程测死。
+            app = root / "Skyrocket.app"
+            (app / "Contents").mkdir(parents=True)
+            (app / "Contents" / "Info.plist").write_bytes(b"app-fixture")
+            dmg = root / "Skyrocket-1.4.17.dmg"
+            dmg.write_bytes(b"dmg-fixture")
             (assets / self.tool.MANIFEST_PATH).write_text(
                 json.dumps({"version": "1.4.17",
-                            "notes": notes if manifest_notes is None else manifest_notes}),
-                encoding="utf-8")
+                            "notes": notes if manifest_notes is None else manifest_notes,
+                            "archive": {
+                                "url": "https://github.com/%s/releases/download/%s/%s" % (
+                                    self.tool.REPO, self.tool.TAG, ARCHIVE_NAME),
+                                "size": len(ARCHIVE_BYTES),
+                                "sha256": hashlib.sha256(ARCHIVE_BYTES).hexdigest(),
+                            }}), encoding="utf-8")
+        # 真执行器、真核验器，只在临时 git 源树中运行；观测是协议夹具而非真机验收。
+        quality = self.tool.quality_module()
+        source = root / "source"
+        source.mkdir()
+        subprocess.run(["git", "init", "--quiet", str(source)], check=True,
+                       capture_output=True,
+                       env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
+        (source / "probe.py").write_text("print('protocol fixture')\n", encoding="utf-8")
+        receipt_path = quality.run_command(source, root / "sessions", ["/usr/bin/true"], 3)
+        receipt = quality.load(receipt_path)
+        reference = receipt_path.relative_to(root).as_posix()
+        record = quality.template()
+        record.update({
+            "intent": "离线发布协议测试，不证明产品真机验收", "scope": ["probe.py"],
+            "acceptance": ["发布前证据可核验"],
+            "acceptance_map": [{"acceptance": "发布前证据可核验", "evidence_index": 0}],
+            "verification_evidence": [{"command": shlex.join(receipt["argv"]),
+                                       "exit_code": 0, "receipt": reference}],
+        })
+        if with_archive:
+            record.update({
+                "status": "release_candidate",
+                "release_qualification": {"stage": "pre_release",
+                                           "policy_version": quality.RELEASE_POLICY_VERSION},
+                "release_artifacts": {
+                    "version": "1.4.17",
+                    "roles": {
+                        "app": {"path": "Skyrocket.app"},
+                        "dmg": {"path": "Skyrocket-1.4.17.dmg"},
+                        "zip": {"path": "update_assets/" + ARCHIVE_NAME},
+                        "ota_manifest": {"path": "update_assets/" + self.tool.MANIFEST_PATH},
+                    },
+                    "ota": {"archive_role": "zip", "manifest_role": "ota_manifest"},
+                },
+                "artifact_fingerprint": {"artifacts": [
+                    {"path": "Skyrocket.app"},
+                    {"path": "Skyrocket-1.4.17.dmg"},
+                    {"path": "update_assets/" + ARCHIVE_NAME},
+                    {"path": "update_assets/" + self.tool.MANIFEST_PATH},
+                ]},
+                "unverified_limitations": ["仅合成协议夹具；产品真实场景全部未执行"],
+            })
+            receipt_hash = quality.sha256_file(receipt_path)
+            for scenario in record["scenarios"]:
+                scenario.update(required=False, reason="离线夹具不证明产品真实场景")
+            artifact_hashes = {
+                role: quality.artifact_token(source.parent / path)["sha256"]
+                for role, path in {
+                    "app": "Skyrocket.app", "dmg": "Skyrocket-1.4.17.dmg",
+                    "zip": "update_assets/" + ARCHIVE_NAME,
+                    "ota_manifest": "update_assets/" + self.tool.MANIFEST_PATH,
+                }.items()
+            }
+            pre_signals = {
+                "local_mac": ("first_frame", "clean_exit"),
+                "fresh_install": ("installed_version", "signature_valid", "first_frame"),
+                "upgrade_install": ("installed_version", "user_data_preserved", "first_frame"),
+                "fullscreen": ("menu_onscreen", "editor_onscreen", "target_bubble_onscreen"),
+            }
+            for name, signals in pre_signals.items():
+                record["scenarios"][quality.SCENARIOS.index(name)].update(
+                    status="passed", required=True,
+                    observation={
+                        "source": receipt["source_start"],
+                        "device_id": receipt["machine"]["device_id"],
+                        "observer": "offline-protocol-fixture",
+                        "procedure": "synthetic release candidate protocol",
+                        "observed_at": receipt["ended_at"],
+                        "artifact_sha256": artifact_hashes["zip"],
+                        "signals": {signal: True for signal in signals},
+                        "attachments": [{"path": reference, "sha256": receipt_hash}],
+                    },
+                    receipts=[reference])
+        record_path = root / "change.json"
+        quality.atomic_json(record_path, record)
+        if with_archive:
+            quality.atomic_json(record_path.with_suffix(".manifest.json"),
+                                quality.manifest(source, record, root))
+        self.enterContext(patch.object(self.tool, "SOURCE_ROOT", source))
+        self.enterContext(patch.dict(os.environ, {"SF_QUALITY_RECORD": str(record_path)}))
         return assets, notes_file
 
     def _publish(self, assets, notes_file, token="local-test-token"):
         out = io.StringIO()
-        done = subprocess.CompletedProcess([], returncode=0,
-                                           stdout="password=%s\n\n" % token, stderr="")
-        with patch.object(self.tool.subprocess, "run", return_value=done), \
+        with patch.object(self.tool, "github_token", return_value=token), \
              patch.object(sys, "argv", ["publish_update_release.py",
                                         "--assets", str(assets),
                                         "--notes", str(notes_file)]), \
              patch.object(self.tool, "RAW_MANIFEST_URL",
-                          self.tool.API_ROOT + "/raw-simulated-lag"), \
+                          self.raw_root + "/manifest"), \
              contextlib.redirect_stdout(out), _quiet_http_error_warnings():
             self.tool.main()
         return out.getvalue()
@@ -224,7 +344,7 @@ class PublishEndToEndTest(unittest.TestCase):
         text = self._publish(assets, notes)
         self.assertEqual(self.state.routes(),
                          ["release", "upload", "release",          # 传 ZIP 并复验
-                          "contents", "contents",                   # 切 raw 清单指针
+                          "contents", "contents", "contents",       # GET/PUT/读回清单指针
                           "release", "upload", "release",          # 换旧客户端清单
                           "contents"],                             # 发布后读回仓库侧清单
                          "顺序错了就等于清单指向还不存在的包")
@@ -232,6 +352,30 @@ class PublishEndToEndTest(unittest.TestCase):
         self.assertIn("published_manifest_pointer", text)
         # 「打印 published」不等于「线上生效」：读回必须真的发生并给出结论
         self.assertIn("读回通过", text, "宣布成功之前没有权威读回，成功与失败看起来一模一样")
+
+    def test_same_size_wrong_archive_bytes_stop_before_manifest_pointer(self):
+        assets, notes = self._workspace()
+        self.state.corrupt_archive_after_upload = True
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes)
+        self.assertIn("原始字节与本地固定快照不一致", str(got.exception))
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_contents_readback_bytes_stop_before_legacy_manifest(self):
+        assets, notes = self._workspace()
+        self.state.corrupt_contents_readback = True
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes)
+        self.assertIn("Contents 清单写入后原始字节不一致", str(got.exception))
+        self.assertNotIn(("DELETE", "asset"), self.state.log)
+
+    def test_archive_download_failure_stops_before_manifest_pointer(self):
+        assets, notes = self._workspace()
+        self.state.fail_asset_download = True
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes)
+        self.assertIn("资产原始字节读回失败", str(got.exception))
+        self.assertNotIn(("PUT", "contents"), self.state.log)
 
     # ---- 超时不许写死（2026-10-12 用户指定："工具里超时写死 60 秒，不要写死"）----
     def _timeouts_seen(self, env=None):
@@ -317,7 +461,7 @@ class PublishEndToEndTest(unittest.TestCase):
                          "上传的字节必须与本地产物逐字节相同")
         served = self.state.contents[self.tool.MANIFEST_PATH]["content"]
         self.assertEqual(json.loads(served),
-                         {"version": "1.4.17", "notes": "修了几个问题"},
+                         json.loads((assets / self.tool.MANIFEST_PATH).read_bytes()),
                          "切上去的清单必须与本地产物逐字段相同")
         self.assertIn(self.tool.MANIFEST_PATH, self.state.asset_names())
         self.assertIn(ARCHIVE_NAME, self.state.asset_names(),
@@ -331,7 +475,7 @@ class PublishEndToEndTest(unittest.TestCase):
         self._publish(assets, notes)
         self.assertEqual(json.loads(
             self.state.contents[self.tool.MANIFEST_PATH]["content"]),
-            {"version": "1.4.17", "notes": "修了几个问题"})
+            json.loads((assets / self.tool.MANIFEST_PATH).read_bytes()))
 
     def test_legacy_manifest_asset_is_deleted_before_the_new_one_is_posted(self):
         self.state.release["assets"].append(
@@ -355,9 +499,7 @@ class PublishEndToEndTest(unittest.TestCase):
 
     def test_incomplete_workspace_stops_before_any_request(self):
         assets, notes = self._workspace(with_archive=False)
-        with patch.object(self.tool.subprocess, "run",
-                          return_value=subprocess.CompletedProcess(
-                              [], returncode=0, stdout="password=t\n", stderr="")):
+        with patch.object(self.tool, "github_token", side_effect=AssertionError("不得读取凭据")):
             with self.assertRaises(SystemExit):
                 with patch.object(sys, "argv", ["p", "--assets", str(assets),
                                                 "--notes", str(notes)]):
@@ -384,6 +526,104 @@ class PublishEndToEndTest(unittest.TestCase):
             self._publish(assets, notes)
         self.assertIn("清单缺少 version 或 notes", str(got.exception))
         self.assertEqual(self.state.log, [])
+
+    def test_preflight_failures_never_read_credentials_or_send_requests(self):
+        assets, notes = self._workspace()
+        record_path = pathlib.Path(os.environ["SF_QUALITY_RECORD"])
+        evidence_path = record_path.with_suffix(".manifest.json")
+        manifest_path = assets / self.tool.MANIFEST_PATH
+        archive_path = assets / ARCHIVE_NAME
+        paths = (record_path, evidence_path, manifest_path, archive_path)
+        baseline = {p: p.read_bytes() for p in paths}
+        cases = (
+            ("missing_record", "缺少 SF_QUALITY_RECORD"),
+            ("record_json", "发布前核验失败"),
+            ("evidence_json", "manifest 无法读取"),
+            ("unbound_zip", "正式产物未列入 artifact_fingerprint"),
+            ("tampered_zip", "manifest 不一致: artifacts"),
+            ("archive_missing", "缺少 archive 对象"),
+            ("archive_type", "缺少 archive 对象"),
+            ("size_missing", "manifest 不一致: artifacts"),
+            ("size_wrong", "manifest 不一致: artifacts"),
+            ("size_bool", "manifest 不一致: artifacts"),
+            ("hash_missing", "manifest 不一致: artifacts"),
+            ("hash_wrong", "manifest 不一致: artifacts"),
+            ("url_wrong", "manifest 不一致: artifacts"),
+        )
+        for mutation, expected in cases:
+            with self.subTest(mutation=mutation):
+                for path, body in baseline.items():
+                    path.write_bytes(body)
+                metadata = json.loads(baseline[manifest_path])
+                env = {"SF_QUALITY_RECORD": str(record_path)}
+                if mutation == "missing_record":
+                    env["SF_QUALITY_RECORD"] = ""
+                elif mutation == "record_json":
+                    record_path.write_bytes(b"{")
+                elif mutation == "evidence_json":
+                    evidence_path.write_bytes(b"{")
+                elif mutation == "unbound_zip":
+                    other = assets.parent / "other.bin"
+                    other.write_bytes(ARCHIVE_BYTES)
+                    quality = self.tool.quality_module()
+                    record = quality.load(record_path)
+                    record["artifact_fingerprint"]["artifacts"] = [{"path": "other.bin"}]
+                    quality.atomic_json(record_path, record)
+                    quality.atomic_json(evidence_path, quality.manifest(
+                        self.tool.SOURCE_ROOT, record, record_path.parent))
+                elif mutation == "tampered_zip":
+                    archive_path.write_bytes(b"X" * len(ARCHIVE_BYTES))
+                else:
+                    info = metadata["archive"]
+                    if mutation == "archive_missing":
+                        del metadata["archive"]
+                    elif mutation == "archive_type":
+                        metadata["archive"] = []
+                    elif mutation == "size_missing":
+                        del info["size"]
+                    elif mutation == "size_wrong":
+                        info["size"] += 1
+                    elif mutation == "size_bool":
+                        info["size"] = True
+                    elif mutation == "hash_missing":
+                        del info["sha256"]
+                    elif mutation == "hash_wrong":
+                        info["sha256"] = "0" * 64
+                    elif mutation == "url_wrong":
+                        info["url"] = "https://example.invalid/wrong.zip"
+                    manifest_path.write_text(json.dumps(metadata), encoding="utf-8")
+                with patch.dict(os.environ, env), \
+                     patch.object(self.tool, "github_token") as credentials, \
+                     patch.object(self.tool, "request") as request, \
+                     patch.object(sys, "argv", ["p", "--assets", str(assets),
+                                                "--notes", str(notes)]), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as got:
+                        self.tool.main()
+                    self.assertIn(expected, str(got.exception))
+                    credentials.assert_not_called()
+                    request.assert_not_called()
+                self.assertEqual(self.state.log, [])
+
+    def test_preflight_snapshot_survives_local_file_replacement(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        original_manifest = manifest.read_bytes()
+        snapshot = self.tool.publication_snapshot
+
+        def replace_after_check(*args):
+            result = snapshot(*args)
+            (assets / ARCHIVE_NAME).write_bytes(b"replaced")
+            manifest.write_bytes(b'{"version":"wrong-version"}')
+            return result
+
+        with patch.object(self.tool, "publication_snapshot", side_effect=replace_after_check):
+            text = self._publish(assets, notes)
+        self.assertEqual(self.state.blobs[ARCHIVE_NAME], ARCHIVE_BYTES)
+        self.assertEqual(self.state.blobs[self.tool.MANIFEST_PATH], original_manifest)
+        self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"], original_manifest)
+        self.assertIn("读回通过", text)
+        self.assertNotIn("authorization", self.state.raw_headers)
 
     def test_credential_never_appears_in_request_line_but_in_header(self):
         assets, notes = self._workspace()

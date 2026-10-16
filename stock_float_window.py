@@ -132,6 +132,7 @@ from sf_utils import _drop_flash_due
 # ---- 模块化拆分 sf_constants：显式导入（含私有名） ----
 from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TINY_PRICE,
                           APP_DISPLAY_NAME, APP_VERSION, CONFIG_BACKUP_PATH, CONFIG_PATH,
+                          DESKTOP_OUTPUT_DIR,
                           # v1.4.41 复核 F2：守卫"采不到画面"的判中断时长与自愈退避。
                           # 从 sf_constants 直取（唯一来源），不绕 sf_presence 转发。
                           FACE_GUARD_FIRST_FRAME_SEC, FACE_GUARD_MENU_TEXT,
@@ -2686,7 +2687,7 @@ QMenu::separator {
         把 ~/Library/Logs/DiagnosticReports 下本应用（StockFloat* .ips/.crash）
         最近 7 天内优先的 1~2 份报告的关键段（异常类型/终止原因/崩溃线程与主线程
         堆栈/二进制镜像关键行，每份 ≤200KB）写入 zip 的 crash_reports/ 目录，
-        原"文件名+时间"清单保留在 diagnostics.txt 作索引。"""
+        原"文件名+时间"清单保留在 diagnostics.txt 作索引。诊断包写入桌面的 Skyrocket 文件夹。"""
         if background and getattr(self, "_diagnostics_exporting", False):
             return None
         out = None
@@ -2694,8 +2695,8 @@ QMenu::separator {
         try:
             from sf_diagnostic_capture import DiagnosticSources, prepare_diagnostics
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            requested = os.path.expanduser("~/Desktop/%s-诊断-%s.zip" %
-                                           (APP_DISPLAY_NAME, ts))
+            requested = os.path.join(DESKTOP_OUTPUT_DIR,
+                                     "%s-诊断-%s.zip" % (APP_DISPLAY_NAME, ts))
             output_dir = os.path.dirname(requested)
             os.makedirs(output_dir, exist_ok=True)
             fd, temp_out = tempfile.mkstemp(

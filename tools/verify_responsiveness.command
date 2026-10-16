@@ -21,7 +21,9 @@ BUNDLE_IDS="com.skyrocket.app com.stockfloat.targetprice"
 APP_NAMES="Skyrocket.app 实时股价-目标价版.app"
 APP_DIR="$HOME/Library/Application Support/StockFloatTargetPrice"
 LOG="$APP_DIR/debug.log"
-REPORT="$HOME/Desktop/跟手性实机复验-$(date +%Y%m%d-%H%M%S).txt"
+DESKTOP_OUTPUT_DIR="$HOME/Desktop/Skyrocket"
+mkdir -p "$DESKTOP_OUTPUT_DIR"
+REPORT="$DESKTOP_OUTPUT_DIR/跟手性实机复验-$(date +%Y%m%d-%H%M%S).txt"
 MODE="${1:-ask}"
 
 # 先处理"关掉实验开关"：不依赖后面的任何检查，随时可还原

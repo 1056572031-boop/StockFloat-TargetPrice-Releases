@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.92'
+APP_VERSION = '1.4.93'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -353,6 +353,8 @@ LOG_MAX_AGE_DAYS = 7
 # 唯一来源：窗口标题、Dock/关于名、临时副本清扫、更新清单校验都从这里读。
 APP_DISPLAY_NAME = 'Skyrocket'
 BUNDLE_ID = 'com.skyrocket.app'
+# 用户可见的程序产物统一放在桌面专用目录，避免 DMG、更新包和诊断包散落在桌面根目录。
+DESKTOP_OUTPUT_DIR = os.path.expanduser('~/Desktop/Skyrocket')
 # 旧名字必须继续认得：/Applications 与 /tmp 里还有 ≤v1.4.54 的旧包，
 # 清扫与「正式版在运行」的检测漏掉它，旧副本就会被 LaunchServices 重新拉起
 # （v1.4.5 那次 SIGSEGV 事故的根源），卸载残留也会漏扫。

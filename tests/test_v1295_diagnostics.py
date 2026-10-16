@@ -105,18 +105,15 @@ class _ExportCase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _export(self):
-        real_expanduser = os.path.expanduser
-        desktop = os.path.join(self.tmp, "Desktop")
+        desktop = os.path.join(self.tmp, "Desktop", "Skyrocket")
         os.makedirs(desktop, exist_ok=True)
-        with patch.object(m.os.path, "expanduser", side_effect=lambda p: (
-                os.path.join(desktop, os.path.basename(p))
-                if p.startswith("~/Desktop/") else real_expanduser(p))) as exp:
+        with patch.object(m, "DESKTOP_OUTPUT_DIR", desktop):
             out = self.win._export_diagnostics()
-        requested = exp.call_args_list[0].args[0]
         # 导出文件名前缀从产品常量现推（v1.4.55 全局改名 Skyrocket，写死的旧名
         # 会让这一族用例整批红，而报错内容完全看不出是改名）。
-        self.assertRegex(requested, r"^~/Desktop/" + sf_constants.APP_DISPLAY_NAME
-                           + r"-诊断-\d{8}_\d{6}\.zip$")
+        self.assertTrue(out.startswith(desktop + os.sep))
+        self.assertRegex(os.path.basename(out), r"^" + sf_constants.APP_DISPLAY_NAME
+                         + r"-诊断-\d{8}_\d{6}\.zip$")
         self.assertIsNotNone(out, "诊断包未生成")
         self.assertTrue(os.path.exists(out), "诊断包未生成")
         return zipfile.ZipFile(out)

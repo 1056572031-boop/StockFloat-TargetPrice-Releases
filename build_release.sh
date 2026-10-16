@@ -5,10 +5,12 @@
 #     ./build_release.sh              # 打包 + 生成 DMG + 安装到 /Applications
 #     ./build_release.sh --no-install # 只打包 + 生成 DMG，不动 /Applications
 #     ./build_release.sh --local-only # 完整门禁 + DMG + 本机安装，不发布 OTA/源码
+#     ./build_release.sh --prepare-only # 只制作当前源码候选 APP/DMG/ZIP/OTA，不安装、不上传
+#     ./build_release.sh --publish-prepared # 使用已验候选，安装并发布，不重新生成资产
 #
 # 约定（用户 2026-09-02 明确要求，长期生效）：
 #   **新程序默认安装到访达「应用程序」/Applications**，而不是桌面。
-#   DMG 安装包仍然输出到桌面，作为分发/归档物。
+#   DMG、自动更新资产等桌面分发物统一输出到桌面的 Skyrocket 文件夹。
 #
 # 流程：
 #   1) 从 sf_constants.APP_VERSION 读取版本号（唯一来源，不硬编码）
@@ -39,17 +41,21 @@ DO_INSTALL=1
 DO_BUILD=1
 SKIP_TESTS=0
 LOCAL_ONLY=0
+PREPARE_ONLY=0
+USE_PREPARED=0
 for arg in "$@"; do
   case "$arg" in
     --no-install) DO_INSTALL=0 ;;
     --local-only) LOCAL_ONLY=1 ;;
+    --prepare-only) PREPARE_ONLY=1; DO_INSTALL=0; LOCAL_ONLY=0 ;;
+    --publish-prepared) USE_PREPARED=1; DO_INSTALL=1; LOCAL_ONLY=0 ;;
     # 跳过 PyInstaller，只重做 DMG + 安装（dist/ 已有产物时用，便于重试 DMG 阶段）
     --skip-build) DO_BUILD=0 ;;
     # 跳过回归关卡（唯一用途：拿同一份代码重做 DMG/OTA 的应急重试）
     --skip-tests) SKIP_TESTS=1 ;;
     *)
       echo "!! 未知参数：$arg" >&2
-      echo "用法：$0 [--no-install] [--local-only] [--skip-build] [--skip-tests]" >&2
+      echo "用法：$0 [--no-install] [--local-only] [--prepare-only] [--publish-prepared] [--skip-build] [--skip-tests]" >&2
       exit 2
       ;;
   esac
@@ -61,6 +67,7 @@ APP_NAME="Skyrocket"
 APP_BUNDLE="$APP_NAME.app"
 INSTALL_DIR="/Applications/$APP_BUNDLE"
 DMG_NAME="$APP_NAME"
+DESKTOP_OUTPUT_DIR="$HOME/Desktop/Skyrocket"
 if [ ! -x "$VENV_PY" ]; then
   echo "!! 未找到工程内虚拟环境解释器：$VENV_PY" >&2
   echo "!! 请先重建 .venv（Python 3.14.7），依赖见 requirements.txt" >&2
@@ -81,12 +88,20 @@ echo "== 发版前置核验：固定签名 / 公开文档 / 公开树（并行�
 PRECHECK_SIGNING=$!
 "$VENV_PY" tools/public_docs_check.py >"$PRECHECK_DIR/docs.log" 2>&1 &
 PRECHECK_DOCS=$!
-"$VENV_PY" tools/public_release.py >"$PRECHECK_DIR/public.log" 2>&1 &
-PRECHECK_PUBLIC=$!
+if [ "$PREPARE_ONLY" -eq 1 ]; then
+  printf '%s\n' 'prepare-only: skip public_release export; no commit/push/public tree is requested' \
+    >"$PRECHECK_DIR/public.log"
+  PRECHECK_PUBLIC=0
+else
+  "$VENV_PY" tools/public_release.py >"$PRECHECK_DIR/public.log" 2>&1 &
+  PRECHECK_PUBLIC=$!
+fi
 PRECHECK_FAILED=0
 wait "$PRECHECK_SIGNING" || PRECHECK_FAILED=1
 wait "$PRECHECK_DOCS" || PRECHECK_FAILED=1
-wait "$PRECHECK_PUBLIC" || PRECHECK_FAILED=1
+if [ "$PRECHECK_PUBLIC" -ne 0 ]; then
+  wait "$PRECHECK_PUBLIC" || PRECHECK_FAILED=1
+fi
 for precheck_log in "$PRECHECK_DIR"/*.log; do
   cat "$precheck_log"
 done
@@ -250,6 +265,17 @@ echo "== 3.75 macOS 26/27 二进制与 Qt 运行库兼容核验 =="
 "$VENV_PY" tools/verify_macos_compat.py "$PROJ/dist/$APP_BUNDLE" --runtime \
   || { echo "!! 包内系统门槛、架构或依赖不兼容，拒绝发布" >&2; exit 1; }
 
+# The record is mandatory even for retry/skip modes; only its structure is checked here.
+# Final evidence qualification waits until the APP, DMG, ZIP and OTA manifest exist.
+if [ -z "${SF_QUALITY_RECORD:-}" ]; then
+  echo "!! 缺少 SF_QUALITY_RECORD 修改单；质量证据不完整，拒绝生成 DMG、安装或发布" >&2
+  exit 1
+fi
+# 这里不能调用 verify：最终 ZIP/DMG 尚未生成，正式产物角色自然还不能核验。
+# 先校验记录结构；等候选产物全部生成后再调用 qualify。
+"$VENV_PY" tools/quality_evidence.py validate "$SF_QUALITY_RECORD" \
+  || { echo "!! 质量修改单结构无效，拒绝继续生成发布流程" >&2; exit 1; }
+
 # ---- 3.8) 首装与更新路线核验（v1.4.58 起）----
 # 为什么值得为它多花两分钟：对外那句「装完第一次就能打开」一直没有机器判据，只靠人
 # 照指引走一遍。这条闸门把判据换成可观测事实（装完那个 bundle 上有没有来历标签、
@@ -273,7 +299,14 @@ echo "== 3.9 诊断覆盖：本轮改过的模块，包里要么有现场、要�
   || { echo "!! 诊断覆盖核对未过：本轮改的模块在诊断包里既没有现场、也没有申报理由" >&2; exit 1; }
 
 # ---- 4) DMG ----
-DESKTOP_DMG="$HOME/Desktop/${DMG_NAME}-V${VERSION}.dmg"
+if [ "$USE_PREPARED" -eq 1 ]; then
+  DESKTOP_DMG="$DESKTOP_OUTPUT_DIR/${DMG_NAME}-V${VERSION}.dmg"
+  DMG_OUT="$PROJ/build/${DMG_NAME}-V${VERSION}.dmg"
+  [ -f "$DMG_OUT" ] || { echo "!! 缺少已准备 DMG：$DMG_OUT" >&2; exit 1; }
+  echo "== 使用已准备 DMG（不重新生成）=="
+else
+mkdir -p "$DESKTOP_OUTPUT_DIR"
+DESKTOP_DMG="$DESKTOP_OUTPUT_DIR/${DMG_NAME}-V${VERSION}.dmg"
 DMG_ROOT="$PROJ/build/dmg_root"
 DMG_OUT="$PROJ/build/${DMG_NAME}-V${VERSION}.dmg"
 mkdir -p "$DMG_ROOT"
@@ -350,18 +383,55 @@ fi
 
 echo "== DMG 构建完毕 =="
 ls -lh "$DMG_OUT" | awk '{print "   " $5, $9}'
-cp -f "$DMG_OUT" "$DESKTOP_DMG"
-echo "   桌面分发包: $DESKTOP_DMG"
-# v1.2.95 第9轮走查：跨版本旧 DMG 在桌面累积，违反"桌面只留最新、旧版移废纸篓"。
-# 发版后把桌面其他版本的 实时股价-V*.dmg 移入废纸篓（移动即备份，永不 rm）。
-# 两代 DMG 文件名都要收：旧名是 ≤v1.4.54 留在桌面上的，规则仍是「只保留最新一个包」
-for old in "$HOME"/Desktop/Skyrocket-V*.dmg "$HOME"/Desktop/实时股价-目标价版-V*.dmg; do
+if [ "$PREPARE_ONLY" -eq 1 ]; then
+  echo "   prepare-only：不复制到桌面分发目录"
+else
+  cp -f "$DMG_OUT" "$DESKTOP_DMG"
+  echo "   桌面分发包: $DESKTOP_DMG"
+fi
+# v1.2.95 第9轮走查：跨版本旧 DMG 在分发目录累积，违反"只留最新、旧版移废纸篓"。
+# 两代 DMG 文件名都要收：旧名是 ≤v1.4.54 留下的，规则仍是「只保留最新一个包」。
+for old in "$DESKTOP_OUTPUT_DIR"/Skyrocket-V*.dmg "$DESKTOP_OUTPUT_DIR"/实时股价-目标价版-V*.dmg; do
   [ -e "$old" ] || continue
   [ "$old" = "$DESKTOP_DMG" ] && continue
   mv "$old" "$HOME/.Trash/" 2>/dev/null || true
 done
+fi
 
-# ---- 5) 安装到 /Applications（默认行为）----
+# ---- 5) 候选 OTA 资产（正式资格检查前只生成，不上传、不覆盖桌面）----
+if [ "$LOCAL_ONLY" -eq 0 ]; then
+  NOTES_FILE="$PROJ/release_notes.txt"
+  [ -s "$NOTES_FILE" ] || { echo "!! 发布说明缺失或为空：$NOTES_FILE" >&2; exit 1; }
+  UPDATE_ASSET_DIR="$PROJ/build/update_assets/V$VERSION"
+  if [ "$USE_PREPARED" -eq 0 ]; then
+    "$VENV_PY" tools/make_update_assets.py "$PROJ/dist/$APP_BUNDLE" --output "$UPDATE_ASSET_DIR"
+  else
+    echo "   使用已准备 OTA 资产（不重新生成）"
+  fi
+  UPDATE_ZIP="$UPDATE_ASSET_DIR/Skyrocket-${VERSION}-macos.zip"
+  UPDATE_JSON="$UPDATE_ASSET_DIR/Skyrocket-update.json"
+  [ -f "$UPDATE_ZIP" ] && [ -f "$UPDATE_JSON" ] \
+    || { echo "!! 候选 OTA 资产未完整生成，拒绝进入正式资格检查" >&2; exit 1; }
+  echo "   候选自动更新资产: $UPDATE_ASSET_DIR"
+fi
+
+if [ "$PREPARE_ONLY" -eq 1 ]; then
+  echo "== 仅制作候选产物：跳过正式资格、安装、桌面覆盖和远端发布 =="
+  echo "   APP: $PROJ/dist/$APP_BUNDLE"
+  echo "   DMG: $DMG_OUT"
+  echo "   ZIP: $UPDATE_ZIP"
+  echo "   OTA: $UPDATE_JSON"
+  exit 0
+fi
+
+# 产物角色在这里才全部存在。正式资格检查必须早于 /Applications、桌面清理和远端写入；
+# publish_update_release.py 还会在读取凭据前用同一个入口再核验一次固定字节。
+if [ "$LOCAL_ONLY" -eq 0 ]; then
+  "$VENV_PY" tools/quality_evidence.py qualify "$SF_QUALITY_RECORD" \
+    || { echo "!! 正式候选资格未通过，拒绝安装、覆盖桌面或发布 OTA" >&2; exit 1; }
+fi
+
+# ---- 5.1) 安装到 /Applications（默认行为）----
 if [ "$DO_INSTALL" -eq 1 ]; then
   APP_DST="$INSTALL_DIR"
   # 旧包 mv 到工程内作回退副本（不用 rm -rf 删 /Applications 下的内容）
@@ -416,20 +486,14 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
 #      上传版本 ZIP + 切换线上清单指针。跑本脚本 = 发版，执行前必须确认已获授权。
 #      2026-09-22 更正：原注释写作"只本地生成，上传须人工确认"，与实际不符，
 #      曾导致两次"OTA 未推送"的错误汇报。） ----
-UPDATE_ASSET_DIR="$PROJ/build/update_assets/V$VERSION"
-NOTES_FILE="$PROJ/release_notes.txt"
-[ -s "$NOTES_FILE" ] || { echo "!! 发布说明缺失或为空：$NOTES_FILE" >&2; exit 1; }
-"$VENV_PY" tools/make_update_assets.py "$PROJ/dist/$APP_BUNDLE" --output "$UPDATE_ASSET_DIR"
-# 桌面只保留当前应用最新的自动更新 ZIP 与清单；旧文件先入项目回退区，再送废纸篓。
-UPDATE_ZIP="$UPDATE_ASSET_DIR/Skyrocket-${VERSION}-macos.zip"
-UPDATE_JSON="$UPDATE_ASSET_DIR/Skyrocket-update.json"
-cp -p "$UPDATE_ZIP" "$HOME/Desktop/$(basename "$UPDATE_ZIP")"
-cp -p "$UPDATE_JSON" "$HOME/Desktop/Skyrocket-update.json"
+# 分发目录只保留当前应用最新的自动更新 ZIP 与清单；旧文件先入项目回退区，再送废纸篓。
+cp -p "$UPDATE_ZIP" "$DESKTOP_OUTPUT_DIR/$(basename "$UPDATE_ZIP")"
+cp -p "$UPDATE_JSON" "$DESKTOP_OUTPUT_DIR/Skyrocket-update.json"
 UPDATE_DESKTOP_BACKUP="$PROJ/build/_prev/update_assets_$STAMP"
 mkdir -p "$UPDATE_DESKTOP_BACKUP"
-for old in "$HOME"/Desktop/Skyrocket-*-macos.zip "$HOME"/Desktop/StockFloatTargetPrice-*-macos.zip; do
+for old in "$DESKTOP_OUTPUT_DIR"/Skyrocket-*-macos.zip "$DESKTOP_OUTPUT_DIR"/StockFloatTargetPrice-*-macos.zip; do
   [ -e "$old" ] || continue
-  [ "$old" = "$HOME/Desktop/$(basename "$UPDATE_ZIP")" ] && continue
+  [ "$old" = "$DESKTOP_OUTPUT_DIR/$(basename "$UPDATE_ZIP")" ] && continue
   mv "$old" "$UPDATE_DESKTOP_BACKUP/"
   /usr/bin/trash "$UPDATE_DESKTOP_BACKUP/$(basename "$old")" 2>/dev/null || true
 done

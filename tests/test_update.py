@@ -149,9 +149,9 @@ class TestUpdateManifest(unittest.TestCase):
         self.assertNotIn('add_argument("--notes"', tool)
         self.assertIn('parser.add_argument("--notes", type=Path, required=True)', release)
         self.assertIn('git", "credential", "fill"', release)
-        self.assertIn('publish_manifest_pointer(token, manifest)', release)
+        self.assertIn('publish_manifest_pointer(token, manifest_bytes)', release)
         self.assertIn('def publish_legacy_manifest', release)
-        self.assertIn('publish_legacy_manifest(token, load_release(token), manifest)', release)
+        self.assertIn('publish_legacy_manifest(token, load_release(token), manifest_bytes)', release)
         self.assertIn('NOTES_FILE="$PROJ/release_notes.txt"', build)
         self.assertIn('release_notes.txt', build)
 
@@ -181,7 +181,7 @@ class TestUpdatePublisherContract(unittest.TestCase):
             manifest = Path(folder) / publisher.MANIFEST_PATH
             body = '{"notes":"中文说明"}\n'.encode("utf-8")
             manifest.write_bytes(body)
-            payload = json.loads(publisher.manifest_commit_payload(manifest, "old-sha"))
+            payload = json.loads(publisher.manifest_commit_payload(body, "old-sha"))
         self.assertEqual(payload["branch"], "main")
         self.assertEqual(payload["sha"], "old-sha")
         self.assertEqual(base64.b64decode(payload["content"]), body)
