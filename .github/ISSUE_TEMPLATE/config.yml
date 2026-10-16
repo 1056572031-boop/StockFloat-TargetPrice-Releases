@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞与信息泄露（私密报告）
+    url: https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/security/advisories/new
+    about: 不要在公开 Issue 中披露漏洞利用细节、凭据或个人信息。
+  - name: 下载与安装说明
+    url: https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/blob/public-source/docs/INSTALL.md
+    about: 首次安装、系统拦截与文件校验请先查看这里。

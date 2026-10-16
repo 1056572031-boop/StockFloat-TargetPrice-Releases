@@ -1,0 +1,33 @@
+name: 功能建议
+description: 提出使用体验或功能改进建议
+title: "[建议] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        内容公开可见，请勿填写个人配置、账号、凭据或上传完整诊断包。
+        安全问题请按 [安全政策](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/blob/public-source/SECURITY.md) 私下报告。
+        本项目是行情展示与用户自设目标价提醒工具，不连接券商账户、不下单、不提供个性化投资建议。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的使用问题
+      description: 描述具体场景，以及当前操作哪里不方便。
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议的改进
+      description: 说明希望看到什么、什么时候发生。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 目前的替代办法（可选）
+  - type: input
+    id: environment
+    attributes:
+      label: 版本与环境（可选）
+      description: 如建议与系统或设备有关，请填写 Skyrocket 版本、macOS 版本及芯片类型。
