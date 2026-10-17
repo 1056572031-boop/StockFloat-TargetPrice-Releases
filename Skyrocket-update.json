@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.93",
-  "published_at": "2026-10-16T12:10:01Z",
+  "version": "1.4.94",
+  "published_at": "2026-10-17T10:41:23Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 增加源码与 APP、DMG、ZIP、OTA 清单绑定核验。\n2. 固定发布字节并在远端完整读回核对。\n3. 补充首装、升级、全屏和圆角检查。",
+  "notes": "1. 增加冻结版启动健康快照与更新状态诊断。\n2. 补充连续画面、时间戳和遮挡负向核验。\n3. 加固质量计时、复发复盘与发布证据链。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.93-macos.zip",
-    "size": 26173102,
-    "sha256": "34a952639aa00edf4f9d39e8a56336597d05b8a6e0ad5a965a9eb21868e2c34a"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.94-macos.zip",
+    "size": 26245697,
+    "sha256": "d6c7c8c835eea6770598457810052118bf58b74b63f60fe4fe5ece599f687f22"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "PLNcVfUBEwEZaSGqxKj3uUHIrvVTd0WJlaHF++oUyjX6Z439/UMHrwqJq7CJWGKNOAXyZGT9b4HSX3gwrHMUAA=="
+    "value": "F9t3uoLVpDItIFoOei5FgTWFhc8N5itrfNdbze4A7n78KUURDjrgYG/1np7JP6GdGxr71cEie5K5snKDcUeJBQ=="
   }
 }
