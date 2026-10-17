@@ -216,6 +216,14 @@ def run_setup():
         main_num = int(nsw.windowNumber()) if nsw is not None else -1
         glass_num = int(gw.windowNumber()) if gw is not None else -1
         st = _composite_state(main_num, glass_num)
+        # WindowServer may register the pair after the Qt show call returns.
+        # Stop at the first observable pair, even if inverted; never wait for
+        # self-healing or change the order merely to make this test pass.
+        deadline = time.monotonic() + 2.0
+        while st is None and time.monotonic() < deadline:
+            _app().processEvents()
+            time.sleep(0.05)
+            st = _composite_state(main_num, glass_num)
         _marker("watchdog_sees_this_pair", st is not None)
         _marker("glass_on_top", "unknown" if st is None else st["glass_on_top"])
         host._close_glass()                # discipline-ok(R5): 收摊这条路径本身就是被测对象

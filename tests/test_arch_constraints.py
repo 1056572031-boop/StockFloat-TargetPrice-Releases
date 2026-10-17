@@ -580,8 +580,10 @@ class TestLocalReleaseBoundaries(SFCase):
         end = source.index("\nVENV_PY=", start)
         block = source[start:end] + '\nprintf "%s:%s:%s:%s" "$LOCAL_ONLY" "$SKIP_TESTS" "$DO_BUILD" "$DO_INSTALL"'
         for flags, expected in (([], "0:0:1:1"), (["--local-only"], "1:0:1:1")):
+            import os
+            env = dict(os.environ, SF_PUBLIC_REGRESSION="0")
             result = subprocess.run(["/bin/bash", "-c", block, "fixture", *flags],
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, timeout=10, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, expected)
 
