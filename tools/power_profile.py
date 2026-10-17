@@ -59,6 +59,27 @@ ANCHOR = {
 }
 
 
+def workload_problems(sample):
+    """Reject idle/short workloads before interpreting their CPU measurements."""
+    problems: list[str] = []
+    if sample.get("net") != "mock":
+        return problems
+    if not (sample.get("has_quote") and sample.get("minute_points", 0) > 0
+            and sample.get("poll_fail") == 0 and sample.get("poll_state") == 0
+            and sample.get("window_visible") and sample.get("first_frame_painted")):
+        problems.append("mock workload has no healthy visible quote/minute frame")
+    if sample.get("vary"):
+        counts = sample.get("measurement_counts", {})
+        seconds = sample.get("seconds", 0)
+        if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 2:
+            problems.append("dynamic workload needs at least 2 seconds")
+        for name, minimum in (("apply_quote", 2), ("anim_tick", 10), ("paint", 10)):
+            count = counts.get(name, 0)
+            if not isinstance(count, int) or isinstance(count, bool) or count < minimum:
+                problems.append(f"dynamic {name} samples < {minimum}")
+    return problems
+
+
 def prepare_probe_config(directory, source):
     """Copy geometry only; a benchmark must never inherit camera/alert/API settings."""
     config = {}
@@ -335,6 +356,8 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
     # 计时起点：窗口已经建好、首屏已落定，测的是"稳态"而非冷启动
     cpu0 = resource.getrusage(resource.RUSAGE_SELF)
     wall0 = time.monotonic()
+    with lock:
+        counts0 = dict(counts)
 
     def finish():
         """采样收口并退出。
@@ -356,6 +379,8 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
             "cpu_percent_of_core": round(cpu_s / wall * 100.0, 2) if wall else None,
             "wakeups_per_second": {k: round(v / wall, 1) for k, v in counts.items()},
             "call_counts": dict(counts),
+            "measurement_counts": {key: value - counts0.get(key, 0)
+                                   for key, value in counts.items()},
             "self_ms_total": {k: round(v / 1e6, 2) for k, v in spans.items()},
             "self_us_per_call": {k: round(spans[k] / counts[k] / 1000.0, 1)
                                  for k in counts if k in spans and counts[k]},
@@ -378,9 +403,8 @@ def measure(mode, seconds, net, profile, native=False, vary=False):
                                        if win._anim_timer.isActive() else None),
             "tmp": tmp,
         }
-        valid = net != "mock" or (bool(win.quote) and bool(win.minute_points)
-                                    and win._poll_fail == 0 and win._poll_state == 0
-                                    and out["window_visible"] and out["first_frame_painted"])
+        out["workload_problems"] = workload_problems(out)
+        valid = not out["workload_problems"]
         if native:
             screenshot = os.path.join(tmp, "native-frame.png")
             try:
@@ -442,7 +466,14 @@ def run_child(args):
     if not p.stdout.strip():
         print(p.stderr, file=sys.stderr)
         return None
-    return json.loads(p.stdout)
+    sample = json.loads(p.stdout)
+    problems = workload_problems(sample)
+    if any(sample.get(key) != getattr(args, key) for key in ("mode", "net", "vary", "native")):
+        problems.append("child workload does not match requested scenario")
+    if problems or sample.get("probe_valid") is not True:
+        print("测量载荷无效: " + "; ".join(problems or ["probe_valid is not true"]), file=sys.stderr)
+        return None
+    return sample
 
 
 def brief(d):
@@ -498,6 +529,10 @@ def main():
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--json", action="store_true", help="父进程只输出原始 JSON")
     args = ap.parse_args()
+    if not math.isfinite(args.seconds) or args.seconds <= 0:
+        ap.error("seconds must be finite and positive")
+    if args.vary and (args.net != "mock" or args.seconds < 2):
+        ap.error("--vary requires --net mock and at least 2 seconds")
 
     if args.child:
         measure(args.mode, args.seconds, args.net, args.profile,

@@ -8,6 +8,7 @@ EXPECTED_SHA256=""
 EXPECTED_VERSION=""
 TARGET=""
 RESULT=""
+VERIFICATION_HOME=""
 
 # 正式 Developer ID 签名启用后，须同时填写两项并随发布证书轮换更新。
 # 当前开发构建是 ad-hoc 签名，留空时只允许基础 codesign 校验，绝不伪造身份锚定。
@@ -26,6 +27,9 @@ while [ "$#" -gt 0 ]; do
     --version) EXPECTED_VERSION="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --result) RESULT="$2"; shift 2 ;;
+    --verification-home)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$VERIFICATION_HOME" ] || exit 64
+      VERIFICATION_HOME="$2"; shift 2 ;;
     --team-id) EXPECTED_TEAM_ID="$2"; shift 2 ;;
     --cert-sha1) EXPECTED_CERT_SHA1="$2"; shift 2 ;;
     *) exit 64 ;;
@@ -58,6 +62,74 @@ fail() {
   exit 1
 }
 
+# 验证档只接受系统临时区内同一私有根目录，不信任调用者的 TMPDIR。
+# 每次启动前重验：拒绝目录或派生文件被换成软链接；不改变生产启动语义。
+validate_verification_home() {
+  /usr/bin/perl -MCwd -e '
+    use strict; use warnings;
+    my ($home, $target) = @ARGV;
+    sub checked_dir {
+      my ($p) = @_;
+      $p =~ m{^/} && $p !~ m{(?:^|/)[.][.]?(?:/|$)|[\r\n]} or exit 1;
+      $p =~ s{^/tmp(?=/|$)}{/private/tmp};
+      $p =~ s{^/var(?=/|$)}{/private/var};
+      $p =~ s{/+$}{};
+      my $part = "";
+      for my $name (split m{/}, $p) {
+        next if $name eq "";
+        $part .= "/" . $name;
+        -l $part and exit 1;
+      }
+      -d $p or exit 1;
+      my $real = Cwd::realpath($p);
+      defined $real && $real eq $p or exit 1;
+      return $real;
+    }
+    $home = checked_dir($home);
+    $target = checked_dir($target);
+    my $user_tmp = qx{/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null};
+    chomp $user_tmp;
+    my @bases = ("/private/tmp", "/private/var/tmp");
+    push @bases, Cwd::realpath($user_tmp) if -d $user_tmp;
+    my $root;
+    for my $base (@bases) {
+      next unless defined $base;
+      if (index($home, "$base/") == 0) {
+        my ($first) = split m{/}, substr($home, length($base) + 1);
+        $root = "$base/$first";
+        last;
+      }
+    }
+    defined $root && index($target, "$root/") == 0 or exit 1;
+    for my $name (qw(config.json universe.json last_quote.json debug.log single.sock)) {
+      my $p = "$home/$name";
+      -l $p and exit 1;
+      (!-e $p || !-d $p) or exit 1;
+    }
+    print $home;
+  ' "$VERIFICATION_HOME" "$TARGET" 2>/dev/null
+}
+
+launch_app() {
+  if [ -z "$VERIFICATION_HOME" ]; then
+    /usr/bin/open "$1"
+    return $?
+  fi
+  # 回退包恢复到 TARGET 后才启动；不允许按 bundle id 启动其他已安装副本。
+  [ "$1" = "$TARGET" ] || return 1
+  vh_checked="$(validate_verification_home)" || return 1
+  VERIFICATION_HOME="$vh_checked"
+  /usr/bin/open -n -g \
+    --env "SF_CONFIG_PATH=$VERIFICATION_HOME/config.json" \
+    --env "SF_UNIVERSE_PATH=$VERIFICATION_HOME/universe.json" \
+    --env "SF_LAST_QUOTE_PATH=$VERIFICATION_HOME/last_quote.json" \
+    --env "SF_LOG_PATH=$VERIFICATION_HOME/debug.log" \
+    --env "SF_SINGLE_SOCK=$VERIFICATION_HOME/single.sock" \
+    --env SF_ALLOW_TEMP_LAUNCH=1 \
+    --env QT_QPA_PLATFORM=offscreen \
+    --env SF_SEED_FIRST_SCREEN=0 "$1"
+}
+
 rollback_or_fail() {
   reason="$1"
   if [ -d "$TARGET" ]; then
@@ -65,7 +137,7 @@ rollback_or_fail() {
   fi
   if /bin/mv "$rollback" "$TARGET" 2>/dev/null; then
     write_result "rolled_back" "$reason"
-    /usr/bin/open "$TARGET" >/dev/null 2>&1 || true
+    launch_app "$TARGET" >/dev/null 2>&1 || true
     exit 1
   fi
   write_result "rollback_failed" "$reason"
@@ -73,6 +145,10 @@ rollback_or_fail() {
 }
 
 [ -n "$PID" ] && [ -n "$ARCHIVE" ] && [ -n "$EXPECTED_SHA256" ] && [ -n "$EXPECTED_VERSION" ] && [ -n "$TARGET" ] && [ -n "$RESULT" ] || fail "invalid_arguments"
+if [ -n "$VERIFICATION_HOME" ]; then
+  vh_checked="$(validate_verification_home)" || fail "verification_home_invalid"
+  VERIFICATION_HOME="$vh_checked"
+fi
 [ -f "$ARCHIVE" ] || fail "archive_missing"
 [ -d "$TARGET" ] || fail "target_missing"
 
@@ -254,7 +330,7 @@ if ! /usr/bin/codesign --verify --deep --strict "$TARGET" >/dev/null 2>&1; then
   rollback_or_fail "installed_app_signature_invalid"
 fi
 
-if ! /usr/bin/open "$TARGET" >/dev/null 2>&1; then
+if ! launch_app "$TARGET" >/dev/null 2>&1; then
   rollback_or_fail "restart_new_app_failed"
 fi
 # open 返回只代表系统接受了启动请求；必须确认新进程出现并持续存活，避免“安装完成但马上崩溃”被误报为成功。

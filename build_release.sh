@@ -61,6 +61,11 @@ for arg in "$@"; do
   esac
 done
 
+PUBLIC_REGRESSION="${SF_PUBLIC_REGRESSION:-0}"
+if [ "$PUBLIC_REGRESSION" = "1" ]; then
+  echo "!! SF_PUBLIC_REGRESSION=1 仅用于公开源码回归，不具备发布资格；build_release.sh 拒绝运行。" >&2
+  exit 2
+fi
 VENV_PY="$PROJ/.venv/bin/python3"
 # v1.4.55 全局改名：产物与安装路径都是 Skyrocket.app
 APP_NAME="Skyrocket"
@@ -129,7 +134,8 @@ GATE_STAMP_VALID=0
 if [ "$SKIP_TESTS" -eq 1 ]; then
   echo "!! WARNING: --skip-tests 生效 —— 本轮**没有**核验回归关卡，直接进打包。" >&2
   echo "!!          这个开关只用于同一份代码重做 DMG/OTA；改了代码还用它，等于回到 S7-②。" >&2
-elif "$VENV_PY" tools/gate_stamp.py check; then
+elif "$VENV_PY" tools/gate_stamp.py check \
+  && "$VENV_PY" tools/coverage_provenance.py check; then
   GATE_STAMP_VALID=1
 else
   echo "== 关卡时间戳不可用：先补跑 ./run_tests.sh（约 2 分钟）=="

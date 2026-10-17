@@ -239,6 +239,61 @@ class PublicReleaseCase(SFCase):
         self.assertIn("archive", command.call_args.args[0])
         published_docs.assert_called_once()
 
+    def test_main_stops_after_export_push_or_first_upload_failure(self):
+        failures = ("export", "push", "upload")
+        for failure in failures:
+            with self.subTest(failure=failure):
+                calls = []
+                application = self.root / "build/update_assets" / ("V" + public.APP_VERSION) / (
+                    "Skyrocket-%s-macos.zip" % public.APP_VERSION)
+                application.parent.mkdir(parents=True, exist_ok=True)
+                application.write_bytes(b"application")
+                (self.root / "build" / ("Skyrocket-V%s.dmg" % public.APP_VERSION)).write_bytes(b"dmg")
+
+                def archive_command(args, *extra, **kwargs):
+                    calls.append("archive")
+                    Path(args[args.index("-o") + 1]).write_bytes(b"source")
+
+                def fail_export(*args, **kwargs):
+                    calls.append("export")
+                    raise ValueError("export failed")
+
+                def fail_push(*args, **kwargs):
+                    calls.append("push")
+                    raise ValueError("push failed")
+
+                def fail_upload(*args, **kwargs):
+                    calls.append("upload")
+                    raise ValueError("upload failed")
+
+                export = fail_export if failure == "export" else lambda *a, **k: calls.append("export")
+                push = fail_push if failure == "push" else lambda *a, **k: (calls.append("push") or "commit")
+                upload = fail_upload if failure == "upload" else lambda *a, **k: calls.append("upload")
+                with patch.object(public, "ROOT", self.root), \
+                        patch.object(public, "export_source", side_effect=export), \
+                        patch.object(public, "push_source", side_effect=push), \
+                        patch.object(public, "run", side_effect=archive_command), \
+                        patch.object(public, "upload_asset", side_effect=upload), \
+                        patch.object(public, "publish_documents") as published_docs:
+                    with self.assertRaises(ValueError):
+                        public.main(["--publish"])
+                self.assertIn(failure, calls)
+                failure_index = calls.index(failure)
+                if failure == "export":
+                    self.assertEqual(failure_index, 0)
+                    self.assertNotIn("push", calls)
+                    self.assertNotIn("upload", calls)
+                    self.assertNotIn("archive", calls)
+                elif failure == "push":
+                    self.assertEqual(calls[:2], ["export", "push"])
+                    self.assertNotIn("upload", calls)
+                    self.assertNotIn("archive", calls)
+                else:
+                    self.assertEqual(calls[:2], ["export", "push"])
+                    self.assertEqual(calls.count("upload"), 1)
+                    self.assertNotIn("publish", calls)
+                    published_docs.assert_not_called()
+
     def test_default_branch_docs_update_never_stages_the_manifest(self):
         calls = []
 

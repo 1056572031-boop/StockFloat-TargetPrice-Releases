@@ -34,6 +34,7 @@ jobs:
       - name: 运行全量回归与覆盖率门禁（offscreen）
         env:
           QT_QPA_PLATFORM: offscreen
+          SF_PUBLIC_REGRESSION: ${{ (github.ref_name == 'public-source' || github.base_ref == 'public-source') && '1' || '0' }}
         # pipefail 是必须的：加了 tee 之后管道退出码默认取最后一段，
         # 那会让 run_tests.sh 失败也"绿着过"，整道门禁变成假门。
         run: |
@@ -49,11 +50,20 @@ jobs:
           echo "::error::run_tests 尾部：$(tr '\n' ' ' < /tmp/ci_tail.txt | cut -c1-900)"
       - name: 导出覆盖率报告
         # 同上：coverage 装在 .venv 里，系统解释器上没有这个模块。
-        run: .venv/bin/python -m coverage xml -o coverage.xml
+        run: |
+          .venv/bin/python -m coverage xml -o coverage.xml
+          .venv/bin/python -m coverage json -o coverage.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
-          name: coverage-xml
-          path: coverage.xml
+          name: coverage-evidence
+          include-hidden-files: true
+          path: |
+            coverage.xml
+            coverage.json
+            build/.coverage-provenance.json
+            build/change-coverage.json
+            run_tests_offscreen.log
 
   test-cocoa-native:
     runs-on: macos-latest

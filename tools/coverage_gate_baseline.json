@@ -1,5 +1,28 @@
 {
   "schema": 1,
+  "module_floors": {
+    "stock_float_window.py": 85,
+    "sf_quote.py": 93,
+    "sf_presence.py": 92,
+    "sf_glass.py": 87,
+    "sf_update.py": 92,
+    "targets.py": 97,
+    "sf_config.py": 95
+  },
+  "module_baseline": {
+    "date": "2026-10-17",
+    "formula": "floor(100 * (statements - missing) / statements) - 1",
+    "source": "HEAD 25331ba 完整绿 .sf-coverage-p0p1/.coverage，只读 analysis2；主工作区根 .coverage 不存在，未重跑全量",
+    "measured": {
+      "stock_float_window.py": {"statements": 3449, "missing": 471, "percent": 86.343868},
+      "sf_quote.py": {"statements": 697, "missing": 38, "percent": 94.548063},
+      "sf_presence.py": {"statements": 632, "missing": 43, "percent": 93.196203},
+      "sf_glass.py": {"statements": 1010, "missing": 113, "percent": 88.811881},
+      "sf_update.py": {"statements": 607, "missing": 41, "percent": 93.24547},
+      "targets.py": {"statements": 272, "missing": 4, "percent": 98.529412},
+      "sf_config.py": {"statements": 357, "missing": 11, "percent": 96.918768}
+    }
+  },
   "product_floor": 89,
   "chain_floor": 78,
   "measured_product": 89.16,

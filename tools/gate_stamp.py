@@ -49,7 +49,8 @@ BUILD_INPUT_SUFFIXES = (".py", ".sh", ".spec", ".command", ".otf", ".ttf",
 BUILD_INPUT_NAMES = ("requirements.txt", "requirements.lock", "NOTICE.md", "README.md",
                      "INSTALL.md", "SECURITY.md", "LICENSE", ".coveragerc",
                      "static_gate_baseline.json", "test_discipline_baseline.json",
-                     "escapes_ledger.json", "signing_policy.json")
+                     "escapes_ledger.json", "signing_policy.json",
+                     "coverage_gate_baseline.json", "change_coverage_base.txt")
 
 NO_GIT = "no-git"
 

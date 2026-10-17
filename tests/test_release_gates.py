@@ -46,6 +46,46 @@ def _run_tool(script, *args):
     return cp.returncode, cp.stdout + cp.stderr
 
 
+def return_code(code, stdout="", stderr=""):
+    """造一个 subprocess.run 的最小替身，供 factory 行为测试使用。"""
+    return types.SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+
+
+def chain_tools(root=ROOT):
+    """从发版/回归 shell 入口发现链上的 Python 工具。"""
+    import re
+
+    chain = set()
+    for name in ("build_release.sh", "run_tests.sh"):
+        text = (root / name).read_text(encoding="utf-8")
+        chain.update(re.findall(r"tools/([a-z_0-9]+\.py)", text))
+    return tuple(sorted(chain))
+
+
+def _tool_exists(script):
+    return (ROOT / "tools" / script).exists()
+
+
+def _run_chain_tool_case(testcase, script):
+    """一个工具一条测试：不存在、未识别参数和自检失败都必须判红。"""
+    testcase.assertTrue(_tool_exists(script), "%s（脚本不存在）" % script)
+    rc, out = _run_tool(script, "--self-test")
+    testcase.assertNotEqual(rc, 2,
+                            "%s 不认 --self-test（退出码 2）：\\n%s" % (script, out[-700:]))
+    testcase.assertEqual(rc, 0,
+                         "%s 的自检失败：\\n%s" % (script, out[-700:]))
+
+
+def _make_chain_tool_test(script):
+    """生成单工具测试方法；闭包只保存名字，执行时查找真实 runner。"""
+    def test(self):
+        _run_chain_tool_case(self, script)
+
+    test.__name__ = "test_self_test_%s" % script[:-3]
+    test.__doc__ = "%s 的 --self-test 必须可执行并成功返回 0。" % script
+    return test
+
+
 def stale_source_module(bundle, root=ROOT):
     """A matching version does not make a pre-edit dist bundle current."""
     from verify_card_corners import code_shape
@@ -200,44 +240,45 @@ class TestGatesTellTheTruth(unittest.TestCase):
         self.assertEqual(rc3, 0, "台账条目本身必须自洽（归到防线、时刻不倒挂、null 带理由）：\n%s" % out3)
 
     def test_every_chain_tool_can_prove_it_fails(self):
-        """发版链上的每个 `tools/*.py` 必须自带 `--self-test`，且**真跑起来必须过**。
+        """链上工具范围至少十个；每工具的行为测试由动态 factory 独立生成。"""
+        chain = chain_tools()
+        self.assertGreaterEqual(len(chain), 10,
+                                "链条脚本没扫到几个：%s" % list(chain))
 
-        规矩是 2026-10-09 负责人拍的板：链条上的核验工具必须自带 --self-test。
-        守的是什么：任何一枚核验器如果不会红，它给的 PASS 就是空票 —— 本仓为此
-        栽过至少四次（台账 G01~G05：verify_dmg_pyz 写死旧特征连续十几个版本无脑 PASS
-        约 54 个版本、release_checks 一条永不可能命中的伪特征、探针用 Chrome 菜单判全屏
-        导致前 6 轮前置全是假的、位图缓存核验空转却报"36 组比对全部零差异"）。
-        以前这条只活在文档里，而"只写进文档的规矩"在这仓的战绩就是失守。
 
-        为什么必须起子进程跑而不是扫源码文本：找 `--self-test` 字符串只能证明
-        "写了这几个字"，证明不了它会失败、也证明不了它能给出结论。这里要的是行为 ——
-        只加一个空壳 flag 蒙不过去（argparse 退 2 就算没自检）。
-        范围从 `build_release.sh` / `run_tests.sh` 现扫（闭包实测无新增），
-        将来链条上加脚本，这里自动多守一个，不需要谁记得改清单。
-        """
-        import re
-        chain = set()
-        for name in ("build_release.sh", "run_tests.sh"):
-            text = (ROOT / name).read_text(encoding="utf-8")
-            chain |= set(re.findall(r"tools/([a-z_0-9]+\.py)", text))
-        self.assertGreaterEqual(len(chain), 10, "链条脚本没扫到几个：%s" % sorted(chain))
-        no_flag, failed = [], []
-        for fname in sorted(chain):
-            if not (ROOT / "tools" / fname).exists():
-                no_flag.append("%s（脚本不存在）" % fname)
-                continue
-            rc, out = _run_tool(fname, "--self-test")
-            if rc == 2:
-                no_flag.append("%s（不认 --self-test，退出码 2）" % fname)
-            elif rc != 0:
-                failed.append("%s\n%s" % (fname, out[-700:]))
-        problems = []
-        if no_flag:
-            problems.append("这些发版链上的核验器没有可用的 --self-test（没人能证明它会红）：\n  "
-                            + "\n  ".join(no_flag))
-        if failed:
-            problems.append("这些核验器的自检自己没过：\n" + "\n".join(failed))
-        self.assertFalse(problems, "\n".join(problems))
+class ChainToolSelfTestCases(SFCase):
+    """每个链上工具单独跑一次，避免一个失败掩盖其它工具。"""
+
+
+class TestChainToolFactory(SFCase):
+    """factory 的分支判定用 mock 验证，不启动任何真实工具。"""
+
+    def test_return_code_helper_has_subprocess_shape(self):
+        cp = return_code(2, "out", "err")
+        self.assertEqual((cp.returncode, cp.stdout, cp.stderr), (2, "out", "err"))
+
+    def test_factory_accepts_only_zero(self):
+        with patch(__name__ + "._tool_exists", return_value=True), \
+                patch(__name__ + "._run_tool", return_value=(0, "ok")):
+            _run_chain_tool_case(self, "mock_tool.py")
+
+    def test_factory_rejects_one_and_two(self):
+        for code in (1, 2):
+            with self.subTest(code=code), \
+                    patch(__name__ + "._tool_exists", return_value=True), \
+                    patch(__name__ + "._run_tool", return_value=(code, "bad")):
+                with self.assertRaises(AssertionError):
+                    _run_chain_tool_case(self, "mock_tool.py")
+
+    def test_factory_rejects_missing_tool(self):
+        with patch(__name__ + "._tool_exists", return_value=False):
+            with self.assertRaises(AssertionError):
+                _run_chain_tool_case(self, "missing_tool.py")
+
+
+for _chain_tool in chain_tools():
+    setattr(ChainToolSelfTestCases, "test_self_test_%s" % _chain_tool[:-3],
+            _make_chain_tool_test(_chain_tool))
 
 
 class TestBaselinesDoNotCollapse(unittest.TestCase):

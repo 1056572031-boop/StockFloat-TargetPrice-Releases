@@ -90,6 +90,7 @@ def synthetic_data(product=None, chain=None, files=None, total="85"):
                 ("tools/a_bad.py", 50, 40),
                 ("tools/b_ok.py", 50, 10),
                 ("sf_x.py", 1000, 90),
+                *[(name, 100, 0) for name in cg.REQUIRED_MODULES],
             ],
             "total_display": total}
 
@@ -217,7 +218,8 @@ class CoverageGateCli(SFCase):
     def test_report_分支用合成数据给确定结论(self):
         self.track_patch(mock.patch.object(cg, "load_data",
                                            return_value=(synthetic_data(), "")))
-        baseline = {"product_floor": 84, "chain_floor": 63}
+        baseline = {"product_floor": 84, "chain_floor": 63,
+                    "module_floors": dict.fromkeys(cg.REQUIRED_MODULES, 90)}
         rc, out = call(lambda: cg.cmd_report(baseline))
         self.assertEqual(rc, 0, out)
         self.assertIn(PRODUCT_OK_EXPECT, out)

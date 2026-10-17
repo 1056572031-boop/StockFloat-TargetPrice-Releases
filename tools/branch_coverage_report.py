@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import hashlib
 import json
+
+import gate_stamp
 import os
 import subprocess
 import sys
@@ -106,9 +109,11 @@ def markdown(report: dict) -> str:
     def ratio(value):
         return "n/a" if value is None else "%.2f%%" % value
 
+    evidence = report.get("evidence", {"status": "unverified", "origin": "in-memory-summary"})
     lines = ["# Branch Coverage Observation", "",
+             "Evidence: %s (%s)." % (evidence["status"], evidence["origin"]), "",
              "Not a release gate. Line and branch percentages use separate denominators.",
-             "Subprocess-native paths are not measured by this parent-process dataset.", "",
+             "Parent-process statistics do not automatically include subprocesses.", "",
              "Exception recovery still needs behavioral tests; branch counts do not enumerate every exception.", "",
              "| Scope | Line | Branch | Missing Branches | Partial Branch Lines |",
              "| --- | ---: | ---: | ---: | ---: |"]
@@ -138,6 +143,50 @@ def markdown(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def raw_bytes(raw: dict) -> bytes:
+    return (json.dumps(raw, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def source_info() -> dict:
+    info = gate_stamp.current_info(str(ROOT))
+    if info["files"] <= 0:
+        raise ValueError("Empty source fingerprint inputs")
+    return {"root": str(ROOT.resolve()), "fingerprint": info["fingerprint"],
+            "files": info["files"]}
+
+
+def receipt_path(data: Path) -> Path:
+    return data.with_name(data.name + ".branch-receipt.json")
+
+
+def observed_input(data: Path) -> tuple[dict, dict]:
+    path = receipt_path(data)
+    if not path.exists():
+        return read_data(data), {"status": "unverified", "origin": "data-without-receipt",
+                                 "source": None, "command": None}
+    evidence = json.loads(path.read_text(encoding="utf-8"))
+    required = ("raw", "status", "origin", "source", "command", "provenance_receipt")
+    if (not isinstance(evidence, dict) or evidence.get("state") != "completed"
+            or any(key not in evidence for key in required)):
+        raise ValueError("Branch receipt not completed or incomplete")
+    if evidence["status"] != "verified-local" or evidence["origin"] != "collect-run-tests":
+        raise ValueError("Branch receipt origin/status mismatch")
+    if evidence.get("source") != source_info():
+        raise ValueError("Branch receipt source fingerprint mismatch")
+    if (evidence.get("data_file") != str(data.resolve())
+            or evidence.get("data_sha256") != digest(data.read_bytes())):
+        raise ValueError("Branch receipt database mismatch")
+    raw = evidence["raw"]
+    if evidence.get("raw_sha256") != digest(raw_bytes(raw)):
+        raise ValueError("Branch receipt raw hash mismatch")
+    return raw, {key: evidence[key] for key in
+                 ("status", "origin", "source", "command", "provenance_receipt")}
+
+
 def collect(data: Path, log: Path) -> int:
     if data.resolve() == (ROOT / ".coverage").resolve():
         raise ValueError("Branch collection must not overwrite default line .coverage")
@@ -147,6 +196,10 @@ def collect(data: Path, log: Path) -> int:
     config.set("run", "branch", "true")
     data.parent.mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
+    receipt = receipt_path(data)
+    receipt.write_text(json.dumps({"state": "invalid"}), encoding="utf-8")
+    before = source_info()
+    command = [str(ROOT / "run_tests.sh")]
     # Nested fixture sockets must fit macOS's short AF_UNIX pathname limit.
     with tempfile.TemporaryDirectory(prefix="sfbr_", dir="/tmp") as tmp:
         ini = Path(tmp) / "coverage.ini"
@@ -156,19 +209,48 @@ def collect(data: Path, log: Path) -> int:
                    SF_SKIP_COVERAGE="0", SF_RANDOM_ORDER="0", TMPDIR=tmp + os.sep)
         env.pop("SF_GUARD_PROBE", None)
         with log.open("w", encoding="utf-8") as handle:
-            result = subprocess.run([str(ROOT / "run_tests.sh")], cwd=ROOT, env=env,
+            result = subprocess.run(command, cwd=ROOT, env=env,
                                     stdout=handle, stderr=subprocess.STDOUT, check=False)
-    return result.returncode
+        if before != source_info():
+            raise ValueError("Source fingerprint changed during branch collection")
+        if result.returncode:
+            return result.returncode
+        # run_tests already finished this receipt. Check again while the exact
+        # temporary config still exists, not after TemporaryDirectory cleanup.
+        provenance = ROOT / "build" / ".coverage-provenance.json"
+        checked = subprocess.run(
+            [str(ROOT / ".venv/bin/python3"), str(ROOT / "tools/coverage_provenance.py"),
+             "check", "--receipt", str(provenance)], cwd=ROOT, env=env,
+            text=True, capture_output=True, check=False)
+        if checked.returncode:
+            raise ValueError("Collection provenance rejected: " + (checked.stderr or checked.stdout))
+        proof = json.loads(provenance.read_text(encoding="utf-8"))
+        if (proof.get("state") != "completed" or proof.get("exit_code") != 0
+                or proof.get("begin", {}).get("data_file") != str(data.resolve())
+                or proof.get("begin", {}).get("source", {}).get("fingerprint") != before["fingerprint"]
+                or proof.get("data", {}).get("sha256") != digest(data.read_bytes())):
+            raise ValueError("Collection provenance does not match branch data/source")
+        data_hash = digest(data.read_bytes())
+        raw = read_data(data, env=env)
+        if before != source_info() or data_hash != digest(data.read_bytes()):
+            raise ValueError("Source fingerprint or data changed during branch export")
+        evidence = {"state": "completed", "status": "verified-local",
+                    "origin": "collect-run-tests", "source": before, "command": command,
+                    "data_file": str(data.resolve()), "data_sha256": data_hash,
+                    "raw": raw, "raw_sha256": digest(raw_bytes(raw)),
+                    "provenance_receipt": proof}
+        receipt.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
+    return 0
 
 
-def read_data(data: Path) -> dict:
+def read_data(data: Path, env=None) -> dict:
     if not data.is_file():
         raise ValueError("Branch data does not exist: %s" % data)
     with tempfile.TemporaryDirectory(prefix="sf_branch_json_") as tmp:
         output = Path(tmp) / "coverage.json"
         proc = subprocess.run([sys.executable, "-m", "coverage", "json",
                                "--data-file=" + str(data.resolve()), "-o", str(output), "-q"],
-                              cwd=ROOT, text=True, capture_output=True, check=False)
+                              cwd=ROOT, env=env, text=True, capture_output=True, check=False)
         if proc.returncode or not output.is_file():
             raise ValueError("Cannot export branch data: %s" % (proc.stderr or proc.stdout))
         return json.loads(output.read_text(encoding="utf-8"))
@@ -191,11 +273,19 @@ def main(argv=None) -> int:
                 print("Full gate failed (exit %d); no branch verdict. Log: %s" %
                       (code, args.output_dir / "run.log"), file=sys.stderr)
                 return code
-        raw = (json.loads(args.input_json.read_text(encoding="utf-8")) if args.input_json
-               else read_data(args.data))
+        if args.input_json:
+            raw = json.loads(args.input_json.read_text(encoding="utf-8"))
+            evidence = {"status": "unverified", "origin": "historical-input-json",
+                        "source": None, "command": None}
+        else:
+            raw, evidence = observed_input(args.data)
         report = summarize(raw)
+        report["evidence"] = {**evidence, "input_path": str((args.input_json or args.data).resolve()),
+                              "raw_sha256": digest(raw_bytes(raw)),
+                              "boundary": "Local non-adversarial evidence; endpoint fingerprints only. "
+                              "Parent-process statistics do not automatically include subprocesses."}
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        (args.output_dir / "raw.json").write_text(json.dumps(raw, ensure_ascii=False) + "\n", encoding="utf-8")
+        (args.output_dir / "raw.json").write_bytes(raw_bytes(raw))
         (args.output_dir / "summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         (args.output_dir / "report.md").write_text(markdown(report), encoding="utf-8")
         print("Branch observation written to %s (not a release gate)" % args.output_dir)

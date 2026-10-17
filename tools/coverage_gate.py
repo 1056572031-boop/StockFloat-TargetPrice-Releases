@@ -65,6 +65,51 @@ CHAIN_PREFIX = "tools/"
 EXCLUDE_PREFIX = ("tests/", "backups/", "build/", "dist/")
 
 DEFAULT_DATA_FILE = ".coverage"
+REQUIRED_MODULES = (
+    "stock_float_window.py", "sf_quote.py", "sf_presence.py", "sf_glass.py",
+    "sf_update.py", "targets.py", "sf_config.py",
+)
+
+
+def validate_module_floors(floors) -> None:
+    """模块范围不可为空或缺项，bool 也不是合法百分比下限。"""
+    if not isinstance(floors, dict) or not set(REQUIRED_MODULES).issubset(floors):
+        raise RuntimeError("module_floors 必须包含全部七个必需模块")
+    for name, floor in floors.items():
+        if not isinstance(name, str) or type(floor) is not int or not 0 < floor <= 100:
+            raise RuntimeError("module_floors 不合法：%r=%r（需要 1..100 整数）" % (name, floor))
+
+
+def judge_modules(per_file, floors) -> tuple[int, list[str]]:
+    """独立纯函数；总档达标不能掩盖单模块退化或范围缺失。"""
+    validate_module_floors(floors)
+    rows = {}
+    for name, stmts, miss in per_file:
+        if name in rows:
+            raise RuntimeError("模块覆盖率重复：%s" % name)
+        rows[name] = (stmts, miss)
+    rc, lines = 0, []
+    for name, floor in floors.items():
+        if name not in rows:
+            lines.append("!! 模块 %s 缺少 coverage 数据（范围失效）" % name)
+            rc = 1
+            continue
+        stmts, miss = rows[name]
+        if (type(stmts) is not int or type(miss) is not int
+                or stmts <= 0 or not 0 <= miss <= stmts):
+            lines.append("!! 模块 %s 语句数为零或统计不合法，无法给结论" % name)
+            rc = 1
+            continue
+        pct = _percent(stmts, miss)
+        if pct + 1e-9 < floor:
+            lines.append("!! 模块 %s %.2f%% < 下限 %d%%（stmts %d，未覆盖 %d）"
+                         % (name, pct, floor, stmts, miss))
+            rc = 1
+        else:
+            lines.append("   [OK] 模块 %s %.2f%% ≥ %d%%（stmts %d，未覆盖 %d）"
+                         % (name, pct, floor, stmts, miss))
+    return rc, lines
+
 # 2026-10-13 删掉了这里的 DEFAULT_PRODUCT_MIN = 84：全仓没有任何一处读它（grep 只命中定义那一行），
 # 而产品档下限唯一真相是 tools/coverage_gate_baseline.json（load_baseline 在基线缺失时直接抛错，
 # 从不回落到默认值）。留一枚没人读的 84，就等于在基线抬到 89 之后继续对下一读者说"下限是 84"。
@@ -121,6 +166,7 @@ def load_baseline(path: Path = BASELINE) -> dict:
     for key in ("product_floor", "chain_floor"):
         if not isinstance(data.get(key), int) or data[key] <= 0:
             raise RuntimeError("基线里 %s 缺失或不是正整数：%r" % (key, data.get(key)))
+    validate_module_floors(data.get("module_floors"))
     return data
 
 
@@ -174,6 +220,9 @@ def cmd_report(baseline: dict) -> int:
         return 2
     tiers = data["tiers"]
     rc, lines = judge(tiers, baseline["product_floor"], baseline["chain_floor"])
+    module_rc, module_lines = judge_modules(data["files"], baseline["module_floors"])
+    rc = max(rc, module_rc)
+    lines.extend(module_lines)
     print("== 覆盖率分档明细 ==")
     for line in lines:
         print(line)
@@ -332,6 +381,16 @@ def self_test() -> int:
     ok11e = min_override(dict(probe), "abc") == 2
     check("--min 不是整数 —— 必须退 2", ok11e)
 
+    module_floors = dict.fromkeys(REQUIRED_MODULES, 90)
+    module_rows = [(name, 100, 10) for name in REQUIRED_MODULES]
+    check("模块恰好达标必须放行", judge_modules(module_rows, module_floors)[0] == 0)
+    check("总档绿但单模块退化必须红",
+          judge_modules([(REQUIRED_MODULES[0], 100, 11)] + module_rows[1:],
+                        module_floors)[0] == 1)
+    check("必需模块缺失必须红", judge_modules(module_rows[1:], module_floors)[0] == 1)
+    check("模块零语句必须红",
+          judge_modules([(REQUIRED_MODULES[0], 0, 0)] + module_rows[1:],
+                        module_floors)[0] == 1)
     bad = [n for n, ok in cases if not ok]
     for n, ok in cases:
         print("   [%s] %s" % ("OK" if ok else "种错未被抓到", n))
@@ -411,6 +470,9 @@ def main(argv=None) -> int:
         return 2
     rc, lines = judge(data["tiers"],
                       baseline["product_floor"], baseline["chain_floor"])
+    module_rc, module_lines = judge_modules(data["files"], baseline["module_floors"])
+    rc = max(rc, module_rc)
+    lines.extend(module_lines)
     print("== 覆盖率分档门禁（产品 ≥%d%%，链上 ≥%d%%）=="
           % (baseline["product_floor"], baseline["chain_floor"]))
     for line in lines:

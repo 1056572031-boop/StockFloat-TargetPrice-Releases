@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,8 +37,24 @@ REQUIRED = ("change_id", "intent", "scope", "acceptance", "acceptance_map",
 SCHEMA_VERSION = 1
 SCENARIOS = ("local_mac", "second_mac", "intel", "fresh_install", "upgrade_install",
              "camera_upgrade", "fullscreen", "browser_download", "ota_rollback")
-RELEASE_POLICY_VERSION = 1
+RELEASE_POLICY_VERSION = 2
 RELEASE_ARTIFACT_ROLES = ("app", "dmg", "zip", "ota_manifest")
+# This is a closed policy list.  A record cannot add an exemption or turn off a
+# required scenario; the four entries below are the only permanently excluded
+#专项, and their exclusion is not evidence of success.
+PERMANENT_EXEMPTIONS = {
+    "fullscreen": "用户永久排除第三方浏览器专项；不代表常规自动全屏测试通过",
+    "camera_upgrade": "用户永久排除 camera_upgrade 专项；不代表摄像头升级验证通过",
+    "second_mac": "用户永久排除 second_mac 专项；不代表第二台 Mac 实测通过",
+    "browser_download": "用户永久排除 browser_download/Gatekeeper 专项；不代表下载与 Gatekeeper 实测通过",
+}
+CAPABILITY_BOUNDARIES = {
+    "intel": {
+        "status": "not_applicable",
+        "required": False,
+        "reason": "当前产品不支持 ARM 包安装到 Intel；不支持不代表通过，也不得声称 Intel 实测通过",
+    },
+}
 # The policy is intentionally independent from record[].required. A change record
 # may describe a development fixture, but it cannot disable release obligations.
 RELEASE_SCENARIO_PHASES = {
@@ -52,9 +69,16 @@ RELEASE_SCENARIO_PHASES = {
     "ota_rollback": "post_release",
 }
 RELEASE_PRE_SCENARIOS = tuple(name for name in SCENARIOS
-                              if RELEASE_SCENARIO_PHASES[name] == "pre_release")
+                              if RELEASE_SCENARIO_PHASES[name] == "pre_release"
+                              and name not in PERMANENT_EXEMPTIONS
+                              and name not in CAPABILITY_BOUNDARIES)
 RELEASE_POST_SCENARIOS = tuple(name for name in SCENARIOS
-                               if RELEASE_SCENARIO_PHASES[name] == "post_release")
+                               if RELEASE_SCENARIO_PHASES[name] == "post_release"
+                               and name not in PERMANENT_EXEMPTIONS
+                              and name not in CAPABILITY_BOUNDARIES)
+RELEASE_REQUIRED_SCENARIOS = tuple(name for name in SCENARIOS
+                                   if name not in PERMANENT_EXEMPTIONS
+                                   and name not in CAPABILITY_BOUNDARIES)
 LEVELS = {1: "纯函数和规则", 2: "真实组件与隔离协作者", 3: "冻结产物与系统集成", 4: "用户设备和交付通路"}
 TEST_MATRIX = {
     "release_chain": {"levels": [1, 2, 3], "checks": ["full_regression", "mutation", "artifact_identity"]},
@@ -174,6 +198,10 @@ def validate_scenarios(record: dict[str, Any]) -> list[str]:
         seen.add(name)
         if not isinstance(name, str) or name not in SCENARIO_SIGNALS:
             errors.append(f"未知真实场景: {name}")
+        if name in CAPABILITY_BOUNDARIES:
+            boundary = CAPABILITY_BOUNDARIES[name]
+            if any(scenario.get(key) != value for key, value in boundary.items()):
+                errors.append(f"固定能力边界状态、required 或理由不匹配，不得声称通过: {name}")
         status = scenario.get("status")
         if not isinstance(status, str) or status not in allowed_status:
             errors.append(f"场景状态无效: {name}")
@@ -201,6 +229,34 @@ def validate_scenarios(record: dict[str, Any]) -> list[str]:
               if isinstance(item, dict) and isinstance(item.get("id"), str)}
     if len(scenarios) != len(SCENARIOS) or actual != expected or len(seen) != len(actual):
         errors.append("真实场景矩阵不完整、重复或包含未知项")
+    return errors
+
+
+def validate_release_policy(record: dict[str, Any]) -> list[str]:
+    """Validate the closed release policy, independent of record required flags."""
+    errors: list[str] = []
+    scenarios = {item.get("id"): item for item in record.get("scenarios", [])
+                 if isinstance(item, dict)}
+    qualification = record.get("release_qualification")
+    if not isinstance(qualification, dict):
+        return ["正式发布资格缺少 release_qualification"]
+    exclusions = qualification.get("excluded_scenarios")
+    if exclusions != PERMANENT_EXEMPTIONS:
+        errors.append("正式政策豁免必须严格等于用户永久授权的四项，不能新增、删除或改写")
+    if qualification.get("capability_boundaries") != CAPABILITY_BOUNDARIES:
+        errors.append("能力边界必须严格等于固定 Intel ARM 包不支持政策，不能新增、删除或改写")
+    for name in SCENARIOS:
+        item = scenarios.get(name, {})
+        if name in CAPABILITY_BOUNDARIES:
+            if any(item.get(key) != value for key, value in CAPABILITY_BOUNDARIES[name].items()):
+                errors.append(f"固定能力边界状态、required 或理由不匹配，不得声称通过: {name}")
+        elif name in PERMANENT_EXEMPTIONS:
+            if item.get("status") != "not_applicable" or item.get("required") is not False:
+                errors.append(f"永久排除场景必须是 not_applicable + required=false: {name}")
+            if item.get("reason") != PERMANENT_EXEMPTIONS[name]:
+                errors.append(f"永久排除理由不匹配: {name}")
+        elif item.get("required") is not True:
+            errors.append(f"非永久排除场景不得用 required=false 绕过: {name}")
     return errors
 
 
@@ -354,12 +410,19 @@ def template() -> dict[str, Any]:
             "acceptance_map": [], "verification_evidence": [],
             "artifact_fingerprint": {"source": "pending", "artifacts": []},
             "release_qualification": {"stage": "development",
-                                       "policy_version": RELEASE_POLICY_VERSION},
+                                       "policy_version": RELEASE_POLICY_VERSION,
+                                       "excluded_scenarios": dict(PERMANENT_EXEMPTIONS),
+                                       "capability_boundaries": {name: dict(value)
+                                           for name, value in CAPABILITY_BOUNDARIES.items()}},
             "release_artifacts": {"version": "pending", "roles": {},
                                    "ota": {"archive_role": "zip",
                                             "manifest_role": "ota_manifest"}},
-            "scenarios": [{"id": s, "status": "unverified", "required": True,
-                           "reason": "尚无真实执行证据", "receipts": []} for s in SCENARIOS],
+            "scenarios": [{"id": s,
+                           "status": "not_applicable" if s in PERMANENT_EXEMPTIONS or s in CAPABILITY_BOUNDARIES else "unverified",
+                           "required": s not in PERMANENT_EXEMPTIONS and s not in CAPABILITY_BOUNDARIES,
+                           "reason": CAPABILITY_BOUNDARIES[s]["reason"] if s in CAPABILITY_BOUNDARIES
+                           else PERMANENT_EXEMPTIONS.get(s, "尚无真实执行证据"),
+                           "receipts": []} for s in SCENARIOS],
             "unverified_limitations": ["修改单尚未完成；真机、Intel、浏览器下载与线上 OTA 均未验证"]}
 
 
@@ -662,7 +725,12 @@ def verify(root: Path, record: dict[str, Any], base: Path, manifest_path: Path) 
                     errors.append(f"不能拿低层级替身证明真实场景: {scenario.get('id')}")
                 if scenario.get("id") == "intel" and result.get("machine", {}).get("architecture") != "x86_64":
                     errors.append("Intel 场景不是 x86_64 执行证据")
-        if scenario.get("required") is not False and status != "passed":
+        qualification = record.get("release_qualification")
+        pending_post_release = (
+            record.get("status") == "release_candidate"
+            and isinstance(qualification, dict) and qualification.get("stage") == "pre_release"
+            and scenario.get("id") in RELEASE_POST_SCENARIOS and status == "unverified")
+        if scenario.get("required") is not False and status != "passed" and not pending_post_release:
             errors.append(f"必需场景尚未通过: {scenario.get('id')}")
     return errors
 
@@ -671,10 +739,11 @@ def verify_release_candidate(root: Path, record: dict[str, Any], base: Path,
                              manifest_path: Path) -> list[str]:
     """核验正式候选资格；开发协议通过不等于可以发布。
 
-    发布前只要求发布前阶段的真实场景通过，发布后场景必须保持可见且不能
-    被标记为不适用。只有所有阶段都通过，才允许把资格阶段写成 complete。
+    发布前只要求发布前阶段的真实场景通过，发布后有效场景保持待验证。
+    四专项排除与固定 Intel 能力边界不算通过；其余场景全部闭环才可 complete。
     """
     errors = verify(root, record, base, manifest_path)
+    errors.extend(validate_release_policy(record))
     qualification = record.get("release_qualification")
     if record.get("status") != "release_candidate":
         errors.append("正式发布资格要求 status=release_candidate，development 记录不能冒充")
@@ -801,8 +870,8 @@ def verify_release_candidate(root: Path, record: dict[str, Any], base: Path,
             scenarios.get(name, {}).get("status") != "passed" for name in RELEASE_POST_SCENARIOS):
         errors.append("发布后阶段未完成全部真实场景，不能标记为 " + stage)
     if stage == "complete" and any(
-            scenarios.get(name, {}).get("status") != "passed" for name in SCENARIOS):
-        errors.append("全部真实场景未通过，不能标记正式交付 complete")
+            scenarios.get(name, {}).get("status") != "passed" for name in RELEASE_REQUIRED_SCENARIOS):
+        errors.append("全部有效必需场景未通过，不能标记正式交付 complete")
     return errors
 
 
@@ -835,6 +904,9 @@ def qualification_report(root: Path, record: dict[str, Any], base: Path,
             "stage": qualification.get("stage") if isinstance(qualification, dict) else None,
             "pre_release_scenarios": list(RELEASE_PRE_SCENARIOS),
             "post_release_scenarios": list(RELEASE_POST_SCENARIOS),
+            "required_scenarios": list(RELEASE_REQUIRED_SCENARIOS),
+            "permanent_exemptions": dict(PERMANENT_EXEMPTIONS),
+            "capability_boundaries": CAPABILITY_BOUNDARIES,
             "artifact_roles": list(RELEASE_ARTIFACT_ROLES),
             "excluded_scenarios": qualification.get("excluded_scenarios", {})
             if isinstance(qualification, dict) else {},
@@ -852,13 +924,119 @@ def qualification_report(root: Path, record: dict[str, Any], base: Path,
     }
 
 
+def post_release_record(root: Path, candidate: Path, release_log: Path,
+                        installed_app: Path) -> Path:
+    """Retrospective readback, not a newly minted historical execution receipt."""
+    import plistlib
+
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import sf_update
+
+    record = load(candidate)
+    bound_path = candidate.with_suffix(".manifest.json")
+    bound = load(bound_path)
+    version = record["release_artifacts"]["version"]
+    try:
+        sf_update.parse_version(version)
+    except sf_update.UpdateError as exc:
+        raise ValueError("发布后记录版本无效") from exc
+    output = root / "outputs" / "release-candidates" / ("v" + version)
+    target = output / "post_release.json"
+    if target.exists():
+        raise ValueError("不覆盖现有发布后记录")
+    expected_record = hashlib.sha256(json.dumps(
+        record, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+    if expected_record != bound.get("record_sha256"):
+        raise ValueError("候选记录与历史 manifest 不一致")
+    roles = bound["release_artifacts"]["roles"]
+    actual = {}
+    for role, item in roles.items():
+        token = artifact_token(resolve_reference(root, item["path"]))
+        if token != {key: value for key, value in item.items() if key != "path"}:
+            raise ValueError("发布产物已变化: " + role)
+        actual[role] = item
+    installed = artifact_token(installed_app)
+    if installed != {key: value for key, value in roles["app"].items() if key != "path"}:
+        raise ValueError("装机包与候选包不一致")
+    with (installed_app / "Contents" / "Info.plist").open("rb") as stream:
+        identity = plistlib.load(stream)
+    if identity.get("CFBundleShortVersionString") != version:
+        raise ValueError("装机版本不一致")
+    signature = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict",
+                                str(installed_app)], capture_output=True, text=True, timeout=30)
+    if signature.returncode:
+        raise ValueError("装机签名无效: " + signature.stderr)
+    log = release_log.read_text(encoding="utf-8")
+    markers = ["已安装: " + str(installed_app), "版本: " + version,
+               "published_archive=Skyrocket-" + version + "-macos.zip",
+               "最终启动复验：" + str(installed_app), "结论: 冒烟通过",
+               "发版完成 v" + version]
+    if any(marker not in log for marker in markers):
+        raise ValueError("发布日志缺少安装、发布或最终启动证据")
+    try:
+        raw = sf_update.fetch_manifest()
+        info = sf_update.verify_manifest(raw)
+    except sf_update.UpdateError as exc:
+        raise ValueError("线上清单读取或验签失败") from exc
+    local = resolve_reference(root, roles["ota_manifest"]["path"]).read_bytes()
+    if raw != local or info.version != version:
+        raise ValueError("线上签名清单与已绑定产物不一致")
+    if info.archive_sha256 != roles["zip"]["content_sha256"]:
+        raise ValueError("线上清单 ZIP 哈希不一致")
+    scenarios = []
+    for item in record["scenarios"]:
+        item = dict(item)
+        if item["id"] in CAPABILITY_BOUNDARIES:
+            item.update(CAPABILITY_BOUNDARIES[item["id"]], receipts=[])
+            item.pop("observation", None)
+        elif item["id"] in PERMANENT_EXEMPTIONS:
+            item.update(status="not_applicable", required=False,
+                        reason=PERMANENT_EXEMPTIONS[item["id"]], receipts=[])
+        elif item["status"] == "not_applicable":
+            item.update(status="unverified", required=True,
+                        reason="不允许把非永久政策专项标记为不适用；尚无真实场景证据")
+        scenarios.append(item)
+    output.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(release_log, output / "publish.log")
+    (output / "online-manifest.json").write_bytes(raw)
+    value = {"schema_version": 1, "stage": "post_release", "status": "incomplete",
+             "version": version, "recorded_at": now(),
+             "evidence_kind": "retrospective_readback_not_execution_receipt",
+             "candidate_sha256": sha256_file(candidate),
+             "candidate_manifest_sha256": sha256_file(bound_path),
+             "release_source": {key: bound["source"][key]
+                                for key in ("head", "fingerprint", "algorithm")},
+             "artifacts": actual,
+             "installed": {"path": str(installed_app), **installed,
+                           "version": version, "bundle_id": identity.get("CFBundleIdentifier"),
+                           "signature_valid": True},
+             "publication": {"signed_manifest_verified": True, "matches_local_bytes": True,
+                             "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                             "archive_sha256": info.archive_sha256},
+             "historical_publish_log": {"path": "publish.log", "sha256": sha256_file(release_log),
+                                        "matched_markers": markers,
+                                        "timestamp_boundary": "日志未提供结束时间；不由 mtime 推算"},
+             "scenarios": scenarios,
+             "permanent_exemptions": dict(PERMANENT_EXEMPTIONS),
+             "capability_boundaries": {name: dict(value) for name, value in CAPABILITY_BOUNDARIES.items()},
+             "unverified_limitations": ["未完成全部真实场景，不能进入 complete",
+                 "发布日志不是 quality_evidence.run 回执；只保留原始事实与当前读回",
+                 "发布后新改动不属于此已发布包；不刷新历史源码指纹",
+                 "历史候选路径均相对仓库根；归档不重签或刷新资格"],
+             "pending_scenarios": [item["id"] for item in scenarios
+                                   if item["id"] in RELEASE_REQUIRED_SCENARIOS
+                                   and item["status"] != "passed"]}
+    atomic_json(target, value)
+    return target
+
+
 def self_test() -> int:
     good = {"schema_version": 1, "change_id": "T", "intent": "测试", "scope": ["x.py"],
             "acceptance": ["可执行"], "acceptance_map": [{"acceptance": "可执行", "evidence_index": 0}],
             "verification_evidence": [{"command": "true", "exit_code": 0}],
             "artifact_fingerprint": {"source": "pending", "artifacts": [{"path": "x.bin"}]},
-            "scenarios": [{"id": name, "status": "unverified", "required": False,
-                           "reason": "自检样例"} for name in SCENARIOS],
+            "scenarios": template()["scenarios"],
             "unverified_limitations": ["无真机证据"]}
     cases = [("valid", good, False)]
     cases += [(f"missing {key}", {k: v for k, v in good.items() if k != key}, True) for key in REQUIRED]
@@ -882,12 +1060,14 @@ def self_test() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", choices=("init", "validate", "snapshot", "impact", "manifest", "verify", "qualify", "qualification-report", "run"))
+    parser.add_argument("command", nargs="?", choices=("init", "validate", "snapshot", "impact", "manifest", "verify", "qualify", "qualification-report", "run", "post-release"))
     parser.add_argument("record", nargs="?")
     parser.add_argument("--root", default=str(ROOT))
     parser.add_argument("--level", type=int, choices=tuple(LEVELS), default=1)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--release-log", type=Path)
+    parser.add_argument("--installed-app", type=Path, default=Path("/Applications/Skyrocket.app"))
     raw = list(sys.argv[1:] if argv is None else argv)
     command_args = raw[raw.index("--") + 1:] if "--" in raw else []
     args = parser.parse_args(raw[:raw.index("--")] if "--" in raw else raw)
@@ -897,6 +1077,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("需要 command 和 record；run 的 record 参数为证据输出目录")
     root, path = Path(args.root).resolve(), Path(args.record).resolve()
     try:
+        if args.command == "post-release":
+            if args.release_log is None:
+                raise ValueError("post-release 需要 --release-log")
+            print(post_release_record(root, path, args.release_log, args.installed_app))
+            return 0
         if args.command == "init":
             if path.exists():
                 raise ValueError("不覆盖现有修改单")

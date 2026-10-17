@@ -395,6 +395,127 @@ class PollRoutingCase(SFCase):
         self.assertEqual(len(self.host.args_of("_sync_dot_timer")), 1,
                          "批末收尾必须仍执行，否则呼吸灯会跟着这一次异常一起停")
 
+OTA_MESSAGES = (
+    ("update_check_cancel", "skip", ("skip",)),
+    ("update_check", ("ok", "有新版"), ("ok", "有新版")),
+    ("update_prompt_answer", "later", ("later",)),
+    ("update_progress", (90, "下载中"), (90, "下载中")),
+    ("update_download", ("done", "/tmp/test-update.zip"),
+     ("done", "/tmp/test-update.zip")),
+)
+
+
+class PollHandlerFailureMatrix(SFCase):
+    """只使用隔离 Host；不建 FloatWindow，不启动线程、网络或真实 OTA。"""
+
+    normal = PollRoutingCase.normal
+    minimized = PollRoutingCase.minimized
+
+    def setUp(self):
+        super().setUp()
+        _ensure_qapp()
+        self.host = _Host()
+        self.singles = []
+        self.track_patch(mock.patch.object(m, "ui_poll_interval_ms", return_value=IV_MIN))
+        self.track_patch(mock.patch.object(m, "ui_top_poll_interval_ms", return_value=TIV_MIN))
+        self.track_patch(mock.patch.object(m, "log_line", return_value=None))
+        self.track_patch(mock.patch.object(
+            m.QTimer, "singleShot",
+            classmethod(lambda cls, ms, fn: self.singles.append((ms, fn)))))
+
+    def _fail_once(self, kind):
+        name = "_handle_" + kind
+        record = self.host._rec(name)  # discipline-ok(R5): 隔离记录器记录失败调用，防止漏路由也被当通过
+        failures = [True]
+
+        def handler(*args):
+            record(*args)
+            if failures.pop() if failures else False:
+                raise RuntimeError("matrix-boom:" + kind)
+
+        _wire(self.host, **{name: handler})
+
+    def _assert_delivered(self, messages):
+        for kind, _data, args in messages:
+            self.assertEqual(self.host.args_of("_handle_" + kind), [args], kind)
+
+    def test_五类OTA异常逐条隔离且下一拍恢复(self):
+        for trading in (False, True):
+            for failed_kind, _data, _args in OTA_MESSAGES:
+                with self.subTest(trading=trading, failed=failed_kind):
+                    self.host = _Host()
+                    self.singles.clear()
+                    self.normal(trading=trading)
+                    self._fail_once(failed_kind)
+                    seen = []
+                    with mock.patch.object(m, "log_line", side_effect=lambda *a: seen.append(a)):
+                        _wire(self.host, _need_redraw=True, _width_dirty=True)
+                        self.host.put(*[(kind, data) for kind, data, _args in OTA_MESSAGES])
+                        _poll(self.host)
+                        self._assert_delivered(OTA_MESSAGES)
+                        self.assertTrue(self.host.q.empty())
+                        self.assertEqual(len(seen), 1, seen)
+                        self.assertIn("matrix-boom:" + failed_kind, str(seen))
+                        self.assertIn("poll apply error", str(seen))
+                        self.assertEqual(self.host.order()[-3:],
+                                         ["_repaint_now", "_sync_dot_timer", "_auto_width"])
+                        self.assertFalse(_peek(self.host, "_need_redraw"))
+                        self.assertFalse(_peek(self.host, "_width_dirty"))
+                        self.assertEqual(len(self.singles), int(not trading))
+                        if not trading:
+                            self.assertIs(self.singles[0][1], _peek(self.host, "_poll"))
+                        self.host.calls.clear()
+                        self.singles.clear()
+                        _wire(self.host, _need_redraw=True, _width_dirty=True)
+                        self.host.put(*[(kind, data) for kind, data, _args in OTA_MESSAGES])
+                        _poll(self.host)
+                        self._assert_delivered(OTA_MESSAGES)
+                        self.assertEqual(len(seen), 1, "下一拍不应再次失败")
+                        self.assertEqual(self.host.order()[-3:],
+                                         ["_repaint_now", "_sync_dot_timer", "_auto_width"])
+
+    def test_缩Dock五类OTA异常留队下一拍继续且恢复正常收尾(self):
+        for failed in OTA_MESSAGES:
+            with self.subTest(failed=failed[0]):
+                self.host = _Host()
+                self.singles.clear()
+                self.minimized()
+                self._fail_once(failed[0])
+                remaining = [item for item in OTA_MESSAGES if item != failed]
+                seen = []
+                with mock.patch.object(m, "log_line", side_effect=lambda *a: seen.append(a)):
+                    _wire(self.host, _need_redraw=True, _width_dirty=True)
+                    self.host.put((failed[0], failed[1]),
+                                  *[(kind, data) for kind, data, _args in remaining])
+                    _poll(self.host)
+                    self._assert_delivered([failed])
+                    for kind, _data, _args in remaining:
+                        self.assertEqual(self.host.args_of("_handle_" + kind), [])
+                    self.assertEqual(self.host.q.qsize(), len(remaining))
+                    self.assertEqual(len(seen), 1, seen)
+                    self.assertIn("poll error (minimized)", str(seen))
+                    self.assertIn("matrix-boom:" + failed[0], str(seen))
+                    _poll(self.host)
+                    self._assert_delivered(OTA_MESSAGES)
+                    self.assertTrue(self.host.q.empty())
+                    self.assertEqual(self.host.args_of("_update_nap_policy"), [(False,), (False,)])
+                    self.assertEqual(self.host.timer.interval(), IV_MIN)
+                    self.assertEqual(self.host.top_timer.interval(), TIV_MIN)
+                    for tail in ("_repaint_now", "_sync_dot_timer", "_auto_width"):
+                        self.assertEqual(self.host.args_of(tail), [], "缩 Dock 不执行常规收尾")
+                    self.assertTrue(_peek(self.host, "_need_redraw"))
+                    self.assertTrue(_peek(self.host, "_width_dirty"))
+                    self.assertEqual(self.singles, [])
+                    self.host.calls.clear()
+                    self.normal(trading=True)
+                    self.host.put((failed[0], failed[1]))
+                    _poll(self.host)
+                    self._assert_delivered([failed])
+                    self.assertEqual(len(seen), 1, "恢复后 handler 应可再次成功执行")
+                    self.assertEqual(self.host.order()[-3:],
+                                     ["_repaint_now", "_sync_dot_timer", "_auto_width"])
+
+
 class PollTailSurvivesHandlerErrors(SFCase):
     """v1.4.66 复核修复的判据：批末应用段纳入兜异常之后，收尾不可被跳过。
 

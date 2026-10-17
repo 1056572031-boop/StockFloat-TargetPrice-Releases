@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tools import gate_stamp
 from tools import quality_evidence as evidence
 from tests._base import SFCase
 
@@ -39,8 +40,10 @@ class TestQualityEvidenceValidation(SFCase):
 
     def test_template_is_development_until_real_evidence_exists(self):
         self.assertEqual("development", self.record["status"])
-        self.assertTrue(all(item["status"] == "unverified"
-                            for item in self.record["scenarios"]))
+        self.assertTrue(all(
+            item["status"] == ("not_applicable" if item["id"] in evidence.PERMANENT_EXEMPTIONS or item["id"] in evidence.CAPABILITY_BOUNDARIES else "unverified")
+            for item in self.record["scenarios"]
+        ))
         self.assertTrue(evidence.validate(self.record) == [])
 
     def test_boolean_exit_code_is_not_an_integer_receipt(self):
@@ -79,6 +82,25 @@ class TestArtifactFingerprint(SFCase):
             (bundle / "inside").symlink_to(target)
             with self.assertRaises(ValueError):
                 evidence.artifact_token(bundle)
+
+    def test_source_snapshot_rejects_empty_input_and_matches_gate_stamp_for_new_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "--quiet", str(root)], env=evidence.gate_stamp.git_env(),
+                           check=True, capture_output=True)
+            with self.assertRaisesRegex(ValueError, "输入清单为空"):
+                evidence.source_snapshot(root)
+
+            isolated = isolated_source_root(root)
+            tracked = isolated / "probe.py"
+            os.chmod(tracked, 0o700)
+            added = isolated / "new.py"
+            added.write_text("print('new')\n", encoding="utf-8")
+            expected = gate_stamp.current_info(str(isolated))
+            actual = evidence.source_snapshot(isolated)
+            self.assertEqual(expected["fingerprint"], actual["fingerprint"])
+            self.assertEqual(expected["files"], len(actual["files"]))
+            self.assertTrue(any(item["path"] == "new.py" for item in actual["files"]))
 
 
 class TestExecutionReceipt(SFCase):
@@ -337,7 +359,8 @@ class TestVerifyIntegration(SFCase):
             "unverified_limitations": ["合成观测仅验证协议；全部产品真实场景均未执行"],
         })
         for scenario in self.record["scenarios"]:
-            scenario.update(required=False, reason="隔离协议测试未执行此产品场景")
+            if scenario["id"] not in evidence.CAPABILITY_BOUNDARIES:
+                scenario.update(required=False, reason="隔离协议测试未执行此产品场景")
         local = self.record["scenarios"][0]
         local.update(status="passed", required=True, receipts=[reference], observation={
             "source": receipt["source_start"], "device_id": receipt["machine"]["device_id"],
@@ -375,7 +398,9 @@ class TestVerifyIntegration(SFCase):
         self.record.update({
             "status": "release_candidate",
             "release_qualification": {"stage": "pre_release",
-                                       "policy_version": evidence.RELEASE_POLICY_VERSION},
+                                       "policy_version": evidence.RELEASE_POLICY_VERSION,
+                                       "excluded_scenarios": dict(evidence.PERMANENT_EXEMPTIONS),
+                                       "capability_boundaries": copy.deepcopy(evidence.CAPABILITY_BOUNDARIES)},
             "release_artifacts": {
                 "version": "1.4.92",
                 "roles": {name: {"path": path.relative_to(self.base).as_posix()}
@@ -387,7 +412,12 @@ class TestVerifyIntegration(SFCase):
             ]},
         })
         for scenario in self.record["scenarios"]:
-            scenario.update(required=False, reason="发布后真实设备证据待补")
+            scenario.update(required=True, reason="发布后真实设备证据待补")
+            if scenario["id"] in evidence.CAPABILITY_BOUNDARIES:
+                scenario.update(evidence.CAPABILITY_BOUNDARIES[scenario["id"]], receipts=[])
+            elif scenario["id"] in evidence.PERMANENT_EXEMPTIONS:
+                scenario.update(status="not_applicable", required=False,
+                                reason=evidence.PERMANENT_EXEMPTIONS[scenario["id"]], receipts=[])
         local = copy.deepcopy(self.record["scenarios"][0])
         artifact_hash = evidence.artifact_token(archive)["sha256"]
         for name in evidence.RELEASE_PRE_SCENARIOS:
@@ -400,12 +430,131 @@ class TestVerifyIntegration(SFCase):
         self.seal()
         return archive
 
-    def test_development_record_cannot_be_release_qualified(self):
-        errors = evidence.verify_release_candidate(
-            self.root, self.record, self.base, self.manifest_path)
-        self.assertTrue(any("development 记录不能冒充" in item for item in errors))
+    def test_closed_policy_rejects_missing_policy_and_false_exemption_status(self):
+        record = evidence.template()
+        record.pop("release_qualification")
+        self.assertTrue(any("缺少 release_qualification" in item
+                            for item in evidence.validate_release_policy(record)))
+        record = evidence.template()
+        scenario = next(item for item in record["scenarios"] if item["id"] == "fullscreen")
+        scenario.update(status="unverified", required=True)
+        self.assertTrue(any("not_applicable + required=false" in item
+                            for item in evidence.validate_release_policy(record)))
 
-    def test_formal_candidate_requires_all_roles_and_pre_release_scenarios(self):
+    def test_permanent_exemptions_are_closed_and_required_flags_cannot_bypass(self):
+        self.make_release_candidate()
+        self.assertEqual([], evidence.validate_release_policy(self.record))
+        self.record["release_qualification"]["excluded_scenarios"]["ota_rollback"] = "绕过"
+        errors = evidence.validate_release_policy(self.record)
+        self.assertTrue(any("严格等于" in item for item in errors))
+        self.record["release_qualification"]["excluded_scenarios"] = dict(evidence.PERMANENT_EXEMPTIONS)
+        ota = next(item for item in self.record["scenarios"] if item["id"] == "ota_rollback")
+        ota["required"] = False
+        self.assertTrue(any("required=false 绕过" in item
+                            for item in evidence.validate_release_policy(self.record)))
+
+    def test_complete_uses_valid_required_scenarios_not_exemptions(self):
+        self.make_release_candidate()
+        self.record["release_qualification"].update(stage="complete")
+        local = self.record["scenarios"][0]
+        for scenario in self.record["scenarios"]:
+            if scenario["id"] not in evidence.RELEASE_REQUIRED_SCENARIOS:
+                continue
+            scenario.update(status="passed", required=True, receipts=local["receipts"],
+                            observation=copy.deepcopy(local["observation"]))
+            scenario["observation"]["signals"] = {
+                signal: True for signal in evidence.SCENARIO_SIGNALS[scenario["id"]]}
+        self.seal()
+        self.assertEqual([], evidence.verify_release_candidate(
+            self.root, self.record, self.base, self.manifest_path))
+        for stage in ("post_release", "complete"):
+            for name in evidence.RELEASE_REQUIRED_SCENARIOS:
+                with self.subTest(stage=stage, missing=name):
+                    broken = copy.deepcopy(self.record)
+                    broken["release_qualification"]["stage"] = stage
+                    scenario = next(item for item in broken["scenarios"] if item["id"] == name)
+                    scenario.update(status="unverified", reason="缺少真实场景证据", receipts=[])
+                    scenario.pop("observation", None)
+                    evidence.atomic_json(self.manifest_path, evidence.manifest(self.root, broken, self.base))
+                    errors = evidence.verify_release_candidate(
+                        self.root, broken, self.base, self.manifest_path)
+                    self.assertTrue(any("必需场景" in item or "全部真实场景" in item for item in errors), errors)
+        self.seal()
+        report = evidence.qualification_report(self.root, self.record, self.base, self.manifest_path)
+        self.assertEqual("qualified", report["status"])
+        self.assertEqual("not_applicable", report["release"]["scenarios"]["intel"])
+        self.assertNotIn("intel", report["policy"]["required_scenarios"])
+        self.assertIn("ota_rollback", report["policy"]["required_scenarios"])
+        self.assertEqual(4, len(report["policy"]["permanent_exemptions"]))
+
+    def test_capability_boundary_cannot_expand_change_reason_or_claim_success(self):
+        self.make_release_candidate()
+        baseline = copy.deepcopy(self.record)
+        mutations = ("extra", "reason", "missing", "passed", "required", "scenario_reason", "fifth_exemption")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.record = copy.deepcopy(baseline)
+                qualification = self.record["release_qualification"]
+                intel = next(item for item in self.record["scenarios"] if item["id"] == "intel")
+                if mutation == "extra":
+                    qualification["capability_boundaries"]["ota_rollback"] = dict(
+                        evidence.CAPABILITY_BOUNDARIES["intel"])
+                elif mutation == "reason":
+                    qualification["capability_boundaries"]["intel"]["reason"] = "Intel 已通过"
+                elif mutation == "missing":
+                    qualification.pop("capability_boundaries")
+                elif mutation == "passed":
+                    intel.update(status="passed", required=True)
+                elif mutation == "required":
+                    intel["required"] = True
+                elif mutation == "scenario_reason":
+                    intel["reason"] = "本轮暂时不测"
+                else:
+                    qualification["excluded_scenarios"]["intel"] = intel["reason"]
+                self.seal()
+                errors = evidence.verify_release_candidate(
+                    self.root, self.record, self.base, self.manifest_path)
+                self.assertTrue(any("能力边界" in item or "严格等于" in item for item in errors), errors)
+                if mutation in {"passed", "required", "scenario_reason"}:
+                    self.assertTrue(any("固定能力边界" in item for item in self.verify()))
+
+    def test_post_release_readback_preserves_separate_intel_boundary(self):
+        import plistlib
+        from types import SimpleNamespace
+
+        import sf_update
+
+        self.make_release_candidate()
+        app = self.base / "Skyrocket.app"
+        (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": self.record["release_artifacts"]["version"],
+            "CFBundleIdentifier": "com.skyrocket.app",
+        }))
+        self.seal()
+        candidate = self.base / "change.json"
+        evidence.atomic_json(candidate, self.record)
+        version = self.record["release_artifacts"]["version"]
+        log = self.base / "release.log"
+        log.write_text("\n".join([
+            "已安装: " + str(app), "版本: " + version,
+            "published_archive=Skyrocket-" + version + "-macos.zip",
+            "最终启动复验：" + str(app), "结论: 冒烟通过", "发版完成 v" + version,
+        ]), encoding="utf-8")
+        raw = (self.base / "Skyrocket-update.json").read_bytes()
+        info = SimpleNamespace(version=version, archive_sha256=evidence.sha256_file(
+            self.base / ("Skyrocket-" + version + "-macos.zip")))
+        with patch.object(sf_update, "fetch_manifest", return_value=raw), \
+                patch.object(sf_update, "verify_manifest", return_value=info), \
+                patch.object(evidence.subprocess, "run", return_value=SimpleNamespace(returncode=0)):
+            result = evidence.load(evidence.post_release_record(self.base, candidate, log, app))
+        scenarios = {item["id"]: item for item in result["scenarios"]}
+        for key, value in evidence.CAPABILITY_BOUNDARIES["intel"].items():
+            self.assertEqual(value, scenarios["intel"][key])
+        self.assertEqual("incomplete", result["status"])
+        self.assertEqual("unverified", scenarios["ota_rollback"]["status"])
+        self.assertIs(True, scenarios["ota_rollback"]["required"])
+
+    def test_development_record_cannot_be_release_qualified(self):
         errors = evidence.verify_release_candidate(
             self.root, self.record, self.base, self.manifest_path)
         self.assertTrue(any("正式产物角色缺失" in item for item in errors))
@@ -413,8 +562,9 @@ class TestVerifyIntegration(SFCase):
 
     def test_formal_candidate_binds_roles_and_ota_raw_hash(self):
         archive = self.make_release_candidate()
-        self.assertEqual([], evidence.verify_release_candidate(
-            self.root, self.record, self.base, self.manifest_path))
+        errors = evidence.verify_release_candidate(
+            self.root, self.record, self.base, self.manifest_path)
+        self.assertEqual([], errors)
         archive.write_bytes(b"bad-fixture")
         errors = evidence.verify_release_candidate(
             self.root, self.record, self.base, self.manifest_path)
@@ -423,8 +573,8 @@ class TestVerifyIntegration(SFCase):
     def test_post_release_scope_exclusions_require_reasons(self):
         self.make_release_candidate()
         exclusions = {
-            name: "本轮按用户明确范围不执行发布后真实场景"
-            for name in evidence.RELEASE_POST_SCENARIOS
+            name: evidence.PERMANENT_EXEMPTIONS[name]
+            for name in evidence.PERMANENT_EXEMPTIONS
         }
         self.record["release_qualification"]["excluded_scenarios"] = exclusions
         for scenario in self.record["scenarios"]:
@@ -449,7 +599,11 @@ class TestVerifyIntegration(SFCase):
     def test_real_receipt_artifact_manifest_protocol_passes(self):
         self.assertEqual([], self.verify())
         self.assertEqual("development", self.record["status"])
-        self.assertTrue(all(s["status"] == "unverified" for s in self.record["scenarios"][1:]))
+        self.assertTrue(all(
+            item["status"] == ("passed" if item["id"] == "local_mac" else
+                                "not_applicable" if item["id"] in evidence.PERMANENT_EXEMPTIONS or item["id"] in evidence.CAPABILITY_BOUNDARIES else "unverified")
+            for item in self.record["scenarios"]
+        ))
 
     def test_each_corruption_returns_its_specific_error(self):
         baseline_record = copy.deepcopy(self.record)
@@ -463,7 +617,7 @@ class TestVerifyIntegration(SFCase):
             ("device", "场景与执行设备不一致"), ("artifact", "场景产物不属于 manifest"),
             ("time", "场景观测不在执行会话时间内"), ("duplicate", "真实场景重复"),
             ("missing", "真实场景矩阵不完整"), ("unknown", "未知真实场景"),
-            ("no_receipt", "通过场景缺少 receipts"), ("intel_arm", "Intel 场景不是 x86_64"),
+            ("no_receipt", "通过场景缺少 receipts"), ("intel_arm", "固定能力边界"),
             ("attachment_escape", "场景附件缺失或篡改"),
             ("non_object", "必须是对象"), ("manifest_json", "manifest 无法读取"),
             ("bad_argv", "不是执行器留据"), ("bad_reference", "receipt 路径无效"),

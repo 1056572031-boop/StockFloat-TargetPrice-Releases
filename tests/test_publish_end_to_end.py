@@ -266,8 +266,8 @@ class PublishEndToEndTest(unittest.TestCase):
         if with_archive:
             record.update({
                 "status": "release_candidate",
-                "release_qualification": {"stage": "pre_release",
-                                           "policy_version": quality.RELEASE_POLICY_VERSION},
+                "release_qualification": {**record["release_qualification"],
+                                           "stage": "pre_release"},
                 "release_artifacts": {
                     "version": "1.4.17",
                     "roles": {
@@ -287,8 +287,8 @@ class PublishEndToEndTest(unittest.TestCase):
                 "unverified_limitations": ["仅合成协议夹具；产品真实场景全部未执行"],
             })
             receipt_hash = quality.sha256_file(receipt_path)
-            for scenario in record["scenarios"]:
-                scenario.update(required=False, reason="离线夹具不证明产品真实场景")
+            # 保留政策模板：四专项永久排除与 Intel 能力边界均不代表通过；
+            # OTA rollback 仍 required=true，仅发布前阶段允许待验证。
             artifact_hashes = {
                 role: quality.artifact_token(source.parent / path)["sha256"]
                 for role, path in {
@@ -297,13 +297,8 @@ class PublishEndToEndTest(unittest.TestCase):
                     "ota_manifest": "update_assets/" + self.tool.MANIFEST_PATH,
                 }.items()
             }
-            pre_signals = {
-                "local_mac": ("first_frame", "clean_exit"),
-                "fresh_install": ("installed_version", "signature_valid", "first_frame"),
-                "upgrade_install": ("installed_version", "user_data_preserved", "first_frame"),
-                "fullscreen": ("menu_onscreen", "editor_onscreen", "target_bubble_onscreen"),
-            }
-            for name, signals in pre_signals.items():
+            for name in quality.RELEASE_PRE_SCENARIOS:
+                signals = quality.SCENARIO_SIGNALS[name]
                 record["scenarios"][quality.SCENARIOS.index(name)].update(
                     status="passed", required=True,
                     observation={

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -279,6 +280,104 @@ class TestCoverageRatchetDirection(SFCase):
         rc, _ = CG.judge({"product": [1000, 400, 12], "chain": [200, 10, 6]},
                          data["product_floor"], data["chain_floor"])
         self.assertEqual(rc, 1, "产品档 60% 必须红，不管基线里写的 measured 是多少")
+
+
+def _module_fixture():
+    """显式完整范围，老合成档数据不通过 loader 默认空字段绕过模块门禁。"""
+    floors = dict.fromkeys(CG.REQUIRED_MODULES, 90)
+    baseline = {"product_floor": 89, "chain_floor": 78, "module_floors": floors}
+    data = {"tiers": {"product": [1000, 10, 7], "chain": [100, 1, 1]},
+            "files": [(name, 100, 10) for name in floors] + [("tools/example.py", 100, 1)]}
+    return baseline, data
+
+
+class TestModuleFloors(SFCase):
+    def test_boundary_and_single_module_failure(self):
+        baseline, data = _module_fixture()
+        floors = baseline["module_floors"]
+        before = json.dumps(data, sort_keys=True)
+        rc, lines = CG.judge_modules(data["files"], floors)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(lines), len(floors))
+        self.assertTrue(all(name in "\n".join(lines) for name in floors))
+        self.assertEqual(json.dumps(data, sort_keys=True), before)
+        data["files"][0] = (CG.REQUIRED_MODULES[0], 10000, 1001)
+        self.assertEqual(CG.judge(data["tiers"], 89, 78)[0], 0)
+        rc, lines = CG.judge_modules(data["files"], floors)
+        self.assertEqual(rc, 1)
+        self.assertIn(CG.REQUIRED_MODULES[0], lines[0])
+        self.assertIn("下限", lines[0])
+
+    def test_missing_empty_zero_and_invalid_statistics(self):
+        baseline, data = _module_fixture()
+        for rows in ([], data["files"][1:]):
+            with self.subTest(rows=len(rows)):
+                rc, lines = CG.judge_modules(rows, baseline["module_floors"])
+                self.assertEqual(rc, 1)
+                self.assertIn("缺少", lines[0])
+        for stmts, miss in ((0, 0), (-1, 0), (100, -1), (100, 101), (True, 0), (100, 1.5)):
+            with self.subTest(stmts=stmts, miss=miss):
+                rows = [(CG.REQUIRED_MODULES[0], stmts, miss)] + data["files"][1:]
+                rc, lines = CG.judge_modules(rows, baseline["module_floors"])
+                self.assertEqual(rc, 1)
+                self.assertIn("无法给结论", lines[0])
+        with self.assertRaisesRegex(RuntimeError, "重复"):
+            CG.judge_modules(data["files"] * 2, baseline["module_floors"])
+
+    def test_required_field_and_invalid_floors_are_rejected_by_loader(self):
+        baseline, _ = _module_fixture()
+        invalid = [None, {}, [], {CG.REQUIRED_MODULES[0]: 90}]
+        for value in (0, -1, 101, True, 90.5, "90", None):
+            invalid.append(dict(baseline["module_floors"], **{CG.REQUIRED_MODULES[0]: value}))
+        invalid.append({**baseline["module_floors"], 123: 90})
+        for floors in invalid:
+            with self.subTest(floors=floors), self.assertRaises(RuntimeError):
+                CG.judge_modules([], floors)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "baseline.json"
+            for floors in invalid[:-1]:
+                sample = dict(baseline, module_floors=floors)
+                path.write_text(json.dumps(sample), encoding="utf-8")
+                with self.subTest(floors=floors), self.assertRaises(RuntimeError):
+                    CG.load_baseline(path)
+            sample = {k: v for k, v in baseline.items() if k != "module_floors"}
+            path.write_text(json.dumps(sample), encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                CG.load_baseline(path)
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+            self.assertEqual(CG.load_baseline(path), baseline)
+
+    def test_report_and_main_combine_tier_and_module_results(self):
+        for tier_bad, module_bad in ((False, False), (False, True), (True, False)):
+            baseline, data = _module_fixture()
+            if tier_bad:
+                data["tiers"]["chain"] = [100, 99, 1]
+            if module_bad:
+                data["files"][0] = (CG.REQUIRED_MODULES[0], 100, 11)
+            with self.subTest(tier_bad=tier_bad, module_bad=module_bad):
+                for action in (lambda: CG.cmd_report(baseline), lambda: CG.main(["gate"])):
+                    output = io.StringIO()
+                    with patch.object(CG, "load_baseline", return_value=baseline), \
+                            patch.object(CG, "load_data", return_value=(data, "")), \
+                            redirect_stdout(output), redirect_stderr(io.StringIO()):
+                        self.assertEqual(action(), int(tier_bad or module_bad))
+                    self.assertIn(CG.REQUIRED_MODULES[0], output.getvalue())
+
+    def test_update_preserves_module_floors_and_measurement_roundtrip(self):
+        baseline = CG.load_baseline()
+        _, data = _module_fixture()
+        data["files"] = []  # 更新不重算模块基线，更不按本次低值自动降线。
+        data["tiers"]["chain"] = [100, 23, 1]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "baseline.json"
+            with patch.object(CG, "load_data", return_value=(data, "")), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(CG.cmd_update(baseline, True, path), 0)
+            saved = CG.load_baseline(path)
+        self.assertEqual(saved["module_floors"], baseline["module_floors"])
+        self.assertEqual(saved["module_baseline"], baseline["module_baseline"])
+        self.assertEqual(baseline["chain_floor"], 78)
+        self.assertEqual(saved["product_floor"], 89)
 
 
 if __name__ == "__main__":

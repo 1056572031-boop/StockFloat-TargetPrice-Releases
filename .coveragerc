@@ -1,4 +1,5 @@
 [run]
+core = ctrace
 source =
     .
 omit =

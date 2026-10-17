@@ -39,6 +39,20 @@ _ALLOWED_HOSTS = frozenset({"github.com", "raw.githubusercontent.com",
                             "github-releases.githubusercontent.com",
                             "release-assets.githubusercontent.com"})
 _APP_NAME = APP_DISPLAY_NAME + ".app"
+_MANIFEST_LOCK = threading.Lock()
+_MANIFEST_STATUS: dict[str, object] = {"status": "not_checked", "at": None}
+
+
+def manifest_diagnostics():
+    """Only the result of the normal verified transport, never a new request."""
+    with _MANIFEST_LOCK:
+        return dict(_MANIFEST_STATUS)
+
+
+def _record_manifest(status, **values):
+    with _MANIFEST_LOCK:
+        _MANIFEST_STATUS.clear()
+        _MANIFEST_STATUS.update(status=status, at=time.time(), **values)
 
 
 class UpdateError(Exception):
@@ -294,6 +308,15 @@ def check_for_update(current_version=APP_VERSION, attempts=UPDATE_MANIFEST_ATTEM
     **验签不重试**：签名/格式失败是"内容不对"，重取一遍只会白跑一次网络，
     而且失败必须原样上抛，让界面如实说"暂时无法检查更新"，绝不静默当成没新版。
     """
+    _record_manifest("checking")
+    try:
+        return _check_for_update(current_version, attempts)
+    except Exception as exc:
+        _record_manifest("failed", error_kind=type(exc).__name__)
+        raise
+
+
+def _check_for_update(current_version, attempts):
     raw = None
     last_error = None
     for _ in range(max(1, attempts)):
@@ -305,7 +328,11 @@ def check_for_update(current_version=APP_VERSION, attempts=UPDATE_MANIFEST_ATTEM
     if raw is None:
         raise last_error or UpdateError("无法连接更新服务")
     info = verify_manifest(raw)
-    return info if is_newer(info.version, current_version) else None
+    newer = is_newer(info.version, current_version)
+    _record_manifest("verified", version=info.version, archive_sha256=info.archive_sha256,
+                     archive_size=info.archive_size, manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                     newer=newer)
+    return info if newer else None
 
 
 def _file_matches(path, expected_size, expected_sha256):

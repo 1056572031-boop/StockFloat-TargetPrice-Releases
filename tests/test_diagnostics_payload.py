@@ -41,6 +41,7 @@ from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import QApplication
 
 import sf_calendar
+import sf_diag
 import sf_glass
 import sf_constants
 import sf_notify
@@ -393,6 +394,58 @@ class PayloadCase(DiagnosticsBranchCase):
             if name.startswith("crash_reports/"):
                 continue
             self.assertNotIn(self.home, text, "%s 里出现了家目录" % name)
+
+    def _assert_archive_canaries_are_scrubbed(self, files, canaries):
+        """统一检查 ZIP 成员名与正文，避免只测某个 JSON 桶而漏掉日志/附件。"""
+        self.assertIn("diagnostics.txt", files)
+        self.assertIn("runtime.json", files)
+        self.assertIn("hello 诊断", files["debug.log"],
+                      "非敏感日志证据也必须保留，不能把整份日志删掉蒙混")
+        self.assertIn("RELEASE_STAGE=", files["diagnostics.txt"])
+        self.assertIn("diagnostic-safe", files["notify.json"])
+        for canary in canaries:
+            for name, text in files.items():
+                self.assertNotIn(canary, name, "%s 的 ZIP 成员名泄露金丝雀" % name)
+                self.assertNotIn(canary, text, "%s 的 ZIP 正文泄露金丝雀" % name)
+
+    def test_real_zip_scrubs_runtime_config_log_and_identity_canaries(self):
+        """真实导出后逐个扫描所有文本成员：路径、用户名、token、邮箱和 cookie 都不能出包。"""
+        username = "diag_canary_user_7f3"
+        home = self.home
+        token = "diag-token-7f3"
+        email = "diag-email-7f3@example.invalid"
+        cookie = "diag-cookie-7f3"
+        with open(self.cfg_path, "w", encoding="utf-8") as stream:
+            json.dump({"code": "sh600519", "api_urls": {"token": token},
+                       "email": email, "cookie": cookie,
+                       "safe_label": "diagnostic-safe"}, stream)
+        with open(self.log_path, "w", encoding="utf-8") as stream:
+            stream.write("[10:00:00] INFO: hello 诊断\n")
+            stream.write("user=%s path=%s token=%s cookie=%s\n" %
+                         (username, home, token, cookie))
+        stats = {"counts": {"safe": 1}, "diagnostic_safe": "diagnostic-safe",
+                 "path": os.path.join(home, "Library", "state.json"),
+                 "token": token, "email": email, "cookie": cookie}
+        with mock.patch.dict(os.environ, {"USER": username, "USERNAME": username}), \
+             mock.patch.object(m, "_notify_delivery_stats", return_value=stats):
+            files = self._export()
+        self._assert_archive_canaries_are_scrubbed(
+            files, (username, home, token, email, cookie))
+        self.assertIn("diagnostic-safe", files["notify.json"])
+
+    def test_archive_scan_catches_a_non_persisted_scrub_mutation(self):
+        """负向变异：若非落盘文本脱敏被删，统一 ZIP 判据必须立即失败。"""
+        username = "diag_mutation_user_9c2"
+        token = "diag-mutation-token-9c2"
+        with open(self.log_path, "w", encoding="utf-8") as stream:
+            stream.write("hello 诊断 user=%s token=%s\n" % (username, token))
+        with mock.patch.dict(os.environ, {"USER": username, "USERNAME": username}), \
+             mock.patch.object(sf_diag, "scrub_text", side_effect=lambda text, needles: str(text)), \
+             mock.patch.object(m, "_notify_delivery_stats", return_value={
+                 "diagnostic_safe": "diagnostic-safe", "token": token}):
+            files = self._export()
+        with self.assertRaises(AssertionError):
+            self._assert_archive_canaries_are_scrubbed(files, (username, token))
 
     # ---- 渲染计数：真画一帧才算数 ----
 

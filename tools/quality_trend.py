@@ -47,6 +47,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -154,6 +155,8 @@ def now_iso() -> str:
 
 
 def locate_minutes(e: dict[str, Any]) -> float | None:
+    if e.get("locate_unknown_reason") or "估计" in str(e.get("observed_origin", "")):
+        return None
     a, b = e.get("observed_at"), e.get("rootcause_at")
     if not a or not b:
         return None
@@ -166,7 +169,83 @@ def locate_minutes(e: dict[str, Any]) -> float | None:
             return None
     except ValueError:
         return None
-    return round((d2 - d1).total_seconds() / 60.0, 1)
+    seconds = (d2 - d1).total_seconds()
+    return round(seconds / 60.0, 1) if seconds > 0 else None
+
+
+def bookkeeping_times(entries: list[dict[str, Any]]) -> dict[str, str]:
+    """Compare instants, not ISO spellings; cross-endpoint reuse counts too."""
+    owners: dict[dt.datetime, set[str]] = {}
+    bad: dict[str, str] = {}
+    for e in entries:
+        eid = str(e.get("id", ""))
+        instants = []
+        for key in ("observed_at", "rootcause_at"):
+            try:
+                stamp = dt.datetime.fromisoformat(e.get(key) or "")
+            except (ValueError, TypeError):
+                continue
+            if stamp.tzinfo is not None:
+                stamp = stamp.astimezone(dt.timezone.utc)
+            stamp = stamp.replace(microsecond=0)
+            owners.setdefault(stamp, set()).add(eid)
+            instants.append(stamp)
+        if len(instants) == 2 and instants[0] == instants[1]:
+            bad[eid] = "起点终点相同"
+    for stamp, ids in owners.items():
+        if len(ids) > 1:
+            for eid in ids:
+                bad[eid] = f"共用秒级时刻 {stamp.isoformat()}（{', '.join(sorted(ids))}）"
+    return bad
+
+
+def comparable_report(data: dict[str, Any], vmap: dict[str, tuple[str, str]]) -> list[str]:
+    policy = data.get("comparison_policy")
+    if not policy:
+        return ["【可比区间】未声明同等记录口径，以上各桶仅为历史留痕，不得推导改善。"]
+    start = vtuple(policy.get("start_version"))
+    if start is None:
+        return ["【可比区间】起始版本无效，拒绝输出可比率。"]
+    lines = [f"【可比区间】v{policy['start_version']} 起为同样细记的候选区间；此前仅历史留痕。",
+             "依据：" + str(policy.get("reason", "未提供")),
+             "分母为 git 可查版本数（含 Beta/中间号，不冒充已发布版本或用户暴露量）。",
+             "窗口 | 线上逃逸 | 有日期逃逸 | 版本数 | 已复盘/版本数 | 自然日 | 每版 | 每30天"]
+    # Fixed, non-overlapping version windows; no rolling endpoint chosen to flatter the result.
+    observed_versions = [t for v in [*vmap, *(e.get("found_version") for e in data["entries"])]
+                         if (t := vtuple(v)) is not None and t >= start]
+    windows = set()
+    for major, minor, patch in observed_versions:
+        first = start[2] if (major, minor) == start[:2] else 0
+        lower = first + ((patch - first) // 15) * 15
+        windows.add(((major, minor, lower), (major, minor, lower + 15)))
+    for lo, hi in sorted(windows):
+        versions = {v for v in vmap if lo <= (vtuple(v) or (0, 0, 0)) < hi}
+        selected = [e for e in data["entries"] if e.get("channel") in ESCAPE_CHANNELS
+                    and lo <= (vtuple(e.get("found_version")) or (0, 0, 0)) < hi]
+        if not versions and not selected:
+            continue
+        reviewed = {r.get("version") for r in data.get("rounds", []) if r.get("reviewed")}
+        missing = sorted(versions - reviewed, key=lambda v: vtuple(v) or (0, 0, 0))
+        dated = [e for e in selected if e.get("found_version") in versions]
+        d0, d1, nver = day_span(vmap, lo, hi)
+        days = (dt.date.fromisoformat(d1) - dt.date.fromisoformat(d0)).days + 1 if d0 and d1 else 0
+        eligible = bool(nver) and not missing and len(dated) == len(selected)
+        rate = f"{len(selected) / nver:.2f}" if eligible else "不可比"
+        monthly = f"{len(dated) * 30 / days:.2f}" if eligible and days else "不可比"
+        label = f"v{'.'.join(map(str, lo))}~{hi[2] - 1}"
+        lines.append(f"{label} | {len(selected)} | {len(dated)} | {nver} | "
+                     f"{len(versions & reviewed)}/{nver} | {days or '?'} | {rate} | {monthly}")
+        if missing:
+            lines.append("  缺复盘版本：" + ", ".join(missing))
+        undated = [str(e["id"]) for e in selected if e not in dated]
+        if undated:
+            lines.append("  缺版本日期条目：" + ", ".join(undated))
+        if versions:
+            last = max(versions, key=lambda v: vtuple(v) or (0, 0, 0))
+            if vtuple(last) != (hi[0], hi[1], hi[2] - 1):
+                lines.append(f"  已记录至 v{last}，此号段未满，不把末桶短期起伏当成改善。")
+    lines.append("候选区间只控制记账口径；审查强度、用户量与暴露时长未控制，短窗口/末桶不完整，不能据此宣称逃逸下降。")
+    return lines
 
 
 # ---- 日志锚点：让「现象首次可观测时刻」有真数据源 -------------------------------
@@ -390,12 +469,13 @@ def report(data: dict[str, Any]) -> str:
         if d0 and d1:
             days = (dt.date.fromisoformat(d1) - dt.date.fromisoformat(d0)).days + 1
         per_ver = ("%.2f" % (len(sel) / nver)) if nver else "-"
-        per_30 = ("%.2f" % (len(sel) * 30 / days)) if days else "-"
+        dated_sel = [e for e in sel if resolve_date(vmap, e["found_version"])[0]]
+        per_30 = ("%.2f" % (len(dated_sel) * 30 / days)) if days else "-"
         lines.append("%-16s %6d %8d %8s %10s %10s"
                      % (name, len(sel), nver, days or "?", per_ver, per_30))
     undated = [str(e["id"]) for e in strict if not resolve_date(vmap, e["found_version"])[0]]
     dated = len(strict) - len(undated)
-    lines.append("注一：每版条数随发布节奏剧烈摆动（桶②是两天 14 版），**看趋势请用「每 30 天」那一列**。")
+    lines.append("注一：以上旧桶只作历史留痕，记录密度不同，不可跨桶比较改善；每30天也不能消除记录偏差。")
     lines.append("注二：记录密度本身在变 —— v1.4.x 每版都有交付节，v1.2/1.3 只有批次级留痕，"
                  "「发现得更多」与「逃逸得更多」在旧桶里分不开。台账共 %d 条，其中 %d/%d 条能推出发现日期。"
                  % (len(entries), dated, len(strict)))
@@ -404,11 +484,22 @@ def report(data: dict[str, Any]) -> str:
     lines.append("注三：另有 %d 条【已上线但用户看不见或没人报】（S 开头，如抬层整段从未执行、"
                  "清单超时导致常年不告知新版本），%d 条【关卡自己会说假话】（G 开头）—— "
                  "后者不占线上逃逸数，但它让前两个数字失真。" % (len(unnoticed), len(liars)))
+    lines.extend(comparable_report(data, vmap))
 
     # ---- 数字二：平均定位时长 ----
     lines.append("")
     lines.append("【数字二】平均定位时长（现象首次可观测 → 根因写清楚）")
-    timed = [e for e in entries if locate_minutes(e) is not None]
+    bookkeeping = bookkeeping_times(entries)
+    timed = [e for e in entries if str(e["id"]) not in bookkeeping
+             and locate_minutes(e) is not None]
+    unknown_time = [e for e in entries if e not in timed]
+    lines.append(f"当场盖戳/可追溯证据的真时长：{len(timed)} 条 | 时刻未知：{len(unknown_time)} 条（含记账时刻与待定位）。")
+    lines.append("有效区间沿用原账现场/日志声明；未触发异常不等于本轮逐条重新认证，终点来源未声明的在下方点名。")
+    for e in unknown_time:
+        eid = str(e["id"])
+        reason = bookkeeping.get(eid) or e.get("locate_unknown_reason") or "缺起点或终点"
+        if eid in bookkeeping or e.get("timestamp_audit"):
+            lines.append(f"  {eid}：记账时刻，不是定位时长；已剔除平均值。{reason}")
     only_start = [e for e in entries
                   if e.get("observed_at") and not e.get("rootcause_at")]
     if timed:
@@ -416,9 +507,12 @@ def report(data: dict[str, Any]) -> str:
         real = [v for v in vals if v is not None]
         lines.append("可计算条目 %d 条，平均 %.1f 分钟，中位 %.1f 分钟，最长 %.1f 分钟。"
                      % (len(timed), sum(real) / len(real),
-                        sorted(real)[len(real) // 2], max(real)))
+                        median(real), max(real)))
+        for e in timed:
+            lines.append(f"  {e['id']}：{locate_minutes(e):.1f} 分钟；起点来源={e.get('observed_origin', '旧账未声明')}；"
+                         f"终点来源={e.get('rootcause_origin', '旧账未声明，未重新核验')}")
     else:
-        lines.append("可计算条目 **0** 条（台账 %d 条里同时有起点与终点的为 0）—— "
+        lines.append("可计算条目 **0** 条（台账 %d 条里有效起终点区间为 0）—— "
                      "这个指标目前**无法判断是否下降**，不是「没下降」，是没有分母。"
                      % len(entries))
     if only_start:
@@ -453,14 +547,19 @@ def report(data: dict[str, Any]) -> str:
     lines.append("  已上线逃逸里 %d 条至今没登记「补上了什么防线」：%s"
                  % (len(no_defense), ", ".join(no_defense) if no_defense else "无"))
     risk: dict[str, list[str]] = {}
-    for e in strict:
+    for e in entries:
         r = e.get("recurrence_risk")
         if r:
             risk.setdefault(r, []).append(str(e["id"]))
     if risk:
-        lines.append("  这些无落点条目的**复发风险判定**（逐条查现成判据，字段 recurrence_risk）：")
-        for r, ids in sorted(risk.items(), key=lambda kv: -len(kv[1])):
+        lines.append("  全台账**复发风险判定**（含有防线落点条目，不把登记了防线当成保得住）：")
+        for r, ids in sorted(risk.items(), key=lambda kv: ({"高": 0, "中": 1, "低": 2}.get(kv[0], 3), -len(kv[1]))):
             lines.append("    %-14s %d 条：%s" % (r, len(ids), ", ".join(ids)))
+        for e in entries:
+            if e.get("recurrence_risk") == "高":
+                lines.append(f"    下一轮 {e['id']}：{e.get('recurrence_next_action', '需补具体行为判据与反向对照')}")
+    unrated = [str(e["id"]) for e in entries if not e.get("recurrence_risk")]
+    lines.append(f"  未评级 {len(unrated)} 条：" + (", ".join(unrated) or "无"))
 
     # ---- 潜伏跨度：可查证的间接事实 ----
     lines.append("")
@@ -501,6 +600,12 @@ def validate(data: dict[str, Any], target_version: str | None = None) -> list[st
     """
     errs: list[str] = []
     entries = data.get("entries", [])
+    for eid, reason in bookkeeping_times(entries).items():
+        errs.append(f"{eid}: 记账时刻，不是定位时长；{reason}；已剔除平均值，请凭证据修正或退回未知")
+    audited = set(data.get("recurrence_review", {}).get("entry_ids", []))
+    missing_ids = audited - {str(e.get("id", "")) for e in entries}
+    if missing_ids:
+        errs.append("已审查条目丢失：" + ", ".join(sorted(missing_ids)))
     seen: set[str] = set()
     for e in entries:
         eid = str(e.get("id", ""))
@@ -510,6 +615,12 @@ def validate(data: dict[str, Any], target_version: str | None = None) -> list[st
         if eid in seen:
             errs.append(f"{eid}: id 重复")
         seen.add(eid)
+        if eid in audited:
+            if e.get("recurrence_risk") not in ("高", "中", "低"):
+                errs.append(f"{eid}: 缺有效高/中/低复发评级")
+            for key in ("recurrence_guard_refs", "recurrence_liar_check", "recurrence_next_action"):
+                if not e.get(key):
+                    errs.append(f"{eid}: 复发审查缺 {key}")
         if e.get("channel") not in ALL_CHANNELS:
             errs.append(f"{eid}: channel「{e.get('channel')}」不在口径名单 {ALL_CHANNELS}")
         fls = e.get("failed_lines") or []
@@ -610,6 +721,10 @@ def validate(data: dict[str, Any], target_version: str | None = None) -> list[st
 
 
 def print_gate(data: dict[str, Any], target_version: str | None) -> int:
+    archived = [str(e["id"]) for e in data.get("entries", [])
+                if e.get("timestamp_audit") and locate_minutes(e) is None]
+    if archived:
+        print("   记账时刻，不是定位时长（旧值已归档，平均值剔除）：" + ", ".join(archived))
     errs = validate(data, target_version)
     if errs:
         print("!! 逃逸复盘闸门未过（%d 条）：" % len(errs))
@@ -656,7 +771,11 @@ def cmd_open(args: argparse.Namespace) -> int:
 def cmd_rootcause(args: argparse.Namespace) -> int:
     data = load()
     e = _find(data, args.entry_id)
+    if e.get("rootcause_at"):
+        print(f"!! {e['id']} 已有根因戳，拒绝用本次记账时刻覆盖原值")
+        return 1
     e["rootcause_at"] = now_iso()
+    e["rootcause_origin"] = "now"
     if not e.get("observed_at"):
         e["locate_unknown_reason"] = "开条时没在现场盖 observed_at，起点无法追溯"
     else:
@@ -778,6 +897,10 @@ def self_test() -> int:
         ("回填终点戳（起点为空）", lambda d: d["entries"][0].__setitem__("observed_at", None)),
         ("时刻倒挂", lambda d: d["entries"][0].__setitem__(
             "rootcause_at", "2026-10-09 09:00:00+08:00")),
+        ("起终点相同的记账时刻", lambda d: d["entries"][0].__setitem__(
+            "rootcause_at", d["entries"][0]["observed_at"])),
+        ("多条共用秒级起点", lambda d: d["entries"].append(
+            {**d["entries"][0], "id": "T2", "rootcause_at": "2026-10-09 10:38:00+08:00"})),
         ("修复版本早于发现版本", lambda d: d["entries"][0].__setitem__("fixed_version", "1.4.10")),
         ("本轮没有复盘声明", lambda d: d.__setitem__("rounds", [])),
         ("复盘声明没勾选已复核", lambda d: d["rounds"][0].__setitem__("reviewed", False)),

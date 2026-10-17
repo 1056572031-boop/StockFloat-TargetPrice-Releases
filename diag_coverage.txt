@@ -25,6 +25,12 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.94
+skip sf_feedback 本轮仅实现无 Qt、无网络的本地协议纯函数；当前没有接入应用运行态，故不存在可由 sf_diag 采集的模块状态。
+skip sf_feedback_outbox 本轮仅实现显式调用的 SQLite 本地队列；尚未由应用持有或自动启动，队列内容不得进入诊断附件。
+skip sf_feedback_receiver 本轮仅实现本机 Unix socket 的阶段 2 测试收件器；不由 Skyrocket 自动启动，案件对象和回执不得进入诊断附件。
+skip sf_feedback_analyzer 本轮仅实现离线、显式调用的 ZIP 分析器；未由 Skyrocket 自动启动，分析报告和规则配置不得进入诊断附件。
+
 version 1.4.88
 skip sf_window_message_router 无持久运行态，仅按代码过滤并合并当前队列消息；最终滞后状态、分时交易日、点数及重试窗口由 runtime.json 的 minute 导出，应用异常由 debug.log 的 poll apply error 留痕。
 skip renderer 仅构造无状态绘制路径；实际玻璃后端、暗化值和回退原因由 glass.json 的 surface 导出，绘制异常沿用 debug.log 的 paintEvent error 留痕，无独立运行态需要采集。

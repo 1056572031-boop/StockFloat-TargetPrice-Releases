@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "updated": "2026-10-15",
+  "updated": "2026-10-17",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
-    "定位时长": "observed_at(第一次能观测到现象的时刻) 与 rootcause_at(根因写清楚的时刻) 两个时间戳由 quality_trend.py --open/--rootcause 当场盖，历史条目一律为 null。null 不是 0，不许回填估算值。",
+    "定位时长": "现象出现即--open，根因写清即--rootcause，禁止事后批量补盖；同秒共用/起终点相同视为记账时刻。旧值留timestamp_audit，不能追溯的退回null，不估时，不用提交时间当根因时间。",
     "evidence": "verified=本轮逐行复核过出处；second-hand=从交付记录的文字结论转录，行号未逐条复核"
   },
   "entries": [
@@ -27,10 +27,23 @@
       "locate_unknown_reason": "早期记录只写现象与修法，没有任何时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.2.5x 早期批次",
       "evidence": "second-hand",
-      "recurrence_verdict": "只有用例，且保不住",
-      "recurrence_evidence": "tests/test_bugfix_155.py::TestTinyMoveClearsAllRollState 断言 _roll_prev/_roll_anim 清零，但宿主是 FloatWindow.__new__ + MagicMock 定时器，只锁两条已知分支；第三条赋值路径无用例，也没有「显示值必收敛到最新行情」这条不变量",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_bugfix_155.py；仅已知滚动状态清零分支；MagicMock 不证明显示最终收敛",
       "recurrence_risk": "中",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_bugfix_155.py"
+      ],
+      "recurrence_liar_check": "仅已知滚动状态清零分支；MagicMock 不证明显示最终收敛",
+      "recurrence_next_action": "补跨报价序列的显示值收敛不变量",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "中",
+        "recurrence_verdict": "只有用例，且保不住",
+        "recurrence_evidence": "tests/test_bugfix_155.py::TestTinyMoveClearsAllRollState 断言 _roll_prev/_roll_anim 清零，但宿主是 FloatWindow.__new__ + MagicMock 定时器，只锁两条已知分支；第三条赋值路径无用例，也没有「显示值必收敛到最新行情」这条不变量",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "A04",
@@ -51,10 +64,23 @@
       "locate_unknown_reason": "早期记录无时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.2.5x 早期批次",
       "evidence": "second-hand",
-      "recurrence_verdict": "有判据（只到布局决策层）",
-      "recurrence_evidence": "tests/test_v153.py::TestMarketStatusRect::test_left_edge_aligns_name 断言 market_status_rect()[0]==PAD_X，调用点确实走它；像素层没有覆盖，同文件 test_label_is_drawn_centred… 只断言文本被画（名字口径已过期）",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v153.py；布局坐标断言，不等于实际文字墨水居中",
       "recurrence_risk": "低",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_v153.py"
+      ],
+      "recurrence_liar_check": "布局坐标断言，不等于实际文字墨水居中",
+      "recurrence_next_action": "补真实字体像素对齐",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "低",
+        "recurrence_verdict": "有判据（只到布局决策层）",
+        "recurrence_evidence": "tests/test_v153.py::TestMarketStatusRect::test_left_edge_aligns_name 断言 market_status_rect()[0]==PAD_X，调用点确实走它；像素层没有覆盖，同文件 test_label_is_drawn_centred… 只断言文本被画（名字口径已过期）",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "A05",
@@ -74,7 +100,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "早期记录无时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.2.63 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py；底部净间距工具有独立上限及负向自检；仅本机字体",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "底部净间距工具有独立上限及负向自检；仅本机字体",
+      "recurrence_next_action": "保留不同尺寸真实像素对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A12",
@@ -95,10 +132,24 @@
       "locate_unknown_reason": "早期记录无时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.2.82 批次",
       "evidence": "second-hand",
-      "recurrence_verdict": "没有任何东西拦得住",
-      "recurrence_evidence": "肇事元素已在 v1.2.83 撤除（sf_ui_render._paint_target_label 是 return 空实现，本轮亲自复核到），所以复发的唯一路径是「重新加回标签」；而现成的全组合防重叠闸 tests/test_v163.py::TestNoOverlapAnySize 只覆盖价格行，顶部栏「名称×状态文字×按钮带」不在内",
-      "recurrence_risk": "低（但补闸最便宜）",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v153.py; tests/test_render.py；当前产品目标标签已是空实现，原碰撞元素撤除；仍缺重新加入标签的反控",
+      "recurrence_risk": "低",
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_v153.py",
+        "tests/test_render.py"
+      ],
+      "recurrence_liar_check": "当前产品目标标签已是空实现，原碰撞元素撤除；仍缺重新加入标签的反控",
+      "recurrence_next_action": "补多宽度顶部墨水互斥，防后续重加标签",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "低（但补闸最便宜）",
+        "recurrence_verdict": "没有任何东西拦得住",
+        "recurrence_evidence": "肇事元素已在 v1.2.83 撤除（sf_ui_render._paint_target_label 是 return 空实现，本轮亲自复核到），所以复发的唯一路径是「重新加回标签」；而现成的全组合防重叠闸 tests/test_v163.py::TestNoOverlapAnySize 只覆盖价格行，顶部栏「名称×状态文字×按钮带」不在内",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "A13",
@@ -118,7 +169,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "早期记录无时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.2.84~86；QC_CHECKLIST.md 对应核查记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1459_button_icons.py; tests/test_menu_row_icons.py；锁图标绘制与像素，不证明旧版铃铛每种禁用态均可辨识",
+      "recurrence_guard_refs": [
+        "tests/test_v1459_button_icons.py",
+        "tests/test_menu_row_icons.py"
+      ],
+      "recurrence_liar_check": "锁图标绘制与像素，不证明旧版铃铛每种禁用态均可辨识",
+      "recurrence_next_action": "补禁用态点击无动作与铃铛对照图",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A15",
@@ -139,10 +202,24 @@
       "locate_unknown_reason": "早期记录无时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.2.90 批次",
       "evidence": "second-hand",
-      "recurrence_verdict": "有判据拦住",
-      "recurrence_evidence": "tests/test_ui.py::test_fired_target_still_allows_opening_panel 在真 FloatWindow 上断言 _bell_state()==fired、按钮未禁用且面板真可见；test_target_panel.py 另守越界/锁定态",
-      "recurrence_risk": "已关闭",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_ui.py; tests/test_target_panel.py；test_fired_target_still_allows_opening_panel验真实FloatWindow入口未禁用且面板可见；未走用户点击到修改下一档全流程",
+      "recurrence_risk": "低",
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_ui.py",
+        "tests/test_target_panel.py"
+      ],
+      "recurrence_liar_check": "test_fired_target_still_allows_opening_panel验真实FloatWindow入口未禁用且面板可见；未走用户点击到修改下一档全流程",
+      "recurrence_next_action": "补命中→点击→修改下一档→再次命中的真事件闭环",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "已关闭",
+        "recurrence_verdict": "有判据拦住",
+        "recurrence_evidence": "tests/test_ui.py::test_fired_target_still_allows_opening_panel 在真 FloatWindow 上断言 _bell_state()==fired、按钮未禁用且面板真可见；test_target_panel.py 另守越界/锁定态",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "A16",
@@ -163,7 +240,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "崩溃报告有时刻，交付记录没有写排查多久",
       "source": "DELIVERY_CHECKLIST.md · V1.2.91 批次；QC_CHECKLIST.md V1.2.9x",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_ui_dialog_guard.py; tests/test_v148_nativealert.py；原生窗口生命周期有子进程边界；单平台绿不能证明全部连点与回调时序安全",
+      "recurrence_guard_refs": [
+        "tests/test_ui_dialog_guard.py",
+        "tests/test_v148_nativealert.py"
+      ],
+      "recurrence_liar_check": "原生窗口生命周期有子进程边界；单平台绿不能证明全部连点与回调时序安全",
+      "recurrence_next_action": "补确认弹窗连续创建关闭及延迟回调崩溃对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A17",
@@ -184,10 +273,35 @@
       "rootcause_at": null,
       "locate_unknown_reason": "原文只写「只读审查＋真实日志」定到 P0，没有时长",
       "source": "DELIVERY_CHECKLIST.md · V1.3.32~36 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_window_lifecycle.py; tests/test_reopen_signature.py；重开和签名有判据；静态未定义名与日志本身不拦原生重开崩溃",
+      "recurrence_guard_refs": [
+        "tests/test_window_lifecycle.py",
+        "tests/test_reopen_signature.py"
+      ],
+      "recurrence_liar_check": "重开和签名有判据；静态未定义名与日志本身不拦原生重开崩溃",
+      "recurrence_next_action": "补缩小到Dock后重开的真实进程存活断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A21",
+      "continuous_capture_followup": {
+        "date": "2026-10-17",
+        "status": "local_source_chain_verified_not_release_qualification",
+        "evidence": "outputs/continuous-frames-2026-10-17/",
+        "result": "连续录制在构窗前就绪，最终两代材质首个有效价格均约282ms，启动真实paint尺寸/有效价格判据通过；源帧与编码解码数量、PTS及文件哈希一致。不是无缓存/冻结包首帧几何逐像素验收，风险不自动下调。"
+      },
+      "recurrence_followup": {
+        "date": "2026-10-17",
+        "status": "partial_not_closed",
+        "guard": "tools/native_glass_probe.py --quality-sequence --exercise --fullscreen",
+        "evidence": "outputs/quality-guards-2026-10-17/",
+        "result": "首个paintEvent几何与有效价格已有判据；当前采样首张晚到，无法证明真实首屏无中间态。仅覆盖预置缓存启动，风险不下调。"
+      },
       "symptom": "冷启动「窗口先很高再被压扁」，首帧画完占位符再整屏换",
       "component": "启动与首帧",
       "channel": "online_user",
@@ -204,7 +318,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "早期记录无时刻（只有修复前后 7/7→0/7 的复现计数）",
       "source": "DELIVERY_CHECKLIST.md · V1.3.45 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "高",
+      "recurrence_verdict": "尚有关键行为判据缺口",
+      "recurrence_evidence": "tests/test_v1345.py；首帧/缓存用例与coldstart基准存在，未见前后帧几何跳变的硬拒绝门槛",
+      "recurrence_guard_refs": [
+        "tests/test_v1345.py"
+      ],
+      "recurrence_liar_check": "首帧/缓存用例与coldstart基准存在，未见前后帧几何跳变的硬拒绝门槛",
+      "recurrence_next_action": "补原生产物首帧至稳态的高度/占位符帧序列门禁",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A22",
@@ -224,7 +349,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "有配置文件的写入时间戳，但没人记排查时长",
       "source": "DELIVERY_CHECKLIST.md · V1.3.48/1.3.52 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1352_isolation.py; tests/test_run_tests_guard.py；隔离路径和整轮用户数据守卫可拦污染；独立工具仍需逐个隔离",
+      "recurrence_guard_refs": [
+        "tests/test_v1352_isolation.py",
+        "tests/test_run_tests_guard.py"
+      ],
+      "recurrence_liar_check": "隔离路径和整轮用户数据守卫可拦污染；独立工具仍需逐个隔离",
+      "recurrence_next_action": "保留真实数据前后指纹红线",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A24",
@@ -244,7 +381,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "原文写「一次确认比改错四版便宜」，没有时长",
       "source": "DELIVERY_CHECKLIST.md · V1.3.53~61 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_render.py; tests/test_release_gates.py；已有像素与间距判据，但两种字体基线相对位置不由净间距完全保证",
+      "recurrence_guard_refs": [
+        "tests/test_render.py",
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "已有像素与间距判据，但两种字体基线相对位置不由净间距完全保证",
+      "recurrence_next_action": "补价格与涨跌幅底边逐字形对拍",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A26",
@@ -265,10 +414,24 @@
       "locate_unknown_reason": "早期记录无时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.3.62~64 批次",
       "evidence": "second-hand",
-      "recurrence_verdict": "没有任何东西拦得住",
-      "recurrence_evidence": "sf_ui_render 现在钉 rect.bottom()、渐变上沿取曲线最高点、绿/红各用 CHART_FILL_ALPHA_GREEN/CHART_FILL_ALPHA；tests 里对 _draw_chart_fill 的唯一引用是调用计数 spy（只数次数），全仓无测试引用 CHART_FILL*",
-      "recurrence_risk": "高",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1351_collapsed.py; tests/test_performance_audit.py；现有真实填充墨水差/底边覆盖及alpha缓存失效，旧评级只认调用计数已过时；主观红绿等强仍无量化",
+      "recurrence_risk": "中",
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_v1351_collapsed.py",
+        "tests/test_performance_audit.py"
+      ],
+      "recurrence_liar_check": "现有真实填充墨水差/底边覆盖及alpha缓存失效，旧评级只认调用计数已过时；主观红绿等强仍无量化",
+      "recurrence_next_action": "补红绿填充带固定背景像素对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "高",
+        "recurrence_verdict": "没有任何东西拦得住",
+        "recurrence_evidence": "sf_ui_render 现在钉 rect.bottom()、渐变上沿取曲线最高点、绿/红各用 CHART_FILL_ALPHA_GREEN/CHART_FILL_ALPHA；tests 里对 _draw_chart_fill 的唯一引用是调用计数 spy（只数次数），全仓无测试引用 CHART_FILL*",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "A27",
@@ -289,10 +452,24 @@
       "locate_unknown_reason": "原文有实测毫秒数，但没有定位时长",
       "source": "DELIVERY_CHECKLIST.md · V1.3.65/66 批次",
       "evidence": "second-hand",
-      "recurrence_verdict": "只有用例，且保不住（无度量）",
-      "recurrence_evidence": "根治项「本地字典命中零往返」有断言（test_v1366_universe.py::test_hit_skips_network）；并行化只剩间接痕迹，且 :108-123 明确放弃过「东财不被调用」的断言；全仓没有任何搜索耗时闸（coldstart_bench/input_latency_probe/frame_rate_audit 都不涉及搜索）",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_quality_editor.py; tests/test_v1366_universe.py；有搜索/取消/字典覆盖；接口桩不证明真实源尾延迟",
       "recurrence_risk": "中",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_quality_editor.py",
+        "tests/test_v1366_universe.py"
+      ],
+      "recurrence_liar_check": "有搜索/取消/字典覆盖；接口桩不证明真实源尾延迟",
+      "recurrence_next_action": "补有界延迟故障注入与请求次数预算",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "中",
+        "recurrence_verdict": "只有用例，且保不住（无度量）",
+        "recurrence_evidence": "根治项「本地字典命中零往返」有断言（test_v1366_universe.py::test_hit_skips_network）；并行化只剩间接痕迹，且 :108-123 明确放弃过「东财不被调用」的断言；全仓没有任何搜索耗时闸（coldstart_bench/input_latency_probe/frame_rate_audit 都不涉及搜索）",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "A28",
@@ -312,7 +489,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "交付记录有假异常的条数与时间戳，没有排查时长",
       "source": "DELIVERY_CHECKLIST.md · V1.3.67 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1352_isolation.py; tests/test_coverage_logging.py；测试配置与日志隔离已有覆盖；仓库外手工工具仍可污染",
+      "recurrence_guard_refs": [
+        "tests/test_v1352_isolation.py",
+        "tests/test_coverage_logging.py"
+      ],
+      "recurrence_liar_check": "测试配置与日志隔离已有覆盖；仓库外手工工具仍可污染",
+      "recurrence_next_action": "新工具也须重定向日志并读回真实日志指纹",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A29",
@@ -332,7 +521,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "原文写「外机诊断已定位」，没有时长",
       "source": "QC_CHECKLIST.md · V1.3.74 交付核查记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py; tests/test_dependency_alias_gate.py；闭包扫描有缺包负向对照；运行时惰性导入仍可能不在静态闭包内",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py",
+        "tests/test_dependency_alias_gate.py"
+      ],
+      "recurrence_liar_check": "闭包扫描有缺包负向对照；运行时惰性导入仍可能不在静态闭包内",
+      "recurrence_next_action": "每新增惰性导入补包内执行路径",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "A30",
@@ -353,10 +554,24 @@
       "locate_unknown_reason": "外机回传有现象，没有时长",
       "source": "DELIVERY_CHECKLIST.md · V1.3.79 批次",
       "evidence": "second-hand",
-      "recurrence_verdict": "有判据拦住（有一条零成本加强）",
-      "recurrence_evidence": "tests/test_coverage_notify_update.py 除 _request_url 外还 patch urlopen 抓 request.full_url 断言真发出的就是编码 URL，test_update.py 另防双重转义；缺口是只断言「含 %E6%B5%8B…」，没断言「最终请求行全 ASCII」",
-      "recurrence_risk": "基本关闭",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update.py; tests/test_coverage_notify_update.py；已抓urlopen真实request.full_url验证中文URL编码并防双重转义；未锁最终请求行全ASCII",
+      "recurrence_risk": "低",
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_update.py",
+        "tests/test_coverage_notify_update.py"
+      ],
+      "recurrence_liar_check": "已抓urlopen真实request.full_url验证中文URL编码并防双重转义；未锁最终请求行全ASCII",
+      "recurrence_next_action": "补最终请求行全ASCII负向对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "基本关闭",
+        "recurrence_verdict": "有判据拦住（有一条零成本加强）",
+        "recurrence_evidence": "tests/test_coverage_notify_update.py 除 _request_url 外还 patch urlopen 抓 request.full_url 断言真发出的就是编码 URL，test_update.py 另防双重转义；缺口是只断言「含 %E6%B5%8B…」，没断言「最终请求行全 ASCII」",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "A31",
@@ -376,7 +591,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "同一天连发三版，交付记录没有时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.3.84~86 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v148_nativealert.py; tests/test_coverage_native_alert_layout.py；有布局及原生桥接覆盖；一次构造不证明同名ObjC类二次创建安全",
+      "recurrence_guard_refs": [
+        "tests/test_v148_nativealert.py",
+        "tests/test_coverage_native_alert_layout.py"
+      ],
+      "recurrence_liar_check": "有布局及原生桥接覆盖；一次构造不证明同名ObjC类二次创建安全",
+      "recurrence_next_action": "补同进程多轮构造关闭的类登记与布局回归",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "B02",
@@ -396,7 +623,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "原文只写「v1.4.2 现场复现」",
       "source": "DELIVERY_CHECKLIST.md · V1.4.3 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1420_exit_teardown.py; tests/test_quit_lifecycle.py；原生退出子进程检查比Mock强；本机可执行不等于外机路径已验",
+      "recurrence_guard_refs": [
+        "tests/test_v1420_exit_teardown.py",
+        "tests/test_quit_lifecycle.py"
+      ],
+      "recurrence_liar_check": "原生退出子进程检查比Mock强；本机可执行不等于外机路径已验",
+      "recurrence_next_action": "保留有/无原生alert两档退出存活/退出码",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "B03",
@@ -417,7 +656,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "崩溃报告有时刻（09-22 上午），排查时长没记",
       "source": "DELIVERY_CHECKLIST.md · V1.4.5 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v145_tempguard.py; tests/test_sweep_temp_apps.py；有身份/临时路径/运行中副本边界；无权读取目录时不能说清扫完成",
+      "recurrence_guard_refs": [
+        "tests/test_v145_tempguard.py",
+        "tests/test_sweep_temp_apps.py"
+      ],
+      "recurrence_liar_check": "有身份/临时路径/运行中副本边界；无权读取目录时不能说清扫完成",
+      "recurrence_next_action": "保留不可访问目录与运行中副本负向测试",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "B06",
@@ -437,7 +688,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "老板反馈没有时刻戳",
       "source": "DELIVERY_CHECKLIST.md · V1.4.11 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_bugfix_top_button_pop.py；首帧按钮像素/几何用例已存在；单帧不是全动画过程",
+      "recurrence_guard_refs": [
+        "tests/test_bugfix_top_button_pop.py"
+      ],
+      "recurrence_liar_check": "首帧按钮像素/几何用例已存在；单帧不是全动画过程",
+      "recurrence_next_action": "保留多帧尺寸稳定性对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "B08",
@@ -457,7 +719,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "原文有上线约 37 分钟，那是暴露时长不是定位时长",
       "source": "DELIVERY_CHECKLIST.md · V1.4.12/13 批次",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_power_v1410.py; tests/test_anim_driver.py；帧率/动效驱动有测试，调用计数不能完全等同屏幕合成帧率",
+      "recurrence_guard_refs": [
+        "tests/test_power_v1410.py",
+        "tests/test_anim_driver.py"
+      ],
+      "recurrence_liar_check": "帧率/动效驱动有测试，调用计数不能完全等同屏幕合成帧率",
+      "recurrence_next_action": "补冻结产物可见动效帧间隔门槛",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "C04",
@@ -478,7 +752,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "崩溃报告时刻 2026-09-23 09:29:33 有，根因中的「为何走兜底」仍未定位",
       "source": "DELIVERY_CHECKLIST.md · V1.4.20 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1420_exit_teardown.py; tests/test_quit_lifecycle.py；退出路径子进程存在；下载完成再退出的全状态组合有限",
+      "recurrence_guard_refs": [
+        "tests/test_v1420_exit_teardown.py",
+        "tests/test_quit_lifecycle.py"
+      ],
+      "recurrence_liar_check": "退出路径子进程存在；下载完成再退出的全状态组合有限",
+      "recurrence_next_action": "补下载完成→更新交接→退出的真实进程回归",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "C05",
@@ -499,10 +785,35 @@
       "rootcause_at": null,
       "locate_unknown_reason": "有崩溃报告时刻，没有定位时长",
       "source": "DELIVERY_CHECKLIST.md · V1.4.23 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_sweep_temp_apps.py; tests/test_standalone_command_tools.py；标准库清扫与双击工具均有判据；真实外机残留权限未穷举",
+      "recurrence_guard_refs": [
+        "tests/test_sweep_temp_apps.py",
+        "tests/test_standalone_command_tools.py"
+      ],
+      "recurrence_liar_check": "标准库清扫与双击工具均有判据；真实外机残留权限未穷举",
+      "recurrence_next_action": "保留旧新身份及运行中副本边界",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "C07",
+      "continuous_capture_followup": {
+        "date": "2026-10-17",
+        "status": "local_post_space_source_pixels_verified",
+        "evidence": "outputs/continuous-frames-2026-10-17/",
+        "result": "两代材质系统确认全屏/回桌面完成后立即开始连续像素观察，未先等自愈；目标阶段无缺价格样本。Space动画移出固定取景区的原始视频单列、不判产品空窗；不是跨机或冻结产物结论。"
+      },
+      "recurrence_followup": {
+        "date": "2026-10-17",
+        "status": "partial_not_closed",
+        "guard": "tools/visual_sequence_guard.py::sequence_problems",
+        "evidence": "outputs/quality-guards-2026-10-17/",
+        "result": "全屏/回桌面6次合成截图验证实际价格文字并核双层；首张晚到或采样间隙不足即拒绝。采样不是连续合成证据，保留高风险。"
+      },
       "symptom": "第三方全屏回桌面后「只剩毛玻璃、内容看不见但点得动」，且永不自愈",
       "component": "玻璃层与层级",
       "channel": "online_user",
@@ -521,10 +832,35 @@
       "rootcause_at": null,
       "locate_unknown_reason": "上一会话中断在 ENOSPC、连续 5 次续跑失败 —— 有过程没有时长",
       "source": "DELIVERY_CHECKLIST.md · V1.4.26 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "高",
+      "recurrence_verdict": "尚有关键行为判据缺口",
+      "recurrence_evidence": "tests/test_v1426_glass_zorder.py; tests/test_coverage_glass_evidence.py；WindowServer与日志有证据，但历史跨Space复发且本机零复现不是全平台修复",
+      "recurrence_guard_refs": [
+        "tests/test_v1426_glass_zorder.py",
+        "tests/test_coverage_glass_evidence.py"
+      ],
+      "recurrence_liar_check": "WindowServer与日志有证据，但历史跨Space复发且本机零复现不是全平台修复",
+      "recurrence_next_action": "补真实全屏切换→回桌面双层持续可见的时限门禁",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D02",
+      "continuous_capture_followup": {
+        "date": "2026-10-17",
+        "status": "continuous_price_pixels_and_native_trajectory_verified_with_limits",
+        "evidence": "outputs/continuous-frames-2026-10-17/",
+        "result": "最终两代材质拖动阶段连续视频源样本最大间隔约33ms，无缺价格样本，原生双层/16点拖动判据也通过；但价格像素位置不是玻璃边缘逐像素位差，Qt输入不是HID，不把这条风险写成关闭。"
+      },
+      "recurrence_followup": {
+        "date": "2026-10-17",
+        "status": "partial_not_closed",
+        "guard": "tools/visual_sequence_guard.py::drag_problems",
+        "evidence": "outputs/quality-guards-2026-10-17/",
+        "result": "16点真实Qt拖动及WindowServer双层轨迹，要求真实位移>=40pt、位差<=2pt、采样间隔<=60ms。初轮采样超时；最终liquid复验最大约40ms且位差0。非HID、非拖动逐帧合成，不宣称原缺陷已拦住。"
+      },
       "symptom": "快速拖动时内容与毛玻璃层分开（重影），实测掉队 55~88px",
       "component": "玻璃层与层级",
       "channel": "online_user",
@@ -541,7 +877,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "同日多版，记录没有时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.4.33~37 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "高",
+      "recurrence_verdict": "尚有关键行为判据缺口",
+      "recurrence_evidence": "tests/test_float_drag_top.py; tests/test_coverage_glass_layer.py；真事件拖动/几何断言存在；未证明快速拖动时双层逐帧跟手误差上限",
+      "recurrence_guard_refs": [
+        "tests/test_float_drag_top.py",
+        "tests/test_coverage_glass_layer.py"
+      ],
+      "recurrence_liar_check": "真事件拖动/几何断言存在；未证明快速拖动时双层逐帧跟手误差上限",
+      "recurrence_next_action": "补原生拖动轨迹中内容/玻璃逐帧位差阈值",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D03",
@@ -561,7 +909,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "有实测数字没有时长",
       "source": "DELIVERY_CHECKLIST.md · V1.4.35/36 交付记录；outputs/全屏Space坐标跳变与背景层压盖-实测报告",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1445_screen_pick_evidence.py; tests/test_window_geometry.py；几何/屏幕选择有测试；Space里WindowServer坐标到Qt回写仍需原生对照",
+      "recurrence_guard_refs": [
+        "tests/test_v1445_screen_pick_evidence.py",
+        "tests/test_window_geometry.py"
+      ],
+      "recurrence_liar_check": "几何/屏幕选择有测试；Space里WindowServer坐标到Qt回写仍需原生对照",
+      "recurrence_next_action": "补拖动→收展位置连续性真窗口对拍",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D04",
@@ -582,10 +942,35 @@
       "rootcause_at": null,
       "locate_unknown_reason": "触发链未复现，时长口径不成立",
       "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_coverage_glass_setup_chain.py; tests/test_coverage_glass_layer.py；真cocoa故障注入验证先倒序再有界自愈，Qt/WindowServer坐标有回归；普通Space成功不能推全屏/长时跟手",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_glass_setup_chain.py",
+        "tests/test_coverage_glass_layer.py"
+      ],
+      "recurrence_liar_check": "真cocoa故障注入验证先倒序再有界自愈，Qt/WindowServer坐标有回归；普通Space成功不能推全屏/长时跟手",
+      "recurrence_next_action": "补冻结产物全屏失同步注入→有界自愈→诊断一致门禁",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D05",
+      "continuous_capture_followup": {
+        "date": "2026-10-17",
+        "status": "continuous_visibility_guard_and_real_negative_control_verified",
+        "evidence": "outputs/continuous-frames-2026-10-17/",
+        "result": "最终两代材质四个目标阶段连续画面通过，保留最大未观测源间隔（不超过100ms），不宣称零空窗。最终250ms真实隐藏对照抓到8个缺价格源样本、保守区间上界约300ms并拒绝；解码少帧/错PTS/源与视频同删区间/晚开流对照均拒绝。"
+      },
+      "recurrence_followup": {
+        "date": "2026-10-17",
+        "status": "partial_not_closed",
+        "guard": "tools/visual_sequence_guard.py::text_match / sequence_problems",
+        "evidence": "outputs/quality-guards-2026-10-17/",
+        "result": "增加空白/全白/透明/稀疏样本/首张晚到负向判据；真实合成截图可辨实际价格文字。但非视频连续采集，不能证明最大空窗时长，风险不下调。"
+      },
       "symptom": "「只剩背景、内容不见」的空窗 4.46 秒（用户第二次报同一症状）",
       "component": "玻璃层与层级",
       "channel": "online_user",
@@ -603,7 +988,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "同一症状跨 7 版，交付记录没有首次报障时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录（提交 5a53b34）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "高",
+      "recurrence_verdict": "尚有关键行为判据缺口",
+      "recurrence_evidence": "tests/test_coverage_glass_setup_chain.py; tests/test_v1426_glass_zorder.py；已有至多5拍倒序自愈断言；它量WindowServer状态而非跨Space后每帧真实合成空窗，历史0.57秒不是像素空窗上限门禁",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_glass_setup_chain.py",
+        "tests/test_v1426_glass_zorder.py"
+      ],
+      "recurrence_liar_check": "已有至多5拍倒序自愈断言；它量WindowServer状态而非跨Space后每帧真实合成空窗，历史0.57秒不是像素空窗上限门禁",
+      "recurrence_next_action": "补内容实际合成连续采样及最大空窗时长硬阈值",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D07",
@@ -623,7 +1020,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "潜伏约 4 周/60 个版本，但没记哪天报的障",
       "source": "DELIVERY_CHECKLIST.md · V1.4.34 交付记录；outputs/底部把手拖到0高度-实测报告",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1434_stretch_floor.py；真实状态模型覆盖高度下限；边界随尺寸新增需同步",
+      "recurrence_guard_refs": [
+        "tests/test_v1434_stretch_floor.py"
+      ],
+      "recurrence_liar_check": "真实状态模型覆盖高度下限；边界随尺寸新增需同步",
+      "recurrence_next_action": "保留展开/收起及超大负拖动边界",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D08",
@@ -644,10 +1052,23 @@
       "locate_unknown_reason": "用户截图驱动，没有时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.4.34 交付记录",
       "evidence": "verified",
-      "recurrence_verdict": "有判据拦住，但判据自己可以说假话",
-      "recurrence_evidence": "tests/test_v1434_hint_gap.py::_baseline_y 在测试里**手抄**了一份区间公式（含 0.10 pad），漏了产品侧 hi-lo<1e-6 → hi=lo+1 的平盘分支 —— 它自己的 docstring 写着「用渲染器自己的区间算法，不在测试里另推一套」，实际却另推了一套：区间算法一改就静默失真（自证永真）",
-      "recurrence_risk": "高（修法极便宜）",
-      "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1434_hint_gap.py；提示布局有定向回归；几何不等于所有字体与基准线像素互斥",
+      "recurrence_risk": "中",
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review",
+      "recurrence_guard_refs": [
+        "tests/test_v1434_hint_gap.py"
+      ],
+      "recurrence_liar_check": "提示布局有定向回归；几何不等于所有字体与基准线像素互斥",
+      "recurrence_next_action": "补基准线越出当日范围时提示墨水互斥",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "高（修法极便宜）",
+        "recurrence_verdict": "有判据拦住，但判据自己可以说假话",
+        "recurrence_evidence": "tests/test_v1434_hint_gap.py::_baseline_y 在测试里**手抄**了一份区间公式（含 0.10 pad），漏了产品侧 hi-lo<1e-6 → hi=lo+1 的平盘分支 —— 它自己的 docstring 写着「用渲染器自己的区间算法，不在测试里另推一套」，实际却另推了一套：区间算法一改就静默失真（自证永真）",
+        "recurrence_audited": "2026-10-09 只读代理逐条查现成判据；A12/D08 两条本轮亲自打开源文件复核，其余六条为 second-hand"
+      }
     },
     {
       "id": "D14",
@@ -671,7 +1092,19 @@
       "source": "DELIVERY_CHECKLIST.md · V1.4.35~37 交付记录",
       "evidence": "verified",
       "observed_origin": "log",
-      "field_evidence": "装机版 v1.4.34 run=1bcb3a（STARTUP 16:06:22，会话到 16:40:18）：re-top: glass above main 482 行 / 持续 1278.0 秒，order probe blind 509 行 / 持续 2034.6 秒。由 tools/quality_trend.py --from-log --days 30 扫出，比交付记录当时写的「9 条同名日志」口径准。"
+      "field_evidence": "装机版 v1.4.34 run=1bcb3a（STARTUP 16:06:22，会话到 16:40:18）：re-top: glass above main 482 行 / 持续 1278.0 秒，order probe blind 509 行 / 持续 2034.6 秒。由 tools/quality_trend.py --from-log --days 30 扫出，比交付记录当时写的「9 条同名日志」口径准。",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_coverage_glass_setup_chain.py; tests/test_v1426_glass_zorder.py；原账未修复结论已陈旧：目前真cocoa先断言注入倒序/探针看见双层，再验至多5拍自愈；全屏长期原现场未同等重验",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_glass_setup_chain.py",
+        "tests/test_v1426_glass_zorder.py"
+      ],
+      "recurrence_liar_check": "原账未修复结论已陈旧：目前真cocoa先断言注入倒序/探针看见双层，再验至多5拍自愈；全屏长期原现场未同等重验",
+      "recurrence_next_action": "把已有双层倒序注入接到真实Space切换后，并加非空截图与最长不可见时长",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D15",
@@ -692,7 +1125,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "用户报障没有时刻；潜伏约 3 周（09-17→10-08）由版本日期反推",
       "source": "DELIVERY_CHECKLIST.md · V1.4.43/44 交付记录",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1443_update_feedback.py; tests/test_update_dialog_visibility.py；已有首击/反馈行为回归；Mock成功不能替代Space内合成可见",
+      "recurrence_guard_refs": [
+        "tests/test_v1443_update_feedback.py",
+        "tests/test_update_dialog_visibility.py"
+      ],
+      "recurrence_liar_check": "已有首击/反馈行为回归；Mock成功不能替代Space内合成可见",
+      "recurrence_next_action": "保留已知新版/未知新版/失败三时机真弹窗",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "D18",
@@ -712,7 +1157,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "用户附截图提要求，没有时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.4.38 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1438_alert_center.py；真窗口定位子进程覆盖多场景；本机屏幕组合有限",
+      "recurrence_guard_refs": [
+        "tests/test_v1438_alert_center.py"
+      ],
+      "recurrence_liar_check": "真窗口定位子进程覆盖多场景；本机屏幕组合有限",
+      "recurrence_next_action": "保留多屏及已有父窗坐标负向对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S09",
@@ -734,7 +1190,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "发现即定位，但没记时长",
       "source": "DELIVERY_CHECKLIST.md · V1.4.29 交付记录（第 1143、1151 行已复核）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py；F821硬零与swallow留痕覆盖；动态字符串名字仍不由F821保证",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "F821硬零与swallow留痕覆盖；动态字符串名字仍不由F821保证",
+      "recurrence_next_action": "动态入口继续加行为断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S10",
@@ -754,7 +1221,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "留痕有时刻，但没记人查了多久",
       "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1438_alert_center.py; tests/test_release_gates.py；居中已有真窗口判据；SWALLOWED只是发现而非阻止故障",
+      "recurrence_guard_refs": [
+        "tests/test_v1438_alert_center.py",
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "居中已有真窗口判据；SWALLOWED只是发现而非阻止故障",
+      "recurrence_next_action": "保留居中失败必须留痕且可见的回退断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S16",
@@ -774,7 +1253,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "由 D15 的报障顺带量出，无独立时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.4.43/44 交付记录（第 266 行已复核）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update.py; tests/test_quality_http.py；超时重试有覆盖；把超时调大不是所有网络路径的保证",
+      "recurrence_guard_refs": [
+        "tests/test_update.py",
+        "tests/test_quality_http.py"
+      ],
+      "recurrence_liar_check": "超时重试有覆盖；把超时调大不是所有网络路径的保证",
+      "recurrence_next_action": "补首字节慢响应与仅重试清单的请求预算",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S29",
@@ -794,7 +1285,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "由本轮新探针首次量出，此前无人报",
       "source": "DELIVERY_CHECKLIST.md · V1.4.14 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_anim_driver.py; tests/test_power_v1410.py；有驱动/功耗约束，产品内回调活着不证明可见帧率",
+      "recurrence_guard_refs": [
+        "tests/test_anim_driver.py",
+        "tests/test_power_v1410.py"
+      ],
+      "recurrence_liar_check": "有驱动/功耗约束，产品内回调活着不证明可见帧率",
+      "recurrence_next_action": "同B08接入冻结产物逐动效采样",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S33",
@@ -814,7 +1317,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "复核直接读出，无用户时刻",
       "source": "DELIVERY_CHECKLIST.md · V1.4.45 交付记录 B1",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_coverage_native_alert_layout.py; tests/test_v146_systemalert.py；原生失败留痕与回退覆盖；回退被创建不必然被合成到当前Space",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_native_alert_layout.py",
+        "tests/test_v146_systemalert.py"
+      ],
+      "recurrence_liar_check": "原生失败留痕与回退覆盖；回退被创建不必然被合成到当前Space",
+      "recurrence_next_action": "补构造失败时实际可见的降级窗口判据",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G01",
@@ -834,7 +1349,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "AGENTS.md §3.1；DELIVERY_CHECKLIST.md · V1.4.17 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py; tests/test_verify_bundle_tools.py；空特征拒绝及包内特征有负向自检；特征清单仍是人为选取",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py",
+        "tests/test_verify_bundle_tools.py"
+      ],
+      "recurrence_liar_check": "空特征拒绝及包内特征有负向自检；特征清单仍是人为选取",
+      "recurrence_next_action": "每轮至少落一条实际行为修复特征",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G02",
@@ -854,7 +1381,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py; tests/test_verify_bundle_tools.py；特征解析与缺符号拒绝存在；字符串字面量不能冒充co_names",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py",
+        "tests/test_verify_bundle_tools.py"
+      ],
+      "recurrence_liar_check": "特征解析与缺符号拒绝存在；字符串字面量不能冒充co_names",
+      "recurrence_next_action": "保持值/符号/资源三类验法分离",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G03",
@@ -874,7 +1413,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "DELIVERY_CHECKLIST.md · V1.4.37 交付记录；QC_CHECKLIST.md",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_popup_fullscreen_space.py; tests/test_coverage_glass_setup_chain.py；native_glass_probe已有entered_distinct_fullscreen_space及回原Space判据；尚缺前置未改变Space的专门自动反控",
+      "recurrence_guard_refs": [
+        "tests/test_popup_fullscreen_space.py",
+        "tests/test_coverage_glass_setup_chain.py"
+      ],
+      "recurrence_liar_check": "native_glass_probe已有entered_distinct_fullscreen_space及回原Space判据；尚缺前置未改变Space的专门自动反控",
+      "recurrence_next_action": "补固定Space/假entered回执两种负向对照，未进入全屏必须拒绝出结论",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G04",
@@ -895,10 +1446,29 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "DELIVERY_CHECKLIST.md · V1.4.14 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1351_linever.py; tests/test_v1351_avg_cache.py；缓存键与命中有回归；只比图相同会再次空转",
+      "recurrence_guard_refs": [
+        "tests/test_v1351_linever.py",
+        "tests/test_v1351_avg_cache.py"
+      ],
+      "recurrence_liar_check": "缓存键与命中有回归；只比图相同会再次空转",
+      "recurrence_next_action": "保留实际命中计数及键失败负向对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G05",
+      "recurrence_followup": {
+        "date": "2026-10-17",
+        "status": "guard_implemented_pending_overall_review",
+        "guard": "tools/power_profile.py::workload_problems / run_child",
+        "evidence": "outputs/quality-guards-2026-10-17/",
+        "result": "测量窗口增量必须有报价应用>=2、动画>=10、绘制>=10且时长>=2秒；健康报价/分时/首帧/可见、父子场景绑定均强制验证。退出码0不再独自等于成功；本机3秒mock动态实跑有效，相关负向对照纳入回归。不是能耗改善或原生帧率结论。"
+      },
       "symptom": "功耗打桩回包写死 600519，行情在动画分支前被静默丢弃 → 交付记录里「盘中 5.58%→1.00%」是错的，_anim_tick/paintEvent 计数恒 0",
       "component": "关卡会说假话",
       "channel": "gate_liar",
@@ -915,7 +1485,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "DELIVERY_CHECKLIST.md · V1.4.12 交付记录",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "高",
+      "recurrence_verdict": "尚有关键行为判据缺口",
+      "recurrence_evidence": "tests/test_performance_audit.py；power_profile现已按请求code造回包并验有效报价/分时/首帧；probe_valid仍不要求animate场景中anim_tick/paint增量与有效样本非零",
+      "recurrence_guard_refs": [
+        "tests/test_performance_audit.py"
+      ],
+      "recurrence_liar_check": "power_profile现已按请求code造回包并验有效报价/分时/首帧；probe_valid仍不要求animate场景中anim_tick/paint增量与有效样本非零",
+      "recurrence_next_action": "animate测量加动画/绘制非零和最小有效采样量前置红线；保留现有code/报价正确性校验",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G06",
@@ -935,7 +1516,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "DELIVERY_CHECKLIST.md · V1.4.33 交付记录；AGENTS.md §2",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_run_tests_guard.py；SF_GUARD_PROBE真子进程锁exit2守卫顺序；短路不代表全量关卡成功",
+      "recurrence_guard_refs": [
+        "tests/test_run_tests_guard.py"
+      ],
+      "recurrence_liar_check": "SF_GUARD_PROBE真子进程锁exit2守卫顺序；短路不代表全量关卡成功",
+      "recurrence_next_action": "保留正式版在跑时的退出码专门验法",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G07",
@@ -955,7 +1547,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "本轮读 tools/verify_bottom_gap_px.py 旧判据第 142 行 + triage 脚本实测「tests/ 引用 0 次」",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py；独立间距硬上限与自指反例已入自检；字体取值仍需正确加载",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "独立间距硬上限与自指反例已入自检；字体取值仍需正确加载",
+      "recurrence_next_action": "保留改大产品常量不能放宽上限的反例",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G08",
@@ -975,7 +1578,18 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "本轮 triage：grep tests/ 对 dist_version_check 的命中只有 test_core.py:234 的注释行",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py；版本错/坏plist/缺包自检与错误退出码已有判据",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "版本错/坏plist/缺包自检与错误退出码已有判据",
+      "recurrence_next_action": "保留同版本正向及旧版本负向对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G09",
@@ -998,7 +1612,18 @@
       "rootcause_at": "2026-10-09 10:05:35+08:00",
       "locate_unknown_reason": null,
       "source": "提交钩子报红 → uptime/sysctl kern.boottime 取证（09:44 重启，monotonic=1038s）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_face_guard.py；单调时钟基准有修正；必须同时看低开机时长边界",
+      "recurrence_guard_refs": [
+        "tests/test_face_guard.py"
+      ],
+      "recurrence_liar_check": "单调时钟基准有修正；必须同时看低开机时长边界",
+      "recurrence_next_action": "保留重启后等价的正时刻夹具",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G10",
@@ -1018,7 +1643,19 @@
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认；它由本轮新关卡当场抓到并同轮修掉",
       "source": "本轮实测：新关卡首跑报 bundle_closure_check.py（不认 --self-test，退出码 2）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py; tests/test_gate_clean_machine.py；无产物判定层必须运行；有产物层缺失不能称产物已验",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py",
+        "tests/test_gate_clean_machine.py"
+      ],
+      "recurrence_liar_check": "无产物判定层必须运行；有产物层缺失不能称产物已验",
+      "recurrence_next_action": "报表继续分离离线层与真产物层",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "E01",
@@ -1037,12 +1674,36 @@
         "防线二：tests/test_v1448_snap_edge.py 5 条（越过物理底/越过左边/贴齐不许挪 1px/中途不误吸/卡片高于可用区时落点再钳）",
         "防线三：判定重写带符号距离并在注释里写明 Dock 与菜单栏两种保留区的差异"
       ],
-      "observed_at": "2026-10-09 11:12:40+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-09 11:12:40+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "用户 2026-10-09 实机报障：「屏幕吸附边缘的功能，有时候不生效，特别是屏幕底部」",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 11:12:40+08:00",
+        "original_rootcause_at": "2026-10-09 11:12:40+08:00",
+        "reason": "起点终点相同",
+        "evidence_checked": [
+          "用户 2026-10-09 实机报障：「屏幕吸附边缘的功能，有时候不生效，特别是屏幕底部」",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1448_snap_edge.py；越界吸附/钳位有独立例；Qt边界仍需多屏倍率覆盖",
+      "recurrence_guard_refs": [
+        "tests/test_v1448_snap_edge.py"
+      ],
+      "recurrence_liar_check": "越界吸附/钳位有独立例；Qt边界仍需多屏倍率覆盖",
+      "recurrence_next_action": "保留Dock保留区与多屏边界测试",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "E02",
@@ -1069,7 +1730,24 @@
       "locate_unknown_reason": null,
       "source": "用户 2026-10-09 11:17 实机报障；日志 face_guard session FAILED ×3，权限 granted=True 历史上仅 1 次",
       "evidence": "verified",
-      "recurrence_risk": "已关闭（E03 复发一次后，v1.4.50 实机闭环：见 defense_added 末尾）"
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1449_face_session.py; tests/test_face_guard.py；真实元组形状可拦桥接错误；假类成功不证明摄像头真的首帧",
+      "recurrence_guard_refs": [
+        "tests/test_v1449_face_session.py",
+        "tests/test_face_guard.py"
+      ],
+      "recurrence_liar_check": "真实元组形状可拦桥接错误；假类成功不证明摄像头真的首帧",
+      "recurrence_next_action": "发布验证必须读授权→session running→首帧真链",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "已关闭（E03 复发一次后，v1.4.50 实机闭环：见 defense_added 末尾）",
+        "recurrence_verdict": "有局部判据",
+        "recurrence_evidence": "tests/test_v1449_face_session.py; tests/test_face_guard.py",
+        "recurrence_audited": null
+      },
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review"
     },
     {
       "id": "E03",
@@ -1097,7 +1775,19 @@
       "rootcause_at": "2026-10-09 11:49:52+08:00",
       "locate_unknown_reason": null,
       "source": "装机版实机日志取证：run cc97a9 与 b16428 两段人脸守卫只有 未授权 一行，全程没有 running/session FAILED/首帧；同机离线 Vision 实测两人照能数出 2 张脸（conf 0.822/0.811），排除了检测侧",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_face_guard.py; tests/test_camera_auth_upgrade.py；未授权菜单/检测失败与升级授权有判据；照片不等于现场采集",
+      "recurrence_guard_refs": [
+        "tests/test_face_guard.py",
+        "tests/test_camera_auth_upgrade.py"
+      ],
+      "recurrence_liar_check": "未授权菜单/检测失败与升级授权有判据；照片不等于现场采集",
+      "recurrence_next_action": "保留真实授权和采集首帧验收，不能仅图片过就写运行",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S06",
@@ -1116,12 +1806,36 @@
         "防线二：tests/test_v1450_etf_entry.py 9 条 —— 段覆盖判定 + 非覆盖段行情探测的三种答案（存在→放行、接口答无此码→提示、断网→可用性优先放行），桩只换外部世界、判定走 sf_editor 真实分支",
         "防线一/判据本体：sf_universe.covers_segment 让字典只为自己收录的 2 位段发言，判据从字典自身推导而非写死段表（空字典一律 False）"
       ],
-      "observed_at": "2026-10-09 12:22:48+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
-      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "30 轮走查第 9 轮（并行会话）实测坐实；本轮合入前再次实测：covers_segment('510300')=False，fetch_quote('sh510300')=沪深300ETF华泰柏瑞 4.326",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 12:22:48+08:00",
+        "original_rootcause_at": null,
+        "reason": "共用秒级时刻 2026-10-09T04:22:48+00:00（S06, S07）",
+        "evidence_checked": [
+          "30 轮走查第 9 轮（并行会话）实测坐实；本轮合入前再次实测：covers_segment('510300')=False，fetch_quote('sh510300')=沪深300ETF华泰柏瑞 4.326",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1450_etf_entry.py；真实编辑分支覆盖段外代码三种答案；字典空输入有边界",
+      "recurrence_guard_refs": [
+        "tests/test_v1450_etf_entry.py"
+      ],
+      "recurrence_liar_check": "真实编辑分支覆盖段外代码三种答案；字典空输入有边界",
+      "recurrence_next_action": "新增证券段同时验真实报价探测回退",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S07",
@@ -1141,12 +1855,37 @@
         "防线二：deliver 对非授权态一律 osascript 补发，不再让 UN 静默吞掉",
         "防线三：补发时把 status 写进 WARNING 日志 —— 事后能回答「那条提醒为什么没弹」"
       ],
-      "observed_at": "2026-10-09 12:22:48+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
-      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "30 轮走查（并行会话）读码核实；本轮合入前复核了判据上下文（sf_notify.deliver 的 status 分支）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 12:22:48+08:00",
+        "original_rootcause_at": null,
+        "reason": "共用秒级时刻 2026-10-09T04:22:48+00:00（S06, S07）",
+        "evidence_checked": [
+          "30 轮走查（并行会话）读码核实；本轮合入前复核了判据上下文（sf_notify.deliver 的 status 分支）",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_notify.py; tests/test_coverage_notify_update.py；非授权fallback/留痕有测试；返回投递方式不等于用户看到横幅",
+      "recurrence_guard_refs": [
+        "tests/test_notify.py",
+        "tests/test_coverage_notify_update.py"
+      ],
+      "recurrence_liar_check": "非授权fallback/留痕有测试；返回投递方式不等于用户看到横幅",
+      "recurrence_next_action": "补通知投递失败不误记已触发的端到端判据",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G11",
@@ -1164,12 +1903,37 @@
       "defense_added": [
         "防线一：run_mypy 先探 \"import mypy.version\"，取不到就当场失败（本闸门的规矩是检查器跑不起来不算通过）；collect() 再加一条「本次产出 0 条而基线里还记着 mypy 债务 → 拒绝下结论」。本轮用桩实测两条都拦得住：mypy 不可用抛错、0 条时拒绝下结论"
       ],
-      "observed_at": "2026-10-09 12:22:59+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
-      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "30 轮走查（并行会话）实测；本轮合入前用桩复现两条守卫：mypy 不可用 → 当场抛错；mypy 跑通但 0 条而基线记有 310 条 → collect() 拒绝下结论",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 12:22:59+08:00",
+        "original_rootcause_at": null,
+        "reason": "共用秒级时刻 2026-10-09T04:22:59+00:00（G11, G12, G13）",
+        "evidence_checked": [
+          "30 轮走查（并行会话）实测；本轮合入前用桩复现两条守卫：mypy 不可用 → 当场抛错；mypy 跑通但 0 条而基线记有 310 条 → collect() 拒绝下结论",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py; tests/test_coverage_runner_and_gate_failures.py；缺mypy与零结果有拒绝分支/自检；依赖版本变化需复核",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py",
+        "tests/test_coverage_runner_and_gate_failures.py"
+      ],
+      "recurrence_liar_check": "缺mypy与零结果有拒绝分支/自检；依赖版本变化需复核",
+      "recurrence_next_action": "保持检查器不可运行=失败",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G12",
@@ -1187,12 +1951,37 @@
       "defense_added": [
         "防线一：write_baseline 与旧基线逐键比较，任何上调一律拒绝；确需上调必须显式带 --allow-rise，并当场把每条差值打出来。本轮实测：把 attr-defined 从 28 抬到 29 被拒，且基线文件 md5 未变（e7401546745a）"
       ],
-      "observed_at": "2026-10-09 12:22:59+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
-      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "30 轮走查（并行会话）提的；本轮合入后实测：write_baseline 传 29 时抛错拒绝，且基线文件 md5 未变（e7401546745a）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 12:22:59+08:00",
+        "original_rootcause_at": null,
+        "reason": "共用秒级时刻 2026-10-09T04:22:59+00:00（G11, G12, G13）",
+        "evidence_checked": [
+          "30 轮走查（并行会话）提的；本轮合入后实测：write_baseline 传 29 时抛错拒绝，且基线文件 md5 未变（e7401546745a）",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py; tests/test_coverage_runner_and_gate_failures.py；基线上升拒写与显式allow-rise有判据；授权上升仍需人审",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py",
+        "tests/test_coverage_runner_and_gate_failures.py"
+      ],
+      "recurrence_liar_check": "基线上升拒写与显式allow-rise有判据；授权上升仍需人审",
+      "recurrence_next_action": "保留逐键差值与拒写后文件不变断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G13",
@@ -1210,12 +1999,37 @@
       "defense_added": [
         "防线一：scan() 加输入规模红线 —— tests/ 少于 100 个 .py 就报错（实测打补丁前指空目录 rc=0 假通过，打补丁后 rc=2 并报「只取到 0 个 .py」）；self_test 的干净样例改为重扫并断言 0 违规"
       ],
-      "observed_at": "2026-10-09 12:22:59+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
-      "locate_unknown_reason": "走查当场发现、当场定根因：observed_at 是登记时刻而不是「现象首次可观测」的时刻，两者相减不构成定位时长，故本条不进数字二样本（rootcause_at 留空）。",
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "30 轮走查（并行会话）实测；本轮合入前实测打补丁前 rc=0（假通过），合入后同一命令 rc=2 并报「只取到 0 个 .py」",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 12:22:59+08:00",
+        "original_rootcause_at": null,
+        "reason": "共用秒级时刻 2026-10-09T04:22:59+00:00（G11, G12, G13）",
+        "evidence_checked": [
+          "30 轮走查（并行会话）实测；本轮合入前实测打补丁前 rc=0（假通过），合入后同一命令 rc=2 并报「只取到 0 个 .py」",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_gate_clean_machine.py; tests/test_code_governance.py；范围硬下限与空目录拒绝可拦空转；规模阈值并不证明所有目录覆盖",
+      "recurrence_guard_refs": [
+        "tests/test_gate_clean_machine.py",
+        "tests/test_code_governance.py"
+      ],
+      "recurrence_liar_check": "范围硬下限与空目录拒绝可拦空转；规模阈值并不证明所有目录覆盖",
+      "recurrence_next_action": "新增目录时检查递归范围与排除项",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G14",
@@ -1234,12 +2048,30 @@
         "防线二：NOW 改为贴着真实时钟取（datetime.now()），显式传 now 的与不传 now 的两类断言同时确定性成立；并把这段教训写进测试文件的注释里，防止下次又钉一个整点",
         "防线二：产品侧顺手补上真正的漏洞 —— 锚点窗口此前只写下界，一条时钟超前的行会永远算作「最近 30 分钟」（把三天前说成刚刚）。现在晚于参照时刻 5 分钟以上的行单独计入 future_lines 并排除，配一条用例两个方向都验（超前一小时必须被剔、超前 60 秒必须仍算数）"
       ],
-      "observed_at": "2026-10-09 12:41:20+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
       "locate_unknown_reason": "全量当场红、单跑同样红、报错文字直接指出锚点数为 0 —— 从看到红到定根因在一次读码之内，不构成一个可统计的定位区间（且起点是关卡红而非线上现象）",
       "source": "本轮 v1.4.51 全量回归当场红（12:37，failures=1，重跑仍红 → 不是抖动）；单跑该模块同样红 → 与时序无关",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 12:41:20+08:00",
+        "original_rootcause_at": null,
+        "reason": "全量当场红、单跑同样红、报错文字直接指出锚点数为 0 —— 从看到红到定根因在一次读码之内，不构成一个可统计的定位区间（且起点是关卡红而非线上现象）"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_coverage_glass_evidence.py；显式/默认时钟与未来行排除两侧覆盖；时区形状仍需保持一致",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_glass_evidence.py"
+      ],
+      "recurrence_liar_check": "显式/默认时钟与未来行排除两侧覆盖；时区形状仍需保持一致",
+      "recurrence_next_action": "保留未来行容差正反例",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N01",
@@ -1265,7 +2097,19 @@
       "rootcause_at": "2026-10-09 17:13:38+08:00",
       "locate_unknown_reason": null,
       "source": "iMac 崩溃报告（2026-10-09 16:21:40，Incident 26FB2B89-63FA-4348-8238-F489B5C97786）；本机 .venv 实测：冷序建类登记编码 ['@','@',':','@','@']，框架元数据权威编码 ['B','@',':','@','B']；再用 ctypes 按调用方签名 v@:@B 向代理真发一次 → 同形状 SIGSEGV，DiagnosticReports 顶帧与 iMac 报告逐帧一致",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_reopen_signature.py; tests/test_macos_native_failures.py；桥接形状/真实回调有检查；单机系统元数据不同不能推外机安全",
+      "recurrence_guard_refs": [
+        "tests/test_reopen_signature.py",
+        "tests/test_macos_native_failures.py"
+      ],
+      "recurrence_liar_check": "桥接形状/真实回调有检查；单机系统元数据不同不能推外机安全",
+      "recurrence_next_action": "保留签名变异及实际冻结包回调生存门禁",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S34",
@@ -1285,12 +2129,31 @@
         "防线一：tools/pyobjc_sig_check.py 的符号核对 —— 全仓每一处 from <pyobjc 框架> import X 都真去 getattr 一次，取不到就红（这条红就是本轮第一次抓到它）",
         "防线二：tests/test_coverage_notify_update.py::TestUnRouteWithRealFramework —— 不用替身跑真 UserNotifications：_ensure_un 必须成功、主队列载体必须存在、delegate 必须真装得上"
       ],
-      "observed_at": "2026-10-09 17:14:17+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
       "locate_unknown_reason": "起点无法确定：坏死发生在依赖升到 pyobjc 12 的那一刻，而仓库里 requirements 的升级时刻与 .venv 重建时刻不一致（git 基线 v1.2.51 就已是这个写法），没有一条现场日志记下'第一次取不到名字'。observed_at 因此是本轮扫出的时刻，不构成定位区间，本条不进数字二样本。",
       "source": "本轮建 tools/pyobjc_sig_check.py 时由符号可用性核对扫出（全仓 34 处 pyobjc 引用里唯二取不到的就是这两个名字）；复现：./.venv/bin/python -c 'from Foundation import dispatch_async' → ImportError；修后 tests/test_coverage_notify_update.py::TestUnRouteWithRealFramework 走真框架两条全绿",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-09 17:14:17+08:00",
+        "original_rootcause_at": null,
+        "reason": "起点无法确定：坏死发生在依赖升到 pyobjc 12 的那一刻，而仓库里 requirements 的升级时刻与 .venv 重建时刻不一致（git 基线 v1.2.51 就已是这个写法），没有一条现场日志记下'第一次取不到名字'。observed_at 因此是本轮扫出的时刻，不构成定位区间，本条不进数字二样本。"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_coverage_notify_update.py; tests/test_release_gates.py；真框架符号/通知路径有覆盖；静态合法不代表线程切换成功",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_notify_update.py",
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "真框架符号/通知路径有覆盖；静态合法不代表线程切换成功",
+      "recurrence_next_action": "保留真实框架而非假导入对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N02",
@@ -1315,9 +2178,23 @@
       "locate_unknown_reason": null,
       "source": "用户 2026-10-09 反馈「自动隐藏窗口，现在点击没反应了，功能失效了」+ 本机 debug.log 16:36 会话 184fe1 五行点击记录逐条对上",
       "evidence": "verified",
-      "recurrence_verdict": "E02 同族第二次（对外症状都是「自动隐藏窗口没在保护」，根因不同：E02 是采集会话建不起来，本轮是权限请求的进程级永久闩锁）",
-      "recurrence_evidence": "E02（v1.4.49 修会话形状）→ v1.4.50 收「未授权死路」→ 本轮 v1.4.57 收「弹窗没答就永久装死」",
-      "recurrence_risk": "中：TCC 弹窗被置顶悬浮窗压住这件事我们无法控制，只能保证「再点一次一定有效」"
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_face_guard.py；假时钟冷却恢复有正反例；TCC系统框仍属外部状态",
+      "recurrence_risk": "中",
+      "recurrence_guard_refs": [
+        "tests/test_face_guard.py"
+      ],
+      "recurrence_liar_check": "假时钟冷却恢复有正反例；TCC系统框仍属外部状态",
+      "recurrence_next_action": "保留多次菜单点击与冷却再请求判据",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_prior_review": {
+        "recurrence_risk": "中：TCC 弹窗被置顶悬浮窗压住这件事我们无法控制，只能保证「再点一次一定有效」",
+        "recurrence_verdict": "E02 同族第二次（对外症状都是「自动隐藏窗口没在保护」，根因不同：E02 是采集会话建不起来，本轮是权限请求的进程级永久闩锁）",
+        "recurrence_evidence": "E02（v1.4.49 修会话形状）→ v1.4.50 收「未授权死路」→ 本轮 v1.4.57 收「弹窗没答就永久装死」",
+        "recurrence_audited": null
+      },
+      "recurrence_audited": "2026-10-17 当前判据静态复核，历史原评级见recurrence_prior_review"
     },
     {
       "id": "N03",
@@ -1337,12 +2214,36 @@
         "防线二：tests/test_digit_tabular.py 7 条 —— 同位数价格的涨跌幅起点必须一模一样、可见墨水不得越出定宽占位盒、布局量的必须是这一帧真正绘制的那一串；另配一条反向用例（不改口径时宽度确实会跳），防止断言变空",
         "判据本体：sf_ui_render 新增 digit_cell_width / tabular_advance，成为量宽与绘制的唯一口径（_glyph_slot 出「占位宽 + 格内居中偏移」，_digit_cell 按字体档位缓存）；test_v124 那条「总宽==自然 advance」改成「总宽==布局量出的定宽」，否则旧断言一直为错误口径背书"
       ],
-      "observed_at": "2026-10-10 00:04:52+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
-      "locate_unknown_reason": "现象在 30 轮走查（found_version 1.4.51）的报告里已记录，根因与量化是本轮重测坐实的，两个时刻分属不同会话，按\"观测→根因\"相减不构成定位时长，故本条不进数字二样本。",
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "30 轮走查报告 S8（outputs/走查与修复报告-30轮-2026-10-09.md 第 109~112 行）当时记而未修；本轮重测坐实：改前同形状 125 个串宽度落在 10 个取值上（82~101），改后只有 103 一个取值",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 00:04:52+08:00",
+        "original_rootcause_at": null,
+        "reason": "共用秒级时刻 2026-10-09T16:04:52+00:00（N03, S35）",
+        "evidence_checked": [
+          "30 轮走查报告 S8（outputs/走查与修复报告-30轮-2026-10-09.md 第 109~112 行）当时记而未修；本轮重测坐实：改前同形状 125 个串宽度落在 10 个取值上（82~101），改后只有 103 一个取值",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_digit_tabular.py；墨水/占位同源且有不改时宽度跳动的反向例；字体加载仍需验",
+      "recurrence_guard_refs": [
+        "tests/test_digit_tabular.py"
+      ],
+      "recurrence_liar_check": "墨水/占位同源且有不改时宽度跳动的反向例；字体加载仍需验",
+      "recurrence_next_action": "新增字体必须重跑同位数与跨位数帧",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S35",
@@ -1363,12 +2264,37 @@
         "发版链 3.6 步补两条产物级核验：值核验 BUNDLED_FONT_FILES / NUM_FONT（字符串元组只进 co_consts，check/forbid 查不到），以及包内 fonts/ 目录清单 —— 旧 D-DIN-PRO-*.ttf 必须消失、官方件与许可原文必须在场",
         "判据与复跑清单写进 .sf-opensource/docs/FONT_LICENSE.md（公开快照前置项结项）"
       ],
-      "observed_at": "2026-10-10 00:04:52+08:00",
+      "observed_at": null,
       "observed_origin": "now",
       "rootcause_at": null,
-      "locate_unknown_reason": "合规类发现，不是运行时故障：没有\"现象第一次可被观测到的时刻\"可盖，observed_at 是登记时刻，与本条 rootcause 无关，故不进数字二样本。",
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "对外分发就绪度复核（开源快照前置项）。取证链三步：解析字体 name 表发现「CyberFei. All rights reserved」与 OFL 字段自相矛盾 → 与 github.com/CyberFei/D-DIN-PRO 的 TTF/Normal 两文件 sha256 逐字节相同 → 与 Datto 官方构建逐格 advance 完全一致",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 00:04:52+08:00",
+        "original_rootcause_at": null,
+        "reason": "共用秒级时刻 2026-10-09T16:04:52+00:00（N03, S35）",
+        "evidence_checked": [
+          "对外分发就绪度复核（开源快照前置项）。取证链三步：解析字体 name 表发现「CyberFei. All rights reserved」与 OFL 字段自相矛盾 → 与 github.com/CyberFei/D-DIN-PRO 的 TTF/Normal 两文件 sha256 逐字节相同 → 与 Datto 官方构建逐格 advance 完全一致",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_bundle_resources.py; tests/test_public_release.py；随包字体/许可有门禁；文件名和哈希只能锁材料不能自动证明权利链",
+      "recurrence_guard_refs": [
+        "tests/test_bundle_resources.py",
+        "tests/test_public_release.py"
+      ],
+      "recurrence_liar_check": "随包字体/许可有门禁；文件名和哈希只能锁材料不能自动证明权利链",
+      "recurrence_next_action": "新增字体必须人工核权利人/许可来源再锁哈希",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S36",
@@ -1390,12 +2316,36 @@
         "防线一：TestHelperNeedsNoDevTools 两条依赖围栏（非注释行不得再出现任何 python 解释器路径；助手点名的每个绝对命令必须在本机存在）",
         "防线二：LC_ALL=C 是实测逼出来的必需项 —— ditto 造的非 ASCII 条目名经 zipinfo 按代码页转换后是非法 UTF-8，macOS 的 awk 一碰到就整条中止（实测 towc: multibyte conversion failure），这类缺陷只会在一台装了中文命名旧包的客户机上露头"
       ],
-      "observed_at": "2026-10-10 11:41:14+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-10 11:41:14+08:00",
-      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 11:41:14+08:00",
+        "original_rootcause_at": "2026-10-10 11:41:14+08:00",
+        "reason": "起点终点相同",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_helper.py；真实shell正反包及不得依赖CLT检查；系统命令可用性仍需目标系统",
+      "recurrence_guard_refs": [
+        "tests/test_update_helper.py"
+      ],
+      "recurrence_liar_check": "真实shell正反包及不得依赖CLT检查；系统命令可用性仍需目标系统",
+      "recurrence_next_action": "保留中文条目、软链接、无开发工具路线",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S37",
@@ -1414,12 +2364,37 @@
         "改法本身不再列名字清单：存活复核直接读 Info.plist 的 CFBundleExecutable（打包时唯一决定这个名字的字段），读不到就判失败并回滚 —— 把「认两代名字」这件事从人维护的清单换成结构上不会漂移的来源",
         "发版链 3.6 步新增 forbidfile：包内 shell 资源里 MacOS/StockFloatTargetPrice 这种写死旧名的整句必须消失，否则拒绝出包（checkfile/forbidfile 是本轮第一次真正用在改名类缺陷上）"
       ],
-      "observed_at": "2026-10-10 11:41:15+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-10 11:41:15+08:00",
-      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 11:41:15+08:00",
+        "original_rootcause_at": "2026-10-10 11:41:15+08:00",
+        "reason": "起点终点相同",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_helper.py; tests/test_identity_literals.py；真实installed路线读CFBundleExecutable并验进程；名字常量扫不能替代它",
+      "recurrence_guard_refs": [
+        "tests/test_update_helper.py",
+        "tests/test_identity_literals.py"
+      ],
+      "recurrence_liar_check": "真实installed路线读CFBundleExecutable并验进程；名字常量扫不能替代它",
+      "recurrence_next_action": "保留不同可执行名的正向升级路线",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S38",
@@ -1439,12 +2414,36 @@
         "助手装成功后只保留最近一份回退包，更早的一律 mv 进系统临时目录交 macOS 回收（全程不删文件）；留在临时目录的目录名不以 .app 结尾，不会被 LaunchServices 当成应用重新拉起（v1.4.5 那枚 SIGSEGV 的成因）",
         "防线二：tests/test_v1459_bottom_fit 同批新增的 tests/test_update_helper.py::TestRollbackPrune 四条夹具真跑该函数，判据是目录树（谁还在原位、谁被挪走、只有一份时一份都不许动、目的地不存在要能建出来）；正向路线要真拉起新版才走得到，夹具不该开 GUI，所以函数体用成对标记（# BEGIN/END prune_rollbacks）抽出来在同一个 /bin/sh 里跑 —— 标记被删用例当场红，不会静默变成没测"
       ],
-      "observed_at": "2026-10-10 11:42:06+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-10 11:42:06+08:00",
-      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 11:42:06+08:00",
+        "original_rootcause_at": "2026-10-10 11:42:06+08:00",
+        "reason": "共用秒级时刻 2026-10-10T03:42:06+00:00（G15, G16, S38）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_helper.py；现已有整条installed+prune目录树断言；抽段给parent不能替代整条",
+      "recurrence_guard_refs": [
+        "tests/test_update_helper.py"
+      ],
+      "recurrence_liar_check": "现已有整条installed+prune目录树断言；抽段给parent不能替代整条",
+      "recurrence_next_action": "保留回退目录树及进程事实",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G15",
@@ -1466,12 +2465,37 @@
         "防线一：test_arch_constraints 三条位置判据 —— 核验排在 hdiutil / cp 到 /Applications / publish_update_release 之前、落戳排在「全部测试通过」之后、--skip-tests 必须带 WARNING 且不是唯一分支；用源码结构断言是因为守的对象是 shell 脚本的调用顺序，没有可调用的行为（该文件 §6 第 2 条例外的指定落点）",
         "本轮实测闸门真的会拦：APP_VERSION 一改（.py 动过）时间戳即判过期，build_release 自动补跑一整轮回归 —— 这是设计意图，不是故障"
       ],
-      "observed_at": "2026-10-10 11:42:06+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-10 11:44:42+08:00",
-      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 11:42:06+08:00",
+        "original_rootcause_at": "2026-10-10 11:44:42+08:00",
+        "reason": "共用秒级时刻 2026-10-10T03:42:06+00:00（G15, G16, S38）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_gate_stamp.py; tests/test_arch_constraints.py；内容/权限/新文件变动使戳失效，链序锁位；显式skip-tests仍是风险出口",
+      "recurrence_guard_refs": [
+        "tests/test_gate_stamp.py",
+        "tests/test_arch_constraints.py"
+      ],
+      "recurrence_liar_check": "内容/权限/新文件变动使戳失效，链序锁位；显式skip-tests仍是风险出口",
+      "recurrence_next_action": "每次使用skip-tests必须单独报告未完整回归",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G16",
@@ -1491,12 +2515,37 @@
         "verify_install_paths --self-test 由五处错增到七处：S6 两条专门种这一族错，其中一条先断言「LC_ALL=C 确实被摘干净了」，防止变异空跑（自检里种不进去的错，等于没种）",
         "顺带修掉核验器自己的一处脆断：run() 严格 UTF-8 解码会被助手吐出的非法字节砸出 UnicodeDecodeError —— 闸门不是红而是崩，看起来像工具坏了、说不清被测对象哪儿不对；改 errors=replace 并写明原因"
       ],
-      "observed_at": "2026-10-10 11:42:06+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-10 11:44:43+08:00",
-      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 11:42:06+08:00",
+        "original_rootcause_at": "2026-10-10 11:44:43+08:00",
+        "reason": "共用秒级时刻 2026-10-10T03:42:06+00:00（G15, G16, S38）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_helper.py; tests/test_install_path_routes.py；R4精确终点且正/反归档路径覆盖；夹具必须继续故意不签名",
+      "recurrence_guard_refs": [
+        "tests/test_update_helper.py",
+        "tests/test_install_path_routes.py"
+      ],
+      "recurrence_liar_check": "R4精确终点且正/反归档路径覆盖；夹具必须继续故意不签名",
+      "recurrence_next_action": "保留停早/停晚两侧均拒绝",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S39",
@@ -1515,12 +2564,36 @@
         "改法是「放不下就缩字号」而不是撑宽窗口：sf_ui_render.bottom_rows_fitting 从当前字号起最多缩两档（下限不低于徽标字号 7pt，档位选择有实测依据：茅台形态需要 193px 而窗口固定 184px，缩 1pt 后 187px 即放下），两档都不够才如实回到丢段并打一条节流日志；撑宽与用户「固定窄版」的明确决定冲突，故未采用",
         "防线二：tests/test_v1459_bottom_fit.py 七条 —— 纯函数契约（普通行情不许无谓缩号、缺陷现场必须找回段落、缩号有下限且不谎报）+ 真墨水对照（同一帧画两遍，差出来的像素就是被找回的那一段，实测 476→887）+ 子类化 QPainter 记录 setFont 真入参（像素口径抓不到「按 8pt 排、按 9pt 画」：实测越界像素为 0，故必须看绘制实际做了什么）"
       ],
-      "observed_at": "2026-10-10 11:42:07+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-10 11:42:07+08:00",
-      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 11:42:07+08:00",
+        "original_rootcause_at": "2026-10-10 11:42:07+08:00",
+        "reason": "共用秒级时刻 2026-10-10T03:42:07+00:00（S39, S40）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1459_bottom_fit.py；真墨水差、绘制字号实参、下限反例齐全；仍限已采字体组合",
+      "recurrence_guard_refs": [
+        "tests/test_v1459_bottom_fit.py"
+      ],
+      "recurrence_liar_check": "真墨水差、绘制字号实参、下限反例齐全；仍限已采字体组合",
+      "recurrence_next_action": "保留极宽/极窄及1x2x墨水对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S40",
@@ -1540,12 +2613,37 @@
         "防线二：tests/test_v1459_color_tokens.py 七条 —— 同源判据（改任一侧即红）+ WCAG 算式复核（阈值来源写明是 AA 小字 4.5:1，不是本仓口味值）+ 端点必须等于 token 而渐变仍然存在的两条正反判据",
         "同轮把底部弱化灰 FG_DIM 由 #6b7280 提到 #848d9c：实测对面板底 3.45:1→4.98:1、对纯黑 4.34:1→6.27:1（AA 小字下限 4.5:1）；这条是本轮唯一改动全局配色的一项，装机版肉眼复看后再定去留"
       ],
-      "observed_at": "2026-10-10 11:42:07+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-10 11:42:07+08:00",
-      "locate_unknown_reason": "走查/复核类发现，不是运行时故障：没有「现象第一次可被观测到的时刻」可盖，observed_at 是登记时刻，因此定位时长不纳入平均（口径与 S35 一致）",
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10 11:42:07+08:00",
+        "original_rootcause_at": "2026-10-10 11:42:07+08:00",
+        "reason": "共用秒级时刻 2026-10-10T03:42:07+00:00（S39, S40）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1459_color_tokens.py; tests/test_style_hex_tokens.py；同源/独立WCAG算式/真文字取色；token本身颜色改动仍需可读性验",
+      "recurrence_guard_refs": [
+        "tests/test_v1459_color_tokens.py",
+        "tests/test_style_hex_tokens.py"
+      ],
+      "recurrence_liar_check": "同源/独立WCAG算式/真文字取色；token本身颜色改动仍需可读性验",
+      "recurrence_next_action": "保留独立对比度阈值而非自指阈值",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S41",
@@ -1566,12 +2664,37 @@
         "tests/test_v1460_review_fixes.py::LegacyEntriesBelongToTheConfigStock 四条（含 owner 未知那档）",
         "tests/test_v1459_targets_per_code.py::test_upgrade_legacy_entries_never_move_to_another_stock 走真实序列；两条都把 owner 改回空串验过「改坏必红」"
       ],
-      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-10 14:51:10+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "全方位复核 F1；sf_config.py:429-434 与 495-509、stock_float_window.py:2457-2460/4417-4422；/tmp 真代码复现输出：切回 A 读到 0 条、4 条全归 sz000001",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10T13:16:00+08:00",
+        "original_rootcause_at": "2026-10-10 14:51:10+08:00",
+        "reason": "共用秒级时刻 2026-10-10T06:51:10+00:00（S41, S42）",
+        "evidence_checked": [
+          "全方位复核 F1；sf_config.py:429-434 与 495-509、stock_float_window.py:2457-2460/4417-4422；/tmp 真代码复现输出：切回 A 读到 0 条、4 条全归 sz000001",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1459_targets_per_code.py; tests/test_v1460_review_fixes.py；真实切股写回序列与owner未知边界；Mock加载成功不能取代磁盘读回",
+      "recurrence_guard_refs": [
+        "tests/test_v1459_targets_per_code.py",
+        "tests/test_v1460_review_fixes.py"
+      ],
+      "recurrence_liar_check": "真实切股写回序列与owner未知边界；Mock加载成功不能取代磁盘读回",
+      "recurrence_next_action": "保留A→B设目标→A完整数据归属断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S42",
@@ -1590,12 +2713,36 @@
         "_stop_face_guard 新增 stop_timer 参数，screen off 这一支只停采集不停轮询表（AGENTS §5.2 立为长期口径：凡停回调表又指望它自己醒的写法必须有活性判据）",
         "tests/test_face_guard.py::test_screen_off_leaves_the_polling_timer_running 断言 QTimer.isActive()，把 stop_timer=False 改回默认即红"
       ],
-      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-10 14:51:10+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "全方位复核 F2；stock_float_window.py:5149-5153 配 5114-5116，全仓仅 5202/5225 与 _sync_face_guard 会 start，调用者都在被停的那张表内或需用户手动开关菜单",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10T13:16:00+08:00",
+        "original_rootcause_at": "2026-10-10 14:51:10+08:00",
+        "reason": "共用秒级时刻 2026-10-10T06:51:10+00:00（S41, S42）",
+        "evidence_checked": [
+          "全方位复核 F2；stock_float_window.py:5149-5153 配 5114-5116，全仓仅 5202/5225 与 _sync_face_guard 会 start，调用者都在被停的那张表内或需用户手动开关菜单",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_face_guard.py；现有QTimer活性断言拦停表；不等于真实锁屏→解锁采集恢复被验证",
+      "recurrence_guard_refs": [
+        "tests/test_face_guard.py"
+      ],
+      "recurrence_liar_check": "现有QTimer活性断言拦停表；不等于真实锁屏→解锁采集恢复被验证",
+      "recurrence_next_action": "补原生锁屏后采集首帧恢复的有界活性判据",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S43",
@@ -1614,12 +2761,36 @@
         "sf_quote 的备源提示改按时间：首条必记 + 每 DEGRADED_SOURCE_LOG_SEC=60 秒一条，主源恢复时把手表一起归零（否则下一次降级被上一条顶掉）",
         "tests/test_v1460_review_fixes.py::DegradedSourceNoticeIsThrottledByTime 三条，把节流常数改回 0 即红"
       ],
-      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-10 14:51:11+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "全方位复核 F5；sf_quote.py:48-63 配 sf_constants.py:148 POLL_INTERVAL_NORMAL=0.1",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10T13:16:00+08:00",
+        "original_rootcause_at": "2026-10-10 14:51:11+08:00",
+        "reason": "共用秒级时刻 2026-10-10T06:51:11+00:00（S43, S44, S45）",
+        "evidence_checked": [
+          "全方位复核 F5；sf_quote.py:48-63 配 sf_constants.py:148 POLL_INTERVAL_NORMAL=0.1",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1460_review_fixes.py；按时节流与主源恢复重置三条行为；真实日志轮转仍未量化",
+      "recurrence_guard_refs": [
+        "tests/test_v1460_review_fixes.py"
+      ],
+      "recurrence_liar_check": "按时节流与主源恢复重置三条行为；真实日志轮转仍未量化",
+      "recurrence_next_action": "保留首条必记与恢复再降级对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S44",
@@ -1638,12 +2809,37 @@
         "新增 sf_constants.FG_DIM_HEX 作为唯一字符串来源（FG_DIM = QColor(FG_DIM_HEX)），菜单禁用项从 token 取，样式表不许再出现裸 hex",
         "tests/test_v1459_targets_per_code.py::test_disabled_menu_items_use_the_single_gray_token 读 QMenu.styleSheet() 的公开输出；把 hex 写回旧值即红"
       ],
-      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-10 14:51:11+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "全方位复核 F6；sf_constants.py:376-379 与 stock_float_window.py:1494（改名前同位置）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10T13:16:00+08:00",
+        "original_rootcause_at": "2026-10-10 14:51:11+08:00",
+        "reason": "共用秒级时刻 2026-10-10T06:51:11+00:00（S43, S44, S45）",
+        "evidence_checked": [
+          "全方位复核 F6；sf_constants.py:376-379 与 stock_float_window.py:1494（改名前同位置）",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1459_targets_per_code.py; tests/test_style_hex_tokens.py；读取实际菜单样式并扫裸hex；非QSS绘制路径另验",
+      "recurrence_guard_refs": [
+        "tests/test_v1459_targets_per_code.py",
+        "tests/test_style_hex_tokens.py"
+      ],
+      "recurrence_liar_check": "读取实际菜单样式并扫裸hex；非QSS绘制路径另验",
+      "recurrence_next_action": "保留禁用项真渲染颜色检查",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S45",
@@ -1662,12 +2858,37 @@
         "sf_config.store_prune_report()（时间/条数/被剪掉的 code）+ 诊断包 targets.json 新增 stored_total 与 store_prune 两键，界面继续不加说明行与弹窗（v1.4.52 口径）",
         "tests/test_v1295_diagnostics.py::test_target_store_prune_is_readable_in_the_bundle 判包内 JSON 键名；tests/test_v1460_review_fixes.py::StorePruneIsAudibleOutsideTheLog 判内容"
       ],
-      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-10 14:51:11+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "全方位复核 F7；sf_config.py:437-438/452-483（仅 WARNING 一行）；tests/test_v1459_targets_per_code.py:96-108 只断言有日志",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10T13:16:00+08:00",
+        "original_rootcause_at": "2026-10-10 14:51:11+08:00",
+        "reason": "共用秒级时刻 2026-10-10T06:51:11+00:00（S43, S44, S45）",
+        "evidence_checked": [
+          "全方位复核 F7；sf_config.py:437-438/452-483（仅 WARNING 一行）；tests/test_v1459_targets_per_code.py:96-108 只断言有日志",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v1460_review_fixes.py; tests/test_diagnostics_payload.py；prune计数与诊断载荷有覆盖；字段存在不等于每次剪枝语义对",
+      "recurrence_guard_refs": [
+        "tests/test_v1460_review_fixes.py",
+        "tests/test_diagnostics_payload.py"
+      ],
+      "recurrence_liar_check": "prune计数与诊断载荷有覆盖；字段存在不等于每次剪枝语义对",
+      "recurrence_next_action": "保留真实剪枝后诊断读回",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S47",
@@ -1686,12 +2907,36 @@
         "tearDown 改为「等到才撤桩、等不到判红并把两个桩的撤除排到收尾」（停网络桩=放它走真网络，停缓存桩=让它写用户真实日历目录）",
         "在飞标记在用例体内 finally 收干净；AGENTS §6 口径补一条：自己种下的状态必须在用例体内收，addCleanup 排在 tearDown 之后等于没收"
       ],
-      "observed_at": "2026-10-10T13:16:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-10 14:51:12+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "全方位复核 F14；tests/test_calendar.py:37-39 约定与 65-71 实现的矛盾，本轮实测复现（单跑 test_warm_async_skips_when_inflight 恰好 5.00s）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-10T13:16:00+08:00",
+        "original_rootcause_at": "2026-10-10 14:51:12+08:00",
+        "reason": "共用秒级时刻 2026-10-10T05:16:00+00:00（S41, S42, S43, S44, S45, S47）",
+        "evidence_checked": [
+          "全方位复核 F14；tests/test_calendar.py:37-39 约定与 65-71 实现的矛盾，本轮实测复现（单跑 test_warm_async_skips_when_inflight 恰好 5.00s）",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_calendar.py；用例内finally及收尾等待修复已有；孤立绿不证明整轮无在飞泄漏",
+      "recurrence_guard_refs": [
+        "tests/test_calendar.py"
+      ],
+      "recurrence_liar_check": "用例内finally及收尾等待修复已有；孤立绿不证明整轮无在飞泄漏",
+      "recurrence_next_action": "随机顺序跑前后模块并断言无线程/外网泄漏",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S48",
@@ -1716,7 +2961,18 @@
       "rootcause_at": "2026-10-10 15:35:23+08:00",
       "locate_unknown_reason": null,
       "source": "用户要求的正向路线实机复验：真助手跑到 installed 后 ls 出三份回退包、prune 目录为空；sh -x trace 第 261 行显示扫的是 result.json 所在目录（/tmp/sf_ota_trace_152921）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_helper.py；正向全流程可抓write_result覆盖parent；抽段不能代替",
+      "recurrence_guard_refs": [
+        "tests/test_update_helper.py"
+      ],
+      "recurrence_liar_check": "正向全流程可抓write_result覆盖parent；抽段不能代替",
+      "recurrence_next_action": "保留installed后回退包实际树断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G17",
@@ -1740,7 +2996,19 @@
       "rootcause_at": "2026-10-10 16:34:28+08:00",
       "locate_unknown_reason": null,
       "source": "另一会话的 GitHub 对账报出邮箱变占位符；本轮复核用 mtime + 分支形状取证：16:02 渲染带邮箱 → 16:08 提交钩子跑该用例后回到占位符",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_install_guide_placeholders.py; tests/test_gate_clean_machine.py；真自检+未知参数退2；必须锁仓库外docs不变",
+      "recurrence_guard_refs": [
+        "tests/test_install_guide_placeholders.py",
+        "tests/test_gate_clean_machine.py"
+      ],
+      "recurrence_liar_check": "真自检+未知参数退2；必须锁仓库外docs不变",
+      "recurrence_next_action": "保留未知参数与自检均不写正式文档的指纹",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G18",
@@ -1761,12 +3029,36 @@
         "度量前提显式化：TestRenderBase.setUpClass 自己调 load_bundled_fonts() 并当场验 QFontInfo 真解析到 D-DIN，不再靠跨用例副作用",
         "AGENTS §5.2 写下长期口径：像素判据不许量「由字体度量与屏幕缩放决定的绝对量」，也不许在整图上数匹配像素"
       ],
-      "observed_at": "2026-10-11 00:05:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-11 00:30:21+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "2026-10-11 云端 CI（2c2bb06 那一轮）的 cocoa 段红（run=5）；本地取证：整图 809 匹配像素 / 徽标 312px、badge_vertical(Y_PRICE=74) 恒返 None、合成图与真路径变异各跑一遍",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-11 00:05:00+08:00",
+        "original_rootcause_at": "2026-10-11 00:30:21+08:00",
+        "reason": "共用秒级时刻 2026-10-10T16:30:21+00:00（G18, S49）",
+        "evidence_checked": [
+          "2026-10-11 云端 CI（2c2bb06 那一轮）的 cocoa 段红（run=5）；本地取证：整图 809 匹配像素 / 徽标 312px、badge_vertical(Y_PRICE=74) 恒返 None、合成图与真路径变异各跑一遍",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_render.py；连通簇/填充率负向合成图可失败；期望尺寸依赖badge_width仍可能同源偏错",
+      "recurrence_guard_refs": [
+        "tests/test_render.py"
+      ],
+      "recurrence_liar_check": "连通簇/填充率负向合成图可失败；期望尺寸依赖badge_width仍可能同源偏错",
+      "recurrence_next_action": "补独立像素最低尺寸与真实降级态画小反控",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S49",
@@ -1784,12 +3076,37 @@
       "defense_added": [
         "新增纯函数 badge_in_band_top：降级态没有涨跌幅行，徽标改放价格带内垂直居中（y 87..98，上方代码行底 68、下方涨跌幅行顶 104，两头都不碰），左沿仍对齐涨跌幅区域。先拆掉挡路的判据 —— tests/test_v1342_round.py 原来用 inspect.getsource 断言源码含 badge_vertical(Y_PRICE)，它把死支路本身钉成不可改（文档给的两条修法都会让它红）且违反 §6 第 2 条，换成行为判据；像素判据 tests/test_render.py::test_suspended_badge_renders_in_degraded_price 已反向验证：把定位函数改成恒不画，它当场红"
       ],
-      "observed_at": "2026-10-11 00:19:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-11 00:30:21+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮修 CI 红时逐像素取证：同窗口下 price=0 帧最大灰簇 48px（10x11，是别的元素），改用「停牌 + 有效价」帧得到 26x12 / 填充率 0.63 的真徽标；常量核算 BADGE_MIN_TOP=69、Y_PRICE=74",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-11 00:19:00+08:00",
+        "original_rootcause_at": "2026-10-11 00:30:21+08:00",
+        "reason": "共用秒级时刻 2026-10-10T16:30:21+00:00（G18, S49）",
+        "evidence_checked": [
+          "本轮修 CI 红时逐像素取证：同窗口下 price=0 帧最大灰簇 48px（10x11，是别的元素），改用「停牌 + 有效价」帧得到 26x12 / 填充率 0.63 的真徽标；常量核算 BADGE_MIN_TOP=69、Y_PRICE=74",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_render.py; tests/test_v1342_round.py；降级价格状态有真徽标渲染判据；必须先证明对照帧非空",
+      "recurrence_guard_refs": [
+        "tests/test_render.py",
+        "tests/test_v1342_round.py"
+      ],
+      "recurrence_liar_check": "降级价格状态有真徽标渲染判据；必须先证明对照帧非空",
+      "recurrence_next_action": "保留price缺失+停牌与普通报价双帧",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G19",
@@ -1812,7 +3129,18 @@
       "rootcause_at": "2026-10-11 01:18:52+08:00",
       "locate_unknown_reason": null,
       "source": "2026-10-10 云端 CI（e0762bb 那一轮）的 offscreen 段注解 NoFixture: 本机没有可复制的真产物；本地 TZ/夹具两档复跑对拍",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_gate_clean_machine.py；缺夹具三态与零输入拒绝；WARNING不得呈现为产物层通过",
+      "recurrence_guard_refs": [
+        "tests/test_gate_clean_machine.py"
+      ],
+      "recurrence_liar_check": "缺夹具三态与零输入拒绝；WARNING不得呈现为产物层通过",
+      "recurrence_next_action": "缺产物时单独标未执行",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G20",
@@ -1830,12 +3158,36 @@
       "defense_added": [
         "_today() 改为按模块属性取函数（_targets._beijing_now），两侧同受注入控制；新增不依赖当下几点的哨兵判据 tests/test_v147_minute_stale.py::test_helper_today_follows_the_injected_clock，任何时区同判；本地复现配方写进项目记忆（TZ=UTC 跑同一模块，新旧写法对拍）"
       ],
-      "observed_at": "2026-10-11 01:19:16+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-11 01:19:16+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "2026-10-10 云端 CI（4a65644 那一轮）offscreen 段 AssertionError 2026-10-10 != 2026-10-11；本地用 TZ=UTC 复现（同一命令换回旧写法即红、还原即绿）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-11 01:19:16+08:00",
+        "original_rootcause_at": "2026-10-11 01:19:16+08:00",
+        "reason": "起点终点相同",
+        "evidence_checked": [
+          "2026-10-10 云端 CI（4a65644 那一轮）offscreen 段 AssertionError 2026-10-10 != 2026-10-11；本地用 TZ=UTC 复现（同一命令换回旧写法即红、还原即绿）",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_v147_minute_stale.py；注入时钟哨兵直接验调用结果，不再绑定旧函数；时区外部依赖另验",
+      "recurrence_guard_refs": [
+        "tests/test_v147_minute_stale.py"
+      ],
+      "recurrence_liar_check": "注入时钟哨兵直接验调用结果，不再绑定旧函数；时区外部依赖另验",
+      "recurrence_next_action": "保留UTC与北京时间等价注入",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S50",
@@ -1853,12 +3205,36 @@
       "defense_added": [
         "标记文字收成唯一来源 target_panel.HIT_MARKER_PREFIX 并移到行首（该被切的是百分比）；行为判据 tests/test_target_panel.py::test_hit_marker_survives_row_truncation 用极端价位撑爆行，断言截断确实发生、标记仍在、且在省略号之前；产物层特征进 release_checks.txt（check target_panel::HIT_MARKER_PREFIX）；换回旧写法该用例当场红，已验"
       ],
-      "observed_at": "2026-10-11 01:19:29+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-11 01:19:29+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "2026-10-10 云端 CI（e0762bb 那一轮）offscreen 段 assertIn 已触发 拿到「↑ 1600.00 (+0.0%) 已触…」；本地 TZ 不设时永远绿（行宽刚好放得下）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-11 01:19:29+08:00",
+        "original_rootcause_at": "2026-10-11 01:19:29+08:00",
+        "reason": "起点终点相同",
+        "evidence_checked": [
+          "2026-10-10 云端 CI（e0762bb 那一轮）offscreen 段 assertIn 已触发 拿到「↑ 1600.00 (+0.0%) 已触…」；本地 TZ 不设时永远绿（行宽刚好放得下）",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_target_panel.py；极端宽度先证截断再证标记保留；翻译文案变化需再验",
+      "recurrence_guard_refs": [
+        "tests/test_target_panel.py"
+      ],
+      "recurrence_liar_check": "极端宽度先证截断再证标记保留；翻译文案变化需再验",
+      "recurrence_next_action": "保留状态在省略号之前的行为断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G21",
@@ -1876,12 +3252,37 @@
       "defense_added": [
         "write_baseline 与旧基线逐键比较，上调一律拒绝并打印差值；确需上调必须显式 --allow-rise（与 static_gate 同口径）。判据 tests/test_gate_clean_machine.py::BaselineRatchetAppliesToEveryBaseline 三条：上调被拒且基线文件字节不动、--allow-rise 放行、下调无需开关"
       ],
-      "observed_at": "2026-10-12 12:56:59+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-12 12:57:25+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 12:56:59+08:00",
+        "original_rootcause_at": "2026-10-12 12:57:25+08:00",
+        "reason": "共用秒级时刻 2026-10-12T04:57:25+00:00（G21, G22, G23, G24）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_coverage_gate.py; tests/test_arch_constraints.py；覆盖率分档/环境绕过拒落戳有反例；新文件分档仍需复核",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_gate.py",
+        "tests/test_arch_constraints.py"
+      ],
+      "recurrence_liar_check": "覆盖率分档/环境绕过拒落戳有反例；新文件分档仍需复核",
+      "recurrence_next_action": "保持链上与产品覆盖率分母分离",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G22",
@@ -1900,12 +3301,37 @@
       "defense_added": [
         "四枚工具改成「除已知值外一律退 2」：gate_stamp 新增纯函数 unknown_args（动词多于一个也算未知）并加进自检（18 项）；coverage_gate/render_install_guide 去掉 startswith('--') 那层过滤，各在自检里种一处裸位置参数必须退 2；pyobjc_sig_check 加参数白名单（--child 内部入口除外）。判据 tests/test_gate_clean_machine.py::UnknownArgumentRefusesToAct"
       ],
-      "observed_at": "2026-10-12 12:57:25+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-12 12:57:39+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 12:57:25+08:00",
+        "original_rootcause_at": "2026-10-12 12:57:39+08:00",
+        "reason": "共用秒级时刻 2026-10-12T04:57:39+00:00（G22, G23）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_gate_clean_machine.py; tests/test_chain_tool_cli_surfaces.py；未知参数退2且不执行默认写入；参数新增要同步",
+      "recurrence_guard_refs": [
+        "tests/test_gate_clean_machine.py",
+        "tests/test_chain_tool_cli_surfaces.py"
+      ],
+      "recurrence_liar_check": "未知参数退2且不执行默认写入；参数新增要同步",
+      "recurrence_next_action": "所有链上工具继续做未知参数负向对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G23",
@@ -1923,12 +3349,37 @@
       "defense_added": [
         "路径改走 sf_constants.APP_DISPLAY_NAME 派生的 DIST_APP（与 verify_install_paths 同一来源），改名后这一层在打包机上真的会跑；全仓另加 tests/test_identity_literals.py 锁身份字面量漂移"
       ],
-      "observed_at": "2026-10-12 12:57:25+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-12 12:57:39+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 12:57:25+08:00",
+        "original_rootcause_at": "2026-10-12 12:57:39+08:00",
+        "reason": "共用秒级时刻 2026-10-12T04:57:39+00:00（G22, G23）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_identity_literals.py; tests/test_release_gates.py；身份同源与真产物层路径覆盖；无产物不能宣称该层验过",
+      "recurrence_guard_refs": [
+        "tests/test_identity_literals.py",
+        "tests/test_release_gates.py"
+      ],
+      "recurrence_liar_check": "身份同源与真产物层路径覆盖；无产物不能宣称该层验过",
+      "recurrence_next_action": "报告中点名产物层是否实际执行",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G24",
@@ -1946,12 +3397,36 @@
       "defense_added": [
         "verify_install_paths 默认档加 not passed 红线（结论里写明真跑几条）；pyobjc_sig_check 的 check_symbols 在 pairs 归零时直接报红并拒绝给结论，自检补一种空目录必须被抓到（六项变异）。判据 tests/test_gate_clean_machine.py::EveryRouteSkippedRefusesToConclude"
       ],
-      "observed_at": "2026-10-12 12:57:25+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-12 12:57:40+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 12:57:25+08:00",
+        "original_rootcause_at": "2026-10-12 12:57:40+08:00",
+        "reason": "共用秒级时刻 2026-10-12T04:57:40+00:00（G24, S51）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_gate_clean_machine.py；全路线skip与零符号拒绝有反例；至少一条跑过仍不等于全范围",
+      "recurrence_guard_refs": [
+        "tests/test_gate_clean_machine.py"
+      ],
+      "recurrence_liar_check": "全路线skip与零符号拒绝有反例；至少一条跑过仍不等于全范围",
+      "recurrence_next_action": "保留实际执行数量与范围红线",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S51",
@@ -1969,12 +3444,37 @@
       "defense_added": [
         "两代包标识/包名并列成 BUNDLE_IDS 与 APP_NAMES 两份清单，「应用程序」按清单逐个找；找不到时把认的是哪两枚名字打出来（旧写法在装机机器上说的是一句假话）。判据 tests/test_standalone_command_tools.py 七条：名单必须覆盖 sf_constants 的两代身份、退回单数写法要红、sh -n 语法关、以及两处种错必红自证"
       ],
-      "observed_at": "2026-10-12 12:57:40+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-12 12:57:56+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 12:57:40+08:00",
+        "original_rootcause_at": "2026-10-12 12:57:56+08:00",
+        "reason": "共用秒级时刻 2026-10-12T04:57:56+00:00（G25, S51）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_standalone_command_tools.py; tests/test_identity_literals.py；两代身份、语法、退回单数变异有检查；仍不等于外机双击全验",
+      "recurrence_guard_refs": [
+        "tests/test_standalone_command_tools.py",
+        "tests/test_identity_literals.py"
+      ],
+      "recurrence_liar_check": "两代身份、语法、退回单数变异有检查；仍不等于外机双击全验",
+      "recurrence_next_action": "保留找不到应用时报真实识别清单",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G25",
@@ -1993,12 +3493,36 @@
       "defense_added": [
         "AST 扫全产品源码：样式表字符串里出现裸 hex 直接红，**硬零不留基线**（留基线等于承认还可以有下一处）；11 处颜色收进 sf_constants 具名 token，禁用态两处合成一枚 FG_DISABLED_HEX=#80899b（4.74:1）。判据 tests/test_style_hex_tokens.py 十一条，含真渲染取「画出来的字是什么颜色」，以及一条防「自检本身是空的」的判据 —— 本轮实测踩过：种样例带缩进让 ast.parse 抛错被 except 当成干净，两条自检全绿而一条都没真的看过"
       ],
-      "observed_at": "2026-10-12 12:57:56+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-12 12:57:56+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 12:57:56+08:00",
+        "original_rootcause_at": "2026-10-12 12:57:56+08:00",
+        "reason": "共用秒级时刻 2026-10-12T04:57:56+00:00（G25, S51）",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_style_hex_tokens.py；AST裸hex硬零/真渲染及坏样例反控；解析失败不可当干净",
+      "recurrence_guard_refs": [
+        "tests/test_style_hex_tokens.py"
+      ],
+      "recurrence_liar_check": "AST裸hex硬零/真渲染及坏样例反控；解析失败不可当干净",
+      "recurrence_next_action": "保留解析失败拒绝与3/6/8位hex反例",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G26",
@@ -2017,12 +3541,37 @@
       "defense_added": [
         "申报格式改成 stale-feature <版本号> <理由>，只有与本轮期望版本一致才生效；不写版本判无效并说明理由；别版的申报本轮不生效但在发版日志里点名。判据 release_feature_check --self-test 三种形状各种一处（无版本被拒 / 上一版申报不被继承 / 空理由仍无效），1.4.63 那行按新格式补版本号做格式迁移"
       ],
-      "observed_at": "2026-10-12 13:13:31+08:00",
+      "observed_at": null,
       "observed_origin": "now",
-      "rootcause_at": "2026-10-12 13:13:31+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 13:13:31+08:00",
+        "original_rootcause_at": "2026-10-12 13:13:31+08:00",
+        "reason": "起点终点相同",
+        "evidence_checked": [
+          "本轮现场",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_release_gates.py; tests/test_verify_bundle_tools.py；stale-feature按本版本约束且三种错误形状自检；理由仍需人审",
+      "recurrence_guard_refs": [
+        "tests/test_release_gates.py",
+        "tests/test_verify_bundle_tools.py"
+      ],
+      "recurrence_liar_check": "stale-feature按本版本约束且三种错误形状自检；理由仍需人审",
+      "recurrence_next_action": "保留上一版声明不能继承的负向例",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G27",
@@ -2045,7 +3594,19 @@
       "rootcause_at": "2026-10-12 13:36:31+08:00",
       "locate_unknown_reason": null,
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_coverage_icons_editor.py; tests/test_coverage_universe.py；旧账未修状态过时：当前目标用例显式桩covers_segment/index_ready/match_confident，且注释说明后续随机序修复；本轮未重跑原1464全序",
+      "recurrence_guard_refs": [
+        "tests/test_coverage_icons_editor.py",
+        "tests/test_coverage_universe.py"
+      ],
+      "recurrence_liar_check": "旧账未修状态过时：当前目标用例显式桩covers_segment/index_ready/match_confident，且注释说明后续随机序修复；本轮未重跑原1464全序",
+      "recurrence_next_action": "重跑原seed并补最小前序污染组合，防再次遗漏字典覆盖段前提",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S52",
@@ -2069,7 +3630,19 @@
       "rootcause_at": "2026-10-12 13:53:41+08:00",
       "locate_unknown_reason": null,
       "source": "用户截图报障 + 装机版 debug.log 现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_minute_recovery_latency.py; tests/test_minute_recovery_audit.py；假时钟故障注入比自指间隔强；真实网络尾延迟仍未穷举",
+      "recurrence_guard_refs": [
+        "tests/test_minute_recovery_latency.py",
+        "tests/test_minute_recovery_audit.py"
+      ],
+      "recurrence_liar_check": "假时钟故障注入比自指间隔强；真实网络尾延迟仍未穷举",
+      "recurrence_next_action": "保留UI不停与后台恢复时限两个独立断言",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N04",
@@ -2093,7 +3666,19 @@
       "rootcause_at": "2026-10-12 14:38:31+08:00",
       "locate_unknown_reason": null,
       "source": "本轮现场",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_face_guard.py; tests/test_face_probe_image_utilities.py；贴边/尺寸/驻留有正反边界；少量图不是现场检出率/隐私保护率",
+      "recurrence_guard_refs": [
+        "tests/test_face_guard.py",
+        "tests/test_face_probe_image_utilities.py"
+      ],
+      "recurrence_liar_check": "贴边/尺寸/驻留有正反边界；少量图不是现场检出率/隐私保护率",
+      "recurrence_next_action": "补光照距离分层样本，未校准前不宣称保护率",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N05",
@@ -2111,12 +3696,30 @@
       "defense_added": [
         "防线二补两处：① 新口径 _face_guard_switch_on()（starting 也算开，needs_auth/denied 等一律不算），勾号与点击目标共用它；② tests/test_face_guard.py 新增三条按真实时序采样的用例（复现序列 [True×6, False×12]），其中「起不来时勾必须灭」是反向诚实锁。口径写进 AGENTS §5.4"
       ],
-      "observed_at": "2026-10-12 19:50:00+08:00",
+      "observed_at": null,
       "observed_origin": "conversation（用户报障时刻，分钟级估计）",
-      "rootcause_at": "2026-10-13 00:04:38+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "起点为分钟级估计，不是可核验的现场戳",
       "source": "用户线上报障（本机 MacBook Air，装机版 1.4.66）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_face_guard.py；已有starting期间勾号采样与失败灭勾反控；替身不能把异步起会话写成同步成功",
+      "recurrence_guard_refs": [
+        "tests/test_face_guard.py"
+      ],
+      "recurrence_liar_check": "已有starting期间勾号采样与失败灭勾反控；替身不能把异步起会话写成同步成功",
+      "recurrence_next_action": "保留异步启动中可再次关闭、授权未定不假亮及失败回灭三态时序",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-12 19:50:00+08:00",
+        "original_rootcause_at": "2026-10-13 00:04:38+08:00",
+        "reason": "起点为分钟级估计，不是可核验的现场戳"
+      },
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S53",
@@ -2134,12 +3737,37 @@
       "defense_added": [
         "防线二：R2c 新路线（旧版在跑必须停下且什么都没动）+ tests/test_installer_script_branches 两条（停下不动 / 用户退出后自动接着装）；产品侧改法：认包→验源包→验可写→验没有在跑的实例（只等不杀，SF_INSTALL_WAIT_SEC 默认 60 秒）→才动旧版；口径进 AGENTS §5.6 第三条"
       ],
-      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-13 09:01:07+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "DELIVERY_CHECKLIST.md 2026-10-13「一键安装加固批」；探针 installer/一键安装.command 真跑 + ps 载荷代际比对",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-13T07:19:00+08:00",
+        "original_rootcause_at": "2026-10-13 09:01:07+08:00",
+        "reason": "共用秒级时刻 2026-10-13T01:01:07+00:00（G28, S53, S54, S55, S56）",
+        "evidence_checked": [
+          "DELIVERY_CHECKLIST.md 2026-10-13「一键安装加固批」；探针 installer/一键安装.command 真跑 + ps 载荷代际比对",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_install_path_routes.py; tests/test_installer_script_branches.py；运行中等待/用户退出后安装有路线；签名替身不是正式旧版全状态",
+      "recurrence_guard_refs": [
+        "tests/test_install_path_routes.py",
+        "tests/test_installer_script_branches.py"
+      ],
+      "recurrence_liar_check": "运行中等待/用户退出后安装有路线；签名替身不是正式旧版全状态",
+      "recurrence_next_action": "保留旧版在跑时目录/进程均不被替换",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S54",
@@ -2157,12 +3785,37 @@
       "defense_added": [
         "防线二：R2d 新路线（坏包只报「什么都没动」：旧版原位未动 + 废纸篓为空）+ 分支用例；产品侧：codesign 前置到源包（实测 0.072 秒），破坏之后的每条失败路径把坏那份 mv 进废纸篓、旧版 mv 回原位；口径进 AGENTS §5.6 第二条"
       ],
-      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-13 09:01:07+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "DELIVERY_CHECKLIST.md 2026-10-13「一键安装加固批」；探针用改掉 Info.plist 的包真跑一次安装脚本后读目录树",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-13T07:19:00+08:00",
+        "original_rootcause_at": "2026-10-13 09:01:07+08:00",
+        "reason": "共用秒级时刻 2026-10-13T01:01:07+00:00（G28, S53, S54, S55, S56）",
+        "evidence_checked": [
+          "DELIVERY_CHECKLIST.md 2026-10-13「一键安装加固批」；探针用改掉 Info.plist 的包真跑一次安装脚本后读目录树",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_install_path_routes.py; tests/test_installer_script_branches.py；坏包前置拒绝与旧版原位/废纸篓空是事实断言",
+      "recurrence_guard_refs": [
+        "tests/test_install_path_routes.py",
+        "tests/test_installer_script_branches.py"
+      ],
+      "recurrence_liar_check": "坏包前置拒绝与旧版原位/废纸篓空是事实断言",
+      "recurrence_next_action": "保留权限不足与坏签名两侧对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S55",
@@ -2180,12 +3833,37 @@
       "defense_added": [
         "防线一新落点：tools/shell_cjk_scan.py（$NAME 紧跟非 ASCII = 硬零、不留基线、含 MIN_SHELL_FILES 范围红线），tests/test_shell_cjk_scan.py 里 TestMechanism 三条钉机制本身仍成立；同批收掉全仓 7 处写法；防线二：九条路线全部改在 LANG=zh_CN.UTF-8 下跑 + 变异 S10「关卡退回 C locale 必须红」"
       ],
-      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-13 09:01:07+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "DELIVERY_CHECKLIST.md 2026-10-13；机制由 locale 矩阵实测（/bin/sh 与 /bin/bash 在 en_US.UTF-8 / zh_CN.UTF-8 炸、C 与未设正常、zsh 免疫）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-13T07:19:00+08:00",
+        "original_rootcause_at": "2026-10-13 09:01:07+08:00",
+        "reason": "共用秒级时刻 2026-10-13T01:01:07+00:00（G28, S53, S54, S55, S56）",
+        "evidence_checked": [
+          "DELIVERY_CHECKLIST.md 2026-10-13；机制由 locale 矩阵实测（/bin/sh 与 /bin/bash 在 en_US.UTF-8 / zh_CN.UTF-8 炸、C 与未设正常、zsh 免疫）",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_shell_cjk_scan.py; tests/test_install_path_routes.py；UTF8机制反例与范围硬下限、中文locale真路线齐全",
+      "recurrence_guard_refs": [
+        "tests/test_shell_cjk_scan.py",
+        "tests/test_install_path_routes.py"
+      ],
+      "recurrence_liar_check": "UTF8机制反例与范围硬下限、中文locale真路线齐全",
+      "recurrence_next_action": "保留机制在新系统上仍成立的正反对照",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "S56",
@@ -2203,12 +3881,37 @@
       "defense_added": [
         "产品侧核验改 xattr -rl（递归读回）；防线二：R2 源包内层先贴标签、装完断言递归读回为空，变异 S9（清除不递归）与 S9b（核验只看包根 + chflags uchg 让标签真清不掉）两处都必须红；实测事实：uchg 与 quarantine 都能活着穿过 ditto + HFS+/UDZO 造卷"
       ],
-      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-13 09:01:07+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "DELIVERY_CHECKLIST.md 2026-10-13；把标签只贴在包内文件上实测：xattr -l 看不见、xattr -rl 看得见",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-13T07:19:00+08:00",
+        "original_rootcause_at": "2026-10-13 09:01:07+08:00",
+        "reason": "共用秒级时刻 2026-10-13T01:01:07+00:00（G28, S53, S54, S55, S56）",
+        "evidence_checked": [
+          "DELIVERY_CHECKLIST.md 2026-10-13；把标签只贴在包内文件上实测：xattr -l 看不见、xattr -rl 看得见",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_install_path_routes.py; tests/test_installer_script_branches.py；递归标签读回与不可清除标签变异；包根干净不算通过",
+      "recurrence_guard_refs": [
+        "tests/test_install_path_routes.py",
+        "tests/test_installer_script_branches.py"
+      ],
+      "recurrence_liar_check": "递归标签读回与不可清除标签变异；包根干净不算通过",
+      "recurrence_next_action": "保留嵌套标签/uchg无法清除的失败现场",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "G28",
@@ -2226,12 +3929,37 @@
       "defense_added": [
         "路线 5→9 条（R2b/R2c/R2d/R2e）且名单提到模块级 ROUTES 表、存函数名而非对象（判据 patch 模块属性才打得到，实测旧写法红在「R0 ✓ 其余八条 TypeError」）；自检档改用几 KB 签名替身造卷（light_signed_app），15 处种错并发 19 秒 —— 串行 48 秒会撞 test_release_gates 那条 60 秒单用例上限，第一次就撞上了；新增 tests/test_install_path_routes.py 把九条路线挪进主进程，每次提交与 CI 都跑"
       ],
-      "observed_at": "2026-10-13T07:19:00+08:00",
+      "observed_at": null,
       "observed_origin": "log",
-      "rootcause_at": "2026-10-13 09:01:07+08:00",
-      "locate_unknown_reason": null,
+      "rootcause_at": null,
+      "locate_unknown_reason": "记账时刻，不是定位时长；旧戳保存在 timestamp_audit，独立真实起终点无法追溯",
       "source": "读码 + 本轮三条新路线（R2b/R2c/R2d）落地后立刻抓到 S55 那处崩溃，反证旧判据是空转",
-      "evidence": "verified"
+      "evidence": "verified",
+      "timestamp_audit": {
+        "audited_on": "2026-10-17",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-13T07:19:00+08:00",
+        "original_rootcause_at": "2026-10-13 09:01:07+08:00",
+        "reason": "共用秒级时刻 2026-10-13T01:01:07+00:00（G28, S53, S54, S55, S56）",
+        "evidence_checked": [
+          "读码 + 本轮三条新路线（R2b/R2c/R2d）落地后立刻抓到 S55 那处崩溃，反证旧判据是空转",
+          "DELIVERY_CHECKLIST.md",
+          "outputs/质量防线摸底-线上逃逸与定位时长-2026-10-09.md"
+        ],
+        "result": "未找到能分别证明本条首次现象和根因写清的秒级证据；不以会话/提交/文件时刻替代"
+      },
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_install_path_routes.py; tests/test_gate_clean_machine.py；旧版升级/运行/坏包/不可清标签九路线；轻夹具与真产物分开",
+      "recurrence_guard_refs": [
+        "tests/test_install_path_routes.py",
+        "tests/test_gate_clean_machine.py"
+      ],
+      "recurrence_liar_check": "旧版升级/运行/坏包/不可清标签九路线；轻夹具与真产物分开",
+      "recurrence_next_action": "保留真产物默认路线不被自检替身代替",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N06",
@@ -2255,7 +3983,18 @@
       "rootcause_at": "2026-10-13 12:24:51+08:00",
       "locate_unknown_reason": null,
       "source": "负责人 2026-10-13 报障 + 三进程取证（合成全屏 host + 真实 HID 右键 + WindowServer 在屏列表 + 截图取色）",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_popup_fullscreen_space.py；Space策略/续补有变异，单测多为假NSWindow；历史真HID证据不是每次发版保证",
+      "recurrence_guard_refs": [
+        "tests/test_popup_fullscreen_space.py"
+      ],
+      "recurrence_liar_check": "Space策略/续补有变异，单测多为假NSWindow；历史真HID证据不是每次发版保证",
+      "recurrence_next_action": "补四类弹窗真实全屏在屏合成的重复门禁",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N07",
@@ -2278,7 +4017,18 @@
       "rootcause_at": "2026-10-13 14:33:53+08:00",
       "locate_unknown_reason": null,
       "source": "用户本轮转述朋友反馈；本机事件复现分时图区无拖动路径",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_float_drag_top.py；真Qt事件覆盖两态拖动/点击；本机不是朋友机输入设备",
+      "recurrence_guard_refs": [
+        "tests/test_float_drag_top.py"
+      ],
+      "recurrence_liar_check": "真Qt事件覆盖两态拖动/点击；本机不是朋友机输入设备",
+      "recurrence_next_action": "保留真事件，补触控板/不同倍率原生走查",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N08",
@@ -2302,7 +4052,18 @@
       "rootcause_at": "2026-10-13 14:34:15+08:00",
       "locate_unknown_reason": null,
       "source": "用户本轮反馈；本机真 QNSPanel hides=True 时稳态仍=True 且下一拍不修复",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_float_drag_top.py；真实NSWindow漂移与最小化不复活已有；外机Space/系统组合未穷举",
+      "recurrence_guard_refs": [
+        "tests/test_float_drag_top.py"
+      ],
+      "recurrence_liar_check": "真实NSWindow漂移与最小化不复活已有；外机Space/系统组合未穷举",
+      "recurrence_next_action": "保留失活隐藏注入后的可见恢复与稳态零写",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N09",
@@ -2325,7 +4086,18 @@
       "rootcause_at": "2026-10-13 15:22:04+08:00",
       "locate_unknown_reason": null,
       "source": "本轮用户提速需求；16片中1片失败离线复现32次请求而非17次",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_download_reuse.py；混合future成功分片保存有独立请求次数/复用断言；远端临时链变化另验",
+      "recurrence_guard_refs": [
+        "tests/test_update_download_reuse.py"
+      ],
+      "recurrence_liar_check": "混合future成功分片保存有独立请求次数/复用断言；远端临时链变化另验",
+      "recurrence_next_action": "保留失败一片不重下其余片的预算",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N10",
@@ -2348,7 +4120,18 @@
       "rootcause_at": "2026-10-13 15:27:51+08:00",
       "locate_unknown_reason": null,
       "source": "用户本会话报障；本机全屏 NSAlert 在屏检测",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_dialog_visibility.py；真实菜单首击和AppKit属性强于纯Mock；属性正确不保证所有Space合成",
+      "recurrence_guard_refs": [
+        "tests/test_update_dialog_visibility.py"
+      ],
+      "recurrence_liar_check": "真实菜单首击和AppKit属性强于纯Mock；属性正确不保证所有Space合成",
+      "recurrence_next_action": "保留真实全屏首击在屏检测与负向退化",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N11",
@@ -2371,7 +4154,18 @@
       "rootcause_at": "2026-10-13 16:58:00+08:00",
       "locate_unknown_reason": null,
       "source": "已发布1.4.74客户端真实整包下载两次403；有界回源对照27836457字节SHA256通过",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "低",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_update_download_reuse.py；403刷新后有界回源、哈希/重定向负向拒绝；线上URL寿命仍外部",
+      "recurrence_guard_refs": [
+        "tests/test_update_download_reuse.py"
+      ],
+      "recurrence_liar_check": "403刷新后有界回源、哈希/重定向负向拒绝；线上URL寿命仍外部",
+      "recurrence_next_action": "保留请求次数、签名源及整包哈希三者联验",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N12",
@@ -2395,7 +4189,19 @@
       "rootcause_at": "2026-10-15 07:12:38+08:00",
       "locate_unknown_reason": null,
       "source": "DiagnosticReports/Skyrocket-2026-10-15-064925.ips；直接执行 /Applications/Skyrocket.app/Contents/MacOS/Skyrocket，退出 134，OC_PythonException: int object is not callable",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_quality_maintenance.py; tests/test_frozen_smoke_lifecycle.py；编译ObjC嵌套block反控及首帧后存活拦原错；三秒不是长时稳定性",
+      "recurrence_guard_refs": [
+        "tests/test_quality_maintenance.py",
+        "tests/test_frozen_smoke_lifecycle.py"
+      ],
+      "recurrence_liar_check": "编译ObjC嵌套block反控及首帧后存活拦原错；三秒不是长时稳定性",
+      "recurrence_next_action": "保留包内回调实际执行，延长抽样运行而不伪称全平台",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N13",
@@ -2406,7 +4212,10 @@
       "introduced_note": "现场确认旧腾讯入口返回 WAF HTML；不能确定触发规则或全部用户是否受影响。",
       "found_version": "1.4.89",
       "fixed_version": "1.4.90",
-      "failed_lines": ["verify", "locate"],
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
       "why_missed": "离线夹具不能发现上游入口变动；网络异常被误计为格式错误，双源失败仅抛主源错误，分时标签没有限定影响范围。",
       "defense_added": [
         "tests/test_minute_waf_recovery.py: route/date/average parsing, error classification, dual-source exception chain, custom HTTPS and real quote pixel/stale-label recovery",
@@ -2415,8 +4224,26 @@
       "observed_at": null,
       "rootcause_at": null,
       "locate_unknown_reason": "本轮汇总前已完成专项修复；仅保留现场日志时段与探针证据，不回填估算定位时刻。",
+      "rootcause_recorded_evidence": {
+        "at": "2026-10-15T15:28:23+08:00",
+        "kind": "git_author_time_not_diagnosis_time",
+        "commit": "9136bb23009edd80b810a63a493d1f6aa3fa93a4",
+        "path": "tools/escapes_ledger.json",
+        "boundary": "该提交已写清根因，仅证明此时有记录；不能代替 rootcause_at 或计算定位时长。"
+      },
       "source": "docs/MINUTE_WAF_FIX_2026-10-15.md；outputs/minute-waf-20261015/live-probe.json",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_minute_waf_recovery.py；双源错误链/真实报价墨水和恢复标签有判据；上游WAF策略外部可变",
+      "recurrence_guard_refs": [
+        "tests/test_minute_waf_recovery.py"
+      ],
+      "recurrence_liar_check": "双源错误链/真实报价墨水和恢复标签有判据；上游WAF策略外部可变",
+      "recurrence_next_action": "保留主源失败时价格继续更新、双源失败与恢复三态",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     },
     {
       "id": "N14",
@@ -2427,7 +4254,10 @@
       "introduced_note": "sf_credentials 首次随 1.4.84 加入，后续版本保留所有 HTTPS 地址自动迁移；不能仅由截图证明每次提示属于同一 account。",
       "found_version": "1.4.90",
       "fixed_version": "1.4.91",
-      "failed_lines": ["verify", "locate"],
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
       "why_missed": "迁移测试只有内存钥匙串，没有真实传统钥匙串 ACL；未覆盖内置默认值和旧引用；把新后端无交互参数当作两个后端的统一保证。",
       "defense_added": [
         "tests/test_keychain_no_prompt.py: public defaults and old default references require zero Keychain calls; exact exemption only, future schema preserved, main/backup deduplicated, first denial stops retries",
@@ -2437,8 +4267,26 @@
       "observed_at": null,
       "rootcause_at": null,
       "locate_unknown_reason": "本轮先完成代码定位与专项验证后才登记，未在初始报障时盖时间戳，不回填估算定位时长。",
+      "rootcause_recorded_evidence": {
+        "at": "2026-10-15T18:39:26+08:00",
+        "kind": "git_author_time_not_diagnosis_time",
+        "commit": "2c8bf99024b78bfe8eafba0ff0789ac602421af2",
+        "path": "tools/escapes_ledger.json",
+        "boundary": "该提交已写清根因，仅证明此时有记录；不能代替 rootcause_at 或计算定位时长。"
+      },
       "source": "2026-10-15 用户密码框截图；sf_credentials.py；tests/test_keychain_no_prompt.py 的真实独立钥匙串验证",
-      "evidence": "verified"
+      "evidence": "verified",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "有局部判据",
+      "recurrence_evidence": "tests/test_keychain_no_prompt.py；真实隔离钥匙串外ACL拒绝与不交互覆盖；用户旧钥匙串迁移状态有限",
+      "recurrence_guard_refs": [
+        "tests/test_keychain_no_prompt.py"
+      ],
+      "recurrence_liar_check": "真实隔离钥匙串外ACL拒绝与不交互覆盖；用户旧钥匙串迁移状态有限",
+      "recurrence_next_action": "保留read/add/update/delete策略恢复与首拒停止，补旧数据迁移矩阵",
+      "recurrence_reviewed_on": "2026-10-17",
+      "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
+      "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
     }
   ],
   "rounds": [
@@ -2447,7 +4295,9 @@
       "date": "2026-10-15",
       "reviewed": true,
       "escapes_this_round": 1,
-      "defense_added": ["N14: exact public-default recovery without Keychain; guarded noninteractive access on both macOS backends; native foreign-ACL denial and bounded per-startup retries"],
+      "defense_added": [
+        "N14: exact public-default recovery without Keychain; guarded noninteractive access on both macOS backends; native foreign-ACL denial and bounded per-startup retries"
+      ],
       "zero_reason": null
     },
     {
@@ -2991,6 +4841,140 @@
         "本机首装、升级、全屏和原生圆角门禁完成候选证据；发布后外部场景按范围显式排除"
       ],
       "zero_reason": "本轮为发布前质量证据与流程加固，未将未执行的外部场景计为通过；未发现新的已发布线上逃逸。"
+    },
+    {
+      "version": "1.4.94",
+      "date": "2026-10-17",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "冻结版启动健康快照与正常更新链状态进入诊断包，不新增网络请求，未核验签名明确标记未核验",
+        "连续画面取证核对帧数、时间戳及遮挡负向对照，不以阶段合格冒充动画全程或跨机合格",
+        "质量计时拒绝同秒记账时刻充当定位时长，历史复发审查逐条保留判据盲区与后续动作"
+      ],
+      "zero_reason": "本轮汇总尚未发布的启动健康与质量核验改动；未新增已发布缺陷条目，不把测试数量或覆盖率当作线上改善，外部真实场景仍须独立验收。"
     }
-  ]
+  ],
+  "comparison_policy": {
+    "start_version": "1.4.60",
+    "reason": "从v1.4.60全方位复核批起使用逐条缺陷+复盘声明；这是审查口径选择，不是历史观测强度相等的实证",
+    "window_versions": 15,
+    "denominator": "git version dates, including Beta/intermediate versions; not deployments or users"
+  },
+  "recurrence_review": {
+    "date": "2026-10-17",
+    "total": 107,
+    "previously_rated": 10,
+    "newly_rated": 97,
+    "entry_ids": [
+      "A03",
+      "A04",
+      "A05",
+      "A12",
+      "A13",
+      "A15",
+      "A16",
+      "A17",
+      "A21",
+      "A22",
+      "A24",
+      "A26",
+      "A27",
+      "A28",
+      "A29",
+      "A30",
+      "A31",
+      "B02",
+      "B03",
+      "B06",
+      "B08",
+      "C04",
+      "C05",
+      "C07",
+      "D02",
+      "D03",
+      "D04",
+      "D05",
+      "D07",
+      "D08",
+      "D14",
+      "D15",
+      "D18",
+      "S09",
+      "S10",
+      "S16",
+      "S29",
+      "S33",
+      "G01",
+      "G02",
+      "G03",
+      "G04",
+      "G05",
+      "G06",
+      "G07",
+      "G08",
+      "G09",
+      "G10",
+      "E01",
+      "E02",
+      "E03",
+      "S06",
+      "S07",
+      "G11",
+      "G12",
+      "G13",
+      "G14",
+      "N01",
+      "S34",
+      "N02",
+      "N03",
+      "S35",
+      "S36",
+      "S37",
+      "S38",
+      "G15",
+      "G16",
+      "S39",
+      "S40",
+      "S41",
+      "S42",
+      "S43",
+      "S44",
+      "S45",
+      "S47",
+      "S48",
+      "G17",
+      "G18",
+      "S49",
+      "G19",
+      "G20",
+      "S50",
+      "G21",
+      "G22",
+      "G23",
+      "G24",
+      "S51",
+      "G25",
+      "G26",
+      "G27",
+      "S52",
+      "N04",
+      "N05",
+      "S53",
+      "S54",
+      "S55",
+      "S56",
+      "G28",
+      "N06",
+      "N07",
+      "N08",
+      "N09",
+      "N10",
+      "N11",
+      "N12",
+      "N13",
+      "N14"
+    ],
+    "method": "static references + historical evidence; not native replay"
+  }
 }

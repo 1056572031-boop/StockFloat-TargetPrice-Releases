@@ -481,6 +481,151 @@ class TestHelperPositiveRoute(_HelperCase):
         self.assertTrue(got, "助手说装好了，但按 Info.plist 里的可执行名找不到进程")
 
 
+class TestHelperVerificationHome(SFCase):
+    """真 shell 全流程；只替换系统启动/签名/存活出口，绝不启动候选 GUI。"""
+
+    def setUp(self):
+        super().setUp()
+        temp = tempfile.TemporaryDirectory(prefix="sf_verify_helper_")
+        self.addCleanup(temp.cleanup)
+        self.root = pathlib.Path(temp.name).resolve()
+        self.home = self.root / "验证 home"
+        self.home.mkdir()
+        self.apps = self.root / "Applications"
+        self.apps.mkdir()
+        self.target = _make_app(self.apps, version="1.0.0")
+        self.result = self.root / "result.json"
+        self.archive = self.root / "ota.zip"
+        self.archive.write_bytes(b"not needed before validation")
+
+    def invoke(self, home, target=None, helper=HELPER, extra=()):
+        import hashlib
+        args = ["/bin/sh", str(helper), "--pid", "2147483646",
+                "--archive", str(self.archive), "--sha256",
+                hashlib.sha256(self.archive.read_bytes()).hexdigest(),
+                "--version", "9.9.9", "--target", str(target or self.target),
+                "--result", str(self.result)]
+        if home is not None:
+            args += ["--verification-home", str(home)]
+        proc = subprocess.run(args + list(extra), capture_output=True, text=True,
+                              timeout=30, env=dict(os.environ, TMPDIR=str(self.root)))
+        payload = json.loads(self.result.read_text()) if self.result.exists() else {}
+        return proc, payload
+
+    def test_rejects_unsafe_home_and_target_before_touching_old_app(self):
+        other = tempfile.TemporaryDirectory(prefix="sf_verify_other_")
+        self.addCleanup(other.cleanup)
+        other_target = _make_app(pathlib.Path(other.name))
+        link = self.root / "linked-home"
+        link.symlink_to(self.home, target_is_directory=True)
+        apps_link = self.root / "linked-apps"
+        apps_link.symlink_to(self.apps, target_is_directory=True)
+        escape = self.root / "escape"
+        escape.symlink_to("/Applications", target_is_directory=True)
+        outside = ROOT  # 真实存在但不是系统临时目录；不得把 TMPDIR 当作许可根。
+        pairs = [("relative", self.target), ("", self.target),
+                 (self.root / "missing", self.target), (outside, self.target),
+                 (link, self.target), (self.home, other_target),
+                 (self.home, apps_link / APP_NAME),
+                 (self.home, escape / APP_NAME),
+                 (self.home, pathlib.Path("/Applications/Skyrocket.app")),
+                 (self.home, self.apps / ".." / "Applications" / APP_NAME)]
+        original = (self.target / "Contents/Info.plist").read_bytes()
+        for home, target in pairs:
+            with self.subTest(home=str(home), target=str(target)):
+                proc, payload = self.invoke(home, target)
+                self.assertNotEqual(proc.returncode, 0)
+                if str(home):
+                    self.assertEqual(payload.get("message"), "verification_home_invalid")
+                self.assertEqual((self.target / "Contents/Info.plist").read_bytes(), original)
+                self.assertEqual(list(self.apps.glob(".*.rollback-*")), [])
+
+    def test_rejects_derived_path_symlinks_including_dangling_links(self):
+        for name in ("config.json", "universe.json", "last_quote.json",
+                     "debug.log", "single.sock"):
+            with self.subTest(name=name):
+                link = self.home / name
+                link.symlink_to(self.root / "missing-external-file")
+                proc, payload = self.invoke(self.home)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(payload.get("message"), "verification_home_invalid")
+                link.unlink()
+
+    def test_missing_or_duplicate_option_value_is_usage_error(self):
+        for extra in (("--verification-home",),
+                      ("--verification-home", "")):
+            proc, _ = self.invoke(None, extra=extra)
+            self.assertEqual(proc.returncode, 64)
+        proc, _ = self.invoke(self.home, extra=("--verification-home", str(self.home)))
+        self.assertEqual(proc.returncode, 64)
+
+    def instrument_helper(self, fail_first=False):
+        """系统命令替身只存在于临时副本；生产脚本不留测试开关。"""
+        import shlex
+        log = self.root / "open.args"
+        opener = self.root / "record-open"
+        opener.write_text(
+            "#!/bin/sh\n"
+            + (f"[ -f {shlex.quote(str(log))} ] && first=0 || first=1\n")
+            + f"printf '%s\\0' \"$@\" >> {shlex.quote(str(log))}\n"
+            + f"printf '\\0' >> {shlex.quote(str(log))}\n"
+            + ("[ \"$first\" -eq 0 ]\n" if fail_first else "exit 0\n"))
+        opener.chmod(0o755)
+        text = HELPER.read_text(encoding="utf-8")
+        text = text.replace("/usr/bin/open", shlex.quote(str(opener)))
+        text = text.replace("/usr/bin/codesign", "/usr/bin/true")
+        text = text.replace("/usr/bin/pgrep", "/usr/bin/true")
+        text = text.replace("set -eu", "set -eu\nsleep() { :; }")
+        helper = self.root / "helper.sh"
+        helper.write_text(text, encoding="utf-8")
+        stage = self.root / "stage"
+        stage.mkdir()
+        _zip(_make_app(stage), self.archive)
+        return helper, log
+
+    def expected_args(self):
+        values = {
+            "SF_CONFIG_PATH": str(self.home / "config.json"),
+            "SF_UNIVERSE_PATH": str(self.home / "universe.json"),
+            "SF_LAST_QUOTE_PATH": str(self.home / "last_quote.json"),
+            "SF_LOG_PATH": str(self.home / "debug.log"),
+            "SF_SINGLE_SOCK": str(self.home / "single.sock"),
+            "SF_ALLOW_TEMP_LAUNCH": "1", "QT_QPA_PLATFORM": "offscreen",
+            "SF_SEED_FIRST_SCREEN": "0",
+        }
+        args = ["-n", "-g"]
+        for key, value in values.items():
+            args.extend(["--env", key + "=" + value])
+        return args + [str(self.target)]
+
+    def test_installed_launch_gets_explicit_isolated_environment(self):
+        helper, log = self.instrument_helper()
+        proc, payload = self.invoke(self.home, helper=helper)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(payload.get("status"), "installed")
+        calls = log.read_bytes().split(b"\0\0")[:-1]
+        self.assertEqual([c.decode().split("\0") for c in calls], [self.expected_args()])
+
+    def test_failed_restart_and_rollback_launch_use_identical_environment(self):
+        helper, log = self.instrument_helper(fail_first=True)
+        original = (self.target / "Contents/Info.plist").read_bytes()
+        proc, payload = self.invoke(self.home, helper=helper)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(payload, {"status": "rolled_back", "message": "restart_new_app_failed"})
+        calls = log.read_bytes().split(b"\0\0")[:-1]
+        self.assertEqual([c.decode().split("\0") for c in calls],
+                         [self.expected_args(), self.expected_args()])
+        self.assertEqual((self.target / "Contents/Info.plist").read_bytes(), original)
+
+    def test_production_launch_keeps_original_open_arguments(self):
+        helper, log = self.instrument_helper(fail_first=True)
+        _, payload = self.invoke(None, helper=helper)
+        self.assertEqual(payload.get("status"), "rolled_back")
+        calls = log.read_bytes().split(b"\0\0")[:-1]
+        self.assertEqual([c.decode().split("\0") for c in calls],
+                         [[str(self.target)], [str(self.target)]])
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main(verbosity=2)

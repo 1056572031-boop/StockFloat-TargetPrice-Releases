@@ -35,7 +35,6 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-import os
 import pathlib
 import sys
 import tempfile
@@ -281,7 +280,8 @@ class ReportTwoNumbers(SFCase):
         self.assertEqual(b1, ["1", "2", "13", "0.50", "2.31"])
         self.assertEqual(b2, ["1", "3", "3", "0.33", "10.00"])
         self.assertEqual(b3, ["1", "3", "4", "0.33", "7.50"])
-        self.assertEqual(b4, ["2", "2", "10", "1.00", "6.00"])
+        # 两条发现版本均无日期：只计入原始逃逸数，不伪装成有日期的每30天分子。
+        self.assertEqual(b4, ["2", "2", "10", "1.00", "0.00"])
 
     def test_平均中位最长三个数(self):
         # 三段时长 30 / 90 / 20：平均 46.7、中位 30.0、最长 90.0。
@@ -706,6 +706,168 @@ class CliReadOnly(SFCase):
     def test_未知参数退2不落默认动作(self):
         rc, _ = self._cli(["--no-such-flag"])
         self.assertEqual(rc, 2, "AGENTS §3.1：链上工具未知参数一律退 2")
+
+
+class MeasurementIntegrity(SFCase):
+    def setUp(self):
+        super().setUp()
+        self.track_patch(mock.patch.object(qt, "version_dates", return_value=dict(VMAP)))
+
+    def test_same_second_across_endpoints_is_rejected_and_excluded(self):
+        data = fixture_ledger()
+        data["entries"] = data["entries"][:2]
+        first, second = data["entries"]
+        first.update(observed_at="2026-10-09T10:00:00+08:00",
+                     rootcause_at="2026-10-09T10:30:00+08:00", locate_unknown_reason=None)
+        second.update(observed_at="2026-10-09T02:30:00.800+00:00",
+                      rootcause_at="2026-10-09T03:30:00+00:00", locate_unknown_reason=None)
+        errs = "\n".join(qt.validate(data))
+        for entry in data["entries"]:
+            self.assertIn(entry["id"] + ": 记账时刻，不是定位时长", errs)
+        out = qt.report(data)
+        self.assertIn("时刻未知：2 条", out)
+        self.assertIn("可计算条目 **0** 条", out)
+
+    def test_equal_endpoints_and_explicit_unknown_never_enter_average(self):
+        data = fixture_ledger()
+        for entry in data["entries"]:
+            entry["locate_unknown_reason"] = "只知登记时刻"
+        entry = data["entries"][0]
+        entry.update(observed_at=T_1000, rootcause_at=T_1000, locate_unknown_reason=None)
+        self.assertIsNone(qt.locate_minutes(entry))
+        self.assertIn("起点终点相同", "\n".join(qt.validate(data)))
+        self.assertIn("可计算条目 **0** 条", qt.report(data))
+
+    def test_independent_positive_interval_stays_in_mean(self):
+        data = fixture_ledger()
+        data["entries"] = data["entries"][:1]
+        data["entries"][0].update(observed_at="2026-10-09T10:00:00+08:00",
+                                  rootcause_at="2026-10-09T10:37:00+08:00",
+                                  locate_unknown_reason=None)
+        self.assertEqual(qt.bookkeeping_times(data["entries"]), {})
+        self.assertIn("平均 37.0 分钟", qt.report(data))
+        self.assertEqual(qt.validate(data), [])
+
+    def test_even_sample_median_is_middle_pair_mean(self):
+        data = fixture_ledger()
+        data["entries"] = data["entries"][:2]
+        for day, entry, minutes in zip((8, 9), data["entries"], (10, 30)):
+            entry.update(observed_at=f"2026-10-{day:02}T10:00:00+08:00",
+                         rootcause_at=f"2026-10-{day:02}T10:{minutes:02}:00+08:00",
+                         locate_unknown_reason=None)
+        self.assertIn("中位 20.0 分钟", qt.report(data))
+
+    def test_comparable_window_requires_review_coverage_and_dates(self):
+        data = fixture_ledger()
+        data["comparison_policy"] = {"start_version": V_BUCKET4, "reason": "测试细记边界"}
+        rows = qt.comparable_report(data, dict(VMAP))
+        self.assertIn("缺复盘版本", "\n".join(rows))
+        self.assertIn("不可比", "\n".join(rows))
+        data["rounds"] = [{"version": v, "reviewed": True} for v in VMAP]
+        data["entries"] = [e for e in data["entries"] if e["found_version"] in VMAP]
+        text = "\n".join(qt.comparable_report(data, dict(VMAP)))
+        self.assertNotIn("不可比", text)
+        self.assertIn("此前仅历史留痕", text)
+        self.assertIn("不能据此宣称逃逸下降", text)
+
+    def test_missing_policy_never_implies_comparable_history(self):
+        self.assertIn("不得推导改善", qt.report(fixture_ledger()))
+
+    def test_gate_names_bookkeeping_even_when_reason_claims_it_is_unknown(self):
+        data = fixture_ledger()
+        entry = data["entries"][0]
+        entry.update(rootcause_at=entry["observed_at"], locate_unknown_reason="只是登记")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = qt.print_gate(data, None)
+        self.assertEqual(rc, 1)
+        self.assertIn(entry["id"] + ": 记账时刻，不是定位时长", out.getvalue())
+
+    def test_audited_entry_and_each_answer_cannot_silently_disappear(self):
+        clean = json.loads(REAL_LEDGER.read_text(encoding="utf-8"))
+        self.assertEqual(qt.validate(clean), [])
+        first_id = clean["recurrence_review"]["entry_ids"][0]
+        for field in ("recurrence_risk", "recurrence_guard_refs", "recurrence_liar_check",
+                      "recurrence_next_action"):
+            data = json.loads(json.dumps(clean))
+            entry = next(e for e in data["entries"] if e["id"] == first_id)
+            entry.pop(field)
+            self.assertTrue(qt.validate(data), field + " 被删了却仍通过")
+        clean["entries"] = [e for e in clean["entries"] if e["id"] != first_id]
+        self.assertIn("已审查条目丢失：" + first_id, "\n".join(qt.validate(clean)))
+
+    def test_all_reviewed_ids_have_canonical_risk_and_timestamp_audit_keeps_old_values(self):
+        data = json.loads(REAL_LEDGER.read_text(encoding="utf-8"))
+        reviewed = data["recurrence_review"]
+        self.assertEqual(reviewed["previously_rated"] + reviewed["newly_rated"], reviewed["total"])
+        by_id = {e["id"]: e for e in data["entries"]}
+        for eid in reviewed["entry_ids"]:
+            entry = by_id[eid]
+            self.assertIn(entry["recurrence_risk"], ("高", "中", "低"))
+            self.assertTrue(entry["recurrence_liar_check"])
+            self.assertTrue(entry["recurrence_next_action"])
+            for ref in entry["recurrence_guard_refs"]:
+                self.assertTrue((ROOT / ref).is_file(), ref)
+            if entry.get("timestamp_audit"):
+                self.assertTrue(entry["timestamp_audit"]["original_observed_at"])
+                if entry.get("locate_unknown_reason"):
+                    self.assertIsNone(qt.locate_minutes(entry))
+
+    def test_repeated_rootcause_refuses_without_writing(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "ledger.json"
+            path.write_text(json.dumps(fixture_ledger()), encoding="utf-8")
+            self.track_patch(mock.patch.object(qt, "LEDGER_PATH", path))
+            before = path.read_bytes()
+            entry = fixture_ledger()["entries"][0]
+            with redirect_stdout(io.StringIO()):
+                rc = qt.main(["--rootcause", entry["id"]])
+            self.assertEqual(rc, 1)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_invalid_comparison_start_refuses_rates(self):
+        data = fixture_ledger()
+        data["comparison_policy"] = {"start_version": "invalid", "reason": "损坏配置"}
+        self.assertEqual(qt.comparable_report(data, dict(VMAP)),
+                         ["【可比区间】起始版本无效，拒绝输出可比率。"])
+
+    def test_history_only_entry_does_not_invent_an_empty_comparison_window(self):
+        data = fixture_ledger()
+        data["comparison_policy"] = {"start_version": V_BUCKET1, "reason": "测试窗口"}
+        data["entries"] = [dict(data["entries"][0], channel="gate_liar")]
+        text = "\n".join(qt.comparable_report(data, {}))
+        self.assertIn("窗口 | 线上逃逸", text)
+        self.assertFalse(any(line.startswith("v") and " | " in line for line in text.splitlines()))
+        self.assertNotIn("缺版本日期条目", text)
+        self.assertIn("不能据此宣称逃逸下降", text)
+
+    def test_gate_names_archived_bookkeeping_without_reintroducing_duration(self):
+        data = fixture_ledger()
+        entry = data["entries"][0]
+        entry.update(observed_at=None, rootcause_at=None,
+                     locate_unknown_reason="只有记账时刻，已归档",
+                     timestamp_audit={"original_observed_at": T_1000,
+                                      "original_rootcause_at": T_1030})
+        with redirect_stdout(io.StringIO()) as output:
+            rc = qt.print_gate(data, None)
+        self.assertEqual(rc, 0, output.getvalue())
+        self.assertIn("旧值已归档，平均值剔除）：" + entry["id"], output.getvalue())
+        self.assertIsNone(qt.locate_minutes(entry))
+
+    def test_estimated_start_is_not_an_exact_duration(self):
+        entry = fixture_ledger()["entries"][0]
+        entry["observed_origin"] = "conversation（分钟级估计）"
+        self.assertIsNone(qt.locate_minutes(entry))
+
+    def test_unknown_version_date_is_excluded_from_monthly_numerator(self):
+        data = fixture_ledger()
+        original_rows = _bucket_rows(qt.report(data))
+        extra = dict(data["entries"][0], id="UNDATE", found_version=V_UNDATED)
+        data["entries"].append(extra)
+        changed_rows = _bucket_rows(qt.report(data))
+        label = qt.BUCKETS[-1][0]
+        self.assertEqual(int(changed_rows[label][0]), int(original_rows[label][0]) + 1)
+        self.assertEqual(changed_rows[label][-1], original_rows[label][-1])
 
 
 if __name__ == "__main__":

@@ -210,6 +210,10 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
                 0, "network"),
         }
         _json_entry("network.json", network)
+        def _startup_health_snapshot():
+            import sf_startup_health
+            return sf_startup_health.diagnostics(window)
+        _snapshot("startup_health.json", _startup_health_snapshot)
         alerts = _field("alerts", window._safe_alerts, [], "targets")
         now = sources.beijing_now()
         target_counts = {"pending": 0, "hit": 0, "expired": 0, "invalid": 0}

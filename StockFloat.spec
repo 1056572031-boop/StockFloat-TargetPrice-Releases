@@ -65,6 +65,8 @@ a = Analysis(
                    'sf_credentials', 'Security', 'sf_diagnostics', 'sf_camera_check',
                    'sf_http', 'sf_instance', 'sf_macos_menu', 'sf_privacy',
                    'sf_quote_delivery', 'sf_storage_tasks', 'sf_maintenance',
+                   'sf_feedback', 'sf_feedback_outbox', 'sf_feedback_receiver',
+                   'sf_feedback_analyzer',
                    # 诊断包自动采集层：导出那一下才在嵌套函数里 import（sf_diag.collect），
                    # 与上面同一族处置 —— 缺它装机版导出诊断时只会留一行
                    # "state.json: No module named 'sf_diag'"，功能静默缺一整份文件。

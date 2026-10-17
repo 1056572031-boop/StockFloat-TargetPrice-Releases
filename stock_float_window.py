@@ -1432,6 +1432,8 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         执行会阻塞首帧渲染与首个事件循环 tick，拖慢首条行情上屏；改为 singleShot(0)
         排到首帧渲染完成后注入，视觉上玻璃效果仅晚一个事件循环 tick（<50ms）出现。"""
         super().showEvent(e)
+        from sf_startup_health import schedule as schedule_startup_health
+        schedule_startup_health(self)
         if self._glass_pending:
             self._glass_pending = False
             QTimer.singleShot(0, self._inject_glass)

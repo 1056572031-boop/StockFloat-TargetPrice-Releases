@@ -14,6 +14,17 @@ if [ ! -x "$VENV_PY" ]; then
   exit 1
 fi
 PY="$VENV_PY"
+PUBLIC_REGRESSION="${SF_PUBLIC_REGRESSION:-0}"
+if [ "$PUBLIC_REGRESSION" != "0" ] && [ "$PUBLIC_REGRESSION" != "1" ]; then
+  echo "!! SF_PUBLIC_REGRESSION 只能是 0 或 1" >&2
+  exit 2
+fi
+# 公开回归即使失败，也不能留下上一轮的发布资格；先保全旧戳，再运行任何测试。
+if [ "$PUBLIC_REGRESSION" = "1" ] && [ -e build/.gate_stamp ]; then
+  mkdir -p build/public-regression-invalidated || exit 1
+  INVALIDATED_STAMP_DIR="$(mktemp -d "build/public-regression-invalidated/$(date +%Y%m%d-%H%M%S)-$$-XXXXXX")" || exit 1
+  mv build/.gate_stamp "$INVALIDATED_STAMP_DIR/.gate_stamp" || exit 1
+fi
 echo "== 使用解释器: $PY ($("$PY" --version 2>&1)) =="
 
 # 离屏渲染（默认）：测试全为单元/回归测试，不需要真实窗口。
@@ -155,7 +166,19 @@ elif [ "${SF_RANDOM_ORDER:-0}" = "1" ]; then
   SF_RANDOM_ORDER=1 "$PY" tools/test_runner.py
 else
   "$PY" -m coverage erase
-  "$PY" -m coverage run tools/test_runner.py
+  "$PY" tools/coverage_provenance.py begin
+  COVERAGE_RC=0
+  "$PY" -m coverage run tools/test_runner.py || COVERAGE_RC=$?
+  "$PY" tools/coverage_provenance.py finish --exit-code "$COVERAGE_RC" || exit 1
+  "$PY" tools/coverage_provenance.py check || exit 1
+  if [ "$PUBLIC_REGRESSION" = "1" ]; then
+    echo "== 公开回归：无 privatebase，变更覆盖率标记 unverified-public-history =="
+    echo "== 公开回归不是发布资格：仍将验证 global/modules，不落 gate_stamp =="
+    "$PY" -c 'import json; from pathlib import Path; Path("build").mkdir(exist_ok=True); Path("build/change-coverage.json").write_text(json.dumps({"schema": 1, "status": "unverified-public-history", "ok": False, "reason": "公开源码没有 privatebase，无法证明变更范围覆盖率"}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")'
+  else
+    CHANGE_BASE="$("$PY" -c 'import os, subprocess, sys; from pathlib import Path; from tools.gate_stamp import git_env; anchor=Path("tools/change_coverage_base.txt").read_text().strip(); chosen=os.environ.get("SF_CHANGE_BASE") or anchor; resolve=lambda ref: subprocess.check_output(["git", "rev-parse", "--verify", ref+"^{commit}"], env=git_env(), text=True).strip(); anchor_id=resolve(anchor); chosen_id=resolve(chosen); check=subprocess.run(["git", "merge-base", "--is-ancestor", chosen_id, anchor_id], env=git_env(), check=False); check.returncode == 0 or sys.exit("SF_CHANGE_BASE cannot narrow the version-controlled comparison range"); print(chosen_id)')"
+    "$PY" tools/change_coverage_gate.py --base "$CHANGE_BASE" --data-file "${COVERAGE_FILE:-.coverage}" --report-json build/change-coverage.json || exit 1
+  fi
   # 分档断言在 tools/coverage_gate.py + tools/coverage_gate_baseline.json：
   # 产品档下限记在基线里（2026-10-13 起 89）；SF_COVER_MIN 只能临时**加严**，
   # 往基线以下压一律退 2 —— 一枚环境变量不该是降档通道（同下面那条"不落戳"的口径）。
@@ -168,10 +191,16 @@ else
   else
     "$PY" tools/coverage_gate.py
   fi
-  COVERAGE_GATE_RAN=1
+  if [ "$PUBLIC_REGRESSION" != "1" ]; then
+    COVERAGE_GATE_RAN=1
+  fi
 fi
 
-echo "== 全部测试通过，可进行打包发布 =="
+if [ "$PUBLIC_REGRESSION" = "1" ]; then
+  echo "== 公开源码回归通过；差异覆盖未验证，不具备打包发布资格 =="
+else
+  echo "== 全部测试通过，可进行打包发布 =="
+fi
 
 # ---- 关卡时间戳（v1.4.59 起，S7-②）----
 # 为什么放在最后一行之后：只有「整轮真的全绿」才配落戳，前面任何一段红都会 set -e 退出。

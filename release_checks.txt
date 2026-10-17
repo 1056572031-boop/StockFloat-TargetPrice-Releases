@@ -20,7 +20,10 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.93
+version 1.4.94
+checkfile Contents/Resources/updater/update_helper.sh::--verification-home
+checkfile Contents/Resources/updater/update_helper.sh::validate_verification_home
+checkfile Contents/Resources/updater/update_helper.sh::launch_app
 check sf_stock_transition::StockTransition
 check sf_stock_transition::profile
 check sf_stock_transition::blur_weights
@@ -41,8 +44,9 @@ check sf_http::remaining_budget
 check sf_http::read_chunk
 check sf_http::BudgetHTTPResponse
 check sf_http::BudgetHTTPSHandler
-check sf_update::_update_remaining
-check sf_credentials::needs_keychain
+check sf_update::manifest_diagnostics
+check sf_startup_health::diagnostics
+check sf_startup_health::schedule
 check sf_config::mkstemp
 check sf_privacy::quote
 # 2026-10-15 摄像头授权延续：下一版必须提升版本，签名证据由独立门禁提供。
@@ -84,9 +88,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.93 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.94 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.93
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.94
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

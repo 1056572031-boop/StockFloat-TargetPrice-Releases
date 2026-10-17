@@ -65,6 +65,8 @@ IN_SUITE = (
 
 # 有意排除的，写清楚为什么（不是忘了）
 SKIPPED = {
+    "coverage_provenance": "真实微型数据库及故障样本已由 test_coverage_provenance 在主进程逐项执行；self_test 再载入测试模块会递归运行测试套件，不在此重复",
+    "change_coverage_gate": "自检使用真实临时 Git 与 coverage 收集器；test_change_coverage_gate 已直调核心检查并验证 CLI 正反，避免在全量里重复切换嵌套收集器",
     "smoke_frozen_app": "要真起打包产物进程，全量里不该再开一份 GUI 生命周期",
     "verify_install_paths": "会真解包安装到临时目录并挂 DMG 卷，已由发版链 3.8 单独跑",
     "verify_bottom_gap_px": "本身已是 run_tests.sh 第 0.5 关，整脚本直接跑过",

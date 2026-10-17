@@ -65,11 +65,24 @@ def main():
     parser.add_argument("--fullscreen", action="store_true")
     parser.add_argument("--corners", action="store_true")
     parser.add_argument("--popups", action="store_true")
+    parser.add_argument("--startup-health", action="store_true")
+    parser.add_argument("--quality-sequence", action="store_true",
+                        help="sample compositor text and native geometry during startup and fullscreen return")
+    parser.add_argument("--continuous-video", action="store_true",
+                        help="record compositor video before window construction; reconcile and decode every frame")
+    parser.add_argument("--continuous-control", choices=("none", "hide"), default="none",
+                        help="tool-only negative control: hide the window for 250ms during the drag phase")
     parser.add_argument("--fullscreen-host", action="store_true")
     parser.add_argument("--seconds", type=float, default=15)
     parser.add_argument("--snapshot", type=Path)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
+    if args.quality_sequence and not (args.fullscreen and args.exercise):
+        parser.error("--quality-sequence requires --fullscreen and --exercise")
+    if args.continuous_video and (args.quality_sequence or not (args.fullscreen and args.exercise)):
+        parser.error("--continuous-video requires --fullscreen --exercise and cannot use --quality-sequence")
+    if args.continuous_control != "none" and not args.continuous_video:
+        parser.error("--continuous-control requires --continuous-video")
     if args.fullscreen_host:
         return fullscreen_host()
     if args.out is None:
@@ -111,8 +124,18 @@ def main():
     (temporary / "config.json").write_text(json.dumps({"code": snapshot["code"], "x": 400,
         "y": 180, "h": 224, "bg": "glass", "face_guard": False, "alerts": []}))
 
+    startup_paints: list[dict[str, Any]] = []
+    record_startup = True
+
     class ProbeWindow(product.FloatWindow):
         _prefer_liquid_glass = not args.legacy
+
+        def paintEvent(self, event):
+            super().paintEvent(event)
+            if (args.quality_sequence or args.continuous_video) and record_startup:
+                startup_paints.append({"size": [self.width(), self.height()],
+                                       "has_price": bool(self.quote) and self._disp_price is not None
+                                                    and self._disp_price > 0})
 
         def _quote_loop_wrapper(self):
             return None
@@ -181,20 +204,109 @@ def main():
     def reject_network(*_args, **_kwargs):
         raise RuntimeError("Native UI probe must never make live network requests")
 
+    def sample_presentation(phase):
+        from visual_sequence_guard import sequence_problems, text_match
+        samples: list[dict[str, Any]] = []
+        started = time.monotonic()
+        # Reference is only an expected text mask; observations come from screencapture.
+        reference = win.grab().toImage()
+        reference.save(str(args.out / (phase + "-template.png")))
+        observe(0.03)
+        for index in range(6):
+            native = content_ns_window(win)
+            rows = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionIncludingWindow,
+                                                    int(native.windowNumber())) or []
+            if not rows:
+                samples.append({"time": time.monotonic() - started, "pair": None,
+                                "content_visible": False, "size": None})
+                observe(0.15)
+                continue
+            bounds = rows[0]["kCGWindowBounds"]
+            image_path = args.out / f"{phase}-{index:02}.png"
+            before = time.monotonic()
+            process = subprocess.Popen(["/usr/sbin/screencapture", "-x", "-o",
+                f"-R{int(bounds['X'])},{int(bounds['Y'])},{int(bounds['Width'])},{int(bounds['Height'])}",
+                str(image_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            while process.poll() is None and time.monotonic() - before < 3:
+                app.processEvents()
+                time.sleep(0.002)
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            observed = QImage(str(image_path))
+            match = text_match(reference, observed)
+            samples.append({"time": time.monotonic() - started,
+                            "capture_seconds": time.monotonic() - before,
+                            "content_visible": process.returncode == 0 and match["passed"],
+                            "text_match": match, "pair": state(),
+                            "size": [bounds["Width"], bounds["Height"]], "image": image_path.name})
+            observe(0.12)
+        result.setdefault("presentation_sequences", {})[phase] = samples
+        problems = sequence_problems(samples, startup=phase == "startup")
+        check(phase + "_sampled_compositor_sequence", not problems, problems)
+
+    def sample_drag():
+        from visual_sequence_guard import drag_problems
+        press = QPoint(20, 5)
+        start = win.mapToGlobal(press)
+        input_api.mousePress(win, Qt.MouseButton.LeftButton, pos=press)
+        trajectory = []
+        started = time.monotonic()
+        try:
+            for index in range(16):
+                global_point = start + QPoint(index * 5, (index % 4) * 2)
+                local_point = win.mapFromGlobal(global_point)
+                event = QMouseEvent(QEvent.Type.MouseMove, QPointF(local_point), QPointF(global_point),
+                    Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+                QCoreApplication.sendEvent(win, event)
+                observe(0.016)
+                trajectory.append({"time": time.monotonic() - started, "pair": state(),
+                                   "position": [win.x(), win.y()]})
+        finally:
+            input_api.mouseRelease(win, Qt.MouseButton.LeftButton, pos=QPoint(20, 5))
+        result["drag_trajectory"] = trajectory
+        problems = drag_problems(trajectory)
+        check("rapid_drag_windowserver_trajectory", not problems, problems)
+
     win: Any = None
+    continuous: Any = None
     # Qt's stubs incorrectly model these static input helpers as instance methods.
     input_api: Any = QTest
     with (patch.object(product, "load_api_urls", lambda: None), patch.object(product, "show_dock", lambda: None),
           patch("sf_quote.http_get", reject_network), patch("sf_network.http_get", reject_network)):
         try:
+            if args.continuous_video:
+                from continuous_frames import ContinuousCapture
+                continuous = ContinuousCapture(args.out / "continuous")
+                continuous.wait_ready(app.processEvents)
+                continuous.begin("startup")
             win = ProbeWindow()
             for timer in win.findChildren(QTimer):
                 timer.stop()
             win.top_timer.start()
             win.show()
+            if args.quality_sequence:
+                sample_presentation("startup")
+                from visual_sequence_guard import first_paint_problems
+                result["startup_paints"] = startup_paints
+                problems = first_paint_problems(startup_paints)
+                check("actual_startup_paint_geometry_and_price", not problems, problems)
+                record_startup = False
             check("native_surface_ready", wait(lambda: bool(getattr(win, "_bg_effect", False))))
             check("surface_backend", win.glass_diagnostics()["surface"]["backend"] == result["backend_requested"])
             check("initial_alignment", wait(aligned))
+            if continuous is not None:
+                observe(1)
+                continuous.end()
+                from visual_sequence_guard import first_paint_problems
+                result["startup_paints"] = startup_paints
+                problems = first_paint_problems(startup_paints)
+                check("continuous_actual_startup_paints", not problems, problems)
+                record_startup = False
+                template = win.grab().toImage().scaled(184, 224)
+                template_path = args.out / "continuous-template.png"
+                if not template.save(str(template_path)):
+                    raise RuntimeError("continuous capture price template could not be saved")
             if args.popups:
                 from popup_material_probe import verify_popups
                 verify_popups(win, app, args.out, check, wait, observe)
@@ -214,20 +326,40 @@ def main():
                             return host.stdout.readline().strip() == expected
                         return False
 
+                    if continuous is not None:
+                        continuous.begin("fullscreen_transition")
                     host.stdin.write("enter\n")
                     host.stdin.flush()
                     check("fullscreen_transition_completed", wait(lambda: acknowledged("entered"), 10))
                     check("entered_distinct_fullscreen_space", wait(lambda:
                         (space := active_space_id()) is not None and space != normal_space, 10))
+                    if continuous is not None:
+                        continuous.end()
+                        continuous.begin("fullscreen")
+                    if args.quality_sequence:
+                        sample_presentation("fullscreen")
                     check("glass_and_content_visible_in_fullscreen", wait(aligned, 10))
+                    if continuous is not None:
+                        observe(1)
+                        continuous.end()
                     if args.popups:
                         from popup_material_probe import verify_fullscreen_popups
                         verify_fullscreen_popups(win, args.out, check, wait)
+                    if continuous is not None:
+                        continuous.begin("desktop_transition")
                     host.stdin.write("leave\n")
                     host.stdin.flush()
                     check("exit_fullscreen_transition_completed", wait(lambda: acknowledged("left"), 10))
                     check("returned_to_original_space", wait(lambda: active_space_id() == normal_space, 10))
+                    if continuous is not None:
+                        continuous.end()
+                        continuous.begin("desktop_return")
+                    if args.quality_sequence:
+                        sample_presentation("desktop_return")
                     check("desktop_alignment_after_fullscreen", wait(aligned, 10))
+                    if continuous is not None:
+                        observe(1)
+                        continuous.end()
                 finally:
                     if host.stdin is not None:
                         host.stdin.write("quit\n")
@@ -238,6 +370,8 @@ def main():
                         host.terminate()
                         host.communicate(timeout=5)
             if args.exercise:
+                if continuous is not None:
+                    continuous.begin("drag")
                 origin = win.pos()
                 input_api.mousePress(win, Qt.MouseButton.LeftButton, pos=QPoint(20, 5))
                 local = QPoint(68, 29)
@@ -247,6 +381,24 @@ def main():
                 input_api.mouseRelease(win, Qt.MouseButton.LeftButton, pos=local)
                 check("default_qt_drag_moves_window", wait(lambda: win.pos() != origin))
                 check("drag_alignment", wait(aligned))
+                if args.quality_sequence:
+                    sample_drag()
+                    sample_presentation("after_drag")
+                if continuous is not None:
+                    sample_drag()
+                    if args.continuous_control == "hide":
+                        hidden_at = time.monotonic()
+                        win.hide()
+                        observe(0.25)
+                        win.show()
+                        result["continuous_control"] = {"kind": "hide", "start": hidden_at,
+                                                        "end": time.monotonic()}
+                    observe(0.5)
+                    continuous.end()
+                    observe(0.2)
+                    evidence = continuous.finish(template_path)
+                    result["continuous_video"] = evidence
+                    check("continuous_compositor_frame_chain", evidence["passed"], evidence)
                 original_height = win.height()
                 input_api.mouseClick(win, Qt.MouseButton.LeftButton,
                                  pos=QPoint(win.width() // 2, (CHART_TOP + original_height - 46) // 2))
@@ -289,6 +441,12 @@ def main():
                 "rss_growth_mib": round(rss[-1] - rss[0], 2) if rss else None,
                 "windowserver_cpu_median": statistics.median(ws_cpu) if ws_cpu else None}
             result["surface"] = win.glass_diagnostics()["surface"]
+            if args.startup_health:
+                from sf_startup_health import capture as capture_startup_health
+                result["startup_health"] = capture_startup_health(win)
+                for name in ("visibility", "space", "glass", "window_level"):
+                    sample = result["startup_health"]["checks"][name]
+                    check("startup_health_" + name, sample["status"] == "passed", sample)
             main_window = content_ns_window(win)
             numbers = (int(main_window.windowNumber()), int(glass_window().windowNumber()))
             window_info = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionIncludingWindow, numbers[0])
@@ -339,6 +497,8 @@ def main():
             check("window_threads_stopped", all(not thread.is_alive() for value in vars(win).values()
                 if isinstance((thread := value), threading.Thread)))
         finally:
+            if continuous is not None:
+                continuous.stop()
             if win is not None:
                 win._persist_on_exit()
                 win._shutdown_threads()
