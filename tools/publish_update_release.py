@@ -18,11 +18,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-REPO = "1056572031-boop/StockFloat-TargetPrice-Releases"
-TAG = "版本更新"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_identity import MANIFEST_PATH, REPO, TAG  # noqa: E402
 # v1.4.55 改名后走新清单；旧清单 `StockFloatTargetPrice-update.json` 留在仓库里
 # 冻结在 1.4.54 —— 已装旧版的客户端仍指它，删掉只会让旧版报错，留着不动最安全。
-MANIFEST_PATH = "Skyrocket-update.json"
 API_ROOT = "https://api.github.com/repos/" + REPO
 # 资产上传走独立主机名；单列成常量是为了让端到端回归能把两个根都指向本地
 # 假服务器（真实构造请求、真实解析响应），而不是把 request() 整个 mock 掉。
@@ -108,6 +107,15 @@ def upload_url(release_id, asset_name):
 
 def contents_url():
     return API_ROOT + "/contents/" + urllib.parse.quote(MANIFEST_PATH, safe="/")
+
+
+def contents_ref_url(ref="main"):
+    return contents_url() + "?" + urllib.parse.urlencode({"ref": ref})
+
+
+def read_contents_main(token):
+    """Read the same explicit main branch that manifest_commit_payload writes."""
+    return json.loads(request(contents_ref_url("main"), token))
 
 
 def load_release(token):
@@ -236,14 +244,14 @@ def publish_manifest_pointer(token, manifest_bytes):
     """通过 Contents API 单次提交固定清单，提交前的 ZIP 已可下载并经验证。"""
     url = contents_url()
     try:
-        existing_sha = json.loads(request(url, token)).get("sha")
+        existing_sha = read_contents_main(token).get("sha")
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
         existing_sha = None
     request(url, token, method="PUT",
             data=manifest_commit_payload(manifest_bytes, existing_sha))
-    payload = json.loads(request(url, token))
+    payload = read_contents_main(token)
     try:
         read_back = base64.b64decode(payload["content"])
     except (KeyError, ValueError, TypeError) as exc:
@@ -328,7 +336,7 @@ def _fetch_manifest_json(url, token=None):
 
 def verify_live_manifest(token, expected_version, expected_bytes=None):
     """发布后必须读回：仓库侧不过关就直接非零退出（发版链据此中止）。"""
-    repo_bytes = _fetch_manifest_bytes(contents_url(), token)
+    repo_bytes = _fetch_manifest_bytes(contents_ref_url("main"), token)
     raw_bytes = _fetch_manifest_bytes(RAW_MANIFEST_URL)
     repo = json.loads(repo_bytes.decode("utf-8")) if repo_bytes is not None else None
     raw = json.loads(raw_bytes.decode("utf-8")) if raw_bytes is not None else None

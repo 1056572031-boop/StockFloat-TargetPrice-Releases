@@ -65,6 +65,7 @@ class _State:
         self.contents = {}         # 清单路径 -> {"sha", "content"}
         self.log = []              # [(method, 路由)]，按到达顺序
         self.last_headers = {}     # 最近一次请求的请求头
+        self.content_refs = []
         self.next_asset_id = 900
         self.drop_asset_after_upload = False    # 模拟"传上去但服务端查不到"
         self.corrupt_archive_after_upload = False
@@ -125,7 +126,12 @@ class _Handler(BaseHTTPRequestHandler):
             return self._reply(200, json.dumps(self.st.release).encode())
         if "/contents/" in self.tail:
             self.st.add("GET", "contents")
-            name = self.tail.rsplit("/contents/", 1)[1]
+            parsed = urllib.parse.urlsplit(self.path)
+            ref = urllib.parse.parse_qs(parsed.query).get("ref")
+            self.st.content_refs.append(ref)
+            if ref != ["main"]:
+                return self._reply(404, b'{"message":"manifest is not on the default branch"}')
+            name = urllib.parse.unquote(parsed.path).rsplit("/contents/", 1)[1]
             entry = self.st.contents.get(name)
             if entry is None:
                 return self._reply(404, b'{"message":"Not Found"}')
@@ -343,6 +349,9 @@ class PublishEndToEndTest(unittest.TestCase):
                           "release", "upload", "release",          # 换旧客户端清单
                           "contents"],                             # 发布后读回仓库侧清单
                          "顺序错了就等于清单指向还不存在的包")
+        self.assertTrue(self.state.content_refs)
+        self.assertTrue(all(ref == ["main"] for ref in self.state.content_refs),
+                        "清单读回必须固定 main，不能读默认分支后碰运气降级")
         self.assertIn("published_archive=%s" % ARCHIVE_NAME, text)
         self.assertIn("published_manifest_pointer", text)
         # 「打印 published」不等于「线上生效」：读回必须真的发生并给出结论

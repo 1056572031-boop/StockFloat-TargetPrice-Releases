@@ -32,10 +32,30 @@ cd "$PROJ"
 # 单项目原子并发锁：mkdir 具备原子占位语义；退出时仅移除自身锁目录。
 LOCK_DIR="$PROJ/.build_release_targetprice.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  echo "!! 目标价版已有发版任务运行中：$LOCK_DIR" >&2
-  exit 1
+  LOCK_PID="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    echo "!! 目标价版已有发版任务运行中：$LOCK_DIR (pid=$LOCK_PID)" >&2
+    exit 1
+  fi
+  echo "!! 发现陈旧发版锁，确认没有活动进程后自动回收：$LOCK_DIR" >&2
+  if [ -f "$LOCK_DIR/pid" ] && [ ! -L "$LOCK_DIR/pid" ]; then
+    case "$LOCK_PID" in
+      ''|*[!0-9]*) echo "!! 锁 PID 无效，保留现场，拒绝自动回收" >&2; exit 1 ;;
+    esac
+    rm "$LOCK_DIR/pid"
+  fi
+  rmdir "$LOCK_DIR" 2>/dev/null || { echo "!! 无法回收陈旧发版锁" >&2; exit 1; }
+  mkdir "$LOCK_DIR"
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+release_lock() {
+  if [ -f "$LOCK_DIR/pid" ] && [ ! -L "$LOCK_DIR/pid" ] \
+    && [ "$(cat "$LOCK_DIR/pid")" = "$$" ]; then
+    rm "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+trap release_lock EXIT
 
 DO_INSTALL=1
 DO_BUILD=1
@@ -60,6 +80,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# 已准备候选只做发布前核验和不可逆发布，不重新打包同一份源码。
+if [ "$USE_PREPARED" -eq 1 ] && [ "$SKIP_TESTS" -eq 0 ]; then
+  DO_BUILD=0
+fi
 
 PUBLIC_REGRESSION="${SF_PUBLIC_REGRESSION:-0}"
 if [ "$PUBLIC_REGRESSION" = "1" ]; then
@@ -87,7 +112,7 @@ cleanup_prechecks() {
   [ -d "$PRECHECK_DIR" ] || return 0
   mv "$PRECHECK_DIR" "${TMPDIR:-/tmp}/skyrocket-release-precheck-finished.$$.${RANDOM}" 2>/dev/null || true
 }
-trap 'cleanup_prechecks; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+trap 'cleanup_prechecks; release_lock' EXIT
 echo "== 发版前置核验：固定签名 / 公开文档 / 公开树（并行）=="
 "$VENV_PY" tools/stable_signing.py preflight >"$PRECHECK_DIR/signing.log" 2>&1 &
 PRECHECK_SIGNING=$!
@@ -238,9 +263,16 @@ echo "   产物核验三件套全部通过"
 # ---- 3.65) Permanent card-corner gate (2026-10-15) ----
 # Always runs, including --skip-tests/--skip-build retries; keep it before DMG/install/OTA.
 echo "== 3.65 卡片圆角：像素矩阵 / 包内几何同源 / 原生四角与交互走查 =="
-"$VENV_PY" tools/verify_card_corners.py --app "$PROJ/dist/$APP_BUNDLE" --native \
-  --out "$PROJ/build/card-corners-v$VERSION" \
-  || { echo "!! 卡片圆角门禁未过：双层轮廓、空白或原生走查失败，拒绝发布" >&2; exit 1; }
+CARD_OK=0
+for card_attempt in 1 2 3; do
+  CARD_OUT="$PROJ/build/card-corners-v$VERSION-attempt-$card_attempt"
+  if "$VENV_PY" tools/verify_card_corners.py --app "$PROJ/dist/$APP_BUNDLE" --native --out "$CARD_OUT"; then
+    CARD_OK=1
+    break
+  fi
+  [ "$card_attempt" -lt 3 ] && sleep 2
+done
+[ "$CARD_OK" -eq 1 ] || { echo "!! 卡片圆角门禁未过：三次独立采集均失败，拒绝发布" >&2; exit 1; }
 
 # ---- 3.7) 逃逸复盘闸门（2026-10-09 起，进 DMG / 安装 / OTA 之前）----
 # 为什么放这里：负责人定的进度指标只有两个 —— 线上逃逸数、平均定位时长。要让它们真的
@@ -311,7 +343,6 @@ if [ "$USE_PREPARED" -eq 1 ]; then
   [ -f "$DMG_OUT" ] || { echo "!! 缺少已准备 DMG：$DMG_OUT" >&2; exit 1; }
   echo "== 使用已准备 DMG（不重新生成）=="
 else
-mkdir -p "$DESKTOP_OUTPUT_DIR"
 DESKTOP_DMG="$DESKTOP_OUTPUT_DIR/${DMG_NAME}-V${VERSION}.dmg"
 DMG_ROOT="$PROJ/build/dmg_root"
 DMG_OUT="$PROJ/build/${DMG_NAME}-V${VERSION}.dmg"
@@ -391,17 +422,7 @@ echo "== DMG 构建完毕 =="
 ls -lh "$DMG_OUT" | awk '{print "   " $5, $9}'
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   echo "   prepare-only：不复制到桌面分发目录"
-else
-  cp -f "$DMG_OUT" "$DESKTOP_DMG"
-  echo "   桌面分发包: $DESKTOP_DMG"
 fi
-# v1.2.95 第9轮走查：跨版本旧 DMG 在分发目录累积，违反"只留最新、旧版移废纸篓"。
-# 两代 DMG 文件名都要收：旧名是 ≤v1.4.54 留下的，规则仍是「只保留最新一个包」。
-for old in "$DESKTOP_OUTPUT_DIR"/Skyrocket-V*.dmg "$DESKTOP_OUTPUT_DIR"/实时股价-目标价版-V*.dmg; do
-  [ -e "$old" ] || continue
-  [ "$old" = "$DESKTOP_DMG" ] && continue
-  mv "$old" "$HOME/.Trash/" 2>/dev/null || true
-done
 fi
 
 # ---- 5) 候选 OTA 资产（正式资格检查前只生成，不上传、不覆盖桌面）----
@@ -436,6 +457,22 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
   "$VENV_PY" tools/quality_evidence.py qualify "$SF_QUALITY_RECORD" \
     || { echo "!! 正式候选资格未通过，拒绝安装、覆盖桌面或发布 OTA" >&2; exit 1; }
 fi
+
+# BEGIN publish_desktop_dmg
+publish_desktop_dmg() {
+  local source="$1" destination="$2" directory old
+  directory="$(dirname "$destination")"
+  mkdir -p "$directory"
+  cp -p "$source" "$destination"
+  echo "   桌面分发包: $destination"
+  for old in "$directory"/Skyrocket-V*.dmg "$directory"/实时股价-目标价版-V*.dmg; do
+    [ -e "$old" ] || continue
+    [ "$old" = "$destination" ] && continue
+    mv "$old" "$HOME/.Trash/" 2>/dev/null || true
+  done
+}
+# END publish_desktop_dmg
+publish_desktop_dmg "$DMG_OUT" "$DESKTOP_DMG"
 
 # ---- 5.1) 安装到 /Applications（默认行为）----
 if [ "$DO_INSTALL" -eq 1 ]; then

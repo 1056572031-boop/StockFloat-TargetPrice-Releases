@@ -156,7 +156,8 @@ class TestUpdateManifest(unittest.TestCase):
         self.assertIn('release_notes.txt', build)
 
     def test_raw_manifest_url_is_trusted_and_requestable(self):
-        source = "https://raw.githubusercontent.com/1056572031-boop/StockFloat-TargetPrice-Releases/main/StockFloatTargetPrice-update.json"
+        source = ("https://raw.githubusercontent.com/" + sf_constants.RELEASE_REPO
+                  + "/main/StockFloatTargetPrice-update.json")
         sf_update._check_release_url(source)
         self.assertEqual(sf_update._request_url(source), source)
 

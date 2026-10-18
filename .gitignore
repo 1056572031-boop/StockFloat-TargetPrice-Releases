@@ -16,6 +16,8 @@ __pycache__/
 # 构建产物
 build/
 dist/
+# Release runner ownership is local runtime state, not source or evidence.
+/.build_release_targetprice.lock/
 
 # 修改前的源码级回退副本（AGENTS.md §5：受控机制，勿删改）
 # 忽略是为了**不再往里塞整包 .app**（历史上曾塞进 6 份、约 422MB 二进制，

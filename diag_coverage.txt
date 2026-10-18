@@ -25,6 +25,8 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.96
+
 version 1.4.94
 skip sf_feedback 本轮仅实现无 Qt、无网络的本地协议纯函数；当前没有接入应用运行态，故不存在可由 sf_diag 采集的模块状态。
 skip sf_feedback_outbox 本轮仅实现显式调用的 SQLite 本地队列；尚未由应用持有或自动启动，队列内容不得进入诊断附件。

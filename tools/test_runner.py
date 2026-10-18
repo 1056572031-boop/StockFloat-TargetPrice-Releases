@@ -29,13 +29,21 @@
     SF_RANDOM_ORDER=1 tools/test_runner.py  # 随机顺序跑一次（排查顺序依赖）
     SF_RERUN_FAILED=0 tools/test_runner.py  # 不做失败重跑
     SF_TEST_TIMEOUT=120 tools/test_runner.py
+    tools/test_runner.py --module test_daily_workflow --module test_code_governance
+
+指定模块仍走超时、桌面弹窗和用户数据保护；不代表完整回归、不检查覆盖率、不落关卡戳。
+未知参数或零用例拒绝通过。SF_RERUN_FAILED=0 可保留首次失败为本轮失败。
 
 退出码：0 全绿；1 存在失败/错误/桌面弹窗违规；2 用户数据被改动（最高优先级，不算"测试问题"）。
 """
+import argparse
+import contextlib
 import faulthandler
 import os
 import random
+import re
 import sys
+import tempfile
 import time
 import unittest
 
@@ -352,11 +360,51 @@ def self_test():
     return 0
 
 
+def module_name(value):
+    name = value.removeprefix("tests.")
+    if not re.fullmatch(r"test_[A-Za-z0-9_]+", name):
+        raise argparse.ArgumentTypeError("expected test_module or tests.test_module")
+    return name
+
+
+@contextlib.contextmanager
+def focused_environment():
+    # Short paths also keep the single-instance Unix socket below macOS limits.
+    with tempfile.TemporaryDirectory(prefix="sf_dt_", dir="/tmp" if os.path.isdir("/tmp") else None) as directory:
+        overrides = {name: os.path.join(directory, filename) for name, filename in (
+            ("SF_CONFIG_PATH", "config.json"), ("SF_LAST_QUOTE_PATH", "quote.json"),
+            ("SF_UNIVERSE_PATH", "universe.json"), ("SF_LOG_PATH", "debug.log"),
+            ("SF_SINGLE_SOCK", "single.sock"))}
+        overrides.update(SF_UNIVERSE_DISABLE="1", SF_SEED_FIRST_SCREEN="0")
+        previous = {name: os.environ.get(name) for name in overrides}
+        os.environ.update(overrides)
+        try:
+            yield directory
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if "--self-test" in argv:
+    parser = argparse.ArgumentParser(description=__doc__)
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--self-test", action="store_true")
+    action.add_argument("--module", action="append", type=module_name,
+                        help="Run only this test module; repeat to combine (not the full gate)")
+    args = parser.parse_args(argv)
+    if args.self_test:
         # 必须在任何发现/预导入之前分流，否则它会把整套用例再跑一遍（实测 88 秒）
         return self_test()
+    if args.module:
+        with focused_environment():
+            return run_tests(args.module)
+    return run_tests()
+
+
+def run_tests(modules=None):
     timeout = float(os.environ.get("SF_TEST_TIMEOUT", "60") or 0)
     random_order = os.environ.get("SF_RANDOM_ORDER", "0") == "1"
     rerun = os.environ.get("SF_RERUN_FAILED", "1") == "1"
@@ -367,6 +415,7 @@ def main(argv=None):
     tests_dir = os.path.join(root, "tests")
     sys.path.insert(0, tests_dir)
 
+    before = _snapshot_user_data()
     install_ui_dialog_guard()
     _preimport_project_modules()
 
@@ -374,8 +423,13 @@ def main(argv=None):
     # top_level_dir 必须与原 `unittest discover -s tests` 保持一致（即 tests 自身），
     # 否则模块名会从 test_x 变成 tests.test_x，导致 `from sf_xxx import` 之类的
     # 顶层导入全部失败。tests/ 目录下没有 __init__.py，靠的就是这层目录在 sys.path 上。
-    suite = loader.discover(start_dir="tests", pattern="test_*.py",
-                            top_level_dir=tests_dir)
+    if modules:
+        names = list(dict.fromkeys(modules))
+        suite = loader.loadTestsFromNames(names)
+        print("== 定向模块测试（不代表完整关卡，不写关卡戳）==")
+    else:
+        suite = loader.discover(start_dir="tests", pattern="test_*.py",
+                                top_level_dir=tests_dir)
     cases = list(suite)
     if random_order:
         rnd = random.Random(seed or time.time_ns())
@@ -396,8 +450,10 @@ def main(argv=None):
             cases = quit_cases + other_cases
             print("== 退出生命周期用例优先执行（隔离 Qt 原生资源）==")
     total = sum(t.countTestCases() for t in cases)
+    if total == 0:
+        print("!! 没有加载到测试，拒绝将零用例记为通过")
+        return 2
 
-    before = _snapshot_user_data()
     runner = unittest.TextTestRunner(
         verbosity=2, resultclass=lambda *a, **kw: _Result(*a, sf_timeout=timeout, **kw))
     result = runner.run(unittest.TestSuite(cases))

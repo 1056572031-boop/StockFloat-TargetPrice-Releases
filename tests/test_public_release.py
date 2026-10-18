@@ -14,6 +14,8 @@ from tests._base import SFCase
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import public_docs_check as docs  # noqa: E402
+import sf_constants as C  # noqa: E402
+import release_identity  # noqa: E402
 import public_release as public  # noqa: E402
 
 
@@ -151,11 +153,99 @@ class PublicReleaseCase(SFCase):
         self.assertTrue(public.privacy_problems(number, "unused"))
 
     def test_only_approved_support_mailbox_is_public(self):
-        self.assertEqual(public.privacy_problems(b"1056572031@qq.com", "unused"), [])
+        self.assertEqual(public.privacy_problems(C.SUPPORT_EMAIL.encode(), "unused"), [])
         other_mail = b"someone" + b"@" + b"qq.com"
         self.assertIn("personal contact", public.privacy_problems(other_mail, "unused"))
         number = public.REPO.split("/", 1)[0].split("-", 1)[0].encode()
         self.assertTrue(public.privacy_problems(number, "unused"))
+
+    def test_release_tools_share_public_identity_without_loading_qt(self):
+        import subprocess
+        code = """
+import sys
+sys.path.insert(0, sys.argv[1] + '/tools')
+import release_identity, make_update_assets, publish_update_release
+assert 'sf_constants' not in sys.modules
+assert not any(name.startswith('PyQt6') for name in sys.modules)
+assert make_update_assets.REPO == publish_update_release.REPO == release_identity.REPO
+assert make_update_assets.TAG == publish_update_release.TAG == release_identity.TAG
+"""
+        result = subprocess.run([sys.executable, "-c", code, str(ROOT)],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(release_identity.REPO, C.RELEASE_REPO)
+        self.assertEqual(release_identity.TAG, C.RELEASE_TAG)
+        self.assertEqual(release_identity.SUPPORT_EMAIL, C.SUPPORT_EMAIL)
+        self.assertEqual(release_identity.MANIFEST_PATH, C.UPDATE_MANIFEST_NAME)
+        from tools import publish_update_release as publisher
+        import render_install_guide as guide
+        self.assertEqual(publisher.RAW_MANIFEST_URL, C.UPDATE_MANIFEST_URL)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(guide.contact(), C.SUPPORT_EMAIL)
+        # Public documents intentionally contain rendered URLs, not Python expressions.
+        for name in ("README.md", "docs/INSTALL.md"):
+            body = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("https://github.com/" + C.RELEASE_REPO, body)
+        self.assertIn(C.SUPPORT_EMAIL, (ROOT / "docs/INSTALL.md").read_text())
+
+    def test_identity_reader_rejects_missing_duplicate_and_executable_values(self):
+        config = self.root / "identity.py"
+        values = release_identity.load_identity()
+        safe = "\n".join("%s = %r" % item for item in values.items())
+        config.write_text("raise RuntimeError('must not execute')\n" + safe)
+        self.assertEqual(release_identity.load_identity(config), values)
+        for invalid in ("", safe + "\nRELEASE_REPO = 'duplicate'",
+                        safe.replace(repr(values["SUPPORT_EMAIL"]), "''"),
+                        safe.replace(repr(values["SUPPORT_EMAIL"]), "123"),
+                        safe.replace(repr(values["SUPPORT_EMAIL"]), "str('not literal')")):
+            with self.subTest(config=invalid):
+                config.write_text(invalid)
+                with self.assertRaises(ValueError):
+                    release_identity.load_identity(config)
+
+    def test_old_numeric_contacts_fail_but_normal_numbers_and_urls_pass(self):
+        # Compose synthetic old contacts so the public test source itself is clean.
+        old_phone = b"138" + b"00138000"
+        old_id = b"927" + b"45163"
+        owner = C.RELEASE_REPO.split("/", 1)[0].encode()
+        rejected = (old_phone, b"phone=" + old_phone, b"QQ: " + old_id,
+                    b"old owner " + owner,
+                    b"https://example.com/" + C.RELEASE_REPO.encode(),
+                    b"prefix" + C.SUPPORT_EMAIL.encode())
+        for value in rejected:
+            with self.subTest(value=value):
+                self.assertTrue(public.privacy_problems(value, "unused"))
+        accepted = (C.SUPPORT_EMAIL.encode(), b"https://github.com/" + owner + b"/repo",
+                    b"https://raw.githubusercontent.com/" + C.RELEASE_REPO.encode() + b"/main/file",
+                    b"https://api.github.com/repos/" + C.RELEASE_REPO.encode(),
+                    b"run 387" + b"04366170", b"value 11.000000000000002",
+                    b"sha256 abc" + old_phone + b"def", b"20261016001")
+        for value in accepted:
+            with self.subTest(value=value):
+                self.assertEqual(public.privacy_problems(value, "unused"), [])
+
+    def test_phone_shaped_github_owner_is_exempt_only_in_namespace(self):
+        owner = b"138" + b"00138000" + b"-maintainer"
+        repo = owner.decode() + "/release"
+        with patch.object(public, "REPO", repo):
+            for prefix in (b"https://github.com/", b"https://raw.githubusercontent.com/",
+                           b"https://api.github.com/repos/"):
+                self.assertEqual(public.privacy_problems(prefix + repo.encode(), "unused"), [])
+            self.assertTrue(public.privacy_problems(owner, "unused"))
+            self.assertTrue(public.privacy_problems(b"https://github.com.evil/" + repo.encode(),
+                                                   "unused"))
+
+    def test_one_old_number_in_reachable_history_is_rejected(self):
+        self.init_repo()
+        path = self.root / "contact.txt"
+        path.write_bytes(b"138" + b"00138000")
+        public.run(["git", "add", "contact.txt"], self.root)
+        public.run(["git", "commit", "-qm", "old contact fixture"], self.root)
+        path.write_bytes(b"contact removed")
+        public.run(["git", "add", "contact.txt"], self.root)
+        public.run(["git", "commit", "-qm", "clean current tree"], self.root)
+        with self.assertRaisesRegex(ValueError, "personal phone number"):
+            public.audit_history(self.root, "/Users/fixture-owner")
 
     def test_public_push_uses_only_the_existing_public_parent(self):
         calls = []

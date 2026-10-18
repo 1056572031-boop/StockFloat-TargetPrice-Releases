@@ -55,6 +55,26 @@ class _GuideCase(SFCase):
 
 
 class RenderedGuideCarriesNoPlaceholders(_GuideCase):
+    def test_guide_is_stable_before_and_after_asset_generation(self):
+        texts = []
+        for digest in (None, "ab" * 32, "cd" * 32):
+            with patch.object(self.g, "manifest_sha256", return_value=digest):
+                texts.append(self.g.render())
+        self.assertEqual(texts[0], texts[1])
+        self.assertEqual(texts[1], texts[2])
+        self.assertIn(self.g.checksums_name(), texts[0])
+        self.assertIn("shasum -a 256 ~/Downloads/" + self.g.archive_name(), texts[0])
+        self.assertNotIn("ab" * 32, texts[1])
+
+    def test_check_rejects_wrong_checksum_list_and_modified_content(self):
+        body = self.g.render()
+        with patch.object(self.g, "probe_asset", return_value=("unknown", "offline")):
+            for broken in (body.replace(self.g.checksums_name(), "wrong-checksums.txt"),
+                           body + "\nunreviewed change\n"):
+                self.g.OUT_DEFAULT.parent.mkdir(parents=True, exist_ok=True)
+                self.g.OUT_DEFAULT.write_text(broken)
+                self.assertEqual(self.g.main(["guide", "--check"]), 1)
+
     def test_rendered_text_has_no_literal_percent_s(self):
         with patch.dict(os.environ, {self.g.CONTACT_ENV: "support@example.com"}):
             text = self.g.render()
@@ -74,19 +94,19 @@ class RenderedGuideCarriesNoPlaceholders(_GuideCase):
 
 
 class ContactPlaceholderIsCaughtBeforeItShips(_GuideCase):
-    """No private email is required; public Issues is the usable fallback."""
+    """The approved public support mailbox is the usable default."""
 
     def _env_without_contact(self):
         env = dict(os.environ)
         env.pop(self.g.CONTACT_ENV, None)
         return patch.dict(os.environ, env, clear=True)
 
-    def test_unset_contact_uses_public_feedback_without_personal_email(self):
+    def test_unset_contact_uses_approved_public_support_mailbox(self):
         with self._env_without_contact():
             text = self.g.render()
         problems = self.g.lint_placeholders(text)
         self.assertEqual(problems, [])
-        self.assertIn("/issues", text)
+        self.assertIn(self.g.SUPPORT_EMAIL, text)
         self.assertNotIn(self.g.CONTACT_ENV, text)
 
     def test_explicit_escape_hatch_only_clears_the_contact_item(self):

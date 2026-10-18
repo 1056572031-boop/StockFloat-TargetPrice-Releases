@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.95'
+APP_VERSION = '1.4.96'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -353,6 +353,12 @@ LOG_MAX_AGE_DAYS = 7
 # 唯一来源：窗口标题、Dock/关于名、临时副本清扫、更新清单校验都从这里读。
 APP_DISPLAY_NAME = 'Skyrocket'
 BUNDLE_ID = 'com.skyrocket.app'
+# Public release identity. Keep these as string literals: standalone tools read
+# only these assignments without importing Qt or executing product configuration.
+RELEASE_REPO = '1056572031-boop/StockFloat-TargetPrice-Releases'
+RELEASE_TAG = '版本更新'
+SUPPORT_EMAIL = '1056572031@qq.com'
+UPDATE_MANIFEST_NAME = 'Skyrocket-update.json'
 # 用户可见的程序产物统一放在桌面专用目录，避免 DMG、更新包和诊断包散落在桌面根目录。
 DESKTOP_OUTPUT_DIR = os.path.expanduser('~/Desktop/Skyrocket')
 # 旧名字必须继续认得：/Applications 与 /tmp 里还有 ≤v1.4.54 的旧包，
@@ -415,9 +421,8 @@ STAGING_PRUNE_GRACE_SEC = 3600
 # 与 app_name，客户端拿自己那两个值比对（sf_update 的清单校验），一份清单喂不了
 # 两代程序；而旧版内置的更新助手只认旧 id，硬发过去就是一次注定失败的更新。
 # 所以旧清单冻结在 1.4.54，改名后的这一版需要手动装一次 DMG。
-UPDATE_MANIFEST_URL = ('https://raw.githubusercontent.com/1056572031-boop/'
-                       'StockFloat-TargetPrice-Releases/main/'
-                       'Skyrocket-update.json')
+UPDATE_MANIFEST_URL = ('https://raw.githubusercontent.com/' + RELEASE_REPO
+                       + '/main/' + UPDATE_MANIFEST_NAME)
 # v1.4.60（复核 F10）：原先这里还有一条 LEGACY_UPDATE_MANIFEST_URL（旧清单
 # StockFloatTargetPrice-update.json 的地址），注释说"诊断包与文档要说清已装旧版为什么
 # 收不到新版"，但全仓（含 tests/tools）没有任何消费点 —— 一个没人读的常量只会让人以为

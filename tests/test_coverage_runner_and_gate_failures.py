@@ -24,9 +24,9 @@ try:
 except ImportError:  # pragma: no cover
     from tests._base import SFCase
 
-import test_runner as runner
-import shell_cjk_scan as shell_gate
 import bundle_closure_check as closure
+import shell_cjk_scan as shell_gate
+import test_runner as runner
 
 
 def invoke(fn, *args):
@@ -38,11 +38,12 @@ def invoke(fn, *args):
 
 class RunnerExecutionContracts(SFCase):
     def run_suite(self, functions, *, rerun=True, random_order=False,
-                  snapshots=None, ui_violation=False):
+                  snapshots=None, ui_violation=False, modules=None):
         suite = unittest.TestSuite([
             unittest.TestSuite([unittest.FunctionTestCase(fn)]) for fn in functions])
         loader = mock.Mock()
         loader.discover.return_value = suite
+        loader.loadTestsFromNames.return_value = suite
         env = {"SF_TEST_TIMEOUT": "0", "SF_RANDOM_ORDER": "1" if random_order else "0",
                "SF_RANDOM_SEED": "123456", "SF_RERUN_FAILED": "1" if rerun else "0"}
         snapshots = snapshots or [{}, {}]
@@ -53,10 +54,95 @@ class RunnerExecutionContracts(SFCase):
              mock.patch.object(runner.unittest, "TestLoader", return_value=loader), \
              mock.patch.object(runner, "_snapshot_user_data", side_effect=snapshots), \
              mock.patch.object(runner, "_report_ui_dialog_violations", return_value=ui_violation):
-            rc, out = invoke(runner.main, [])
+            args = [] if modules is None else [part for name in modules for part in ("--module", name)]
+            rc, out = invoke(runner.main, args)
         guard.assert_called_once_with()
-        loader.discover.assert_called_once()
+        if modules is None:
+            loader.discover.assert_called_once()
+            loader.loadTestsFromNames.assert_not_called()
+        else:
+            loader.discover.assert_not_called()
+            loader.loadTestsFromNames.assert_called_once_with(
+                list(dict.fromkeys(name.removeprefix("tests.") for name in modules)))
         return rc, out
+
+    def test_selected_modules_use_guarded_runner_without_full_discovery(self):
+        visits = []
+        rc, out = self.run_suite([lambda: visits.append("ran")],
+                                 modules=["tests.test_daily_workflow", "test_daily_workflow"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(visits, ["ran"])
+        self.assertIn("定向模块", out)
+
+    def test_selected_module_failure_is_not_hidden_when_retry_disabled(self):
+        def failing():
+            raise AssertionError("selected failure")
+
+        rc, out = self.run_suite([failing], modules=["test_sample"], rerun=False)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("selected failure", out)
+
+    def test_selected_modules_preserve_ui_and_user_data_guards(self):
+        rc, _ = self.run_suite([lambda: None], modules=["test_sample"], ui_violation=True)
+        self.assertEqual(rc, 1)
+        rc, _ = self.run_suite([lambda: None], modules=["test_sample"],
+                               snapshots=[{"config.json": (1, 1)}, {"config.json": (1, 2)}])
+        self.assertEqual(rc, 2)
+
+    def test_empty_suites_cannot_pass_in_full_or_selected_mode(self):
+        for modules in (None, ["test_sample"]):
+            with self.subTest(modules=modules):
+                rc, out = self.run_suite([], modules=modules)
+                self.assertEqual(rc, 2)
+                self.assertIn("零用例", out)
+
+    def test_invalid_module_or_cli_flags_are_rejected_before_preimport(self):
+        for args in (["--module", "os"], ["--module", "../test_x"],
+                     ["--module", "test_x.test_case"], ["--unknown"],
+                     ["--self-test", "--module", "test_sample"]):
+            with self.subTest(args=args), redirect_stderr(io.StringIO()), \
+                    mock.patch.object(runner, "_preimport_project_modules") as preimport:
+                with self.assertRaises(SystemExit) as error:
+                    runner.main(args)
+                self.assertEqual(error.exception.code, 2)
+                preimport.assert_not_called()
+
+    def test_focused_paths_exist_before_tests_and_environment_is_restored(self):
+        original = dict(os.environ)
+        observed = {}
+
+        def inspect_paths(modules):
+            self.assertEqual(modules, ["test_sample"])
+            for name in ("SF_CONFIG_PATH", "SF_LAST_QUOTE_PATH", "SF_UNIVERSE_PATH",
+                         "SF_LOG_PATH", "SF_SINGLE_SOCK"):
+                path = pathlib.Path(os.environ[name])
+                self.assertTrue(path.parent.is_dir())
+                self.assertFalse(path.exists())
+                observed[name] = path
+            self.assertEqual(os.environ["SF_UNIVERSE_DISABLE"], "1")
+            self.assertEqual(os.environ["SF_SEED_FIRST_SCREEN"], "0")
+            return 7
+
+        with mock.patch.object(runner, "run_tests", side_effect=inspect_paths):
+            rc = runner.main(["--module", "test_sample"])
+        self.assertEqual(rc, 7)
+        self.assertEqual(dict(os.environ), original)
+        self.assertTrue(observed)
+        self.assertFalse(next(iter(observed.values())).parent.exists())
+
+    def test_focused_environment_restores_paths_even_on_exception(self):
+        original = dict(os.environ)
+        with mock.patch.object(runner, "run_tests", side_effect=RuntimeError("injected")), \
+                self.assertRaises(RuntimeError):
+            runner.main(["--module", "test_sample"])
+        self.assertEqual(dict(os.environ), original)
+
+    def test_focused_environment_removes_previously_absent_variables(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with runner.focused_environment():
+                self.assertIn("SF_CONFIG_PATH", os.environ)
+                self.assertIn("SF_UNIVERSE_DISABLE", os.environ)
+            self.assertEqual(dict(os.environ), {})
 
     def test_clean_suite_is_green(self):
         visits = []

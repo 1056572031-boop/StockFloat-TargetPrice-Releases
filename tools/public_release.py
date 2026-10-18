@@ -17,7 +17,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from sf_constants import APP_VERSION  # noqa: E402
-from make_update_assets import REPO, TAG  # noqa: E402
+from release_identity import REPO, SUPPORT_EMAIL, TAG  # noqa: E402
 from public_docs_check import problems  # noqa: E402
 
 PUBLIC_BRANCH = "public-source"
@@ -30,6 +30,9 @@ CREDENTIALS = re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{2
                          rb"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 PERSONAL_MAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@(?:qq|foxmail|gmail|icloud|outlook|hotmail)\.com")
 PHONE = re.compile(rb"(?<![0-9.,eE+\-])1[3-9][0-9]{9}(?![0-9.,a-fA-F])")
+NUMERIC_CONTACT = re.compile(
+    r"(?i)(?:qq|phone|mobile|personal[_ -]?id|电话|手机|旧号码|个人号码)"
+    r"[\s:=\"']*([0-9]{5,12})(?![0-9])".encode())
 
 
 def git_env() -> dict:
@@ -64,19 +67,32 @@ def privacy_problems(data: bytes, home: str, secrets=()) -> list[str]:
     if CREDENTIALS.search(data):
         bad.append("credential")
     # The explicitly approved support mailbox is public; do not exempt other contacts.
-    public_data = data.replace(b"1056572031@qq.com", b"public-support-mailbox")
+    public_data = re.sub(
+        rb"(?<![A-Za-z0-9._%+\-])" + re.escape(SUPPORT_EMAIL.encode())
+        + rb"(?![A-Za-z0-9._%+@\-])", b"public-support-mailbox", data)
     if PERSONAL_MAIL.search(public_data):
         bad.append("personal contact")
-    if PHONE.search(data):
+    # Exempt the exact repository slug and real GitHub owner URL components,
+    # not arbitrary prose containing the owner's spelling or lookalike hosts.
+    owner = REPO.split("/", 1)[0].encode()
+    public_data = re.sub(
+        rb"https://(?:github\.com|raw\.githubusercontent\.com|api\.github\.com/repos|"
+        rb"uploads\.github\.com/repos)/" + re.escape(owner) + rb"(?=/|[\s\"')]|$)",
+        b"https://github.com/maintainer", public_data)
+    public_data = re.sub(
+        rb"(?<![A-Za-z0-9_./\-])" + re.escape(REPO.encode())
+        + rb"(?![A-Za-z0-9_.\-])", b"public-repository", public_data)
+    if PHONE.search(public_data):
         bad.append("personal phone number")
+    if NUMERIC_CONTACT.search(public_data):
+        bad.append("personal numeric contact")
     if home.encode() in data:
         bad.append("personal home path")
     if b"." + b"workbuddy" in data:
         bad.append("internal credential directory")
     # An existing download namespace is necessary. Do not grant a blanket number exemption.
-    owner = REPO.split("/", 1)[0].encode()
     number = owner.split(b"-", 1)[0]
-    if number.isdigit() and number in public_data.replace(owner, b"maintainer"):
+    if number.isdigit() and number in public_data:
         bad.append("personal numeric identifier outside GitHub namespace")
     return bad
 
@@ -204,7 +220,11 @@ def self_test() -> int:
     home = "/Users/" + "private-owner"
     token = b"ghp_" + b"a" * 30
     cases = ((home.encode(), True), (token, True), (b"person@" + b"qq.com", True),
-             (b"138" + b"00138000", True),
+             (b"138" + b"00138000", True), (b"QQ: " + b"927" + b"45163", True),
+             (b"old owner " + REPO.split("/", 1)[0].encode(), True),
+             (SUPPORT_EMAIL.encode(), False),
+             (("https://github.com/" + REPO).encode(), False),
+             (b"run 387" + b"04366170", False),
              (b"safe example", False), (REPO.encode(), False))
     if any(bool(privacy_problems(data, home)) != want for data, want in cases):
         return 1

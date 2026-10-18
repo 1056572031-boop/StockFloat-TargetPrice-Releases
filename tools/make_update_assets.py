@@ -22,8 +22,8 @@ from pathlib import Path
 from nacl.signing import SigningKey
 
 
-REPO = "1056572031-boop/StockFloat-TargetPrice-Releases"
-TAG = "版本更新"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_identity import REPO, TAG  # noqa: E402
 # v1.4.55 全局改名：产物与清单里的身份字段一起换（REPO 名不动 —— 那是外部仓库地址，
 # 改它要连 GitHub 仓库一起搬，客户端里也有它）。
 APP_NAME = "Skyrocket.app"

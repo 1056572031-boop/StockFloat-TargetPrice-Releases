@@ -5,14 +5,14 @@
   那行命令里带着**版本号与资产名**。手写的下一轮就旧了，而旧指引的表现形式是
   「用户照做、404、以为你的程序有问题」—— 这类错不会有任何地方报错。
   版本唯一来源是 sf_constants.APP_VERSION，资产名与仓库/标签唯一来源是
-  tools/make_update_assets.py，本脚本只从这两处取值，不复制常量。
+  sf_constants.py，本脚本通过轻量身份读取器共享发行配置，不复制常量。
 
 用法
     ./.venv/bin/python tools/render_install_guide.py            # 写到 docs/INSTALL.md
     ./.venv/bin/python tools/render_install_guide.py --print    # 只打印
     ./.venv/bin/python tools/render_install_guide.py --check    # 核验现存文件是不是本轮版本（发版闸门）
     ./.venv/bin/python tools/render_install_guide.py --self-test  # 变异自检（发版链要求，见下）
-    默认使用发行仓库的公开问题反馈入口，不要求发布维护者私人邮箱。
+    默认使用获准保留的公开支持邮箱，允许 SF_CONTACT_EMAIL 显式覆盖。
 """
 from __future__ import annotations
 
@@ -31,7 +31,8 @@ sys.path.insert(0, str(ROOT))
 
 from sf_constants import APP_DISPLAY_NAME, APP_VERSION, DESKTOP_OUTPUT_DIR  # noqa: E402
 
-import make_update_assets  # noqa: E402  （REPO / TAG / APP_NAME 的唯一来源）
+from release_identity import SUPPORT_EMAIL  # noqa: E402
+import make_update_assets  # noqa: E402  （资产命名；发行身份来自 sf_constants）
 from verify_install_paths import launcher_script  # noqa: E402  （卷内双击脚本：名字按 installer/*.command 发现）
 import apply_installer_icon as AIC  # noqa: E402  （卷内条目在 Finder 里的**显示名**，与发版链同一份实现）
 
@@ -69,6 +70,10 @@ def archive_name(version: str = APP_VERSION) -> str:
     return "Skyrocket-%s-macos.zip" % version
 
 
+def checksums_name(version: str = APP_VERSION) -> str:
+    return "Skyrocket-%s-SHA256SUMS.txt" % version
+
+
 def download_url(version: str = APP_VERSION) -> str:
     # TAG 是中文「版本更新」，URL 里必须百分号编码，否则 curl 会 404。
     return "https://github.com/%s/releases/download/%s/%s" % (
@@ -78,7 +83,7 @@ def download_url(version: str = APP_VERSION) -> str:
 
 
 def manifest_sha256() -> str | None:
-    """本轮包的 sha256，用来给用户一句可核对的话；拿不到就整段不写（不编数字）。"""
+    """Read current asset digest availability, without embedding it back into the app."""
     for cand in (ROOT / "build" / "update_assets" / ("V%s" % APP_VERSION) / "Skyrocket-update.json",
                  Path(DESKTOP_OUTPUT_DIR) / "Skyrocket-update.json"):
         if not cand.is_file():
@@ -113,9 +118,8 @@ def release_line() -> str:
 
 
 def contact() -> str:
-    """Use a real public feedback channel when no approved contact override is set."""
-    return (os.environ.get(CONTACT_ENV) or
-            "[GitHub 问题反馈](https://github.com/%s/issues)" % make_update_assets.REPO)
+    """Keep the approved public mailbox unless explicitly overridden."""
+    return os.environ.get(CONTACT_ENV) or SUPPORT_EMAIL
 
 
 # FR-12 的四条硬约束里，有两条能在**代码块**上机器核验（正文里的否定句不算违规：
@@ -189,7 +193,6 @@ def render(local_only: bool = False) -> str:
             "漏洞按 SECURITY.md 私下报告，完整许可见 LICENSE 与 NOTICE.md。",
             "",
         ])
-    digest = manifest_sha256()
     ver = APP_VERSION
     lines = [
         "# %s 安装说明（v%s）" % (APP_DISPLAY_NAME, ver),
@@ -206,7 +209,7 @@ def render(local_only: bool = False) -> str:
         "核对本版文件名和 SHA-256；校验不符或来源不明时停止安装，不要盲目放行。"
         % (make_update_assets.REPO, urllib.parse.quote(make_update_assets.TAG, safe="")),
         "不会关闭全系统安全保护；以下放行方式仅在你确认信任本项目后使用。",
-        "发行页的 `Skyrocket-%s-SHA256SUMS.txt` 列出本版 DMG、应用 ZIP 和源码 ZIP 校验值。" % ver,
+        "发行页的 `%s` 列出本版 DMG、应用 ZIP 和源码 ZIP 校验值。" % checksums_name(),
         "在终端执行下列命令，并将输出与校验清单的同名文件一行对照：",
         "",
         "```sh",
@@ -264,17 +267,19 @@ def render(local_only: bool = False) -> str:
         "它只清除这一个程序路径上的来历标签，不清系统里的其他任何东西。",
         "",
     ]
-    if digest:
-        lines += [
-            "## 想核对拿到的是不是同一份包（可选）",
-            "",
-            "```sh",
-            "shasum -a 256 ~/Downloads/%s" % archive_name(),
-            "```",
-            "",
-            "期望值：`%s`。不一致就是包在路上被换过或下坏了，重新按第一种装法来一次。" % digest,
-            "",
-        ]
+    # The ZIP includes this guide. Embedding its own digest would change the
+    # build inputs after packaging and create a circular archive dependency.
+    lines += [
+        "## 核对 ZIP 安装包",
+        "",
+        "```sh",
+        "shasum -a 256 ~/Downloads/%s" % archive_name(),
+        "```",
+        "",
+        "将输出与官方发行页 `%s` 中 `%s` 的同名条目对照；不一致时停止安装。"
+        % (checksums_name(), archive_name()),
+        "",
+    ]
     lines += [
         "## 照做之后还是装不上",
         "",
@@ -425,12 +430,13 @@ def main(argv=None) -> int:
         problems = lint_commands(body) + lint_placeholders(
             body, allow_unset_contact="--allow-unset-contact" in argv)
         for token, why in ((download_url(), "那行 curl 命令的下载地址不是本轮版本"),
-                           (archive_name(), "包名不是本轮版本")):
+                           (archive_name(), "包名不是本轮版本"),
+                           (checksums_name(), "校验清单不是本轮版本")):
             if token not in body:
                 problems.append(why)
         digest = manifest_sha256()
-        if digest and digest not in body:
-            problems.append("文中写的 sha256 与本轮清单里的不是同一份")
+        if body != render():
+            problems.append("安装说明与当前版本的稳定渲染内容不一致")
         # 线上可达性：说明指向的包必须真的在架上。拿不到结论时只如实说明，不假装通过也不判红。
         state, note = probe_asset(download_url())
         if state == "missing":
@@ -446,8 +452,8 @@ def main(argv=None) -> int:
                 print("   · " + one, file=sys.stderr)
             print("   重跑：./.venv/bin/python tools/render_install_guide.py", file=sys.stderr)
             return 1
-        print("== 安装说明与本轮版本同源（v%s，含 sha256=%s，命令块无 sudo/删除）=="
-              % (APP_VERSION, "已写" if digest else "本轮无清单，未写"))
+        print("== 安装说明与本轮版本同源（v%s，独立校验清单，资产摘要%s，命令块无 sudo/删除）=="
+              % (APP_VERSION, "已生成" if digest else "未生成"))
         return 0
     out.parent.mkdir(parents=True, exist_ok=True)
     text = render(local_only=True) if "--local-only" in argv else render()
