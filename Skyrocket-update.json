@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.94",
-  "published_at": "2026-10-17T10:41:23Z",
+  "version": "1.4.95",
+  "published_at": "2026-10-18T09:36:10Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 增加冻结版启动健康快照与更新状态诊断。\n2. 补充连续画面、时间戳和遮挡负向核验。\n3. 加固质量计时、复发复盘与发布证据链。",
+  "notes": "1. 补充窗口失败路径、屏幕信号和更新反馈覆盖。\n2. 收紧公开 CI 分支触发边界。\n3. 收口启动、画面与质量证据链，保留未验证边界。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.94-macos.zip",
-    "size": 26245697,
-    "sha256": "d6c7c8c835eea6770598457810052118bf58b74b63f60fe4fe5ece599f687f22"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.95-macos.zip",
+    "size": 26243456,
+    "sha256": "cdfc6a1710197afd85ec447194cfd6f357dec0f9ed461ac75e379b535fa57d0a"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "F9t3uoLVpDItIFoOei5FgTWFhc8N5itrfNdbze4A7n78KUURDjrgYG/1np7JP6GdGxr71cEie5K5snKDcUeJBQ=="
+    "value": "4mHQyMEuiT6USeu7MVjT3TCafX5m0TM9yYKCN/83S93uytE06XfN9wHT4gC2Mnoe5KYvARzBPiwmPdrOtVMfBg=="
   }
 }
