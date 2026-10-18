@@ -31,6 +31,8 @@ skip sf_feedback_outbox 本轮仅实现显式调用的 SQLite 本地队列；尚
 skip sf_feedback_receiver 本轮仅实现本机 Unix socket 的阶段 2 测试收件器；不由 Skyrocket 自动启动，案件对象和回执不得进入诊断附件。
 skip sf_feedback_analyzer 本轮仅实现离线、显式调用的 ZIP 分析器；未由 Skyrocket 自动启动，分析报告和规则配置不得进入诊断附件。
 
+version 1.4.95
+
 version 1.4.88
 skip sf_window_message_router 无持久运行态，仅按代码过滤并合并当前队列消息；最终滞后状态、分时交易日、点数及重试窗口由 runtime.json 的 minute 导出，应用异常由 debug.log 的 poll apply error 留痕。
 skip renderer 仅构造无状态绘制路径；实际玻璃后端、暗化值和回退原因由 glass.json 的 surface 导出，绘制异常沿用 debug.log 的 paintEvent error 留痕，无独立运行态需要采集。

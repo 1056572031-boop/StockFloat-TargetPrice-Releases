@@ -64,6 +64,25 @@ class DynamicWorkloadTests(SFCase):
             sample[field] = value
             self.assertTrue(power_profile.workload_problems(sample), field)
 
+    def test_real_network_workload_still_requires_a_visible_painted_window(self):
+        # G05 复核定：本地健康判据不许只锁 mock 档。真实网络档窗口没显示/首帧没画时，
+        # 任何“稳态 CPU”结论都是空转冒充的 —— 这两条就是“改坏必红”的锚。
+        for field, value in (("window_visible", False), ("first_frame_painted", False)):
+            sample = workload()
+            sample.update(net="real", vary=False, measurement_counts={})
+            sample[field] = value
+            problems = power_profile.workload_problems(sample)
+            self.assertTrue(problems, field)
+            self.assertTrue(any("real workload has no visible window" in p for p in problems), field)
+
+    def test_real_network_workload_with_local_health_keeps_degraded_network_legal(self):
+        # 反向红线：真实网络档的行情失败是合法现场，不许为了“看起来更严”把
+        # 报价/分时判据也抬到 real 档 —— 那会把真实降级测量全部错杀。
+        sample = workload()
+        sample.update(net="real", vary=False, measurement_counts={},
+                      has_quote=False, minute_points=0, poll_fail=3, poll_state=1)
+        self.assertEqual(power_profile.workload_problems(sample), [])
+
     def test_parent_rejects_success_exit_with_invalid_or_unqualified_payload(self):
         args = SimpleNamespace(mode="trading", seconds=3, net="mock", vary=True,
                                profile=False, native=False)
@@ -80,6 +99,16 @@ class DynamicWorkloadTests(SFCase):
         child = SimpleNamespace(returncode=0, stdout=json.dumps(workload()), stderr="")
         with mock.patch.object(power_profile.subprocess, "run", return_value=child):
             self.assertEqual(power_profile.run_child(args), workload())
+
+    def test_parent_accepts_locally_healthy_real_network_payload(self):
+        # real 档正向对照：场景绑定一致 + 本地健康成立时必须放行（反向是上一条的 net 篡改拒绝）。
+        args = SimpleNamespace(mode="trading", seconds=30, net="real", vary=False,
+                               profile=False, native=False)
+        payload = workload()
+        payload.update(net="real", vary=False, measurement_counts={})
+        child = SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        with mock.patch.object(power_profile.subprocess, "run", return_value=child):
+            self.assertEqual(power_profile.run_child(args), payload)
 
 
 class MeasurementEntryTests(SFCase):

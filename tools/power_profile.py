@@ -62,12 +62,17 @@ ANCHOR = {
 def workload_problems(sample):
     """Reject idle/short workloads before interpreting their CPU measurements."""
     problems: list[str] = []
+    # 本地健康两项对所有网络档都成立（G05 复核定补）：窗口没显示、首帧没画出来时，
+    # 任何 CPU/唤醒数字都不描述用户可见的稳态，exit 0 不得独自当成功。
+    # 真实网络的行情失败是合法现场（不能拒），所以 mock 专属的报价/分时健康判据仍单独锁。
+    if not (sample.get("window_visible") and sample.get("first_frame_painted")):
+        problems.append("%s workload has no visible window with a painted first frame"
+                        % sample.get("net"))
     if sample.get("net") != "mock":
         return problems
     if not (sample.get("has_quote") and sample.get("minute_points", 0) > 0
-            and sample.get("poll_fail") == 0 and sample.get("poll_state") == 0
-            and sample.get("window_visible") and sample.get("first_frame_painted")):
-        problems.append("mock workload has no healthy visible quote/minute frame")
+            and sample.get("poll_fail") == 0 and sample.get("poll_state") == 0):
+        problems.append("mock workload has no healthy quote/minute frame")
     if sample.get("vary"):
         counts = sample.get("measurement_counts", {})
         seconds = sample.get("seconds", 0)

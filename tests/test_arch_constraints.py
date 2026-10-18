@@ -494,6 +494,28 @@ class TestCISupplyChain(SFCase):
             self.assertRegex(action, r"^actions/[a-z-]+@[0-9a-f]{40}$")
         self.assertIn(".venv/bin/python tools/dependency_audit.py", workflow)
 
+    def test_cloud_regression_triggers_only_on_the_public_branch(self):
+        """云端回归只在公开仓的 public-source 上跑，私有仓的开发分支不许再进触发名单。
+
+        守的是**触发条件**而不是运行结果：远程 Actions 在本地跑不了（同类上一条），
+        而这份文件被公开快照原样带走、两个仓库共用同一份。私有仓的 macOS 运行器
+        按 10 倍费率折算，额度用完又没设消费额时，GitHub 不启动作业、
+        只留一条 6 秒的 failure（2026-10-17 实测三连红），既烧额度又说不了任何事。
+        谁把开发分支加回名单，这条必须当场红。
+        """
+        workflow = (ROOT / ".github/workflows/python-ci.yml").read_text()
+        triggers = workflow.split("\non:", 1)[1].split("\njobs:", 1)[0]
+        push_block = triggers.split("pull_request", 1)[0]
+        pr_block = triggers.split("pull_request", 1)[1].split("workflow_dispatch", 1)[0]
+        self.assertIn("public-source", push_block)
+        self.assertIn("public-source", pr_block)
+        self.assertIn("workflow_dispatch", triggers)
+        for dev_branch in ("feat/target-price", "main", "master"):
+            self.assertNotIn(
+                dev_branch, push_block,
+                "私有仓分支 %r 回到了 CI 的 push 名单：每次推送都会消耗 macOS 计费分钟，"
+                "并在私有仓挂红叉" % dev_branch)
+
 
 class TestTestWritingDiscipline(SFCase):
     """AGENTS §6 那 9 条书写纪律的自动关卡（v1.4.33 补：此前只有第 9、10 条有）。

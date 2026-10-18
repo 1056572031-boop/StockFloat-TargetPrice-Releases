@@ -41,6 +41,7 @@ _prompt = FloatWindow._prompt_update  # discipline-ok(R5): 同上
 _handle_prompt_answer = FloatWindow._handle_update_prompt_answer  # discipline-ok(R5): 同上
 _resume_check = FloatWindow._check_updates_after_resume  # discipline-ok(R5): 同上
 _show_checking = FloatWindow._show_checking_dialog  # discipline-ok(R5): 同上
+_show_previous_result = FloatWindow._show_previous_update_result  # discipline-ok(R5): 同上
 
 _NEW = sf_update.UpdateInfo(
     "9.9.9", "本轮说明",
@@ -334,6 +335,50 @@ class ManifestNetworkBudgetTest(SFCase):
             with self.assertRaises(sf_update.UpdateError):
                 sf_update.check_for_update("1.0.0")
         self.assertEqual(len(fetches), 1)
+
+
+class PreviousInstallResultTest(SFCase):
+    def test_non_success_results_are_shown_and_consumed_once(self):
+        shown = []
+        host = type("Host", (), {
+            "_show_update_message": lambda self, *args: shown.append(args),
+        })()
+        results = [
+            {"status": "rolled_back"},
+            {"status": "rollback_failed"},
+            {"status": "failed"},
+        ]
+        with patch.object(sf_update, "consume_install_result",
+                          side_effect=results + [None]):
+            for _ in results:
+                _show_previous_result(host)
+        self.assertEqual(len(shown), 3)
+        self.assertIn("已自动保留原版本", shown[0][1])
+        self.assertIn("自动恢复原版本失败", shown[1][1])
+        self.assertEqual(shown[2], ("更新未完成", "更新未完成，当前版本未受影响。"))
+
+    def test_installed_or_missing_result_is_silent(self):
+        shown = []
+        host = type("Host", (), {
+            "_show_update_message": lambda self, *args: shown.append(args),
+        })()
+        with patch.object(sf_update, "consume_install_result",
+                          side_effect=[{"status": "installed"}, None]):
+            _show_previous_result(host)
+            _show_previous_result(host)
+        self.assertEqual(shown, [])
+
+    def test_read_failure_is_logged_and_does_not_escape(self):
+        lines = []
+        host = type("Host", (), {
+            "_show_update_message": lambda self, *args: self,
+        })()
+        with patch.object(sf_update, "consume_install_result",
+                          side_effect=OSError("bad result")), \
+                patch.object(stock_float_window, "log_line",
+                             lambda msg, *args: lines.append(msg)):
+            _show_previous_result(host)
+        self.assertTrue(any("update result read failed" in line for line in lines))
 
 
 class CheckTraceabilityTest(SFCase):

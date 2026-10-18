@@ -195,6 +195,10 @@ def render(local_only: bool = False) -> str:
         "# %s 安装说明（v%s）" % (APP_DISPLAY_NAME, ver),
         "",
         "提供 DMG 和 ZIP 两种安装包，普通用户建议用下文的 DMG 双击安装。",
+        "系统要求：Apple 芯片的 Mac，**仅支持 macOS 26 或更高版本**；"
+        "不提供 macOS 25 及更早版本、Intel、Windows 或 Linux 安装包。"
+        "装机版实机核验来自 macOS 27，macOS 26 由云端 CI 完成全量回归与原生平台冒烟、尚未做装机实机验收；"
+        "先在「苹果菜单 → 关于本机」确认版本，低于支持范围时请勿安装。",
         "**未签名、未公证**：本项目没有 Apple Developer ID 开发者签名和 Apple 公证。",
         "本地签名用于完整性与版本身份检查：历史包使用临时 ad-hoc，后续固定签名包使用项目自签名证书；"
         "两者均不代表 Apple 已确认开发者身份或审核程序。",

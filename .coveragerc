@@ -15,3 +15,4 @@ skip_covered = True
 fail_under = 65
 exclude_lines =
     if __name__ == .__main__.:
+    pragma: no cover

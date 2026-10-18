@@ -139,11 +139,11 @@ class TestSeedBumpsLineVer(_WindowBase):
             win._line_ver = 0
             win._seed_first_screen()
 
-            self.assertTrue(getattr(win, "_seeded_from_cache", False),
+            self.assertTrue(getattr(win, "_seeded_from_cache", False),  # discipline-ok(R5): cache-seed result is the behavior under test
                             "同代码快照应当完成首屏预填")
             self.assertEqual(len(win.minute_points), 2,
                              "快照里的分时点应被写进 minute_points")
-            self.assertEqual(win._line_ver, 1,
+            self.assertEqual(win._line_ver, 1,  # discipline-ok(R5): line-cache version is the behavior under test
                              "写入分时数据后 _line_ver 必须自增，否则折线/均价线"
                              "缓存不会失效，切股后可能残留上一只股票的图")
         finally:
@@ -157,9 +157,46 @@ class TestSeedBumpsLineVer(_WindowBase):
             os.environ["SF_SEED_FIRST_SCREEN"] = "1"
             win._line_ver = 7
             win._seed_first_screen()
-            self.assertEqual(win._line_ver, 8)
-            win._seed_first_screen()
-            self.assertEqual(win._line_ver, 9)
+            self.assertEqual(win._line_ver, 8,  # discipline-ok(R5): line-cache version is the behavior under test
+                             )
+            win._seed_first_screen()  # discipline-ok(R5): callback under test
+            self.assertEqual(win._line_ver, 9,  # discipline-ok(R5): line-cache version is the behavior under test
+                             )
+        finally:
+            win.close()
+
+    def test_cross_day_seed_keeps_price_but_clears_change_percent(self):
+        self._write_snapshot([("0930", 1680.0, None)])
+        win = self._make_win()
+        try:
+            os.environ["SF_SEED_FIRST_SCREEN"] = "1"
+            with patch.object(m, "load_last_quote", return_value={
+                    "code": "600519",
+                    "quote": {"price": "1688.00", "pct": "3.5"},
+                    "day": "2026-09-11",
+                    "minute_points": [("0930", 1680.0, None)]}):
+                win._seed_first_screen()
+            self.assertEqual(win._disp_price, 1688.0)  # discipline-ok(R5): displayed price is the cache-seed behavior under test
+            self.assertEqual(win._disp_pct, 0.0)  # discipline-ok(R5): displayed change is the cache-seed behavior under test
+            self.assertTrue(win._price_is_fallback)  # discipline-ok(R5): fallback state is the cache-seed behavior under test
+            self.assertEqual(win._real_price, 0.0)  # discipline-ok(R5): real-price cache is the cache-seed behavior under test
+        finally:
+            win.close()
+
+    def test_invalid_or_other_stock_seed_does_not_touch_display_state(self):
+        win = self._make_win()
+        try:
+            os.environ["SF_SEED_FIRST_SCREEN"] = "1"
+            win._disp_price = None  # discipline-ok(R5): sentinel display cache is the invalid-input behavior under test
+            for snap in (
+                    {"code": "sz000001", "quote": {"price": "9", "pct": "1"}},
+                    {"code": "600519", "quote": {"price": "nan", "pct": "1"}},
+                    {"code": "600519", "quote": {"price": "0", "pct": "1"}},
+                    {"code": "600519", "quote": "not-a-dict"}):
+                with patch.object(m, "load_last_quote", return_value=snap):
+                    win._seed_first_screen()  # discipline-ok(R5): callback under test
+                self.assertIsNone(win._disp_price)  # discipline-ok(R5): invalid snapshots must preserve displayed price
+                self.assertFalse(getattr(win, "_seeded_from_cache", False))  # discipline-ok(R5): invalid snapshots must not mark cache seeding
         finally:
             win.close()
 

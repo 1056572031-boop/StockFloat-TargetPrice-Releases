@@ -27,10 +27,11 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QObject, QPoint, QRect, Qt, QTimer, pyqtSignal
 
 import stock_float_window as m
 import target_panel
+from sf_anim_driver import AnimDriver
 from tests._base import SFCase
 
 _QAPP = None
@@ -183,6 +184,144 @@ def _host(rec, **extra):
     return host
 
 
+class _ScreenSignals(QObject):
+    """Qt 信号是真信号；不依赖本机显示器或改变系统屏幕设置。"""
+
+    geometryChanged = pyqtSignal(QRect)
+    availableGeometryChanged = pyqtSignal(QRect)
+
+
+class WindowP0BehaviorCase(SFCase):
+    """只调用产品方法；私有接线与状态观测集中走现有 _wire/_peek。"""
+
+    def setUp(self):
+        super().setUp()
+        _ensure_qapp()
+        self.rec = _Rec()
+        self.swallowed = mock.Mock()
+        self.track_patch(mock.patch.object(m, "log_swallow", self.swallowed))
+
+    def tearDown(self):
+        super().tearDown()
+        self.swallowed.assert_not_called()
+
+    def screen_host(self, *, visible=True, minimized=False):
+        host = _host(self.rec, _minimized=minimized, _glass_mode="cached")
+        host.isVisible = lambda: visible
+        _wire(host, _clamp_to_screen=self.rec.slot("clamp"),
+              _keep_on_screen=self.rec.slot("keep"),
+              _force_top=self.rec.slot("top"),
+              _on_screen_changed=lambda *args: m.FloatWindow._on_screen_changed(host, *args),  # discipline-ok(R5): 绑定真实屏幕槽，验证信号消费行为
+              _watch_screen_geometry=lambda screen: m.FloatWindow._watch_screen_geometry(host, screen))  # discipline-ok(R5): 产品屏幕槽在隔离宿主上互调，必须绑定真实方法
+        return host
+
+    def test_both_screen_geometry_signals_force_clamp_when_visible(self):
+        host = self.screen_host()
+        screen = _ScreenSignals()
+        m.FloatWindow._watch_screen_geometry(host, screen)  # discipline-ok(R5): 测试对象是屏幕信号接线，无公开替代入口
+        for signal in (screen.geometryChanged, screen.availableGeometryChanged):
+            with self.subTest(signal=signal):
+                self.rec.calls.clear()
+                signal.emit(QRect(EDGE_X, EDGE_Y, SCREEN_W, SCREEN_H))
+                self.assertEqual(self.rec.names(), ["clamp", "keep", "top"])
+                self.assertEqual(self.rec.calls[0][2], {"force": True})
+                self.assertIsNone(_peek(host, "_glass_mode"))
+
+    def test_added_screen_is_clamped_now_and_watched_for_later_changes(self):
+        host = self.screen_host()
+        screen = _ScreenSignals()
+        m.FloatWindow._on_screen_added(host, screen)  # discipline-ok(R5): 热插拔入口必须既即时钳制又接续后续信号
+        self.assertEqual(self.rec.names(), ["clamp", "keep", "top"])
+        self.assertEqual(self.rec.calls[0][2], {"force": True})
+        self.rec.calls.clear()
+        screen.availableGeometryChanged.emit(QRect())
+        self.assertEqual(self.rec.names(), ["clamp", "keep", "top"])
+        self.assertEqual(self.rec.calls[0][2], {"force": True})
+
+    def test_screen_changes_do_not_reveal_hidden_or_minimized_window(self):
+        for visible, minimized in ((False, False), (True, True)):
+            with self.subTest(visible=visible, minimized=minimized):
+                host = self.screen_host(visible=visible, minimized=minimized)
+                self.rec.calls.clear()
+                m.FloatWindow._on_screen_changed(host, QRect())  # discipline-ok(R5): 负向对照：隐藏态不能被屏幕回调重新置顶
+                self.assertEqual(self.rec.calls, [])
+                self.assertIsNone(_peek(host, "_glass_mode"))
+
+    def test_price_finish_consumption_keeps_timer_until_layout_finishes(self):
+        driver = AnimDriver()
+        now = 1000.0
+        driver.anim_from_price, driver.anim_to_price = 10.0, 12.0
+        driver.anim_from_pct, driver.anim_to_pct = 0.0, 1.0
+        driver.anim_start, driver.anim_dur = now - 1.0, 0.2
+        driver.begin_layout(CARD_H, TARGET_H, now)
+        timer = QTimer()
+        self.addCleanup(timer.stop)
+        host = _host(self.rec, _anim_driver=driver, _anim_timer=timer,
+                     _resize_target_h=None, _chart_changed=False, _chart_expanded=True,
+                     _disp_price=10.0, _disp_pct=0.0,
+                     _partial_price=(0, 0, CARD_W, CARD_H),
+                     _repaint_now=self.rec.slot("repaint"),
+                     _keep_on_screen=self.rec.slot("keep"))
+        host.setMinimumHeight = self.rec.slot("min")
+        host.setMaximumHeight = self.rec.slot("max")
+        timer.start()
+        with mock.patch.object(m.time, "monotonic", return_value=now + m.LAYOUT_ANIM_DUR / 2):
+            m.FloatWindow._anim_tick_inner(host)  # discipline-ok(R5): 验证主窗消费真实 driver 动作，而非只测事件产生
+        self.assertEqual(_peek(host, "_disp_price", "_disp_pct"), (12.0, 1.0))
+        self.assertEqual(_peek(host, "_roll_pending"), {})
+        self.assertIsNone(_peek(host, "_partial_price"))
+        self.assertGreater(host.height(), CARD_H)
+        self.assertLess(host.height(), TARGET_H)
+        self.assertTrue(timer.isActive(), "价格已落定但布局只到半途，不能停共用时钟")
+        self.assertIn("repaint", self.rec.names())
+        with mock.patch.object(m.time, "monotonic", return_value=now + m.LAYOUT_ANIM_DUR * 2):
+            m.FloatWindow._anim_tick_inner(host)  # discipline-ok(R5): 完成帧负向对照：布局落定后必须停表
+        self.assertEqual(host.height(), TARGET_H)
+        self.assertFalse(timer.isActive())
+        self.assertIn("keep", self.rec.names())
+        self.assertIn("glass_sync", self.rec.names())
+
+    def test_collapse_failure_relocks_maximum_height_and_logs(self):
+        error = RuntimeError("minute interval failed")
+        host = _host(self.rec, _chart_expanded=True,
+                     _reconcile_model_with_server=self.rec.slot("resync"),
+                     _set_minute_interval=mock.Mock(side_effect=error))
+        bounds = {"max": m.MAX_H}
+        host.setMinimumHeight = self.rec.slot("min")
+        host.setMaximumHeight = self.rec.slot(
+            "max", action=lambda value: bounds.__setitem__("max", value))
+        host.maximumHeight = lambda: bounds["max"]
+        with mock.patch.object(m, "feature_enabled", return_value=True), \
+                mock.patch.object(m, "log_line") as log:
+            m.FloatWindow._toggle_chart(host)  # discipline-ok(R5): 故障注入在放开上限之后，测异常恢复而非正常完成帧
+        self.assertEqual([call[1][0] for call in self.rec.calls if call[0] == "max"],
+                         [m.MAX_H, COLLAPSED_H])
+        self.assertEqual(host.maximumHeight(), COLLAPSED_H)
+        self.assertFalse(_peek(host, "_chart_expanded"))
+        _peek(host, "_anim_timer").start.assert_not_called()
+        log.assert_called_once()
+        self.assertIn("toggle chart error", log.call_args.args[0])
+        self.assertIn(str(error), log.call_args.args[0])
+
+    def test_failed_config_save_logs_shows_tooltip_and_schedules_hide(self):
+        host = _host(self.rec)
+        origin = QPoint(30, 40)
+        host.mapToGlobal = lambda point: point + origin
+        with mock.patch.object(m, "log_line") as log, \
+                mock.patch.object(m.QToolTip, "showText") as show, \
+                mock.patch.object(m.QToolTip, "hideText") as hide, \
+                mock.patch.object(QTimer, "singleShot") as schedule:
+            m.FloatWindow._after_save_config(host, False)  # discipline-ok(R5): 保存失败反馈入口；Tooltip 与定时回调均隔离
+            log.assert_called_once_with("config save failed; notify user", "WARNING")
+            show.assert_called_once_with(
+                origin + QPoint(CARD_W // 2, 10),
+                "配置保存失败：请检查磁盘空间或 config 文件权限", host)
+            schedule.assert_called_once_with(5000, hide)
+            hide.assert_not_called()
+            schedule.call_args.args[1]()
+            hide.assert_called_once_with()
+
+
 class MouseReleaseDragCase(SFCase):
     """拖拽/拉伸松手这一拍：顺序、落盘、玻璃层对齐。"""
 
@@ -228,6 +367,25 @@ class MouseReleaseDragCase(SFCase):
         self.assertFalse(_peek(host, "_drag"), "松手后拖拽标志必须清掉")
         self.assertFalse(_peek(host, "_sys_drag"),
                          "系统拖拽标志也必须清：留着下一拍还会走一次收口")
+
+    def test_glass_sync_failure_still_finishes_drag_and_saves_position(self):
+        error = RuntimeError("glass sync failed")
+        sync = mock.Mock(side_effect=error)
+        host = _host(self.rec, _drag=True, _sys_drag=True, _press_btn=None,
+                     _press_chart=False, _sync_glass_frame=sync)
+        host.update = mock.Mock()
+        with mock.patch.object(m, "log_swallow") as swallowed:
+            _release(host, _Mouse())
+        sync.assert_called_once_with(force_mask=True, use_server_origin=True)
+        swallowed.assert_called_once_with(
+            "stock_float_window.mouseReleaseEvent.glass_sync", error)
+        self.assertEqual(_peek(host, "_drag", "_sys_drag", "_press_btn"),
+                         (False, False, None))
+        self.assertEqual(self.saved, [
+            (host.code, host.x(), host.y(), host.height(), _peek(host, "_bg_cfg"))])
+        after_save = next(call for call in self.rec.calls if call[0] == "after_save")
+        self.assertEqual(after_save[1], (True,))
+        host.update.assert_called()
 
     def test_desktop_drag_release_does_not_touch_the_server_origin(self):
         """桌面上（非系统拖拽）模型是最新的，此时**不许**去问服务端 ——

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import datetime
 import pathlib
+import plistlib
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -31,6 +33,12 @@ sync_panel = window.FloatWindow._sync_target_panel  # discipline-ok(R5): visible
 WINDOW_X, WINDOW_Y, WINDOW_HEIGHT = 100, 200, 224
 MIN_TIMER_MS = 1
 BJ = datetime.timezone(datetime.timedelta(hours=8))
+nap = window.FloatWindow._nap  # discipline-ok(R5): quote-loop sleep fallback boundary
+prefetch = window.FloatWindow._prefetch_calendar  # discipline-ok(R5): startup calendar orchestration
+adopt = window.FloatWindow._adopt_targets_for  # discipline-ok(R5): stock-switch target adoption
+minimize = window.FloatWindow.minimize_to_dock
+flash_tick = window.FloatWindow._flash_tick  # discipline-ok(R5): animation timer delivery boundary
+running_bundle_id = window._running_bundle_id  # discipline-ok(R5): installed identity read boundary
 
 
 def host(**state):
@@ -287,6 +295,165 @@ class TargetCalendarBranchCases(SFCase):
         panel.isVisible = lambda: False
         sync_panel(target)
         self.assertIsNone(shown["alerts"])
+
+
+class WindowOrchestrationFallbacks(SFCase):
+    """Exercise real handlers without allocating a production window or workers."""
+
+    def test_optional_dock_cleanup_failures_do_not_leave_the_main_window_visible(self):
+        for failing in ("panel", "bubble", "glass", "flash"):
+            with self.subTest(failing=failing), mock.patch.object(window, "show_dock") as show:
+                actions = {name: mock.Mock() for name in ("panel", "bubble", "glass", "flash")}
+                actions[failing].side_effect = RuntimeError("native object deleted")
+                pending = host(stop=mock.Mock())
+                target = host(
+                    _close_editor_safely=mock.Mock(), _close_target_panel=actions["panel"],
+                    _hide_target_bubble=actions["bubble"], _hide_dock_timer=pending,
+                    _hover_btn="bell", _press_btn="min", _press_btn_actioned=True,
+                    _runtime=host(enter_dock=mock.Mock()), hide=mock.Mock(),
+                    _resched_loops=mock.Mock(), _glass_window=host(orderOut_=actions["glass"]),
+                    top_timer=host(stop=mock.Mock()), _sync_dot_timer=mock.Mock(),
+                    _update_nap_policy=mock.Mock(), _flash_drop_timer=host(stop=actions["flash"]),
+                    timer=host(interval=lambda: 50, setInterval=mock.Mock()),
+                    _sync_face_guard=mock.Mock())
+                minimize(target)
+                target.hide.assert_called_once_with()
+                vars(target)["_runtime"].enter_dock.assert_called_once_with()
+                vars(target)["_resched_loops"].assert_called_once_with()
+                pending.stop.assert_called_once_with()
+                self.assertIsNone(vars(target)["_hide_dock_timer"])
+                self.assertIsNone(vars(target)["_hover_btn"])
+                self.assertIsNone(vars(target)["_press_btn"])
+                self.assertFalse(vars(target)["_press_btn_actioned"])
+                for action in actions.values():
+                    action.assert_called_once()
+                target.top_timer.stop.assert_called_once_with()
+                vars(target)["_sync_dot_timer"].assert_called_once_with()
+                vars(target)["_update_nap_policy"].assert_called_once_with(False)
+                target.timer.setInterval.assert_called_once_with(int(window.POLL_INTERVAL_MINIMIZED * 1000))
+                show.assert_called_once_with()
+                vars(target)["_sync_face_guard"].assert_called_once_with("minimize", stop_wait=False)
+
+    def test_trading_nap_short_circuits_boundary_and_schedule_calculations(self):
+        schedule = host(last=10.0, tick_seconds=0.25, nap_seconds=mock.Mock())
+        with mock.patch.object(window, "seconds_to_session_change") as boundary:
+            self.assertEqual(nap(None, schedule, 10.0, 0.1), 0.25)
+        boundary.assert_not_called()
+        schedule.nap_seconds.assert_not_called()
+
+    def test_boundary_failure_still_delegates_to_the_sleep_scheduler(self):
+        schedule = host(last=10.0, tick_seconds=0.25, nap_seconds=mock.Mock(return_value=0.25))
+        with mock.patch.object(window, "seconds_to_session_change", side_effect=RuntimeError("calendar unavailable")):
+            self.assertEqual(nap(None, schedule, 11.0, 3600.0), 0.25)
+        schedule.nap_seconds.assert_called_once_with(11.0, 3600.0, 0.0)
+
+    def test_schedule_failure_uses_configured_tick_or_legacy_default(self):
+        for tick in (None, 0.25):
+            with self.subTest(tick=tick):
+                schedule = host(last=None, nap_seconds=mock.Mock(side_effect=RuntimeError("bad schedule")))
+                if tick is not None:
+                    schedule.tick_seconds = tick
+                with mock.patch.object(window, "seconds_to_session_change", return_value=2.0):
+                    self.assertEqual(nap(None, schedule, 11.0, 3600.0), tick or 0.1)
+                schedule.nap_seconds.assert_called_once_with(11.0, 3600.0, 2.0)
+
+    def test_calendar_prefetch_filters_builtin_year_and_handles_december_rollover(self):
+        for year, month, months in (
+                (2026, 11, []), (2026, 12, ["2027-01"]),
+                (2027, 12, ["2027-12", "2028-01"])):
+            with self.subTest(year=year, month=month):
+                now = datetime.datetime(year, month, 15, tzinfo=BJ)
+                status = {ym: "loading" for ym in months}
+                with mock.patch.object(window, "_beijing_now", return_value=now), \
+                     mock.patch.object(window, "prefetch_months_async") as warm, \
+                     mock.patch.object(window, "calendar_sync_status", return_value=status) as sync:
+                    self.assertEqual(prefetch(None), status)
+                warm.assert_called_once_with(months)
+                sync.assert_called_once_with(months)
+
+    def test_calendar_prefetch_or_status_failure_returns_empty_status_and_logs(self):
+        for failed in ("prefetch_months_async", "calendar_sync_status"):
+            with self.subTest(failed=failed), \
+                 mock.patch.object(window, "_beijing_now", return_value=datetime.datetime(2027, 1, 8, tzinfo=BJ)), \
+                 mock.patch.object(window, "prefetch_months_async"), \
+                 mock.patch.object(window, "calendar_sync_status"), \
+                 mock.patch.object(window, failed, side_effect=RuntimeError("calendar offline")), \
+                 mock.patch.object(window, "log_line") as log:
+                self.assertEqual(prefetch(None), {})
+                self.assertIn("calendar offline", log.call_args.args[0])
+
+    def test_failed_target_adoption_clears_the_previous_stocks_alerts(self):
+        for failed in ("load_alerts", "_persist_alerts", "_arm_clear_timer"):
+            with self.subTest(failed=failed):
+                target = host(_targets_enabled=lambda: True, _alerts=[{"target": 99}],
+                              _persist_alerts=mock.Mock(return_value=True),
+                              _after_save_config=mock.Mock(), _arm_clear_timer=mock.Mock())
+                with mock.patch.object(window, "load_alerts", return_value=[{"target": 10}]) as load, \
+                     mock.patch.object(window, "expired", return_value=failed == "_persist_alerts"), \
+                     mock.patch.object(window, "log_line") as log:
+                    collaborator = load if failed == "load_alerts" else vars(target)[failed]
+                    collaborator.side_effect = RuntimeError("adoption unavailable")
+                    adopt(target, "sz000001")
+                self.assertEqual(vars(target)["_alerts"], [])
+                self.assertEqual(log.call_args.args[1], "WARNING")
+                self.assertIn("sz000001", log.call_args.args[0])
+                if failed == "load_alerts":
+                    vars(target)["_persist_alerts"].assert_not_called()
+                    vars(target)["_arm_clear_timer"].assert_not_called()
+
+    def test_failed_expired_target_save_keeps_only_live_targets_and_reports_failure(self):
+        live, old = {"target": 10}, {"target": 20}
+        target = host(_targets_enabled=lambda: True, _alerts=[{"target": 99}],
+                      _persist_alerts=mock.Mock(return_value=False),
+                      _after_save_config=mock.Mock(), _arm_clear_timer=mock.Mock())
+        with mock.patch.object(window, "load_alerts", return_value=[live, old]), \
+             mock.patch.object(window, "expired", side_effect=lambda alert, now: alert is old):
+            adopt(target, "sz000001")
+        self.assertEqual(vars(target)["_alerts"], [live])
+        vars(target)["_persist_alerts"].assert_called_once_with([live])
+        vars(target)["_after_save_config"].assert_called_once_with(False)
+        vars(target)["_arm_clear_timer"].assert_called_once_with()
+
+    def test_flash_expiry_still_stops_timer_when_repaint_fails_and_logs(self):
+        target = host(_anim_driver=host(flash_tick=mock.Mock(return_value=(False, False))),
+                      _flash_timer=host(stop=mock.Mock()),
+                      _repaint_now=mock.Mock(side_effect=RuntimeError("paint unavailable")))
+        with mock.patch.object(window.time, "monotonic", return_value=42.0), \
+             mock.patch.object(window, "log_line") as log:
+            flash_tick(target)
+        vars(target)["_anim_driver"].flash_tick.assert_called_once_with(42.0)
+        vars(target)["_flash_timer"].stop.assert_called_once_with()
+        self.assertIn("paint unavailable", log.call_args.args[0])
+
+
+class RunningBundleIdentityFailures(SFCase):
+    def test_installed_identity_is_read_from_real_plist_not_source_constants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            contents = pathlib.Path(directory) / "Fixture.app" / "Contents"
+            executable = contents / "MacOS" / "Fixture"
+            executable.parent.mkdir(parents=True)
+            plist = contents / "Info.plist"
+            with mock.patch.object(window.sys, "executable", str(executable)):
+                for bundle_id in ("com.fixture.installed", "com.fixture.legacy"):
+                    with self.subTest(bundle_id=bundle_id):
+                        plist.write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle_id}))
+                        self.assertEqual(running_bundle_id(), bundle_id)
+                plist.write_bytes(plistlib.dumps({"CFBundleName": "Fixture"}))
+                self.assertEqual(running_bundle_id(), "")
+                plist.unlink()
+                self.assertEqual(running_bundle_id(), "")
+
+    def test_corrupt_installed_plist_returns_empty_identity_with_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            contents = pathlib.Path(directory)
+            executable = contents / "MacOS" / "Fixture"
+            executable.parent.mkdir()
+            (contents / "Info.plist").write_bytes(b"not a plist")
+            with mock.patch.object(window.sys, "executable", str(executable)), \
+                 mock.patch.object(window, "log_line") as log:
+                self.assertEqual(running_bundle_id(), "")
+            self.assertEqual(log.call_args.args[1], "WARNING")
+            self.assertIn("bundle id unreadable", log.call_args.args[0])
 
 
 if __name__ == "__main__":

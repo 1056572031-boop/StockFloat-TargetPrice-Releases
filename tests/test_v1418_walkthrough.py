@@ -156,6 +156,38 @@ class TestApplyStockResetsPrice(unittest.TestCase):
         self.assertTrue(self.win._price_is_fallback)
         self.assertEqual(self.win._anim_driver.anim_to_price, 0.0)
 
+    def test_switching_stock_resets_display_timers_and_cached_quote_state(self):
+        self.win._flash_timer.start()  # discipline-ok(R5): timer state is the state under test
+        self.win._rainbow_timer.start()  # discipline-ok(R5): timer state is the state under test
+        self.win._flash_drop_timer.start()  # discipline-ok(R5): timer state is the state under test
+        self.win.quote = {"price": "1500"}
+        self.win.minute_points = [("0930", 1500.0, None)]
+        self.win._minute_day = "2026-09-12"  # discipline-ok(R5): stale day is the state under test
+        self.win._minute_stale = True  # discipline-ok(R5): stale marker is the state under test
+        self.win._disp_price = 1500.0  # discipline-ok(R5): display cache is the state under test
+        self.win._disp_pct = 1.2  # discipline-ok(R5): display cache is the state under test
+        self.win._real_price = 1500.0  # discipline-ok(R5): quote cache is the state under test
+        self.win._roll_pending = {"price": 1500.0}  # discipline-ok(R5): animation state is the state under test
+        self.win._roll_prev = {"price": 1499.0}  # discipline-ok(R5): animation state is the state under test
+        self.win._roll_anim = {"price": object()}  # discipline-ok(R5): animation state is the state under test
+        old_line_ver = self.win._line_ver  # discipline-ok(R5): version counter is the state under test
+        self.assertTrue(self.win.apply_stock("sz000001"))
+        self.assertFalse(self.win._flash_timer.isActive())  # discipline-ok(R5): timer state is the state under test
+        self.assertFalse(self.win._rainbow_timer.isActive())  # discipline-ok(R5): timer state is the state under test
+        self.assertFalse(self.win._flash_drop_timer.isActive())  # discipline-ok(R5): timer state is the state under test
+        self.assertIsNone(self.win.quote)  # discipline-ok(R5): quote cache is the state under test
+        self.assertEqual(self.win.minute_points, [])  # discipline-ok(R5): minute cache is the state under test
+        self.assertEqual(self.win._real_price, 0.0)  # discipline-ok(R5): quote cache is the state under test
+        self.assertTrue(self.win._price_is_fallback)  # discipline-ok(R5): fallback state is the state under test
+        self.assertIsNone(self.win._disp_price)  # discipline-ok(R5): display cache is the state under test
+        self.assertIsNone(self.win._disp_pct)  # discipline-ok(R5): display cache is the state under test
+        self.assertEqual(self.win._minute_day, "")  # discipline-ok(R5): stale day is the state under test
+        self.assertFalse(self.win._minute_stale)  # discipline-ok(R5): stale marker is the state under test
+        self.assertGreater(self.win._line_ver, old_line_ver)  # discipline-ok(R5): version counter is the state under test
+        self.assertEqual(self.win._roll_pending, {})  # discipline-ok(R5): animation state is the state under test
+        self.assertEqual(self.win._roll_prev, {})  # discipline-ok(R5): animation state is the state under test
+        self.assertEqual(self.win._roll_anim, {})  # discipline-ok(R5): animation state is the state under test
+
     def test_new_press_clears_stale_gesture(self):
         """S5：丢一次 mouseRelease 会让 _resizing 粘滞为真；下一次按下必须复位，
         否则在中部拖动窗口会被误当成拉伸高度。"""

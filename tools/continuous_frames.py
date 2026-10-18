@@ -76,7 +76,7 @@ def join_frames(source, decoded):
     return frames, errors
 
 
-def phase_report(frames, start, end, *, startup=False):
+def phase_report(frames, start, end, *, startup=False, first_visible_budget=None):
     errors = []
     if not finite(start) or not finite(end) or end - start < 0.5:
         return {"passed": False, "errors": ["invalid/too-short phase interval"]}
@@ -103,7 +103,11 @@ def phase_report(frames, start, end, *, startup=False):
         first_delay = None
     else:
         first_delay = max(0, visible[0]["time"] - start)
-        if first_delay > (MAX_STARTUP_DELAY if startup else MAX_FRAME_GAP):
+        # first_visible_budget：调用方显式覆盖（冻结包冷启动含进程引导，
+        # 源码探针的构造→首价预算不适用）；不给时维持原有两档预算。
+        budget = first_visible_budget if first_visible_budget is not None else (
+            MAX_STARTUP_DELAY if startup else MAX_FRAME_GAP)
+        if first_delay > budget:
             errors.append("first visible price frame exceeds phase budget")
     # Upper bound includes both neighbouring known-good samples, never just the
     # difference between bad-frame timestamps (a one-frame loss must not be zero).
@@ -173,7 +177,7 @@ def build_helper():
 
 
 class ContinuousCapture:
-    def __init__(self, out):
+    def __init__(self, out, rect=None, seconds=60.0):
         self.out = Path(out)
         self.out.mkdir(parents=True, exist_ok=False)
         self.binary = build_helper()
@@ -181,8 +185,10 @@ class ContinuousCapture:
         self.driver_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         self.phases = []
         self.active = None
-        config = {"rect": [360, 140, 460, 360], "seconds": 60.0}
-        self.rect = config["rect"]
+        # 矩形默认与源码探针的 ProbeWindow(400,180,184,224) 匹配；冻结包无缓存变体
+        # 的窗口落在默认几何 (120,120)，必须用别的录制区 —— 由调用方显式传入。
+        self.rect = list(rect) if rect is not None else [360, 140, 460, 360]
+        config = {"rect": self.rect, "seconds": seconds}
         (self.out / "config.json").write_text(json.dumps(config), encoding="utf-8")
         self.log = (self.out / "capture.log").open("w", encoding="utf-8")
         self.process = subprocess.Popen([str(self.binary), str(self.out / "config.json"), str(self.out)],
@@ -234,7 +240,13 @@ class ContinuousCapture:
         finally:
             self.log.close()
 
-    def finish(self, template):
+    def finish_evidence(self, template):
+        """停止录制、解码并绑定证据哈希；返回 (source, decoded, 哈希表)。
+
+        分析口径由调用方选择：finish() 走六阶段 analyze()（源码探针全场景），
+        冻结包冷启动等单阶段取证直接取返回值再调 join_frames/phase_report，
+        避免"少几个阶段就永远 fail"的分析壳变成绕开判据的理由。
+        """
         self.stop()
         (self.out / "events.json").write_text(json.dumps(self.phases, indent=2), encoding="utf-8")
         if self.process.returncode:
@@ -253,11 +265,16 @@ class ContinuousCapture:
             raise RuntimeError("capture helper/driver source changed during recording")
         source = json.loads((self.out / "source-frames.json").read_text())
         decoded = json.loads((self.out / "decoded-frames.json").read_text())
+        hashes = {name: hashlib.sha256((self.out / name).read_bytes()).hexdigest()
+                  for name in ("capture.mov", "source-frames.json", "decoded-frames.json", "events.json", "config.json")}
+        hashes.update(template=hashlib.sha256(Path(template).read_bytes()).hexdigest(),
+                      helper_binary=hashlib.sha256(self.binary.read_bytes()).hexdigest(),
+                      helper_source=self.helper_source_sha256, driver_source=self.driver_sha256)
+        return source, decoded, hashes
+
+    def finish(self, template):
+        source, decoded, hashes = self.finish_evidence(template)
         result = analyze(source, decoded, self.phases)
-        result["evidence_sha256"] = {name: hashlib.sha256((self.out / name).read_bytes()).hexdigest()
-                                     for name in ("capture.mov", "source-frames.json", "decoded-frames.json", "events.json", "config.json")}
-        result["evidence_sha256"].update(template=hashlib.sha256(Path(template).read_bytes()).hexdigest(),
-                                         helper_binary=hashlib.sha256(self.binary.read_bytes()).hexdigest(),
-                                         helper_source=self.helper_source_sha256, driver_source=self.driver_sha256)
+        result["evidence_sha256"] = hashes
         (self.out / "analysis.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result

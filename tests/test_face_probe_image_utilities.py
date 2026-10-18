@@ -25,11 +25,13 @@ PNG 那份用**测试里独立实现的编码器**造出各种滤波器类型的
 """
 from __future__ import annotations
 
+import io
 import os
 import pathlib
 import struct
 import sys
 import tempfile
+import types
 import unittest
 import zlib
 from unittest import mock
@@ -139,6 +141,52 @@ def encode_png(path, w, h, px, color_type=6, filter_type=0):
                   + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, color_type, 0, 0, 0))
                   + chunk(b"IDAT", comp) + chunk(b"IEND", b""))
     return p
+
+
+class ImageProbeCliCase(SFCase):
+    """静态图 CLI 的失败可见性：无素材、无框架、空结果不能冒充通过。"""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="face-probe-cli-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+
+    def test_image_probe_missing_asset_returns_skip_not_pass(self):
+        with mock.patch.object(vfp.sf_presence, "_load_frameworks", return_value=(object(), "")), \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(vfp.run_image(str(self.tmp / "missing.png")), 2)
+
+    def test_image_probe_rejects_empty_results_after_successful_vision_request(self):
+        class Request:
+            def alloc(self):
+                return self
+
+            def init(self):
+                return self
+
+            def results(self):
+                return []
+
+        class Handler:
+            def alloc(self):
+                return self
+
+            def initWithURL_options_(self, _url, _options):
+                return self
+
+            def performRequests_error_(self, _requests, _error):
+                return True
+
+        classes = {"VNDetectFaceRectanglesRequest": Request(),
+                   "VNImageRequestHandler": Handler()}
+        foundation = types.ModuleType("Foundation")
+        foundation.NSURL = types.SimpleNamespace(fileURLWithPath_=lambda path: path)
+        with tempfile.NamedTemporaryFile(suffix=".png", dir=self.tmp, delete=False) as image, \
+                mock.patch.object(vfp.sf_presence, "_load_frameworks", return_value=(classes, "")), \
+                mock.patch.dict(sys.modules, {"Foundation": foundation}), \
+                mock.patch.object(vfp.sf_presence, "count_faces", return_value=0), \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(vfp.run_image(image.name), 1)
 
 
 class PngReadCase(SFCase):

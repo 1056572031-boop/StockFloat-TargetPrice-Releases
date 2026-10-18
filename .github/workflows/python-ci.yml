@@ -1,10 +1,19 @@
 # Skyrocket（原名 实时股价-目标价版）质量门禁：离屏全量回归 + Cocoa 原生平台冒烟。
 name: ci
 
+# 触发名单**只留 public-source**，这一份文件会被公开快照原样带走、两个仓库共用：
+# 公开仓的 public-source 命中它（标准运行器对公开仓免费、不限时长），
+# 私有仓没有这个分支，于是开发分支的每次推送都不再生成运行。
+# 为什么不在私有仓跑：macOS 运行器在私有仓按 10 倍费率折算，每月免费额度
+# 折成真实 macOS 时间只有 200 分钟，本项目的推送频率几天就用完；额度用完且
+# 未设消费额时，GitHub 不启动作业，只留一条 6 秒的 failure（2026-10-17 实测三连红）。
+# 私有仓侧的强制回归本来就不依赖云端：run_tests.sh 全绿落关卡时间戳，
+# build_release.sh 第 0 步按构建输入指纹核验，不同源自动补跑一整轮。
 on:
   push:
-    branches: [main, master, feat/target-price, public-source]
+    branches: [public-source]
   pull_request:
+    branches: [public-source]
   workflow_dispatch:
 
 permissions:

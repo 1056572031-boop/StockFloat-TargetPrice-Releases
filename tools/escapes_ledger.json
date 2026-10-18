@@ -1464,10 +1464,10 @@
       "id": "G05",
       "recurrence_followup": {
         "date": "2026-10-17",
-        "status": "guard_implemented_pending_overall_review",
+        "status": "overall_review_done_risk_downgraded",
         "guard": "tools/power_profile.py::workload_problems / run_child",
         "evidence": "outputs/quality-guards-2026-10-17/",
-        "result": "测量窗口增量必须有报价应用>=2、动画>=10、绘制>=10且时长>=2秒；健康报价/分时/首帧/可见、父子场景绑定均强制验证。退出码0不再独自等于成功；本机3秒mock动态实跑有效，相关负向对照纳入回归。不是能耗改善或原生帧率结论。"
+        "result": "测量窗口增量必须有报价应用>=2、动画>=10、绘制>=10且时长>=2秒；健康报价/分时/首帧/可见、父子场景绑定均强制验证。退出码0不再独自等于成功；本机3秒mock动态实跑有效，相关负向对照纳入回归。不是能耗改善或原生帧率结论。；复核定：判据缺口闭合、真网档本地健康红线补齐并通过种错复验，复发风险高→中。下调依据是判据可失败性与接线完整性，不是能耗改善或线上表现结论"
       },
       "symptom": "功耗打桩回包写死 600519，行情在动画分支前被静默丢弃 → 交付记录里「盘中 5.58%→1.00%」是错的，_anim_tick/paintEvent 计数恒 0",
       "component": "关卡会说假话",
@@ -1486,14 +1486,15 @@
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
       "source": "DELIVERY_CHECKLIST.md · V1.4.12 交付记录",
       "evidence": "second-hand",
-      "recurrence_risk": "高",
-      "recurrence_verdict": "尚有关键行为判据缺口",
-      "recurrence_evidence": "tests/test_performance_audit.py；power_profile现已按请求code造回包并验有效报价/分时/首帧；probe_valid仍不要求animate场景中anim_tick/paint增量与有效样本非零",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "关键判据缺口已闭合；残余为真实硬件能耗结论未验证与新增测量面需按同族补红线",
+      "recurrence_evidence": "tests/test_quality_measurement_guards.py 18条：mock动态增量(apply_quote>=2/anim_tick>=10/paint>=10)与2秒下限、父子场景绑定、exit0不独自当成功均入回归；2026-10-17复核定补上真网档本地健康红线（window_visible/first_frame_painted 对所有网络档强制，真实网络行情失败仍合法），种回mock-only旧写法当场红。mock_response按请求code造回包（2026-10-17上午批），写死600519那族打桩缺陷的复发路径已被工具自身判据+负向对照双面拦住",
       "recurrence_guard_refs": [
-        "tests/test_performance_audit.py"
+        "tests/test_quality_measurement_guards.py",
+        "tools/power_profile.py"
       ],
       "recurrence_liar_check": "power_profile现已按请求code造回包并验有效报价/分时/首帧；probe_valid仍不要求animate场景中anim_tick/paint增量与有效样本非零",
-      "recurrence_next_action": "animate测量加动画/绘制非零和最小有效采样量前置红线；保留现有code/报价正确性校验",
+      "recurrence_next_action": "为新增测量维度沿用同族红线（非零增量+本地健康+场景绑定）；能耗/续航结论仍须真机实测，不得由探针CPU数字外推",
       "recurrence_reviewed_on": "2026-10-17",
       "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
       "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
@@ -4853,6 +4854,18 @@
         "质量计时拒绝同秒记账时刻充当定位时长，历史复发审查逐条保留判据盲区与后续动作"
       ],
       "zero_reason": "本轮汇总尚未发布的启动健康与质量核验改动；未新增已发布缺陷条目，不把测试数量或覆盖率当作线上改善，外部真实场景仍须独立验收。"
+    },
+    {
+      "version": "1.4.95",
+      "date": "2026-10-18",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "补充窗口失败路径、屏幕信号和更新反馈的行为覆盖，保持失败状态可观察",
+        "公开 CI 触发参数仅允许公开源码分支，私有开发分支继续由本地回归与构建指纹门禁负责",
+        "冻结启动、连续画面和质量证据链继续区分源码、冻结包、安装、OTA 与真实场景证据"
+      ],
+      "zero_reason": "本轮为测试覆盖与发布链收口，未发现新的已发布线上逃逸；未完成的真实场景不计为通过，也不以覆盖率或候选包冒充安装、升级、OTA rollback 或跨机验收。"
     }
   ],
   "comparison_policy": {

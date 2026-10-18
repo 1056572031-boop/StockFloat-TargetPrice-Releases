@@ -1418,6 +1418,41 @@ class TestWindowWiring(SFCase):
         self.assertIn("运行中", self.win.face_guard_status_text(d),
                       "fail-open 之后状态句仍要说真话")
 
+    def test_toggle_persistence_failure_reverts_menu_and_does_not_sync(self):
+        """配置写失败时运行态与持久化意图分离，菜单必须回到旧值且不启动守卫。
+
+        夹具必须复刻 Qt 真实点击的两步：先翻转勾态、再发 triggered —— 只调
+        回调而不翻勾态的话，勾态在断言两侧同值，产品漏回滚也测不出来
+        （实测：删掉产品里的 setChecked(prev) 后旧夹具照样全绿）。
+        """
+        action = self._menu_guard_item()
+        self.assertFalse(action.isChecked())
+        self.win._face_guard_pref = False  # discipline-ok(R5): preference is the private state under test
+        self.win._face_guard_monitor = None  # discipline-ok(R5): verify failed persistence does not start monitor
+        with patch.object(m, "save_face_guard_pref", return_value=False), \
+                patch.object(self.win, "_sync_face_guard") as sync:
+            action.setChecked(True)  # Qt 点击可勾选菜单项：先翻勾态
+            self.win._on_face_guard_toggled(True, action=action)  # discipline-ok(R5): callback under test
+        self.assertFalse(self.win._face_guard_pref)  # discipline-ok(R5): failed save must preserve preference
+        self.assertFalse(action.isChecked())
+        self.assertIsNone(self.win._face_guard_monitor)  # discipline-ok(R5): failed save must not start monitor
+        sync.assert_not_called()
+        self.assertEqual(len(self.notices), 1)
+        self.assertEqual(self.notices[0][0], "设置没能保存")
+
+    def test_toggle_persistence_failure_when_turning_off_restores_checked_state(self):
+        """关闭失败同理：勾态先被 Qt 翻成未勾，保存失败必须翻回选中。"""
+        action = self._menu_guard_item()
+        action.setChecked(True)
+        self.win._face_guard_pref = True  # discipline-ok(R5): preference is the private state under test
+        with patch.object(m, "save_face_guard_pref", return_value=False), \
+                patch.object(self.win, "_sync_face_guard") as sync:
+            action.setChecked(False)  # Qt 点击可勾选菜单项：先翻勾态
+            self.win._on_face_guard_toggled(False, action=action)  # discipline-ok(R5): callback under test
+        self.assertTrue(self.win._face_guard_pref)  # discipline-ok(R5): failed save must preserve preference
+        self.assertTrue(action.isChecked())
+        sync.assert_not_called()
+
     def test_toggle_persists_pref_and_never_pops_a_dialog(self):
         """开→关→再开：偏好必须落盘，而**一个框都不许弹**（v1.4.52 用户要求）。
 

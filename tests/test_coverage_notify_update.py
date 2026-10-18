@@ -26,7 +26,11 @@ import sf_config             # noqa: E402
 import sf_constants          # noqa: E402
 import sf_notify             # noqa: E402
 import sf_update             # noqa: E402
+import stock_float_window as stock_window  # noqa: E402
+from stock_float_window import FloatWindow  # noqa: E402
 from tests._base import SFCase, wait_for   # noqa: E402
+
+_request_notify_auth = FloatWindow._request_notify_auth  # discipline-ok(R5): 被测私有包装方法集中别名
 
 try:
     from nacl.signing import SigningKey
@@ -443,6 +447,24 @@ class TestFileVerification(SFCase):
     def test_a_missing_file_is_not_a_crash(self):
         self.assertFalse(sf_update._file_matches(
             __import__("pathlib").Path(self.d, "nope"), 1, "0" * 64))
+
+
+# ===========================================================================
+# 三、FloatWindow 通知授权包装
+# ===========================================================================
+
+class TestWindowNotificationAuthorization(SFCase):
+    def test_requests_authorization_without_replacing_notification_path(self):
+        host = object()
+        with mock.patch.object(stock_window, "request_authorization") as request:
+            _request_notify_auth(host)
+        request.assert_called_once_with()
+
+    def test_authorization_failure_is_silent_to_the_caller(self):
+        host = object()
+        with mock.patch.object(stock_window, "request_authorization",
+                               side_effect=RuntimeError("notification unavailable")):
+            _request_notify_auth(host)
 
 
 # ==========================================================================
