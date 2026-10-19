@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.96",
-  "published_at": "2026-10-18T17:51:30Z",
+  "version": "1.4.97",
+  "published_at": "2026-10-19T14:38:02Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 统一发行身份与支持入口，加固公开源码隐私检查。\n2. 合入测试导航、钩子安装和覆盖率回归检查。\n3. 保留启动、圆角与更新链核验及未验证边界。",
+  "notes": "1. 新增反馈问题：脱敏预览、同意确认、失败后本地重试。\n2. 加入私有反馈收件与分析，拒绝越权字段和凭据泄露。\n3. 放缓目标价彩虹提示并收紧窗口高度。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.96-macos.zip",
-    "size": 26244693,
-    "sha256": "9e70cb9afdeb26e585b8ff3453e4da352e5c9ed539b1a393247f8203ce9f95e4"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.97-macos.zip",
+    "size": 26314777,
+    "sha256": "a09c1ea9c99002a3ecadd3db116fcac859d121d3d817b5103ecfdee9a34fdda1"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "Dx2N/UcXMt4DixN8+GQwrh4IQKtJCcKoRT7HXIAR2TrH9w0LC33MfEvk/E7AQoWkWpUdPNtfLSBiN0zcv3QaAA=="
+    "value": "tGa0cVS9L4yu0Mqi5sAXRsaGSDncXo8AcZJwNZp5o6lusaqS9gwk/ZKwz8KQh97FZ6jr+TLqaLs5bNAIAzTKDA=="
   }
 }
