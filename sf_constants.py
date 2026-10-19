@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.96'
+APP_VERSION = '1.4.97'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -374,6 +374,9 @@ LEGACY_EXECUTABLE_NAMES = ('StockFloatTargetPrice',)
 # 数据目录**故意不改名**（用户选的是「改 id、数据不动」）：目标价、窗口位置、
 # 证券字典缓存都在这里，换目录等于让用户重录一遍。
 APP_SUPPORT_DIR = os.path.expanduser('~/Library/Application Support/StockFloatTargetPrice')
+# Public receiver only. Never place administrator GitHub credentials here.
+FEEDBACK_ENDPOINT = os.environ.get(
+    'SF_FEEDBACK_ENDPOINT', 'https://skyrocket-feedback-1056572031.pages.dev/v1/feedback')
 # 自动更新：公开 GitHub Release 分发；清单必须经内置公钥验签。
 # 检查调度：启动15秒首检；失败后5分钟补一次，继续失败则30分钟；稳定运行每6小时复查。
 UPDATE_INITIAL_DELAY_MS = 15000
@@ -481,7 +484,7 @@ SINGLE_SOCK = os.environ.get('SF_SINGLE_SOCK') or os.path.join(APP_SUPPORT_DIR, 
 DEFAULT_STOCK = 'sh600519'
 R = 16  # 窗口统一普通圆角，视觉大小以替换股票弹窗为准（逻辑像素）
 W, H = 184, 192  # 主界面宽度为原始 200px 的 92%；高度保持不变
-MIN_H = 224
+MIN_H = 218  # 2026-10：顶部收紧 6pt、底部收紧 3pt 后的默认展开高度
 MAX_H = 420
 # v1.4.59（走查 S8）：涨跌业务色收拢到这一处。此前主卡用 #ff5252、目标价面板用
 # #ff6b6b，而面板注释写的却是"与主界面涨色一致" —— 同屏确实出现了两种红，注释还在说谎。

@@ -147,7 +147,9 @@ def _atomic_replace(path: Path, writer) -> None:
 def build_archive(path: os.PathLike[str] | str, files: Mapping[str, bytes | str], *,
                   app_version: str, bundle_id: str, run_id: str,
                   omitted: list[str] | None = None,
-                  truncated: list[str] | None = None) -> dict[str, Any]:
+                  truncated: list[str] | None = None,
+                  capture_started_at: str | None = None,
+                  capture_completed_at: str | None = None) -> dict[str, Any]:
     """Write a self-contained feedback ZIP and return its package metadata."""
     if "manifest.json" in files:
         raise FeedbackProtocolError("manifest.json is generated and cannot be supplied")
@@ -168,8 +170,8 @@ def build_archive(path: os.PathLike[str] | str, files: Mapping[str, bytes | str]
         "app_version": str(app_version),
         "bundle_id": str(bundle_id),
         "run_id": str(run_id),
-        "capture_started_at": utc_now(),
-        "capture_completed_at": utc_now(),
+        "capture_started_at": capture_started_at or utc_now(),
+        "capture_completed_at": capture_completed_at or utc_now(),
         "files": [{"name": name, "size_bytes": len(data),
                    "sha256": hashlib.sha256(data).hexdigest()}
                   for name, data in prepared.items()],
@@ -273,9 +275,12 @@ def make_envelope(*, archive_path: os.PathLike[str] | str, app_version: str,
 
 def validate_receipt(receipt: Mapping[str, Any], envelope: Mapping[str, Any]) -> dict[str, Any]:
     required = ("case_id", "archive_sha256", "size_bytes", "received_at", "storage_status",
-                "validation_status", "retention_until")
+                "validation_status")
     if not isinstance(receipt, Mapping) or any(not receipt.get(key) for key in required):
         raise FeedbackProtocolError("receipt is incomplete")
+    if "retention_until" not in receipt or (
+            not receipt["retention_until"] and receipt.get("retention_policy") != "manual_deletion"):
+        raise FeedbackProtocolError("receipt retention policy is incomplete")
     if receipt["archive_sha256"] != envelope["archive_sha256"] or receipt["size_bytes"] != envelope["size_bytes"]:
         raise FeedbackProtocolError("receipt does not match the submitted archive")
     if not isinstance(receipt["case_id"], str) or len(receipt["case_id"]) > 128:

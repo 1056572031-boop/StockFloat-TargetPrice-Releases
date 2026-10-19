@@ -25,7 +25,15 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
-version 1.4.96
+version 1.4.97
+skip sf_feedback 纯协议校验和原子归档函数；提交阶段和失败计数由 feedback.json 导出，不包含包内容或任何凭据。
+skip sf_feedback_outbox 本地私有 SQLite 队列不进入附件；当前提交阶段、存储可用性和失败计数由 feedback.json 导出，恢复行为由跨进程测试验证。
+skip sf_feedback_capture 显式调用的白名单投影与描述脱敏纯函数；失败在主窗 feedback capture failed 日志及界面中可见，不保留额外业务状态。
+skip sf_feedback_transport 显式 HTTPS 传输及回执校验函数；提交状态持久化于 outbox，由 feedback.json 导出阶段和失败计数，不导出地址或正文。
+skip sf_feedback_github 仅收件端和管理工具调用的私有 GitHub 存储适配器，不由应用启动或采集；管理凭据禁止进入应用和诊断附件。
+skip sf_feedback_admin 仅维护者本机拉取分析工具调用；独立 SQLite 队列和报告不得进入用户诊断附件，工具显式输出失败及案件状态。
+skip sf_feedback_notifications 仅维护者本机后台调用；通知只含固定状态和数量，私有通知去重记录不进入客户端诊断附件，发送失败由管理工具返回非零码并在后续检查中重试。
+skip sf_feedback_analyzer 独立隔离分析进程的离线规则函数；报告绑定包哈希，不属于应用常驻业务状态，也不进入用户诊断附件。
 
 version 1.4.94
 skip sf_feedback 本轮仅实现无 Qt、无网络的本地协议纯函数；当前没有接入应用运行态，故不存在可由 sf_diag 采集的模块状态。

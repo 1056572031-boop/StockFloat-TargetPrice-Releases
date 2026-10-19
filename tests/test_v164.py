@@ -167,7 +167,7 @@ class TestSectionDerivedFromGap(unittest.TestCase):
         shrink = 6 - R.BOTTOM_ROW_GAP
         old_section = (R.BOTTOM_BASE_HIDDEN + R.BOTTOM_ROW_H + 6
                        + R.BOTTOM_ROW_ASCENT + R.BOTTOM_SECTION_EXTRA)
-        self.assertEqual(old_section, 50, "改前（gap=6）保留区应为 50")
+        self.assertEqual(old_section, 47, "按当前底部留白（17px）回推 gap=6 时应为 47")
         self.assertEqual(R.BOTTOM_SECTION_HIDDEN, old_section - shrink)
 
     def test_no_hardcoded_literal(self):

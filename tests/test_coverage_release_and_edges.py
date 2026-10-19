@@ -301,6 +301,26 @@ class MakeUpdateAssetsPositiveRoute(SFCase):
             self.assertEqual(output.stat().st_mode & 0o777, 0o700)
             self.assertEqual((output / "Skyrocket-update.json").stat().st_mode & 0o777, 0o600)
 
+    def test_self_test_rejects_broken_positive_controls(self):
+        """自检里的正向对照若失效，必须把自检本身判红并留下覆盖证据。"""
+        original = mua.require_own_section
+        calls = {"long": 0}
+
+        def broken_positive_controls(raw_notes, version):
+            if version == "1.4.45":
+                calls["long"] += 1
+                if calls["long"] == 1:
+                    raise SystemExit("forced positive-control rejection")
+                return None
+            return original(raw_notes, version)
+
+        with mock.patch.object(mua, "require_own_section", side_effect=broken_positive_controls):
+            rc, out = call(mua.self_test)
+
+        self.assertEqual(rc, 1, out)
+        self.assertIn("扩大上限后的正向对照未通过", out)
+        self.assertIn("300 字的说明被放行", out)
+
 
 class ProductSmallEdgeBranches(SFCase):
     def test_utils_handles_market_and_format_edges(self):

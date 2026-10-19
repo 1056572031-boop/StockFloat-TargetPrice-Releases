@@ -52,6 +52,11 @@ RUNTIME_PROVIDED = {
 ALLOW_MISSING: set[str] = set()
 
 DYNAMIC_IMPORT_FUNCS = {"import_module", "__import__"}
+# Maintenance-only modules are kept in the source checkout for the private
+# feedback workflow but are deliberately excluded from the user application.
+# Scanning them as application roots would make an admin-only GitHub adapter
+# look like a missing frozen-app dependency.
+DEVELOPER_ONLY_SOURCE_MODULES = {"sf_feedback_admin.py"}
 
 
 def collect_imports(product_dir: pathlib.Path) -> tuple[set[str], list[str]]:
@@ -63,6 +68,8 @@ def collect_imports(product_dir: pathlib.Path) -> tuple[set[str], list[str]]:
     tops: set[str] = set()
     dynamic: list[str] = []
     for path in sorted(product_dir.glob("*.py")):
+        if path.name in DEVELOPER_ONLY_SOURCE_MODULES:
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
         except SyntaxError as exc:

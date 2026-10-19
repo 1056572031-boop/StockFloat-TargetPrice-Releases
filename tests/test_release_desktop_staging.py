@@ -58,6 +58,18 @@ class ReleaseDesktopStaging(SFCase):
             with self.subTest(mutation=broken[:60]), self.assertRaises(ValueError):
                 check_order(broken)
 
+    def test_history_audit_and_its_failure_wait_precede_build_or_desktop_mutations(self):
+        # The object under test is irreversible command order, not shell prose.
+        audit = 'tools/public_release.py --audit-public-history'
+        wait = 'wait "$PRECHECK_HISTORY" || PRECHECK_FAILED=1'
+        stop = 'if [ "$PRECHECK_FAILED" -ne 0 ]; then'
+        build = '# ---- 0) 回归关卡'
+        self.assertLess(self.source.index(audit), self.source.index(wait))
+        self.assertLess(self.source.index(wait), self.source.index(stop))
+        self.assertLess(self.source.index(stop), self.source.index(build))
+        self.assertLess(self.source.index(build), self.source.index(CALL))
+        self.assertIn('if [ "$LOCAL_ONLY" -eq 0 ]; then', self.source[:self.source.index(audit)])
+
     def test_copies_exact_bytes_then_retires_only_own_old_dmg_names(self):
         old = self.desktop / "Skyrocket-V0.0.1.dmg"
         legacy = self.desktop / "实时股价-目标价版-V0.0.1.dmg"

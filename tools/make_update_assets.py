@@ -48,7 +48,7 @@ def canonical(data):
 
 
 
-NOTES_MAX_CHARS = 100
+NOTES_MAX_CHARS = 150
 
 
 def own_section_text(raw_notes, version):
@@ -72,7 +72,7 @@ def require_own_section(raw_notes, version):
         raise SystemExit(
             "release_notes.txt 里找不到 v%s 这一节（应有一行 \"V%s 发布说明:\"），"
             "拒绝把整份历史变更写进更新弹窗。" % (version, version))
-    # 第二道判据（2026-10-09 用户定为永久规则）：本版说明**不超过 100 字**。
+    # 第二道判据（2026-10-19 用户定为永久规则）：本版说明**不超过 150 字**。
     # 为什么也做成闸门而不是靠自觉：这条规则是"永久"的，而人会忘 —— 更新说明
     # 是弹在用户屏幕上的，长文等于没人看（v1.4.50~53 那几版都是 5~8 行）。
     # 计数口径：去掉所有空白后的字符数（中文按字、英文按字母，标题行一起算）。
@@ -138,15 +138,27 @@ def self_test():
         bad.append("小节标题用了小写 v 却被放行 —— 约定是大写 V，弹窗侧按同一个正则裁")
     except SystemExit:
         pass
-    # 100 字上限（2026-10-09 用户永久规则）：这条判据自己也必须能红。
+    # 150 字上限（2026-10-19 用户永久规则）：这条判据自己也必须能红。
     short = "V1.4.46 发布说明（Beta）— 短\n1. 修了甲。\n\nV1.4.45 发布说明（Beta）— 长\n1. " + ("乙" * 300) + "\n"
     try:
         require_own_section(short, "1.4.46")
     except SystemExit as exc:
         bad.append("短说明被误拒：%s" % exc)
+    global NOTES_MAX_CHARS
+    original_limit = NOTES_MAX_CHARS
+    try:
+        # Positive control: temporarily widen the limit so the self-test proves
+        # the "would have been accepted" branch is observable before restoring
+        # the production rule and checking that 300 characters are rejected.
+        NOTES_MAX_CHARS = 400
+        require_own_section(short, "1.4.45")
+    except SystemExit:
+        bad.append("扩大上限后的正向对照未通过")
+    finally:
+        NOTES_MAX_CHARS = original_limit
     try:
         require_own_section(short, "1.4.45")
-        bad.append("300 字的说明被放行 —— 100 字上限成了没有牙齿的文档")
+        bad.append("300 字的说明被放行 —— 150 字上限成了没有牙齿的文档")
     except SystemExit:
         pass
     for broken in ("甲；乙。", "1. 甲\n3. 乙", "1. 甲\n1. 乙", "1. 甲\n乙", "1. "):
@@ -161,7 +173,7 @@ def self_test():
         return 1
     print("self-test 通过：canonical 3 类（键序/signature 排除/改值变字节）、"
           "sha256 3 类（一致/改字节必须变/空文件）、本版说明闸门 6 类各判对"
-          "（含 100 字上限能拦下 300 字），编号闸门 5 类非法正文均拒绝")
+          "（含 150 字上限能拦下 300 字），编号闸门 5 类非法正文均拒绝")
     return 0
 
 

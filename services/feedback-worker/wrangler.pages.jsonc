@@ -1,0 +1,7 @@
+{
+  "name": "skyrocket-private-feedback",
+  "pages_build_output_dir": "./dist/pages",
+  "compatibility_date": "2026-10-19",
+  "vars": { "GITHUB_APP_ID": "", "GITHUB_INSTALLATION_ID": "", "GITHUB_RELEASE_ID": "", "ENABLED": "false" },
+  "d1_databases": [{ "binding": "DB", "database_name": "skyrocket-feedback-budget", "database_id": "00000000-0000-0000-0000-000000000000" }]
+}

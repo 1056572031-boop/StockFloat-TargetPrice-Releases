@@ -105,7 +105,7 @@ if [ ! -x "$VENV_PY" ]; then
 fi
 
 # These checks are read-only and independent. Run them together so a normal
-# release does not pay three Python startup/scan costs back-to-back. Each
+# release does not pay independent startup/scan costs back-to-back. Each
 # result is still collected and every failure blocks the release.
 PRECHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/skyrocket-release-precheck.XXXXXX")"
 cleanup_prechecks() {
@@ -113,11 +113,18 @@ cleanup_prechecks() {
   mv "$PRECHECK_DIR" "${TMPDIR:-/tmp}/skyrocket-release-precheck-finished.$$.${RANDOM}" 2>/dev/null || true
 }
 trap 'cleanup_prechecks; release_lock' EXIT
-echo "== 发版前置核验：固定签名 / 公开文档 / 公开树（并行）=="
+echo "== 发版前置核验：固定签名 / 公开文档 / 既有公开历史 / 公开树（并行）=="
 "$VENV_PY" tools/stable_signing.py preflight >"$PRECHECK_DIR/signing.log" 2>&1 &
 PRECHECK_SIGNING=$!
 "$VENV_PY" tools/public_docs_check.py >"$PRECHECK_DIR/docs.log" 2>&1 &
 PRECHECK_DOCS=$!
+if [ "$LOCAL_ONLY" -eq 0 ]; then
+  "$VENV_PY" tools/public_release.py --audit-public-history >"$PRECHECK_DIR/history.log" 2>&1 &
+  PRECHECK_HISTORY=$!
+else
+  printf '%s\n' 'local-only: no public history/network preflight requested' >"$PRECHECK_DIR/history.log"
+  PRECHECK_HISTORY=0
+fi
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   printf '%s\n' 'prepare-only: skip public_release export; no commit/push/public tree is requested' \
     >"$PRECHECK_DIR/public.log"
@@ -129,6 +136,9 @@ fi
 PRECHECK_FAILED=0
 wait "$PRECHECK_SIGNING" || PRECHECK_FAILED=1
 wait "$PRECHECK_DOCS" || PRECHECK_FAILED=1
+if [ "$PRECHECK_HISTORY" -ne 0 ]; then
+  wait "$PRECHECK_HISTORY" || PRECHECK_FAILED=1
+fi
 if [ "$PRECHECK_PUBLIC" -ne 0 ]; then
   wait "$PRECHECK_PUBLIC" || PRECHECK_FAILED=1
 fi

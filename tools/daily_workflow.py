@@ -12,6 +12,13 @@ TOPICS = {
     "diagnostics": ("Diagnostic export, privacy and startup observations", (
         "tests.test_diagnostics_payload", "tests.test_diagnostics_controller",
         "tests.test_startup_health", "tests.test_feedback_protocol",
+        "tests.test_feedback_receiver", "tests.test_feedback_analyzer",
+        "tests.test_feedback_pipeline", "tests.test_feedback_dialog",
+        "tests.test_feedback_admin_tools", "tests.test_feedback_failure_paths",
+        "tests.test_feedback_notifications",
+        "tests.test_feedback_upload_binding",
+        "tests.test_feedback_agent_guards",
+        "tests.test_feedback_materials",
     )),
     "data": ("Quotes, minute dates, routing, network and stock search", (
         "tests.test_minute_recovery_audit", "tests.test_quote_runtime",
@@ -42,6 +49,11 @@ TOPICS = {
         "tests.test_arch_constraints", "tests.test_code_governance",
         "tests.test_daily_workflow", "tests.test_coverage_runner_and_gate_failures",
         "tests.test_ui_dialog_guard",
+        "tests.test_branch_merge_workflow", "tests.test_coverage_continuation",
+        "tests.test_commit_preflight", "tests.test_commit_workflow",
+        "tests.test_commit_preflight_edges",
+        "tests.test_release_lock_cleanup", "tests.test_release_desktop_staging",
+        "tests.test_public_release",
     )),
 }
 

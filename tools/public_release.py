@@ -21,6 +21,8 @@ from release_identity import REPO, SUPPORT_EMAIL, TAG  # noqa: E402
 from public_docs_check import problems  # noqa: E402
 
 PUBLIC_BRANCH = "public-source"
+PUBLIC_FEEDBACK_REPO = b"1056572031-boop/Skyrocket-Private-Feedback"
+PUBLIC_FEEDBACK_ORIGIN = b"https://skyrocket-feedback-1056572031.pages.dev"
 EXCLUDED = ("AGENTS.md", "DELIVERY_CHECKLIST.md", "QC_CHECKLIST.md", "backups", "outputs",
             "TESTS_AUDIT_2026-09-14.md", "REFACTOR_CHANGES_V1.3.46.md", "tools/archive",
             "目标价功能技术方案_v6.md", "目标价功能评估_基于v1.2.74.md")
@@ -82,6 +84,13 @@ def privacy_problems(data: bytes, home: str, secrets=()) -> list[str]:
     public_data = re.sub(
         rb"(?<![A-Za-z0-9_./\-])" + re.escape(REPO.encode())
         + rb"(?![A-Za-z0-9_.\-])", b"public-repository", public_data)
+    # Only these approved functional namespaces; raw credentials are checked above.
+    public_data = re.sub(
+        rb"(?<![A-Za-z0-9_./:\-])" + re.escape(PUBLIC_FEEDBACK_REPO)
+        + rb"(?![A-Za-z0-9_./:\-])", b"public-feedback-repository", public_data)
+    public_data = re.sub(
+        rb"(?<![A-Za-z0-9_./:@\-])" + re.escape(PUBLIC_FEEDBACK_ORIGIN)
+        + rb"(?=/|[\s\"'`<>)]|$)", b"https://feedback.invalid", public_data)
     if PHONE.search(public_data):
         bad.append("personal phone number")
     if NUMERIC_CONTACT.search(public_data):
@@ -95,6 +104,37 @@ def privacy_problems(data: bytes, home: str, secrets=()) -> list[str]:
     if number.isdigit() and number in public_data:
         bad.append("personal numeric identifier outside GitHub namespace")
     return bad
+
+
+def object_privacy_problems(data: bytes, home: str, secrets=(), kind="blob") -> list[str]:
+    """Recognize approved public identities only in actual Git identity headers."""
+    original = privacy_problems(data, home, secrets)
+    if kind not in ("commit", "tag"):
+        return original
+    header, separator, message = data.partition(b"\n\n")
+    if not separator:
+        return original
+    owner = REPO.split("/", 1)[0].encode()
+    identity = re.compile(re.escape(owner + b" <" + SUPPORT_EMAIL.encode() + b">")
+                          + rb" [0-9]+ [+-][0-9]{4}")
+    fields = (b"author", b"committer") if kind == "commit" else (b"tagger",)
+    normalized = []
+    recognized = False
+    for line in header.split(b"\n"):
+        key, space, value = line.partition(b" ")
+        if space and key in fields and identity.fullmatch(value):
+            line = (key + b" github-public-namespace <" + SUPPORT_EMAIL.encode()
+                    + b"> " + value.rsplit(b"> ", 1)[1])
+            recognized = True
+        normalized.append(line)
+    if not recognized:
+        return original
+    inspected = privacy_problems(b"\n".join(normalized) + separator + message, home, secrets)
+    number_label = "personal numeric identifier outside GitHub namespace"
+    # A declared secret, credential, contact or home-path finding in the raw
+    # object must survive normalization of its otherwise public identity.
+    kept = [label for label in original if label != number_label or label in inspected]
+    return list(dict.fromkeys(kept + inspected))
 
 
 def signing_secrets(root: Path) -> list[bytes]:
@@ -120,19 +160,42 @@ def audit_history(root: Path, home: str, secrets=()) -> None:
         oid, _, name = entry.partition(" ")
         if name and (excluded(name) or re.search(r"\.(dmg|log|ips)$|(^|/)config\.json$", name)):
             issues.append("internal history entry: " + name)
+        if name:
+            issues.extend(label + ": object path " + name
+                          for label in privacy_problems(name.encode(), home, secrets))
         kind = run(["git", "cat-file", "-t", oid], root).strip()
-        if kind not in ("blob", "commit"):
+        if kind not in ("blob", "commit", "tag"):
             continue
         data = run(["git", "cat-file", "-p", oid], root, binary=True)
-        for label in privacy_problems(data, home, secrets):
+        for label in object_privacy_problems(data, home, secrets, kind):
             issues.append(label + ": " + (name or oid[:10]))
     if issues:
         raise ValueError("Public history audit failed:\n" + "\n".join(issues))
     print("Public history audit: %d reachable objects; no private history or detected secrets" % len(objects))
 
 
+def audit_public_history(root: Path = ROOT, url: str | None = None) -> bool:
+    """Fetch/audit only; never push, export private source or move its branch."""
+    url = url or "https://github.com/%s.git" % REPO
+    base = root / "build"
+    base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="public_history_", dir=base) as directory:
+        checkout = Path(directory)
+        run(["git", "init", "-q", "-b", PUBLIC_BRANCH], checkout)
+        refs = run(["git", "ls-remote", "--heads", url, "refs/heads/" + PUBLIC_BRANCH], checkout)
+        if not refs.strip():
+            print("Public history not present: no previous public-source branch; not a future export audit pass")
+            return False
+        run(["git", "fetch", "-q", "--no-tags", url, "refs/heads/" + PUBLIC_BRANCH], checkout)
+        run(["git", "update-ref", "refs/heads/" + PUBLIC_BRANCH, "FETCH_HEAD"], checkout)
+        audit_history(checkout, str(Path.home()), signing_secrets(root))
+    print("Existing public-source history passed read-only preflight; no remote writes")
+    return True
+
+
 def export_source(out: Path, root: Path = ROOT) -> None:
-    # Production code must be committed; the generated install guide can acquire a post-upload digest.
+    # Production code must be committed; public documents are copied from the
+    # stable versioned renderer and validated before export.
     dirty = run(["git", "diff", "HEAD", "--name-only"], root).splitlines()
     untracked = run(["git", "ls-files", "--others", "--exclude-standard"], root).splitlines()
     # Untracked research/tests in a shared checkout are not application build inputs.
@@ -258,7 +321,13 @@ def main(argv=None) -> int:
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--source-only", action="store_true")
     parser.add_argument("--audit", type=Path)
+    parser.add_argument("--audit-public-history", action="store_true")
     args = parser.parse_args(argv)
+    if args.audit_public_history:
+        if args.self_test or args.publish or args.source_only or args.audit:
+            parser.error("--audit-public-history cannot be combined with another action")
+        audit_public_history()
+        return 0
     if args.self_test:
         return self_test()
     if args.audit:

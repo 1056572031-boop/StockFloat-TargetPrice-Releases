@@ -565,12 +565,21 @@ class TestRenderNetBad(TestRenderBase):
         self._render_net_bad()
         with patch.object(QPainter, "drawText", _draw_text):
             self.win._need_redraw = True
-            self.win.update()
-            QApplication.processEvents()
+            # Observe a real synchronous render, not whether Cocoa happens to
+            # dispatch a queued paint before one processEvents call returns.
+            frame = self.win.grab()
+            self.assertFalse(frame.isNull(), "网络异常状态必须有实际渲染帧")
         self.assertTrue(
             any("网络异常" in t for t in texts),
             "未绘制'网络异常'文案，drawText 文本: %r" % (texts,))
         self.assertNotIn("网…", texts, "160px 窄版仍应完整显示网络异常，不得只剩单字省略")
+
+    def test_network_bad_observer_rejects_missing_header_render(self):
+        # Mutation control: a missing production header must remain a failure;
+        # synchronous frame acquisition is not permission to accept no text.
+        with patch.object(self.win, "_paint_header", return_value=None), \
+                self.assertRaisesRegex(AssertionError, "未绘制'网络异常'"):
+            self.test_network_bad_draws_name_text()
 
     def test_last_ok_time_recorded(self):
         """断网：_apply_quote 成功后记录 _last_ok_time（HH:MM:SS 格式）"""

@@ -466,7 +466,7 @@ PRESS_RELEASE_SLOP = 6  # 同一按下动作允许 6px 释放漂移；小于相�
 
 # 布局常量（横向边距与内容区宽度）
 # 布局常量（纵向位置与高度）
-# 顶部留白：名称/代码等左侧内容整体下移 TOP_GAP，窗口高度同步向下拉伸（MIN_H 同增）
+# 顶部留白：名称/代码等左侧内容整体随 TOP_GAP 定位；按钮区保持不动。
 # TOP_GAP 定义见顶部「窗口尺寸常量」区
 # 字号
 # v1.2.64：原 FONT_CODE_ASCENT = 10 已删除 —— 全项目零引用（死常量），
@@ -479,7 +479,7 @@ PRESS_RELEASE_SLOP = 6  # 同一按下动作允许 6px 释放漂移；小于相�
 # 顶部按钮图标（SF Symbols，10px）
 
 # 顶部按钮图标（用户上传 SVG，内嵌资源，保持 10px 显示尺寸；颜色沿用 SVG 内 #EFEFEF）
-# 底部高/低行：基线距窗口底 BOTTOM_BASE_HIDDEN(20)，高/低行贴窗口底 ≈5px 留白
+# 底部高/低行：基线距窗口底 BOTTOM_BASE_HIDDEN(17)，高/低行贴窗口底约 3.5px 留白
 
 # 背景模式：solid=纯黑 / translucent=半透明黑 / glass=系统毛玻璃（NSVisualEffectView）
 
@@ -1096,7 +1096,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 目标价命中后的流动彩虹：约 30fps，只重绘价格大字所在主窗。
         self._rainbow_timer = QTimer(self)
         self._rainbow_timer.timeout.connect(self._rainbow_tick)
-        # v1.4.14 帧率优先：33ms(30 帧/秒) → 16ms。彩虹是 6 秒 4 轮的连续色带扫动，
+        # v1.4.14 帧率优先：33ms(30 帧/秒) → 16ms。彩虹是 6 秒两轮的连续色带扫动，
         # 30 帧/秒在 60Hz 屏上每帧要停留两个 vsync，看得出阶跃。老板要求所有连续动效
         # 稳定 60 帧以上，故与价格滚动同频。（相位交替的白闪/红闪不改：见下方注释。）
         self._rainbow_timer.setInterval(16)
@@ -2081,6 +2081,7 @@ QMenu::separator {
         # 说的"诊断包"对齐，不再一个叫法两个名字。
         _set_menu_icon(m.addAction("导出诊断包",
                                   lambda: self._export_diagnostics(background=True)), "diag")
+        _set_menu_icon(m.addAction("反馈问题", lambda: self._open_feedback()), "diag")
         m.addSeparator()
         # 版本号：灰色禁用项（不可点击），从打包后 .app 的 Info.plist 读取，
         # 开发态（无 Info.plist）回退 sf_constants.APP_VERSION。
@@ -2093,8 +2094,33 @@ QMenu::separator {
         # 注意：macOS 上 QMenu.exec() 会走原生 NSMenu 渲染，QSS 样式(圆角/背景/描边)全部失效，
         # 因此改用非阻塞 popup() 让 Qt 自绘样式生效；同时持有引用防止菜单被 GC 关闭。
         self._ctx_menu = m
-        m.aboutToHide.connect(self._on_ctx_menu_closed)
+        m.aboutToHide.connect(lambda menu=m: self._on_ctx_menu_closed(menu))
         m.popup(e.globalPos())  # PyQt6 适配：QContextMenuEvent 无 globalPosition()，用 globalPos()
+
+    def _open_feedback(self):
+        from sf_feedback_capture import capture_snapshot
+        from sf_feedback_ui import FeedbackDialog
+        from sf_constants import APP_SUPPORT_DIR, FEEDBACK_ENDPOINT
+        from sf_logging import RUN_ID
+        dialog = getattr(self, "_feedback_dialog", None)
+        if dialog is None:
+            try:
+                snapshot = capture_snapshot(self, app_version=_bundle_version(),
+                                            bundle_id=BUNDLE_ID, run_id=RUN_ID)
+                dialog = FeedbackDialog(
+                    self, snapshot=snapshot,
+                    storage_dir=os.path.join(APP_SUPPORT_DIR, "feedback"), endpoint=FEEDBACK_ENDPOINT,
+                    capture_again=lambda: capture_snapshot(
+                        self, app_version=_bundle_version(), bundle_id=BUNDLE_ID, run_id=RUN_ID))
+                self._feedback_dialog = dialog
+            except Exception as exc:
+                log_line("feedback capture failed: %s" % type(exc).__name__, "ERROR")
+                QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 10)),
+                                  "诊断采集失败，未上传。请使用“导出诊断包”。", self)
+                return
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _show_previous_update_result(self):
         """把安装助手留下的最终结果翻译为一次性系统提示。"""
@@ -2570,7 +2596,7 @@ QMenu::separator {
         self._face_guard_menu_timer = None
         self._face_guard_menu_action = None
 
-    def _on_ctx_menu_closed(self):
+    def _on_ctx_menu_closed(self, closed_menu=None):
         """释放右键菜单（幂等）。
 
         v1.2.65 第1轮走查修复：QMenu 以 self 为父对象构造，Qt 的父子机制会让
@@ -2580,6 +2606,10 @@ QMenu::separator {
         属于长生命周期下的持续内存增长。必须 deleteLater() 显式销毁
         （延迟删除，不会在 aboutToHide 信号投递过程中直接析构，安全）。
         """
+        # An old popup may deliver its hide signal after a replacement exists.
+        # Only the popup that owns the current reference may clear its state.
+        if closed_menu is not None and closed_menu is not getattr(self, "_ctx_menu", None):
+            return
         # v1.4.54：勾号刷新定时器与菜单同寿命，关菜单必须一起停（QTimer 以 self
         # 为父对象，不停就是每次右键泄漏一只 300ms 的活定时器）。
         self._stop_face_guard_menu_timer()
@@ -5936,6 +5966,9 @@ QMenu::separator {
         if getattr(self, "_exit_persisted", False):
             return
         self._exit_persisted = True
+        feedback = getattr(self, "_feedback_dialog", None)
+        if feedback is not None:
+            feedback.close()
         self._stock_transition.stop()
         try:
             self.running = False

@@ -34,6 +34,12 @@ build_v1262_dmg.sh
 node_modules/
 package.json
 package-lock.json
+!services/feedback-worker/package.json
+!services/feedback-worker/package-lock.json
+services/feedback-worker/.wrangler/
+services/feedback-worker/.dev.vars*
+services/feedback-worker/wrangler.production.jsonc
+services/feedback-worker/wrangler.pages.production.jsonc
 
 # Qoder 分析运行目录
 .qoder/better-harness-runs/

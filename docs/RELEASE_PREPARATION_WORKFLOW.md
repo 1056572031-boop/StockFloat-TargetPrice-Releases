@@ -1,5 +1,7 @@
 # Skyrocket 发布前准备标准流程
 
+修订：2026-10-19。v1.4.96 的实际失败、恢复和验收经验归入本流程，不新增另一套发布入口或缺陷台账。
+
 状态：**发布前准备流程**。本文件用于把源码收口、候选构建和正式发布分开管理；它不替代
 `build_release.sh`、`DELIVERY_CHECKLIST.md`、`QC_CHECKLIST.md` 或发布后真实场景验收。
 
@@ -32,6 +34,23 @@ OTA rollback、最终启动或其他正式门禁。只有用户永久政策明�
 2. 阅读最近一次已发布记录和最近一次未发布/阻断记录，提取遗留的未验证项、回滚项和真实设备项。
 3. 确认本轮不带入并行修改、临时输出、候选包和个人数据；`outputs/` 证据只在本地保存，除非明确属于公开交付物。
 4. 为每个用户可见改动指定至少一个行为判据；无法形成包内特征时，指定源码/行为/像素判据，并写入 `release_checks.txt` 或相应测试。
+5. 逐一检查相关工作树的未提交增量。来源提交已是主线祖先，不代表工作树内容都已合入；
+   将增量分为相同、被主线更新实现替代、确有新增、需语义复核。同名测试文件中的不同判据也不能丢失。
+6. 冻结前做既有公开历史只读审计、依赖实时检查和发布协议定向检查。`build_release.sh` 已把历史审计接在
+   移动旧产物之前，`--prepare-only` 同样执行；`--local-only` 不因此新增公网发布动作。当前导出树干净不证明旧公开历史干净。
+
+```bash
+./.venv/bin/python3 tools/public_release.py --audit-public-history
+./.venv/bin/python3 tools/dependency_audit.py
+QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./.venv/bin/python3 tools/test_runner.py \
+  --module test_public_release --module test_publish_end_to_end \
+  --module test_install_guide_placeholders --module test_release_lock_cleanup \
+  --module test_release_desktop_staging
+```
+
+定向检查用于尽早暴露协议、锁和阶段边界问题，不代替实际合并后的完整关卡。
+历史分支不存在只是没有旧历史可审计，不等于未来导出通过；网络失败或漏洞查询不确定不能记为通过。
+已占用的同名发行资产不得覆盖，改用新版本。
 
 建议记录：
 
@@ -52,9 +71,11 @@ OTA rollback、最终启动或其他正式门禁。只有用户永久政策明�
 按同一版本一次性同步，不要先打包后补文档：
 
 1. `sf_constants.py` 的版本号是唯一版本来源。
-2. `release_notes.txt` 新增本版段落；每项使用连续的 `1. `、`2. `3. ` 独占一行。
+2. `release_notes.txt` 新增本版段落；按 `1. 内容`、`2. 内容`、`3. 内容` 连续编号，有几项写几项，每项独占一行。
 3. `README.md` 的版本、日期、变更正文、下载文件名和限制说明与发布说明一致。
 4. 使用 `tools/render_install_guide.py` 更新 `docs/INSTALL.md`，并保留真实的签名、公证、系统和设备边界。
+   包内说明稳定引用本版独立 `SHA256SUMS`，不得把包含这份说明的 ZIP 摘要写回说明，形成自引用和打包后输入漂移。
+   资产生成前、生成后及摘要改变时，说明正文应相同；实际摘要在独立清单和远端下载中逐项核验。
 5. 更新 `release_checks.txt`、`diag_coverage.txt` 及本轮需要的质量/逃逸记录。
 6. 运行公开资料检查，不能用手工浏览代替：
 
@@ -73,15 +94,20 @@ OTA rollback、最终启动或其他正式门禁。只有用户永久政策明�
 先在工程环境中确认运行时，再做完整回归：
 
 ```bash
-source .venv/bin/activate
-python --version                 # 必须是 3.14.7
-python -c "import PyQt6"
-QT_QPA_PLATFORM=offscreen ./run_tests.sh
+./.venv/bin/python3 --version     # 必须是 3.14.7
+./.venv/bin/python3 -c "import PyQt6"
+QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./run_tests.sh
+./.venv/bin/python3 tools/gate_stamp.py check
+./.venv/bin/python3 tools/coverage_provenance.py check
 ```
 
 `run_tests.sh` 全绿后才会写入与构建输入绑定的 `build/.gate_stamp`。如果源码、脚本、spec、
-字体、构建基线或文件权限发生变化，必须重新跑完整回归；只改文档不改变构建指纹，但仍要重新
-通过公开资料门禁。
+字体、构建基线或文件权限发生变化，必须重新跑完整回归。不得笼统认为文档不影响指纹：README、INSTALL 等也在当前输入名单内，
+应按实际 `gate_stamp` 检查；公开资料门禁另外执行。覆盖率凭据还绑定原始解释器入口、配置和数据身份，
+即使 `.venv/bin/python` 与 `.venv/bin/python3` 指向相同解释器，也不替换原路径复用凭据，更不能改写凭据消除拒绝。
+
+先登记并清理无解释的 probe/skip/public 模式环境。非空 `SF_GUARD_PROBE`（包括字符串 `0`）不是完整回归。
+保存原始退出码和整轮日志，区分故意种错的自检与最终失败；重跑通过不能抹去首败或不稳定记录。
 
 本阶段必须同时确认：
 
@@ -109,12 +135,19 @@ QT_QPA_PLATFORM=offscreen ./run_tests.sh
 - 构建输入指纹、候选 manifest 和质量记录；
 - 包内本轮特征、import 闭包、离屏/冻结冒烟、Mach-O 和安装路径核验；
 - 两代原生圆角、DMG 真挂载、卷内安装脚本元数据和其他本轮专项结果。
+- 候选阶段桌面分发目录前后快照一致；桌面创建、复制新 DMG、回收旧包须晚于正式资格通过，prepared 与普通发布共用该动作。
+- 在构建清理前保留版本不同、签名有效的真实旧包，供升级/恢复测试使用，不能拿同版候选冒充旧包。
+- 各阶段原生采集使用独立目录；现有同名输出先按原字节、摘要和来源归档，再采集，不覆盖旧截图/result。
 
 候选文件和证据必须放入本轮独立目录，不覆盖上一版本候选。候选生成后如修改任何构建输入，
 不得继续使用旧候选，必须回到 P2 重新回归并回到 P3 重建。
 
 **出口**：所有候选资产固定、同源、可回读，状态改为 `candidate_ready`。不能证明本轮修复
 进入包内时，必须补充真实包内特征或明确的源码/行为判据，不能用上一轮特征代替。
+
+候选后若修源码、脚本、测试或构建输入，回到 `source_open`，将旧候选明确标为退役并保留索引，重新关卡、构建和取证。
+不得把旧圆角/首装/升级凭据贴到新指纹。真实 helper 回滚保留失败注入、真实旧包恢复、旧包首帧和数据哨兵；
+短命签名故障载荷是受控注入，不冒充发布 ZIP 自然故障或真实用户线上现场。
 
 ### P4. 候选人工复核与发布决策
 
@@ -123,6 +156,8 @@ QT_QPA_PLATFORM=offscreen ./run_tests.sh
 1. 对照 `DELIVERY_CHECKLIST.md` 和 `QC_CHECKLIST.md`，逐项检查本轮必需项、永久门禁和未验证项。
 2. 确认四个发布面相互绑定：源码提交、应用包、DMG、OTA 清单/应用 ZIP。
 3. 确认发布凭据、固定签名材料和远端目标可用；缺失时停止，不退回临时签名或假凭据。
+   Contents 清单读写都显式绑定 `main`，不以发行仓默认 `public-source` 代替清单目标；
+   本地假 HTTP 服务也须正确解析路径与查询参数，不把 `?ref=main` 当文件名。
 4. 明确是否有权执行安装、上传、源码公开同步和 OTA 指针切换。没有授权时只停在 `candidate_ready`。
 5. 对候选目录、manifest、质量记录和命令日志做一次只读归档，记录当前提交和 SHA-256。
 
@@ -145,6 +180,12 @@ QT_QPA_PLATFORM=offscreen ./run_tests.sh
 - 清单切换成功但源码同步失败：发布面不完整；
 - 安装替换成功但最终启动失败：发布被阻断，不能宣称完成。
 
+发布锁同时保护原子占位和正常/错误退出的 PID 清理，只删除本进程拥有的 PID，不杀其他任务或删除未知锁内容。
+中断后先读回已发生的安装、资产和指针，再按固定 SHA/指纹/路径/字节恢复剩余阶段；不盲重跑整条链或覆盖已发资产。
+工具误判先用字段含义和正负对照独立核实，不直接去掉检查。历史审计检查全部可达对象，只有真正的
+commit author/committer 或 tag tagger 字段中，精确匹配既有 GitHub 账号与获准公开支持邮箱的身份才按公开命名空间识别；
+相同字节在 blob、正文、相似账号、其他联系方式或凭据命中时仍拒绝，不笼统豁免整个提交，不因误判强推改写历史。
+
 ### P6. 发布后独立验收和收口
 
 发布动作完成后，使用独立读回而不是构建时内存中的结果：
@@ -154,6 +195,12 @@ QT_QPA_PLATFORM=offscreen ./run_tests.sh
 3. 复核首帧、持续存活、异常/退出码、更新状态和用户数据未被误改。
 4. 按场景矩阵逐项记录通过、未验证、`not_applicable` 和阻断原因；不能用旧版证据或候选证据替代。
 5. 生成发布后记录和 manifest 绑定的质量证据；只有规定范围内的真实验收全部闭环，才将状态改为 `complete`。
+
+源码 ZIP 除版本号和压缩包摘要外，逐文件对照实际公开 SHA 的 Git blob、可执行属性和软链接。
+Git archive 的 ZIP 普通文件可能没有完整 Unix 权限字段，不把格式未承载的位推测成 0644 或错误结果。
+公开 CI 两项任务绑定同一公开 SHA，保留首次失败、job ID、原始日志和复测；同源复测不是首次全绿，也不证明不再复发。
+绘制文案/像素检查主动取得实际帧或有界等待明确事件，不把一次 `update()+processEvents()` 当同步绘制保证，
+不放宽断言让空观测通过。收口后再优化流程/工具，另立提交；不改写已发资产、刷新历史指纹或把后续主线当发行源码。
 
 ## 三、每轮最小证据包
 

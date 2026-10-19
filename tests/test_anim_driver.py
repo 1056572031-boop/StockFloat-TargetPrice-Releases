@@ -246,8 +246,38 @@ class TestTargetRainbow(unittest.TestCase):
         d = AnimDriver()
         d.start_rainbow(10.0, 6.0)
         self.assertAlmostEqual(d.rainbow_phase(10.0), 0.0)
-        self.assertAlmostEqual(d.rainbow_phase(10.75), 0.5)
-        self.assertAlmostEqual(d.rainbow_phase(11.5), 0.0)
+        self.assertAlmostEqual(d.rainbow_phase(10.75), 0.25)
+        self.assertAlmostEqual(d.rainbow_phase(11.5), 0.5)
+        self.assertAlmostEqual(d.rainbow_phase(13.0), 0.0)
+        self.assertAlmostEqual(d.rainbow_phase(14.5), 0.5)
+
+    def test_strength_smoothly_enters_and_leaves(self):
+        d = AnimDriver()
+        d.start_rainbow(10.0)
+        for now, expected in [(9.0, 0.0), (10.0, 0.0), (10.18, 0.5),
+                              (10.36, 1.0), (13.0, 1.0), (15.35, 1.0),
+                              (15.675, 0.5), (16.0, 0.0), (17.0, 0.0)]:
+            with self.subTest(now=now):
+                self.assertAlmostEqual(d.rainbow_strength(now), expected)
+
+    def test_zero_negative_and_short_duration_are_bounded(self):
+        d = AnimDriver()
+        for duration in (0.0, -1.0, 0.1):
+            d.start_rainbow(10.0, duration)
+            for now in (9.0, 10.0, 10.025, 10.05, 10.1, 11.0):
+                with self.subTest(duration=duration, now=now):
+                    self.assertGreaterEqual(d.rainbow_strength(now), 0.0)
+                    self.assertLessEqual(d.rainbow_strength(now), 1.0)
+
+    def test_reset_and_restart_reset_the_fade(self):
+        d = AnimDriver()
+        d.start_rainbow(10.0)
+        self.assertEqual(d.rainbow_strength(11.0), 1.0)
+        d.reset_rainbow()
+        self.assertEqual(d.rainbow_strength(11.0), 0.0)
+        d.start_rainbow(11.0)
+        self.assertEqual(d.rainbow_strength(11.0), 0.0)
+        self.assertAlmostEqual(d.rainbow_strength(11.18), 0.5)
 
     def test_reset_clears_rainbow(self):
         d = AnimDriver()

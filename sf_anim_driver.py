@@ -17,7 +17,7 @@
 传入），便于脱离 Qt / QTimer 做纯逻辑单测（对齐 sf_runtime 的注入风格）。
 """
 
-from sf_animator import layout_anim_height, price_interp
+from sf_animator import layout_anim_height, price_interp, smoothstep_inout_cubic
 from sf_utils import _drop_flash_due
 
 
@@ -57,7 +57,7 @@ class AnimDriver(object):
         self.layout_anim_from = 0     # 布局动画起始高度（0 表示无进行中动画）
         self.layout_anim_to = 0       # 布局动画目标高度
         self.layout_anim_start = 0.0  # 布局动画开始时间（monotonic）
-        # 「目标价」彩虹高亮：7 色彩虹仅作用于价格大字，6 秒 ≈ 180 帧。
+        # 「目标价」彩虹高亮：7 色彩虹仅作用于价格大字，6 秒内连续流动两轮。
         # 这是一次性运行时提醒，不写入配置，切股时必须复位。
         self.rainbow_start = 0.0
         self.rainbow_until = 0.0
@@ -245,14 +245,23 @@ class AnimDriver(object):
         """彩虹是否仍在播放；到期后由窗口停止定时器并恢复普通行情颜色。"""
         return float(now) < self.rainbow_until
 
-    def rainbow_phase(self, now, cycles=4.0):
-        """返回 0~1 的流动相位；默认在 6 秒内完成 4 次右下到左上的色带扫动。"""
+    def rainbow_phase(self, now, cycles=2.0):
+        """返回 0~1 的流动相位；默认在 6 秒内完成两轮色带扫动。"""
         if not self.rainbow_active(now):
             return 0.0
         duration = self.rainbow_until - self.rainbow_start
         if duration <= 0:
             return 0.0
         return ((float(now) - self.rainbow_start) / duration * float(cycles)) % 1.0
+
+    def rainbow_strength(self, now):
+        """彩虹与行情色的混合强度：360ms 渐入、650ms 渐出。"""
+        now = float(now)
+        if now < self.rainbow_start or not self.rainbow_active(now):
+            return 0.0
+        enter = min((now - self.rainbow_start) / 0.36, 1.0)
+        leave = min((self.rainbow_until - now) / 0.65, 1.0)
+        return smoothstep_inout_cubic(enter) * smoothstep_inout_cubic(leave)
 
     def reset_rainbow(self):
         """停止目标价彩虹提醒，用于切换股票和退出。"""

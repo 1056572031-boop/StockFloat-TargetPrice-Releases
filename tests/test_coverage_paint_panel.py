@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtCore import QEvent, QRectF, Qt
 from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter
+from PyQt6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QApplication
 
 import sf_constants          # noqa: E402
@@ -271,12 +271,8 @@ class TestStaticTextPainting(WindowCase):
 
 
 class TestRainbowPen(WindowCase):
-    def test_pen_is_a_reflected_linear_gradient_along_the_band_axis(self):
-        """色标列表 PyQt6 不公开，能观测的是"轴 + 铺法 + 笔宽"。
-
-        ReflectSpread 是"7 色画不完还能填满"的前提；轴的方向决定色带
-        是不是从右下流向左上（与 rainbow_gradient_axis 同一口径）。
-        """
+    def test_pen_is_a_repeating_linear_gradient_along_the_band_axis(self):
+        """闭环色谱重复铺开，保留原有斜向渐变轴和笔宽。"""
         rect = QRectF(4, 6, 120, 20)
         pen = self.win._rainbow_pen(rect)
         brush = pen.brush()
@@ -285,7 +281,7 @@ class TestRainbowPen(WindowCase):
         grad = brush.gradient()
         self.assertEqual(grad.spread(),
                          __import__("PyQt6.QtGui", fromlist=["QLinearGradient"])
-                         .QLinearGradient.Spread.ReflectSpread)
+                         .QLinearGradient.Spread.RepeatSpread)
         self.assertEqual(pen.widthF(), 1.0)
         self.assertGreater(grad.start().x(), grad.finalStop().x(),
                            "渐变轴必须由右下指向左上")
@@ -297,6 +293,87 @@ class TestRainbowPen(WindowCase):
                                return_value=0.0) as ph:
             self.win._rainbow_pen(QRectF(0, 0, 120, 20))
         self.assertEqual(ph.call_count, 1)
+
+    def _gradient_at(self, now):
+        with patch.object(sf_ui_render.time, "monotonic", return_value=now):
+            pen = self.win._rainbow_pen(QRectF(0, 0, 120, 20))  # discipline-ok(R5): inspect the actual product brush without paintEvent swallowing errors
+            brush = pen.brush()
+            return QLinearGradient(brush.gradient())
+
+    def test_full_strength_palette_matches_selected_c_and_closes_the_loop(self):
+        self.win._anim_driver.start_rainbow(100.0)  # discipline-ok(R5): inject animation time without real timers
+        colors = [color.name().upper() for _, color in self._gradient_at(101.0).stops()]
+        self.assertEqual(colors, ["#FF4269", "#FF8C42", "#F5CC48", "#20C98B",
+                                  "#12CDE0", "#4B83FF", "#B665F4", "#FF4269"])
+
+    def test_fade_returns_to_current_trend_color_including_alpha(self):
+        self.win._anim_driver.start_rainbow(100.0)  # discipline-ok(R5): inject animation time without real timers
+        for base in (QColor("#ff4949"), QColor("#19b87b"), QColor(120, 130, 140, 190)):
+            with patch.object(self.win, "_trend_color", return_value=base):
+                for now in (100.0, 106.0):
+                    with self.subTest(base=base.name(), now=now):
+                        self.assertTrue(all(color == base for _, color in self._gradient_at(now).stops()))
+
+    def test_half_fade_blends_each_palette_channel_and_alpha(self):
+        self.win._anim_driver.start_rainbow(100.0)  # discipline-ok(R5): deterministic animation clock, no real timers
+        base = QColor(120, 130, 140, 190)
+        with patch.object(self.win, "_trend_color", return_value=base):
+            palette = self._gradient_at(101.0).stops()
+            for now in (100.18, 105.675):
+                with self.subTest(now=now):
+                    blended = self._gradient_at(now).stops()
+                    self.assertEqual(len(blended), len(palette))
+                    for (position, color), (expected_position, target) in zip(blended, palette):
+                        self.assertEqual(position, expected_position)
+                        for actual, start, end in zip(color.getRgbF(), base.getRgbF(), target.getRgbF()):
+                            self.assertAlmostEqual(actual, (start + end) / 2, delta=0.0001)
+
+    def test_cycle_wrap_has_no_visible_color_jump(self):
+        self.win._anim_driver.start_rainbow(100.0)  # discipline-ok(R5): inject animation time without real timers
+
+        def pixels(now):
+            img = QImage(120, 20, QImage.Format.Format_ARGB32)
+            img.fill(QColor("#121416"))
+            painter = QPainter(img)
+            with patch.object(sf_ui_render.time, "monotonic", return_value=now):
+                painter.fillRect(img.rect(), self.win._rainbow_pen(QRectF(0, 0, 120, 20)).brush())  # discipline-ok(R5): read back real gradient pixels on both sides of the cycle boundary
+            painter.end()
+            return [img.pixelColor(x, y).getRgb() for y in range(20) for x in range(120)]
+
+        a, b = pixels(102.99999), pixels(103.00001)
+        delta = [abs(x-y) for ca, cb in zip(a, b) for x, y in zip(ca, cb)]
+        # Qt 渐变栅格量化有约 1% 的通道差；循环边界仍须小于正常一帧的变化。
+        normal = [abs(x-y) for ca, cb in zip(pixels(102.8), pixels(102.8 + 1/60))
+                  for x, y in zip(ca, cb)]
+        self.assertLessEqual(max(delta), max(normal))
+        channel_quantization_limit = 4
+        self.assertLessEqual(max(delta), channel_quantization_limit)
+        self.assertLessEqual(sum(delta) / len(delta), 0.5)
+
+    def test_rainbow_never_overrides_risk_flash_or_pct_color(self):
+        self.win.quote = {"price": "28.68", "pct": "2.36", "change": "0.66", "pre_close": "28.0188"}
+        self.win._disp_price, self.win._disp_pct = 28.68, 2.36  # discipline-ok(R5): inject displayed values independently of the background quote loop
+        self.win._anim_decimals = 2  # discipline-ok(R5): freeze precision for the price-paint fixture
+        for drop, price in ((False, False), (True, False), (False, True)):
+            self.win._flash_drop_on, self.win._price_flash_on = drop, price  # discipline-ok(R5): independently exercise both risk-flash priority branches
+            image = QImage(184, 160, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            try:
+                with (
+                    patch.object(self.win, "_rainbow_active", return_value=True),
+                    patch.object(self.win, "_rainbow_pen", wraps=self.win._rainbow_pen) as rainbow,  # discipline-ok(R5): spy on the real brush to prove risk flashes bypass it
+                    patch.object(self.win, "_draw_roll_text") as draw,
+                ):
+                    self.win._paint_price(painter, 184)  # discipline-ok(R5): verify price and pct color routing through the real paint entry
+                self.assertEqual(rainbow.call_count, int(not (drop or price)))
+                calls = {call.kwargs["roll_key"]: call.args[4] for call in draw.call_args_list}
+                expected = sf_ui_render.FLASH_PRICE if drop or price else sf_ui_render.RED
+                self.assertEqual(calls["pct"], expected)
+                if drop or price:
+                    self.assertEqual(calls["price"], expected)
+            finally:
+                painter.end()
 
 
 # --------------------------------------------------------------------------

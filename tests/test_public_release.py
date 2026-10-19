@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from unittest.mock import patch
@@ -20,6 +21,34 @@ import public_release as public  # noqa: E402
 
 
 class PublicReleaseCase(SFCase):
+    def test_feedback_namespaces_are_exact_and_never_mask_other_secrets(self):
+        repo = b"1056572031-boop/Skyrocket-Private-Feedback"
+        origin = b"https://skyrocket-feedback-1056572031.pages.dev"
+        for value in (repo, origin + b"/v1/feedback", origin + b"/health"):
+            with self.subTest(value=value):
+                self.assertEqual(public.privacy_problems(value, "unused"), [])
+        for value in (repo + b"-evil", b"prefix-" + repo, origin + b".evil/x",
+                      origin + b"@evil.invalid", b"http:" + origin[6:],
+                      origin + b"/phone/" + repo.split(b"-", 1)[0],
+                      repo + b" ghp_" + b"a" * 30,
+                      origin + b" " + b"-----BEGIN " + b"PRIVATE KEY-----",
+                      origin + b" phone=138" + b"00138000"):
+            with self.subTest(value=value):
+                self.assertTrue(public.privacy_problems(value, "unused"))
+        self.assertTrue(public.privacy_problems(repo, "unused", (repo,)))
+
+    def test_actual_feedback_source_passes_the_public_privacy_guard(self):
+        names = ["sf_constants.py", "docs/GITHUB_FEEDBACK.md", "tests/test_public_release.py"]
+        names += [str(p.relative_to(ROOT)) for p in ROOT.glob("sf_feedback*.py")]
+        names += [str(p.relative_to(ROOT)) for p in (ROOT / "tools").glob("*feedback*.py")]
+        names += [str(p.relative_to(ROOT)) for p in (ROOT / "tests").glob("test_feedback*.py")]
+        names += [str(p.relative_to(ROOT)) for p in (ROOT / "services/feedback-worker").rglob("*.mjs")
+                  if not any(part in ("node_modules", "dist", ".wrangler") for part in p.parts)]
+        for name in names:
+            with self.subTest(name=name):
+                data = public.sanitize((ROOT / name).read_text(), str(Path.home())).encode()
+                self.assertEqual(public.privacy_problems(data, str(Path.home())), [])
+
     def setUp(self):
         super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="sfpub_test_")
@@ -84,6 +113,80 @@ class PublicReleaseCase(SFCase):
             self.assertNotIn("GIT_INDEX_FILE", public.git_env())
             self.init_repo()
         self.assertTrue((self.root / ".git").is_dir())
+
+    def test_public_git_identity_is_field_scoped_and_preserves_other_findings(self):
+        owner = public.REPO.split("/", 1)[0].encode()
+        identity = owner + b" <" + public.SUPPORT_EMAIL.encode() + b"> 1792169467 +0800"
+        commit = b"tree " + b"a" * 40 + b"\nauthor " + identity + b"\ncommitter " + identity + b"\n\nsafe\n"
+        self.assertTrue(public.privacy_problems(commit, "/private-home"))
+        self.assertEqual(public.object_privacy_problems(commit, "/private-home", kind="commit"), [])
+        rejected = [
+            (commit, "blob", ()),
+            (commit + b"old owner " + owner, "commit", ()),
+            (commit.replace(b"author " + owner, b"author prefix" + owner), "commit", ()),
+            (commit.replace(public.SUPPORT_EMAIL.encode(), b"someone@" + b"gmail.com"), "commit", ()),
+            (commit + b"ghp_" + b"a" * 30, "commit", ()),
+            (commit + b"phone=" + b"138" + b"00138000", "commit", ()),
+            (commit, "commit", (owner,)),
+            (commit.replace(b"+0800", b"+08x0"), "commit", ()),
+            (commit.replace(b"\n\n", b"\n"), "commit", ()),
+            (commit + b"/private-home/data", "commit", ()),
+        ]
+        for data, kind, secrets in rejected:
+            with self.subTest(kind=kind, data=data[-60:]):
+                self.assertTrue(public.object_privacy_problems(data, "/private-home", secrets, kind))
+        tag = b"object " + b"a" * 40 + b"\ntagger " + identity + b"\n\nsafe tag\n"
+        self.assertEqual(public.object_privacy_problems(tag, "/private-home", kind="tag"), [])
+        self.assertEqual(public.object_privacy_problems(b"tree x\nauthor safe <public@example.invalid> 1 +0000\n\nsafe\n",
+                                                      "/private-home", kind="commit"), [])
+
+    def test_real_history_keeps_approved_git_identity_without_rewriting_objects(self):
+        self.init_repo()
+        tree = public.run(["git", "rev-parse", "HEAD^{tree}"], self.root).strip()
+        parent = public.run(["git", "rev-parse", "HEAD"], self.root).strip()
+        owner = public.REPO.split("/", 1)[0]
+        env = public.git_env()
+        env.update(GIT_AUTHOR_NAME=owner, GIT_COMMITTER_NAME=owner,
+                   GIT_AUTHOR_EMAIL=public.SUPPORT_EMAIL, GIT_COMMITTER_EMAIL=public.SUPPORT_EMAIL)
+        commit = subprocess.run(["git", "commit-tree", tree, "-p", parent, "-m", "public identity"],
+                                cwd=self.root, env=env, text=True, capture_output=True, check=True).stdout.strip()
+        public.run(["git", "update-ref", "HEAD", commit], self.root)
+        before = public.run(["git", "cat-file", "-p", commit], self.root, binary=True)
+        public.run(["git", "tag", "-a", "public-fixture", "-m", "safe tag"], self.root)
+        public.audit_history(self.root, "/private-home")
+        self.assertEqual(before, public.run(["git", "cat-file", "-p", commit], self.root, binary=True))
+        public.run(["git", "commit", "--allow-empty", "-qm", "old owner " + owner], self.root)
+        with self.assertRaisesRegex(ValueError, "outside GitHub namespace"):
+            public.audit_history(self.root, "/private-home")
+
+    def test_history_preflight_uses_local_remote_and_does_not_push_or_move_private_head(self):
+        self.init_repo()
+        remote = self.root.parent / "public.git"
+        public.run(["git", "init", "--bare", "-q", str(remote)], self.root)
+        public.run(["git", "push", "-q", str(remote), "HEAD:refs/heads/public-source"], self.root)
+        before = public.run(["git", "rev-parse", "HEAD"], self.root)
+        refs = public.run(["git", "ls-remote", "--heads", str(remote)], self.root)
+        (self.root / "untracked-private.py").write_text("private local fixture\n")
+        self.assertTrue(public.audit_public_history(self.root, str(remote)))
+        self.assertEqual(before, public.run(["git", "rev-parse", "HEAD"], self.root))
+        self.assertEqual(refs, public.run(["git", "ls-remote", "--heads", str(remote)], self.root))
+        self.assertTrue((self.root / "untracked-private.py").is_file())
+        empty = self.root.parent / "empty-public.git"
+        public.run(["git", "init", "--bare", "-q", str(empty)], self.root)
+        self.assertFalse(public.audit_public_history(self.root, str(empty)))
+
+    def test_history_preflight_cli_is_separate_from_publish_and_export(self):
+        with patch.object(public, "audit_public_history", return_value=True) as audit, \
+                patch.object(public, "export_source") as export, patch.object(public, "push_source") as push:
+            self.assertEqual(public.main(["--audit-public-history"]), 0)
+        audit.assert_called_once_with()
+        export.assert_not_called()
+        push.assert_not_called()
+        for flag in ("--publish", "--source-only", "--self-test"):
+            with self.subTest(flag=flag), self.assertRaises(SystemExit), \
+                    patch.object(public, "audit_public_history") as audit:
+                public.main(["--audit-public-history", flag])
+            audit.assert_not_called()
 
     def test_export_excludes_internal_docs_and_cleans_paths(self):
         home = str(Path.home())

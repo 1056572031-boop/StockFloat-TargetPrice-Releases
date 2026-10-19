@@ -27,6 +27,13 @@ PyQt6 采用 **GPLv3** 许可证。GPLv3 要求：将包含 GPL 组件的程序�
   CFFI 与 PyObjC 许可文件；许可证来自构建依赖的原始发行元数据，不使用手写摘要替代原文。
 - 本轮未购买或启用 Developer ID 商业签名；系统公证与许可材料是不同事项。
 
+### 可选反馈收件服务（不进入 macOS 应用依赖）
+
+- `services/feedback-worker` 的服务端使用 `@zip.js/zip.js` 2.24.0（BSD-3-Clause）和
+  `jsonc-parser` 3.3.1（MIT）；部署工具 Wrangler 4.151.1 标注为 MIT OR Apache-2.0。
+- 版本与完整依赖解析见该目录 `package-lock.json`，许可原文来自各 npm 发行包的 LICENSE 文件。
+  这些 Node.js 依赖用于独立收件服务及其部署工具，不随 PyInstaller 打进股票应用。
+
 - 本项目自身源码：GPL-3.0-only，完整许可见随包 `licenses/LICENSE` 或源码根目录 `LICENSE`。
   每次发行均提供对应源码 ZIP，公开源码位于
   https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/tree/public-source 。

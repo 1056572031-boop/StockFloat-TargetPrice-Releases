@@ -145,9 +145,10 @@ class TestNameVerticalOffset(unittest.TestCase):
         # 矩形底仍在原 Y_NAME + H_NAME，不侵入代码区（与改动前一致）
         self.assertEqual(NAME_DRAW_Y + NAME_DRAW_H, R.Y_NAME + R.H_NAME)
 
-    def test_other_elements_unmoved(self):
-        # 改动 3b 不得影响其他元素坐标
-        self.assertEqual(R.TOP_GAP, 28)
+    def test_confirmed_vertical_spacing(self):
+        # 2026-10：按确认稿收紧顶部留白；按钮区仍保持原位。
+        self.assertEqual(R.TOP_GAP, 22)
+        self.assertEqual(R.BOTTOM_BASE_HIDDEN, 17)
         self.assertEqual(R.Y_CODE, 26 + R.TOP_GAP)
         self.assertEqual(R.Y_PRICE, 46 + R.TOP_GAP)
         self.assertEqual(R.Y_PCT, 76 + R.TOP_GAP)

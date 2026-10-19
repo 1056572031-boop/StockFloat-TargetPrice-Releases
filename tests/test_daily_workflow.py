@@ -49,6 +49,14 @@ class TestDailyWorkflow(SFCase):
         self.assertEqual(tokens[6::2], expected)
         self.assertIn("not the full gate", output.lower())
 
+    def test_infrastructure_includes_commit_workflow_checks_in_suggested_command(self):
+        required = {"tests.test_commit_preflight", "tests.test_commit_workflow"}
+        self.assertTrue(required.issubset(workflow.modules_for(["infrastructure"])))
+        result, output = self.invoke("--topic", "infrastructure")
+        self.assertEqual(result, 0, output)
+        tokens = shlex.split(output.splitlines()[-1])
+        self.assertTrue(required.issubset(tokens[6::2]))
+
     def test_missing_syntax_empty_and_non_utf8_targets_are_rejected(self):
         cases = {"missing": None, "syntax": "def broken(:\n",
                  "empty": "value = 1\n", "encoding": b"\xff"}

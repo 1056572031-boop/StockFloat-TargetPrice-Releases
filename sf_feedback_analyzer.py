@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import platform
@@ -16,7 +17,7 @@ from typing import Any
 from sf_feedback import sha256_file, validate_archive
 
 ANALYZER_SCHEMA_VERSION = 1
-ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-local-v1"
+ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v3"
 DEFAULT_RULESET = {
     "required_members": ["state.json"],
     "health_false_conclusion": "suspected_problem",
@@ -63,22 +64,46 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
     required = [str(item) for item in active_ruleset.get("required_members", [])]
     findings: list[dict[str, str]] = []
     state: dict[str, Any] | None = None
+    description = ""
     with zipfile.ZipFile(archive) as package:
         members = set(package.namelist())
+        if "problem.txt" in members:
+            description = package.read("problem.txt").decode("utf-8", errors="replace")[:4000]
         missing = sorted(set(required) - members)
         for name in missing:
             findings.append(_finding("missing_member", "warning", f"required member omitted: {name}"))
         if "state.json" in members:
             try:
                 state = json.loads(package.read("state.json").decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                if not isinstance(state, dict):
+                    raise ValueError("state.json is not an object")
+            except (UnicodeDecodeError, ValueError) as exc:
                 findings.append(_finding("invalid_state_json", "warning", f"state.json is not valid JSON: {exc}"))
             if isinstance(state, dict) and state.get("health") is False:
                 findings.append(_finding("health_false", "warning", "diagnostic health snapshot reports false"))
-    if missing or any(item["code"] == "invalid_state_json" for item in findings):
+            if isinstance(state, dict) and state.get("phase") == "user_feedback":
+                summary = state.get("summary", {})
+                counts = state.get("counts", {})
+                if isinstance(summary, dict):
+                    for name, bad in (("net_ok", False), ("minute_stale", True),
+                                      ("price_is_fallback", True), ("pct_unknown", True)):
+                        if summary.get(name) is bad:
+                            findings.append(_finding("runtime_warning", "warning", name))
+                if isinstance(counts, dict):
+                    for name, value in counts.items():
+                        if (type(value) is int and value > 0
+                                and any(word in name for word in ("fail", "error", "dropped"))):
+                            findings.append(_finding("historical_counter", "warning", str(name)[:96]))
+                if not state.get("run_id") or not state.get("app_version") or not state.get("capture_completed_at"):
+                    findings.append(_finding("missing_context", "warning", "session/version/time unavailable"))
+    if missing or any(item["code"] in ("invalid_state_json", "missing_context") for item in findings):
         conclusion = str(active_ruleset.get("missing_member_conclusion", "insufficient_evidence"))
     elif any(item["code"] == "health_false" for item in findings):
         conclusion = str(active_ruleset.get("health_false_conclusion", "suspected_problem"))
+    elif any(item["code"] in ("runtime_warning", "historical_counter") for item in findings):
+        conclusion = "suspected_problem"
+    elif isinstance(state, dict) and state.get("phase") == "user_feedback" and state.get("health") is not True:
+        conclusion = "insufficient_evidence"
     else:
         conclusion = "no_known_issue"
     report = {
@@ -93,6 +118,8 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
         "config_sha256": _canonical_hash({"required_members": required}),
         "conclusion": conclusion,
         "findings": findings,
+        "user_description": description,
+        "limitation": "规则未检出不等于没有问题；历史计数不证明本次故障，视觉问题需独立取证。",
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
         "machine": platform.machine(),
     }
@@ -105,7 +132,8 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
                  f"- Archive SHA-256: `{archive_hash}`\n"
                  f"- Analyzer build: `{analyzer_build_id}`\n\n"
                  + "\n".join(f"- {item['severity']}: {item['message']}" for item in findings)
-                 + "\n")
+                 + "\n\n## User Description (Untrusted Text)\n\n<pre>"
+                 + html.escape(description) + "</pre>\n\n" + report["limitation"] + "\n")
     report["json_path"] = str(json_path)
     report["markdown_path"] = str(md_path)
     return report

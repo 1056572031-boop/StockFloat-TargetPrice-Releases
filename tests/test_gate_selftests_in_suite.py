@@ -41,7 +41,7 @@ IN_SUITE = (
     "public_release",           # secrets in reachable old history and privacy boundaries
     "verify_macos_compat",      # real Mach-O deployment/architecture positive and negative controls
     "release_feature_check",     # 本轮特征清单：新增/旧符号/缺 version 各种错
-    "make_update_assets",        # canonical 签名、sha256、本版说明 100 字上限
+    "make_update_assets",        # canonical 签名、sha256、本版说明 150 字上限
     "verify_dmg_pyz",            # 产物字节码核验器本身
     "bundle_closure_check",      # import 闭包对拍
     "dist_version_check",        # 版本闸门（防拿旧 dist 打新 DMG）

@@ -142,6 +142,11 @@ class FeedbackOutbox:
             result.pop("receipt_json", None)
         return result
 
+    def find_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
+        with self._db() as db:
+            row = db.execute("SELECT outbox_id FROM outbox WHERE idempotency_key=?", (key,)).fetchone()
+        return self.get(row[0]) if row is not None else None
+
     def transition(self, outbox_id: str, status: str, *, error: str | None = None) -> dict[str, Any]:
         if status not in STATUSES:
             raise FeedbackProtocolError("unknown outbox status")
@@ -170,6 +175,14 @@ class FeedbackOutbox:
             ids = [row[0] for row in db.execute(
                 "SELECT outbox_id FROM outbox WHERE status != 'cleaned' ORDER BY created_at").fetchall()]
         return [self.get(item) for item in ids]
+
+    def recover_interrupted(self) -> int:
+        """Called before this process starts workers. Never performs network I/O."""
+        with self._db() as db:
+            cursor = db.execute(
+                "UPDATE outbox SET status = 'response_unknown', last_error = 'process_interrupted' "
+                "WHERE status = 'submitting'")
+            return cursor.rowcount
 
     def reconcile_orphans(self) -> list[str]:
         """Return unreferenced object files; never silently deletes them."""

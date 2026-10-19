@@ -60,6 +60,7 @@ class DiagnosticSources:
 def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
     from sf_diagnostics import DiagnosticArchive, write_attachments as write_diagnostic_attachments
     import sf_diag
+    from sf_feedback_ui import feedback_diagnostics
     started = time.monotonic()
     diag_issues: list[str] = []
     needles = sf_diag.identity_needles(diag_issues)
@@ -214,6 +215,7 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
             import sf_startup_health
             return sf_startup_health.diagnostics(window)
         _snapshot("startup_health.json", _startup_health_snapshot)
+        _snapshot("feedback.json", lambda: feedback_diagnostics(window))
         alerts = _field("alerts", window._safe_alerts, [], "targets")
         now = sources.beijing_now()
         target_counts = {"pending": 0, "hit": 0, "expired": 0, "invalid": 0}

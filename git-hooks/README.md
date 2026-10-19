@@ -23,6 +23,13 @@ AIGC:
 
 ## Git pre-commit 钩子
 
+所有普通新提交先按 [日常提交标准流程](../docs/COMMIT_WORKFLOW.md) 的 C0-C5 执行。
+本钩子是其中的强制测试入口，不自动检查提交授权、修改归属或审查树与实际提交树一致性；
+它测试工作目录，不能独自证明部分暂存内容通过。纯文档提交也不跳过当前钩子。
+整理准确提交范围后可先运行 `SF_RERUN_FAILED=0 ./.venv/bin/python3 -m tools.commit_preflight --path <文件>`；
+它只读检查范围/现场/实际 hook 等早期阻断项，不执行测试或安装。检查已确认 hook 一致且可执行时，
+不用每轮重复安装；完整关卡仍由正常提交 hook 执行，不为提速绕过或重复预跑。
+
 每棵工作树均须核验实际路径、内容和可执行权限，不依据本文宣称“已安装”。路径使用
 `git rev-parse --path-format=absolute --git-path hooks/pre-commit` 解析，不能写死 `.git/hooks`。
 

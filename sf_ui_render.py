@@ -325,8 +325,8 @@ def warm_font_metrics():
         pass
 
 
-TOP_GAP = 28   # v1.2.73：顶部留白由 10 增到 28（左侧内容整体下移 18px，按钮区不动），
-                # 使股票名称与顶部「午间休市」等状态栏之间留出 16px 间距；窗口高度同步向下拉伸（MIN_H 同增 206→224）
+TOP_GAP = 22   # 2026-10：按确认稿收紧顶部留白，左侧内容整体上移 6pt，按钮区不动。
+                # 价格区与图表同步上移，保持内容之间的原有相对间距。
 NAME_TOP_PAD = 4   # 名称额外下移量（不改变其他元素位置，仅提升名称与顶部栏的垂直层次）
 FONT_CODE_DESCENT = 3   # v1.2.7：PingFang SC 9pt descent 实测值
 BASELINE = QColor("#ffffff")
@@ -555,9 +555,9 @@ BTN_ICON_Y = 11
 
 BTN_ICON_SZ = BTN_ICON_PT    # 值来自 sf_constants（与图标出图倍率同源，见那里注释）
 
-# 底部留白（固定值）：数据行下方 +12pt 留白 —— baseline 距底 20，
-# glyph 底 = baseline - FONT_CODE_DESCENT(3)，即高/低行数字底距窗口底 ≈17px。
-BOTTOM_BASE_HIDDEN = 20
+# 底部留白（固定值）：数据行下方收紧后的留白 —— baseline 距底 17，
+# glyph 底 = baseline - FONT_CODE_DESCENT(3)，即高/低行数字底距窗口底约 14px。
+BOTTOM_BASE_HIDDEN = 17  # 2026-10：底部两行距窗口底再收紧 3pt，保持行内布局不变。
 # v1.2.62：双行数据布局 —— 此前为单行 4 段（左：涨幅/跌幅；右：高/低），现拆为：
 #   行 1（上）：最高 + 最低（相对昨收百分比，左对齐，紧凑）
 #   行 2（下）：最高点 + 最低点（左对齐，紧凑）
@@ -2167,15 +2167,27 @@ class RenderMixin:
             return self._anim_driver.rainbow_active(time.monotonic())
 
         def _rainbow_pen(self, rect):
-            """7 色彩虹从右下向左上流动，仅用于价格大字。"""
-            phase = self._anim_driver.rainbow_phase(time.monotonic())
-            x0, y0, x1, y1 = rainbow_gradient_axis(rect, phase)
+            """C 宝石色谱闭环流动，并从当前行情色平滑进入和退出。"""
+            now = time.monotonic()
+            driver = self._anim_driver
+            phase = driver.rainbow_phase(now)
+            strength = driver.rainbow_strength(now)
+            x0, y0, x1, y1 = rainbow_gradient_axis(rect, 0.03 - phase)
             grad = QLinearGradient(x0, y0, x1, y1)
-            colors = ("#FF3B30", "#FF9500", "#FFD60A", "#34C759",
-                      "#00C7BE", "#007AFF", "#AF52DE")
-            for index, value in enumerate(colors):
-                grad.setColorAt(index / (len(colors) - 1), QColor(value))
-            grad.setSpread(QLinearGradient.Spread.ReflectSpread)
+            colors = ("#FF4269", "#FF8C42", "#F5CC48", "#20C98B",
+                      "#12CDE0", "#4B83FF", "#B665F4")
+            base = self._trend_color()
+            # 重复首色闭合循环，避免相位回到零时跳色；只需八个原生色标。
+            for index, value in enumerate((*colors, colors[0])):
+                color = QColor(value)
+                if strength == 0.0:
+                    color = base
+                elif strength < 1.0:
+                    color = QColor.fromRgbF(*(
+                        a * (1.0 - strength) + b * strength
+                        for a, b in zip(base.getRgbF(), color.getRgbF())))
+                grad.setColorAt(index / len(colors), color)
+            grad.setSpread(QLinearGradient.Spread.RepeatSpread)
             return QPen(QBrush(grad), 1)
 
         def _draw_bell_icon(self, p, rect, state, disabled=False):

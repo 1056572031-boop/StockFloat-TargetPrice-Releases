@@ -124,8 +124,8 @@ class TestGeometryOrder(unittest.TestCase):
                 "构造期出现 184×420 钳制中间态（冷启动变形的根因），实际路径：%s"
                 % (path,))
             # 落定之后不应再有任何尺寸变化
-            self.assertEqual(win.height(), 224, "最终高度应为 224")
-            self.assertEqual(win.minimumHeight(), 224)
+            self.assertEqual(win.height(), 224, "已保存的用户高度应保持不变")
+            self.assertEqual(win.minimumHeight(), m.MIN_H)
             self.assertEqual(win.maximumHeight(), 420)
         finally:
             win.close()

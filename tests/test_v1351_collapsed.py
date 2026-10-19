@@ -212,8 +212,9 @@ class TestCollapsedBase(unittest.TestCase):
 class TestCollapsedNoChart(TestCollapsedBase):
 
     def test_collapsed_height_band_is_one_px(self):
-        """前置事实：折叠高度下图带只有 1px（本轮要修的瑕疵来源）。"""
-        self.assertEqual(R.collapsed_height(), 155)
+        """按当前布局核对实际折叠窗口；图带仍须只有 1px。"""
+        self._render(R.collapsed_height(), False)
+        self.assertEqual(self.win.height(), R.collapsed_height())
         self.assertEqual(self._band_h(R.collapsed_height()), 1)
 
     def test_collapsed_flag_false_draws_nothing(self):
