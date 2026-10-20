@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.98",
-  "published_at": "2026-10-20T10:44:33Z",
+  "version": "1.4.99",
+  "published_at": "2026-10-20T16:47:23Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 反馈问题时自动附带更完整的诊断资料，方便排查异常。\n2. 简化反馈窗口，上传进度和结果通过弹窗提示。",
+  "notes": "1. 反馈问题可附带更完整的脱敏诊断资料，并显示上传进度和结果。\n2. 优化目标价彩虹提示、窗口留白和关闭按钮效果。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.98-macos.zip",
-    "size": 26335306,
-    "sha256": "d91a42172550d2bc43088dd9684b410402eaa793563526f697396b1d3144db6b"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.99-macos.zip",
+    "size": 26334085,
+    "sha256": "7b45c11e113a35407cd747060d03f1f1b220c717f54e1affb21d1a2f7a31c368"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "kKVClrQCEuzAU46SznLF9JH7tKqPqGjPq/JqNH/giCdQFxj8/nPWZq3rxQl+CEE9N7bnfbtxmk+Yh4Cg9sGuDw=="
+    "value": "IXhg21ZI7AEv0uArk9ASAc2gNMB8dZl+Wi4PiPoZ9KFYilNkyaM6oKGcg83/Tm7Oe/uPqPutYDf031l9dJajAg=="
   }
 }
