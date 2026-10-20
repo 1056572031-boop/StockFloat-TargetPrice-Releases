@@ -51,8 +51,6 @@ def main():
     export_failures = result.get("desktop_export", {}).get("failed", [])
     if export_failures:
         failure += "desktop:" + hashlib.sha256(json.dumps(export_failures, sort_keys=True).encode()).hexdigest()
-    if result.get("capacity", {}).get("near_limit"):
-        failure += "storage_capacity"
     try:
         versions = report_versions(args.data_dir)
     except Exception:

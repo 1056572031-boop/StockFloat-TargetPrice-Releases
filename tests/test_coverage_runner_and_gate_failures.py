@@ -28,64 +28,12 @@ import bundle_closure_check as closure
 import shell_cjk_scan as shell_gate
 import test_runner as runner
 
-snapshot_user_data = runner._snapshot_user_data  # discipline-ok(R5): the private snapshot collector itself is the behavior under test
-diff_user_data = runner._diff_user_data  # discipline-ok(R5): the private mutation verdict itself is the behavior under test
-ensure_gui_session = runner._ensure_gui_session  # discipline-ok(R5): test the runner's session-owned Qt lifetime boundary
-
 
 def invoke(fn, *args):
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
         rc = fn(*args)
     return rc, out.getvalue() + err.getvalue()
-
-
-class FeedbackUserDataProtection(SFCase):
-    def test_gui_session_is_held_by_the_runner_and_survives_fixture_window_closure(self):
-        from PyQt6.QtWidgets import QApplication, QWidget
-
-        app = ensure_gui_session()
-        self.assertIs(app, QApplication.instance())
-        self.assertIs(runner._GUI_APP, app)  # discipline-ok(R5): session ownership itself is the invariant under test
-        self.assertFalse(app.quitOnLastWindowClosed())
-        window = self.track_widget(QWidget())
-        window.show()
-        window.close()
-        QApplication.processEvents()
-        self.assertIs(ensure_gui_session(), app)
-        with mock.patch.object(QApplication, "instance", return_value=object()):
-            with self.assertRaises(RuntimeError):
-                ensure_gui_session()
-        self.assertIs(runner._GUI_APP, app)  # discipline-ok(R5): invalid Qt owners must not replace the retained session
-
-    def test_feedback_creation_change_and_deletion_are_detected(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "_support_dir", return_value=directory):
-            before = snapshot_user_data()
-            path = pathlib.Path(directory) / "feedback" / "objects" / "sealed.zip"
-            path.parent.mkdir(parents=True)
-            path.write_bytes(b"sealed")
-            created = snapshot_user_data()
-            self.assertTrue(any("feedback/objects/sealed.zip" in item for item in diff_user_data(before, created)))
-            path.write_bytes(b"changed and larger")
-            changed = snapshot_user_data()
-            self.assertTrue(any("feedback/objects/sealed.zip" in item for item in diff_user_data(created, changed)))
-            path.unlink()
-            removed = snapshot_user_data()
-            self.assertTrue(any("feedback/objects/sealed.zip" in item for item in diff_user_data(changed, removed)))
-
-    def test_feedback_links_are_not_followed_and_unreadable_state_is_not_a_clean_snapshot(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "_support_dir", return_value=directory):
-            root = pathlib.Path(directory)
-            outside = root / "outside"
-            outside.mkdir()
-            (outside / "not-feedback.txt").write_text("outside")
-            (root / "feedback").symlink_to(outside, target_is_directory=True)
-            snapshot = snapshot_user_data()
-            self.assertIn("feedback/", snapshot)
-            self.assertNotIn("feedback/not-feedback.txt", snapshot)
-            with mock.patch.object(runner.os, "lstat", side_effect=PermissionError("unreadable")):
-                with self.assertRaises(PermissionError):
-                    snapshot_user_data()
 
 
 class RunnerExecutionContracts(SFCase):

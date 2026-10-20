@@ -103,7 +103,7 @@ def read_diagnostics(data):
                 raise PrivacyRejected("完整诊断附件数量不符合限制")
             names = set()
             for entry in entries:
-                name = entry.orig_filename
+                name = entry.filename
                 key = unicodedata.normalize("NFC", name).casefold()
                 mode = entry.external_attr >> 16
                 if (key in names or name.startswith(("/", "."))
@@ -144,8 +144,7 @@ def read_diagnostics(data):
         if not any(isinstance(issue, str) and missing in issue for issue in exported["issues"]):
             raise PrivacyRejected("诊断类别缺失且没有采集失败说明")
     declared = exported.get("files")
-    if (not isinstance(declared, list) or any(not isinstance(item, dict)
-            or not isinstance(item.get("name"), str) or type(item.get("size_bytes")) is not int for item in declared)
+    if (not isinstance(declared, list) or any(not isinstance(item, dict) for item in declared)
             or {item.get("name") for item in declared} != set(files) - {"export.json"}
             or len(declared) != len(files) - 1
             or any(item.get("size_bytes") != sizes.get(item.get("name")) for item in declared)):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -251,7 +252,6 @@ def push_source(out: Path) -> str:
 
 def upload_asset(path: Path) -> None:
     # Never overwrite immutable same-name assets. A retry must verify identical content.
-    import json
     assets = json.loads(run(["gh", "api", "repos/%s/releases/tags/%s" % (REPO, TAG)]))["assets"]
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     for asset in assets:
@@ -354,6 +354,14 @@ def main(argv=None) -> int:
                                     for path in (dmg, application, archive)), encoding="ascii")
             upload_asset(sums)
             publish_documents(out)
+            import quality_evidence
+            import release_state
+            receipt = {"version": APP_VERSION, "public_commit": commit,
+                       "source": release_state.source_snapshot(ROOT),
+                       "source_zip": release_state.reference(archive),
+                       "checksums": release_state.reference(sums),
+                       "recorded_at": quality_evidence.now()}
+            quality_evidence.atomic_json(base / ("publication-v%s.json" % APP_VERSION), receipt)
     print("Audited public source: " + str(out))
     return 0
 

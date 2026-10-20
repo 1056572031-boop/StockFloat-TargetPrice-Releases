@@ -4,7 +4,7 @@
 import threading
 
 from PyQt6.QtCore import (QThread, Qt, QTimer, pyqtSignal, QRectF)
-from PyQt6.QtGui import (QGuiApplication, QPainter)
+from PyQt6.QtGui import (QColor, QGuiApplication, QPainter, QPen)
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 from sf_constants import FG_BRIGHT_HEX, FG_HINT_HEX, FG_TEXT_HEX
 from sf_glass import (GlassMixin, PopupLineEdit, paint_popup_surface, popup_stylesheet,
@@ -13,6 +13,8 @@ from sf_icons import _ICON_SVG, svg_pixmap
 from sf_logging import log_swallow
 from sf_quote import search_stocks
 from sf_utils import normalize_code
+from sf_ui_render import (HOVER_BG_ALPHA, HOVER_STROKE_ALPHA, HOVER_RADIUS,
+                          HOVER_PRESSED_BG_ALPHA, HOVER_PRESSED_STROKE_ALPHA)
 
 
 def verify_bare_code(keyword):
@@ -96,27 +98,44 @@ class SearchThread(QThread):
 
 
 class MainCloseButton(QPushButton):
-    """主界面同款关闭按钮：直接复用主界面正在使用的 close SVG。"""
+    """与主卡共用图标及悬浮令牌，底板使用抗锯齿绘制。"""
     def __init__(self, parent=None):
         super().__init__("", parent)
         self.setFixedSize(26, 26)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self._close_img = svg_pixmap(_ICON_SVG["close"], 24)
+        self._close_images = {24: self._close_img}
         self.setStyleSheet(
-            "QPushButton{background:transparent;border:1px solid transparent;border-radius:6px;}"
-            "QPushButton:hover{background:rgba(255,255,255,0.19);"
-            "border:1px solid rgba(255,255,255,0.35);}")
+            "QPushButton{background:transparent;border:none;padding:0;}")
 
     def paintEvent(self, event):
-        super().paintEvent(event)
-        if self._close_img is None:
-            return
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        size = 12
-        x = (self.width() - size) // 2
-        y = (self.height() - size) // 2
-        p.drawImage(QRectF(x, y, size, size), self._close_img)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            if self.isEnabled() and (self.underMouse() or self.isDown()):
+                pressed = self.isDown()
+                p.setBrush(QColor(255, 255, 255,
+                                 HOVER_PRESSED_BG_ALPHA if pressed else HOVER_BG_ALPHA))
+                p.setPen(QPen(QColor(255, 255, 255,
+                                    HOVER_PRESSED_STROKE_ALPHA if pressed else HOVER_STROKE_ALPHA), 1))
+                p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                                  HOVER_RADIUS, HOVER_RADIUS)
+            size = 12
+            # Render at the destination's device scale, including QWidget.render
+            # redirection, so both 1x and Retina avoid bitmap resampling.
+            pixels = max(1, round(size * abs(p.deviceTransform().m11())))
+            if pixels not in self._close_images:
+                self._close_images[pixels] = svg_pixmap(_ICON_SVG["close"], pixels)
+            image = self._close_images[pixels]
+            if image is not None:
+                if not self.isEnabled():
+                    p.setOpacity(0.3)
+                p.drawImage(QRectF((self.width() - size) / 2, (self.height() - size) / 2,
+                                  size, size), image)
+        finally:
+            p.end()
 
 
 class EditorWindow(GlassMixin, QWidget):

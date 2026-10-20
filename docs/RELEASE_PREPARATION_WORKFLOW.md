@@ -1,6 +1,6 @@
 # Skyrocket 发布前准备标准流程
 
-修订：2026-10-19。v1.4.96 的实际失败、恢复和验收经验归入本流程，不新增另一套发布入口或缺陷台账。
+修订：2026-10-20。v1.4.96/v1.4.97 的实际失败、恢复和验收经验归入本流程，不新增另一套发布入口或缺陷台账。
 
 状态：**发布前准备流程**。本文件用于把源码收口、候选构建和正式发布分开管理；它不替代
 `build_release.sh`、`DELIVERY_CHECKLIST.md`、`QC_CHECKLIST.md` 或发布后真实场景验收。
@@ -17,7 +17,7 @@
 | `source_open` | 源码仍在修改或待复核 | 修复、补测试、整理说明 | 候选包同源、可发布 |
 | `source_qualified` | 当前源码完成回归和发布前质量核验 | 生成候选包 | 安装、OTA、跨机或远端已通过 |
 | `candidate_ready` | 候选 APP/DMG/ZIP/清单已生成，并有同源指纹与证据 | 复核候选，准备不可逆操作 | 已公开发布、用户已升级 |
-| `released_pending_acceptance` | 已执行公开发布或安装替换 | 做远端读回、安装启动、升级和回滚验收 | 所有真实场景已通过 |
+| `released_pending_acceptance` | 已进入安装/公开发布阶段，可能只完成部分动作 | 先读回实际停点，再做安装启动、升级和回滚验收 | 已全部发布或所有真实场景已通过 |
 | `complete` | 规定范围内的发布后验收全部有证据 | 归档并进入下一轮 | 超出证据范围的能力或设备已通过 |
 
 真实场景未完成时必须保留为“未验证”；不使用 `required=false` 绕过常规安装、签名、升级、
@@ -159,7 +159,15 @@ QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./run_tests.sh
    Contents 清单读写都显式绑定 `main`，不以发行仓默认 `public-source` 代替清单目标；
    本地假 HTTP 服务也须正确解析路径与查询参数，不把 `?ref=main` 当文件名。
 4. 明确是否有权执行安装、上传、源码公开同步和 OTA 指针切换。没有授权时只停在 `candidate_ready`。
-5. 对候选目录、manifest、质量记录和命令日志做一次只读归档，记录当前提交和 SHA-256。
+5. 明确绑定本轮质量记录。正式发布命令必须显式传入绝对路径，不依赖终端里残留的环境变量：
+
+```bash
+SF_QUALITY_RECORD="$PWD/build/quality-vX.Y.Z.json" ./build_release.sh --publish-prepared
+```
+
+   `build_release.sh` 会在签名、公开历史和产物核验前先检查记录存在且结构有效；这一步失败不应再进入昂贵核验。
+   `qualify` 仍会在 APP、DMG、OTA ZIP/清单全部固定后执行，不能用早期结构校验代替正式资格。
+6. 对候选目录、manifest、质量记录和命令日志做一次只读归档，记录当前提交和 SHA-256。
 
 此处是发布前最后一个可安全停下的点。候选通过不等于正式发布；本机源码回归不等于冻结包、
 安装、OTA rollback、跨机或 macOS 26 实机通过。
@@ -169,7 +177,7 @@ QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./run_tests.sh
 仅在 P4 明确授权后执行：
 
 ```bash
-./build_release.sh --publish-prepared
+SF_QUALITY_RECORD="$PWD/build/quality-vX.Y.Z.json" ./build_release.sh --publish-prepared
 ```
 
 该模式使用已验候选，不重新打包同一份源码，并执行安装、OTA/公开源码等不可逆动作。任何中途
@@ -182,6 +190,7 @@ QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./run_tests.sh
 
 发布锁同时保护原子占位和正常/错误退出的 PID 清理，只删除本进程拥有的 PID，不杀其他任务或删除未知锁内容。
 中断后先读回已发生的安装、资产和指针，再按固定 SHA/指纹/路径/字节恢复剩余阶段；不盲重跑整条链或覆盖已发资产。
+发布重试时，若源码、构建输入、候选 APP、DMG、OTA ZIP/清单或质量记录发生变化，旧候选和旧收据全部退役，必须回到 P2/P3 重新回归、构建和取证；只有同源且字节未变的候选才允许使用 `--publish-prepared` 复用。
 工具误判先用字段含义和正负对照独立核实，不直接去掉检查。历史审计检查全部可达对象，只有真正的
 commit author/committer 或 tag tagger 字段中，精确匹配既有 GitHub 账号与获准公开支持邮箱的身份才按公开命名空间识别；
 相同字节在 blob、正文、相似账号、其他联系方式或凭据命中时仍拒绝，不笼统豁免整个提交，不因误判强推改写历史。
@@ -203,6 +212,62 @@ Git archive 的 ZIP 普通文件可能没有完整 Unix 权限字段，不把格
 不放宽断言让空观测通过。收口后再优化流程/工具，另立提交；不改写已发资产、刷新历史指纹或把后续主线当发行源码。
 
 ## 三、每轮最小证据包
+
+### 自动状态、固定矩阵与发布总报告（2026-10-20）
+
+沿用本流程五种状态与 `quality_evidence.py` 的正式政策，不建立第二套质量账本。
+`build_release.sh` 在完整关卡之后创建 `build/release-state-vX.Y.Z.json`：
+生成候选之前核验回归戳、覆盖率来源和公开资料，生成候选后固定 APP 目录、DMG、ZIP 和
+OTA 清单的内容、权限及软链接指纹。发布既有候选必须先核验 `candidate_ready`；首次桌面覆盖、
+安装或远端写入之前记为 `released_pending_acceptance`，中断不会被记录成完成。
+`--skip-tests` 不能跳过新状态工具对完整回归的要求，不能与 `--publish-prepared` 混用。
+
+源码、HEAD、已跟踪文档、构建输入或已绑定资产变化后，`validate` 拒绝旧状态。
+旧状态不会静默覆盖；保留原始记录后，用 `SF_RELEASE_STATE` 指定本轮新路径，从回归和候选阶段重来。
+这也是失败恢复的边界：状态为 pending 时先读回已发生动作，不能重跑发布命令覆盖同名资产。
+不要把后续验收写回已固定的发布前质量记录；用另一份同源质量记录保存发布后验收。
+
+脚本退出时自动生成 `<状态路径>.report.json` 和同名 `.md`，保留原退出码；报告失败也不冒充通过。
+`report` 退出 0 只表示报告生成成功，阻断项仍看报告内容；放行必须使用 `validate` 和各阶段专用命令。
+报告统一列出源码、产物、质量记录及正式场景矩阵。四个永久排除专项与 Intel 能力边界必须保留，
+不适用或不支持均不等于通过；`ota_rollback` 仍是必需项。也可随时手动生成：
+
+```bash
+./.venv/bin/python3 tools/release_state.py report --state build/release-state-vX.Y.Z.json \
+  --quality build/quality-vX.Y.Z.json --out build/release-summary-vX.Y.Z.json
+```
+
+有候选交付报告或独立读回报告时，在同一命令追加 `--delivery <候选交付报告>`、`--readback <独立读回报告>`；
+工具核对同源后汇总，不把其他候选的通过项搬过来。缺少报告的子项保持未验证。
+
+候选交付工具的每次运行固定记录：候选启动、首装、升级、OTA 正向、失败回滚、关键数据读回和旧版再启动。
+未执行项保持 `unverified`。升级和回滚都检查带有目标价、窗口位置、高度和背景模式的隔离配置，
+并在新进程使用实际旧包、升级包及回滚旧包内的解析代码核对关键字段和包内版本，缺模块时禁止回退到当前源码；
+这层检查不等于冻结新旧版界面已经显示正确，后者仍须真实场景证据。
+临时首装也不等于 `/Applications` 已安装或 Gatekeeper 已通过。
+
+`public_docs_check.py` 在打包之前同时检查本版连续编号、150 字上限、README 本版正文和安装指南文件名。
+安装指南继续由现有渲染器生成，不维护第二份模板；用语是否面向普通用户仍需人工审阅，不宣称机器能自动判断文案质量。
+
+公开源码发布成功后保存 `build/publication-vX.Y.Z.json`，绑定实际公开提交、源码 ZIP 和校验文件。
+发布后运行下面的独立读回：它会实际下载并核对 OTA 签名清单、应用 ZIP、DMG、源码 ZIP、校验文件，
+逐文件核对源码 ZIP 与公开 Git blob/权限/软链接，核对主分支公开资料与源码包，确认同一公开 SHA 的两项 CI，
+挂载下载的 DMG 并比对卷内应用，最后对同源装机应用验证签名并做 Cocoa 启动。
+联网失败、CI 尚未结束、下载不一致、挂卷或最终启动失败均保留失败结果，不记为通过。
+
+```bash
+./.venv/bin/python3 tools/release_readback.py --state build/release-state-vX.Y.Z.json \
+  --publication build/publication-vX.Y.Z.json --out build/readback-vX.Y.Z-attempt1.json
+./.venv/bin/python3 tools/release_state.py complete --state build/release-state-vX.Y.Z.json \
+  --quality build/quality-vX.Y.Z-complete.json --readback build/readback-vX.Y.Z-attempt1.json
+```
+
+读回不覆写旧报告，重试使用新输出路径。`complete` 仍要求既有质量工具验证全部有效必需真实场景，
+并要求同源的七项渠道/最终启动读回全部通过；不能只修改状态文字完成发布。
+读回必须发生在本轮进入发布阶段之后，时间需带时区且不能在未来；五份实际下载文件缺一份也不能收口。
+公开回执、公开源码和 CI 必须指向同一提交，下载文件须逐一与候选/公开回执的原始字节摘要一致。
+三种运行模式互斥，不论参数顺序如何，混用 `--local-only`、`--prepare-only`、`--publish-prepared` 都拒绝执行。
+这些工具不自动推送、不自动暂停 OTA，也不包含 P3 发布后健康监控。
 
 每个版本至少保留以下索引，文件可以分散在 `build/`、`outputs/release-candidates/` 和发布记录中，
 但必须能由索引定位：

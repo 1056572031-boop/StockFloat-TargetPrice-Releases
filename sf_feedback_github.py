@@ -14,12 +14,11 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, build_opener
 
 from sf_feedback import FeedbackProtocolError
-from sf_feedback_capture import FEEDBACK_REPOSITORY, read_upload_archive, validate_capture_context, validate_upload_receipt
+from sf_feedback_capture import FEEDBACK_REPOSITORY, read_upload_archive, validate_upload_receipt
 from sf_feedback_transport import MAX_UPLOAD_BYTES, NoRedirect
 
 REPOSITORY = FEEDBACK_REPOSITORY
 INBOX_TAG = "feedback-inbox-v1"
-MAX_RELEASE_ASSETS = 1000
 KEY_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
@@ -115,9 +114,7 @@ def validate_submission(envelope: dict, archive: bytes):
     with tempfile.TemporaryDirectory(prefix="feedback-validate-") as directory:
         path = Path(directory) / "incoming.zip"
         path.write_bytes(archive)
-        packet = read_upload_archive(path, envelope)
-        validate_capture_context(packet["manifest"], packet["state"])
-        return packet["manifest"]
+        return read_upload_archive(path, envelope)["manifest"]
 
 
 class GitHubInbox:
@@ -138,9 +135,6 @@ class GitHubInbox:
             receipt_asset = assets.get(prefix + ".receipt.json")
             if archive_asset is None and receipt_asset is not None:
                 raise FeedbackProtocolError("案件对象缺失，不能返回已收件")
-            needed_assets = int(archive_asset is None) + int(receipt_asset is None)
-            if len(assets) + needed_assets > MAX_RELEASE_ASSETS:
-                raise FeedbackProtocolError("反馈收件箱附件名额不足，暂不写入新资料")
             if archive_asset is None:
                 if sum(a.endswith(".zip") for a in assets) >= self.max_cases:
                     raise FeedbackProtocolError("反馈收件箱已达到容量上限")

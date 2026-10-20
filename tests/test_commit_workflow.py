@@ -80,6 +80,58 @@ class TestCommitWorkflow(SFCase):
         self.assertEqual(self.git("write-tree").stdout.strip(), tree)
         self.assertEqual(self.git("show", ":base.py").stdout, "VALUE = 2\n")
 
+    def test_confirmed_command_identity_does_not_rewrite_repository_config(self):
+        self.stage_change()
+        approved = dict(self.env, GIT_AUTHOR_NAME="approved-author",
+                        GIT_AUTHOR_EMAIL="author@example.invalid",
+                        GIT_COMMITTER_NAME="approved-committer",
+                        GIT_COMMITTER_EMAIL="committer@example.invalid")
+        result = subprocess.run(["git", "commit", "-qm", "fix: confirmed identity"],
+                                cwd=self.repo, env=approved, capture_output=True,
+                                text=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.git("show", "-s", "--format=%an|%ae|%cn|%ce").stdout.strip(),
+                         "approved-author|author@example.invalid|approved-committer|committer@example.invalid")
+        self.assertEqual(self.git("config", "--local", "user.name").stdout.strip(), "workflow-test")
+        self.assertEqual(self.git("config", "--local", "user.email").stdout.strip(), "workflow@example.invalid")
+
+    def test_scope_expansion_changes_reviewed_tree_even_with_identical_input_fingerprint(self):
+        self.write("parallel.py", "OTHER = 3\n")
+        narrow_tree = self.stage_change()
+        before = current_info(str(self.repo))
+        self.git("add", "--", "parallel.py")
+        expanded_tree = self.git("write-tree").stdout.strip()
+        after = current_info(str(self.repo))
+        self.assertNotEqual(expanded_tree, narrow_tree)
+        self.assertEqual(before["fingerprint"], after["fingerprint"])
+        self.assertEqual(before["files"], after["files"])
+        self.assertEqual(self.git("diff", "--cached", "--name-only").stdout.splitlines(),
+                         ["base.py", "parallel.py"])
+
+    def test_same_file_isolation_keeps_parallel_change_out_of_commit(self):
+        self.write("base.py", "VALUE = 1\nOTHER = 1\n")
+        self.git("add", "--", "base.py")
+        self.git("commit", "-qm", "chore: prepare mixed-file fixture")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.write("base.py", "VALUE = 2\nOTHER = 1\n")
+        self.git("add", "--", "base.py")
+        reviewed_tree = self.git("write-tree").stdout.strip()
+        patch = self.root / "mixed.patch"
+        patch.write_text(self.git("diff", "--cached", "--binary", "--full-index").stdout,
+                         encoding="ascii")
+        self.write("base.py", "VALUE = 2\nOTHER = 3\n")
+        original_status = self.git("status", "--porcelain=v1").stdout
+        isolated = self.root / "mixed isolated worktree"
+        self.git("worktree", "add", "-qb", "mixed-reviewed", str(isolated), base)
+        self.git("apply", "--index", str(patch), cwd=isolated)
+        self.assertEqual((isolated / "base.py").read_text(), "VALUE = 2\nOTHER = 1\n")
+        self.git("commit", "-qm", "fix: isolate approved change", cwd=isolated)
+        self.assertEqual(self.git("rev-parse", "HEAD^{tree}", cwd=isolated).stdout.strip(), reviewed_tree)
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout.strip(), base)
+        self.assertEqual(self.git("status", "--porcelain=v1").stdout, original_status)
+        self.assertEqual(self.git("write-tree").stdout.strip(), reviewed_tree)
+        self.assertEqual((self.repo / "base.py").read_text(), "VALUE = 2\nOTHER = 3\n")
+
     def test_hidden_index_flags_can_hide_modified_worktree_from_diff(self):
         for flag, marker in (("--assume-unchanged", "h "), ("--skip-worktree", "S ")):
             with self.subTest(flag=flag):

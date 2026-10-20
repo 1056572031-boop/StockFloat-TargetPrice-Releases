@@ -118,7 +118,9 @@ def render_problems():
                     for x in range(R * scale):
                         px, py = (x + 0.5) / scale, (y + 0.5) / scale
                         distance = math.hypot(R - px, R - py)
-                        if min(px, py) < LIQUID_GLASS_INSET + 1 / scale or abs(distance - (R - LIQUID_GLASS_INSET)) < 1 / scale:
+                        if (min(px, py) < LIQUID_GLASS_INSET + 1 / scale
+                                or abs(distance - (R - LIQUID_GLASS_INSET)) < 1 / scale
+                                or abs(distance - R) < 1 / scale):
                             continue
                         expected = BG_LIQUID_GLASS_DIM if distance < R - LIQUID_GLASS_INSET else 0
                         for cx, cy in ((x, y), (image.width() - 1 - x, y),
@@ -127,6 +129,28 @@ def render_problems():
                             mismatches += abs(image.pixelColor(cx, cy).alpha() - expected) > 1
                 if mismatches:
                     problems.append(f"{width}x{height} @{scale}x: {mismatches} mismatched corner pixels")
+                # The old 2pt inset passed the outline oracle but exposed a heavy
+                # undimmed native rim. Pin the visual budget independently of it.
+                edge_mismatches = 0
+                for offset in range(scale, 3 * scale):
+                    for x, y in ((offset, image.height() // 2),
+                                 (image.width() - 1 - offset, image.height() // 2),
+                                 (image.width() // 2, offset),
+                                 (image.width() // 2, image.height() - 1 - offset)):
+                        edge_mismatches += abs(image.pixelColor(x, y).alpha() - BG_LIQUID_GLASS_DIM) > 1
+                asymmetry = 0
+                for y in range(R * scale):
+                    for x in range(R * scale):
+                        alphas = [image.pixelColor(cx, cy).alpha()
+                                  for cx, cy in ((x, y), (image.width() - 1 - x, y),
+                                                 (x, image.height() - 1 - y),
+                                                 (image.width() - 1 - x, image.height() - 1 - y))]
+                        # Qt's reflected cubic rasterization can differ by two
+                        # alpha levels at 1x; this is not a geometry difference.
+                        asymmetry += max(alphas) - min(alphas) > 2
+                if edge_mismatches or asymmetry:
+                    problems.append(f"{width}x{height} @{scale}x: heavy rim or asymmetric corners "
+                                    f"(edge={edge_mismatches}, symmetry={asymmetry})")
     finally:
         host.close()
     if app is None:
@@ -178,7 +202,7 @@ def bundle_problems(bundle):
             problems.append(str(exc))
     constants = bundle.code("sf_constants")
     for name in ("APP_VERSION", "R", "GLASS_INSET", "LIQUID_GLASS_INSET", "BG_ALPHA_DEFAULT",
-                 "BG_LIQUID_GLASS_DIM", "LIQUID_GLASS_OPACITY"):
+                 "BG_LIQUID_GLASS_DIM", "LIQUID_GLASS_OPACITY", "LIQUID_GLASS_RIM_RGB"):
         if constants is None or top_level_literal(constants, name) != getattr(sf_constants, name):
             problems.append(f"packaged corner/material constant differs: {name}")
     return problems

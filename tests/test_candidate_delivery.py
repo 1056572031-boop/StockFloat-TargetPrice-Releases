@@ -165,6 +165,7 @@ class CandidateDeliveryCase(SFCase):
                 mock.patch.object(subprocess, "Popen", return_value=mock.Mock(pid=12345)), \
                 mock.patch.object(subprocess, "run", side_effect=helper), \
                 mock.patch.object(delivery, "stop_target") as stop, \
+                mock.patch.object(delivery, "readback_config", return_value={"scope": "fixture"}), \
                 mock.patch.object(delivery, "smoke", return_value=self.good) as smoke:
             result = delivery.helper_route(self.archive, "candidate", self.old, root, rollback)
             smoke.assert_called_once_with(root / "Skyrocket.app")
@@ -172,6 +173,31 @@ class CandidateDeliveryCase(SFCase):
             self.assertEqual(result["smoke"]["first_frame"], self.good["first_frame"])
             self.assertTrue(result["sentinel_unchanged"])
             return result
+
+    def test_new_process_config_readback_requires_exact_semantics(self):
+        config, content = delivery.sentinel(self.root / "semantic-home")
+        payload = json.loads(content)
+        observed = {"window": [payload[key] for key in ("code", "x", "y", "h", "bg")],
+                    "alerts": payload["alerts"]}
+        with mock.patch.object(subprocess, "run", return_value=mock.Mock(stdout=json.dumps(observed))) as runner:
+            report = delivery.readback_config(config, content)
+        self.assertEqual(report["observed"], observed)
+        self.assertEqual(runner.call_args.kwargs["env"]["SF_CONFIG_PATH"], str(config))
+        with mock.patch.object(delivery.tempfile, "gettempdir", return_value=str(self.root / "unrelated")), \
+                self.assertRaisesRegex(ValueError, "私有临时"):
+            delivery.readback_config(config, content)
+        with mock.patch.object(subprocess, "run", return_value=mock.Mock(stdout='{"window": [], "alerts": []}')), \
+                self.assertRaisesRegex(RuntimeError, "无法完整读回"):
+            delivery.readback_config(config, content)
+        frozen = dict(observed, bundle_version=self.info["CFBundleShortVersionString"])
+        with mock.patch.object(subprocess, "run", return_value=mock.Mock(stdout=json.dumps(frozen))) as runner:
+            result = delivery.readback_config(config, content, self.app)
+        self.assertEqual(result["scope"], "frozen_bundle_parser_new_process_not_ui")
+        self.assertIn("--app", runner.call_args.args[0])
+        frozen["bundle_version"] = "wrong"
+        with mock.patch.object(subprocess, "run", return_value=mock.Mock(stdout=json.dumps(frozen))), \
+                self.assertRaisesRegex(RuntimeError, "包内版本"):
+            delivery.readback_config(config, content, self.app)
 
     def test_upgrade_and_real_old_rollback_orchestration(self):
         self.exercise_route()

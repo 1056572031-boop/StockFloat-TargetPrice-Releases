@@ -4,11 +4,12 @@ import math
 import types
 from unittest import mock
 
-from PyQt6.QtGui import QImage, QPainter
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 import sf_glass
-from sf_constants import BG_LIQUID_GLASS_DIM, LIQUID_GLASS_INSET, LIQUID_GLASS_OPACITY, R
+from sf_constants import (BG_LIQUID_GLASS_DIM, LIQUID_GLASS_INSET, LIQUID_GLASS_OPACITY,
+                          LIQUID_GLASS_RIM_RGB, R)
 from sf_glass import GlassMixin, create_glass_surface
 from sf_ui_render import RenderMixin
 from tests._base import SFCase
@@ -157,6 +158,51 @@ class LiquidPaintTests(SFCase):
             self.__dict__.update(_bg_effect=True, _glass_backend="liquid", _bg_path=None,
                                  _bg_path_wh=None, _bg_path_ins=None, _bg_path_ins_wh=None)
 
+    def test_straight_edges_have_the_same_thin_profile_along_the_whole_card(self):
+        host = self.track_widget(self.Host())
+        for width, height in ((184, 224), (184, 128), (260, 300)):
+            host.resize(width, height)
+            for scale in (1, 2):
+                with self.subTest(size=(width, height), scale=scale):
+                    image = QImage(width * scale, height * scale,
+                                   QImage.Format.Format_ARGB32_Premultiplied)
+                    image.setDevicePixelRatio(scale)
+                    image.fill(0)
+                    painter = QPainter(image)
+                    try:
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                        _paint(host, painter, width)
+                    finally:
+                        painter.end()
+                    profiles = []
+                    for fraction in (0.2, 0.4, 0.6, 0.8):
+                        x, y = int(image.width() * fraction), int(image.height() * fraction)
+                        for edge in (lambda d: (x, d), lambda d: (x, image.height() - 1 - d),
+                                     lambda d: (d, y), lambda d: (image.width() - 1 - d, y)):
+                            profiles.append([image.pixelColor(*edge(d)).getRgb()
+                                             for d in range(3 * scale)])
+                    for profile in profiles:
+                        self.assertEqual(profile, profiles[0])
+                        self.assertEqual(profile[scale], (0, 0, 0, BG_LIQUID_GLASS_DIM))
+                        if scale == 2:
+                            self.assertEqual(profile[0], (*LIQUID_GLASS_RIM_RGB, 255))
+
+    def test_liquid_rim_reuses_geometry_and_preserves_painter_state(self):
+        host = self.track_widget(self.Host())
+        image = QImage(host.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        painter = QPainter(image)
+        try:
+            pen = QPen(QColor("red"), 3)
+            painter.setPen(pen)
+            _paint(host, painter, host.width())
+            cached = host._bg_rim_cache  # discipline-ok(R5): Cache identity is the performance contract under test.
+            _paint(host, painter, host.width())
+            self.assertIs(host._bg_rim_cache, cached)  # discipline-ok(R5): A second frame must reuse the same geometry cache.
+            self.assertEqual(painter.pen(), pen)
+        finally:
+            painter.end()
+
     def test_background_is_black_dimming_with_transparent_edges(self):
         host = self.Host()
         self.addCleanup(host.close)
@@ -195,7 +241,9 @@ class LiquidPaintTests(SFCase):
                             px, py = (x + 0.5) / scale, (y + 0.5) / scale
                             distance = math.hypot(R - px, R - py)
                             # Ignore only the one-pixel antialiasing boundary.
-                            if min(px, py) < inset + 1 / scale or abs(distance - radius) < 1 / scale:
+                            if (min(px, py) < inset + 1 / scale
+                                    or abs(distance - radius) < 1 / scale
+                                    or abs(distance - R) < 1 / scale):
                                 continue
                             expected = BG_LIQUID_GLASS_DIM if distance < radius else 0
                             for cx, cy in ((x, y), (image.width() - 1 - x, y),

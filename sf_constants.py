@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.98'
+APP_VERSION = '1.4.99'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -548,7 +548,9 @@ BG_GLASS_DIM_LIGHT = 185
 GLASS_INSET = 3
 BG_LIQUID_GLASS_DIM = 164
 LIQUID_GLASS_OPACITY = 0.95
-LIQUID_GLASS_INSET = 2
+# 四边与圆角共用半个逻辑像素的中性灰细边，避免原生受光环厚薄不一。
+LIQUID_GLASS_INSET = 0.5
+LIQUID_GLASS_RIM_RGB = (124, 124, 124)
 # v1.2.20：玻璃层圆角 mask 重建节流间隔（秒）。拉伸时窗口高度逐帧变化，
 # 若每帧都重建 squircle CGPath + setPath_（CoreAnimation 强制重绘）会严重拖慢 resize，
 # 节流到 60ms 一次（约 16fps），拉伸结束后再强制重建一次对齐，视觉无感知。

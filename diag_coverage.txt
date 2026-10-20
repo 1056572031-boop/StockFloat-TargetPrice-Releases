@@ -25,6 +25,8 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.99
+
 version 1.4.98
 skip sf_feedback 无独立可变业务状态的协议与归档函数；封存、保存和提交状态由 feedback.json 及 outbox 恢复测试验证。
 skip sf_feedback_bundle 完整诊断ZIP白名单、容量及凭据残留校验纯函数；校验失败由 feedback.json 的阶段与错误类别、主窗日志和上传弹窗体现，不收集包内容作为额外运行态。

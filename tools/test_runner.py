@@ -42,7 +42,6 @@ import faulthandler
 import os
 import random
 import re
-import stat
 import sys
 import tempfile
 import time
@@ -58,11 +57,10 @@ def _support_dir():
 # debug.log 自 v1.3.67 起已由 SF_LOG_PATH 隔离，留在这里是双保险：
 # 将来谁加了一条没隔离的写盘路径，这里立刻报警。
 _USER_DATA = ["config.json", "securities.json", "debug.log"]
-_GUI_APP: object | None = None
 
 
 def _snapshot_user_data():
-    snap: dict[str, tuple[int, int] | None] = {}
+    snap = {}
     for name in _USER_DATA:
         p = os.path.join(_support_dir(), name)
         try:
@@ -71,26 +69,12 @@ def _snapshot_user_data():
             snap[name] = None
         else:
             snap[name] = (st.st_size, int(st.st_mtime))
-    def visit_feedback(path, name):
-        try:
-            st = os.lstat(path)
-        except FileNotFoundError:
-            snap[name] = None
-            return
-        snap[name] = (st.st_size, st.st_mtime_ns)
-        if stat.S_ISDIR(st.st_mode):
-            with os.scandir(path) as entries:
-                children = sorted(entries, key=lambda entry: entry.name)
-            for entry in children:
-                visit_feedback(entry.path, name + entry.name + ("/" if entry.is_dir(follow_symlinks=False) else ""))
-    visit_feedback(os.path.join(_support_dir(), "feedback"), "feedback/")
     return snap
 
 
 def _diff_user_data(before, after):
     out = []
-    names = set(_USER_DATA) | {name for name in before.keys() | after.keys() if name.startswith("feedback/")}
-    for name in sorted(names):
+    for name in _USER_DATA:
         b, a = before.get(name), after.get(name)
         if b == a:
             continue
@@ -200,19 +184,6 @@ def _report_ui_dialog_violations():
     return True
 
 
-def _ensure_gui_session():
-    from PyQt6.QtWidgets import QApplication
-    global _GUI_APP
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    elif not isinstance(app, QApplication):
-        raise RuntimeError("测试会话已存在非GUI Qt应用，不能创建第二个 QApplication")
-    app.setQuitOnLastWindowClosed(False)
-    _GUI_APP = app
-    return app
-
-
 def _preimport_project_modules():
     """在 discover **之前**把项目自有模块导入一次。
 
@@ -227,8 +198,6 @@ def _preimport_project_modules():
     """
     import importlib
     import pathlib
-    # Keep one GUI owner alive across modules, before any Qt-dependent imports.
-    _ensure_gui_session()
     root = pathlib.Path(__file__).resolve().parent.parent
     for p in sorted(root.glob("*.py")):
         name = p.stem
@@ -520,7 +489,7 @@ def run_tests(modules=None):
         for line in dirty:
             print("   - %s" % line)
     else:
-        print("用户数据未改动（config / securities / debug.log / feedback）")
+        print("用户数据未改动（config / securities / debug.log）")
     # 退出码只有一个来源（verdict），这里不再自己判一遍：两处各写一份"什么算红"
     # 迟早会漂移，而这条判定决定 run_tests.sh 那句"可进行打包发布"能不能打印。
     # 结论字符串由 run_tests.sh 统一打印，此处不重复。

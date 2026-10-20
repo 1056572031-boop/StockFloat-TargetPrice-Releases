@@ -352,6 +352,20 @@ class TestReleaseChainCallsTheGate(SFCase):
             self.assertGreater(pos, 0, "找不到 %s，脚本结构变了，这条断言需要重新设计" % what)
             self.assertLess(gate, pos, "关卡核验排在 %s 之后 —— 那已经撤不回了" % what)
 
+    def test_quality_record_is_bound_before_expensive_preflight(self):
+        """质量记录缺失必须在公开历史/签名扫描前失败，避免无效重试浪费发布时间。"""
+        source = self._text("build_release.sh")
+        record_check = source.find('QUALITY_RECORD="${SF_QUALITY_RECORD:-}"')
+        validate = source.find('tools/quality_evidence.py validate "$QUALITY_RECORD"')
+        precheck = source.find('PRECHECK_DIR="$(mktemp -d')
+        irreversible = source.find("publish_update_release.py")
+        self.assertGreater(record_check, 0)
+        self.assertGreater(validate, record_check)
+        self.assertGreater(precheck, validate,
+                           "质量记录结构必须在并行公开/签名前置核验前完成")
+        self.assertGreater(irreversible, validate)
+        self.assertIn("SF_QUALITY_RECORD", source[record_check:validate + 200])
+
     def test_binary_compatibility_gate_precedes_dmg_install_and_ota(self):
         # The contract is shell command order; testing execution would publish a real release.
         source = self._text("build_release.sh")

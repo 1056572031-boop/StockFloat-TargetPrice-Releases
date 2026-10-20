@@ -4328,6 +4328,50 @@
       "recurrence_next_action": "保留并行界面修改，解决兼容测试后，在正式版正常退出的安全条件下完成完整关卡，再更新独立后台快照并读回真实报告。",
       "recurrence_reviewed_on": "2026-10-20",
       "recurrence_review_method": "源码及关联断言和7个哈希匹配原始包的隔离重分析；完整关卡未通过，不代表后台已生效"
+    },
+    {
+      "id": "N16",
+      "symptom": "卡片四角过渡生硬，原生玻璃粗亮边使内外弧线呈现不一致观感",
+      "component": "ui",
+      "channel": "online_user",
+      "introduced_version": null,
+      "introduced_note": null,
+      "found_version": "1.4.97",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "液态玻璃暗化层固定内缩2逻辑像素，留下4物理像素的未暗化原生受光环，内外两条对比强烈的圆弧产生厚重、不均匀观感；现有判据只检查外轮廓越界和同心几何，不限制未暗化环宽度，也不检查内沿对称。源码Cocoa已复现，原截图运行对象未独立取证。",
+      "defense_added": null,
+      "observed_at": "2026-10-20 15:08:21+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-20 15:08:34+08:00",
+      "locate_unknown_reason": null,
+      "source": "2026-10-20 用户截图 codex-clipboard-5cd504e1-b5b5-40a5-b99b-c35d0668ceb6.png；源码真实 Cocoa 复现 build/corner-refinement-20261020/before-liquid/window.png",
+      "evidence": "verified",
+      "rootcause_origin": "now"
+    },
+    {
+      "id": "N17",
+      "symptom": "替换股票与目标价弹窗的关闭按钮悬浮时出现锯齿状边缘，不清晰",
+      "component": "ui",
+      "channel": "online_user",
+      "introduced_version": null,
+      "introduced_note": null,
+      "found_version": "1.4.97",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "两个弹窗共享MainCloseButton：悬浮底板由QPushButton样式表绘制，图标绘制只开SmoothPixmapTransform，没有为底板开启QPainter抗锯齿；固定24px源图在1x屏上又经缩小采样。旧测试只断言样式表含颜色/圆角和图像尺寸，没有对悬浮边缘及目标DPR逐像素比较。新增普通/悬浮/按下/禁用态、1x/2x、20/26px参考像素和非抗锯齿反例验证通过；源码验证不等于装机通过。",
+      "defense_added": null,
+      "observed_at": "2026-10-20 15:33:10+08:00",
+      "observed_origin": "now",
+      "rootcause_at": "2026-10-20 15:38:14+08:00",
+      "locate_unknown_reason": null,
+      "source": "2026-10-20 用户截图 codex-clipboard-674dd818-cb6d-496b-8c60-9c7ed3024773.png 与 codex-clipboard-ce3cc056-9abd-48b4-91f0-685c246c837b.png；两个弹窗共享 sf_editor.MainCloseButton",
+      "evidence": "verified",
+      "rootcause_origin": "now"
     }
   ],
   "rounds": [
@@ -4939,6 +4983,16 @@
         "完整诊断ZIP原字节对拍、保存后哈希读回、新旧包及隐私策略兼容、凭据残留和损坏包反例、离线大包测试、线上验收单POST预算与按原编号读回。"
       ],
       "zero_reason": "本轮是尚未发布的完整诊断反馈改造；目前没有v1.4.98线上用户样本，0仅表示未登记该版已发布逃逸，不代表上线后没有故障。实施中被测试发现的问题保留首败记录，不冒充线上逃逸。N15仍保留既有管理分析修正记录，不自动关闭真实用户问题。"
+    },
+    {
+      "version": "1.4.99",
+      "date": "2026-10-20",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "沿用已合入的反馈隐私、容量、回执、绘制交互与发布状态判据；本轮重新建立固定候选及真实升级回滚证据，不将历史测试当本版已验。"
+      ],
+      "zero_reason": "v1.4.99尚未发布，无该版线上观察窗口；0仅表示未登记本版线上逃逸，不代表上线后无故障，不关闭已有未验证条目。"
     }
   ],
   "comparison_policy": {

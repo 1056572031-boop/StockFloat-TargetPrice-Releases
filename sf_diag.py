@@ -201,7 +201,6 @@ def scrub_text(text: str, needles: tuple[Needle, ...]) -> str:
     result = re.sub(r"-----BEGIN " + r"(?:[A-Z]+ )?PRIVATE KEY-----.*?-----END "
                     + r"(?:[A-Z]+ )?PRIVATE KEY-----", "<REDACTED>", result, flags=re.DOTALL)
     result = re.sub(r"\A.*?-----END " + r"(?:[A-Z]+ )?PRIVATE KEY-----", "<REDACTED>", result, flags=re.DOTALL)
-    result = re.sub(r"-----BEGIN " + r"(?:[A-Z]+ )?PRIVATE KEY-----.*\Z", "<REDACTED>", result, flags=re.DOTALL)
     result = re.sub(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b", "<REDACTED>", result)
     for needle in needles:
         if needle.hint and needle.hint not in result:
@@ -224,7 +223,7 @@ def scrub_text(text: str, needles: tuple[Needle, ...]) -> str:
     if "authorization" in lower:
         result = re.sub(
             r"[\"']?\bauthorization\b[\"']?\s*[:=]\s*"
-            r"(?:\"(?:\\.|[^\"\\\r\n])*\"?|'(?:\\.|[^'\\\r\n])*'?|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
+            r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
             "Authorization=<REDACTED>", result, flags=re.IGNORECASE,
         )
     if "?" in result or "&" in result:

@@ -67,8 +67,8 @@ for arg in "$@"; do
   case "$arg" in
     --no-install) DO_INSTALL=0 ;;
     --local-only) LOCAL_ONLY=1 ;;
-    --prepare-only) PREPARE_ONLY=1; DO_INSTALL=0; LOCAL_ONLY=0 ;;
-    --publish-prepared) USE_PREPARED=1; DO_INSTALL=1; LOCAL_ONLY=0 ;;
+    --prepare-only) PREPARE_ONLY=1; DO_INSTALL=0 ;;
+    --publish-prepared) USE_PREPARED=1 ;;
     # 跳过 PyInstaller，只重做 DMG + 安装（dist/ 已有产物时用，便于重试 DMG 阶段）
     --skip-build) DO_BUILD=0 ;;
     # 跳过回归关卡（唯一用途：拿同一份代码重做 DMG/OTA 的应急重试）
@@ -80,6 +80,15 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ "$USE_PREPARED" -eq 1 ] && { [ "$PREPARE_ONLY" -eq 1 ] || [ "$SKIP_TESTS" -eq 1 ] || [ "$LOCAL_ONLY" -eq 1 ]; }; then
+  echo "!! --publish-prepared 不可混用候选生成、本机模式或跳过测试；已有候选只能核验后发布" >&2
+  exit 2
+fi
+if [ "$PREPARE_ONLY" -eq 1 ] && [ "$LOCAL_ONLY" -eq 1 ]; then
+  echo "!! --prepare-only 与 --local-only 不能同时使用" >&2
+  exit 2
+fi
 
 # 已准备候选只做发布前核验和不可逆发布，不重新打包同一份源码。
 if [ "$USE_PREPARED" -eq 1 ] && [ "$SKIP_TESTS" -eq 0 ]; then
@@ -103,6 +112,21 @@ if [ ! -x "$VENV_PY" ]; then
   echo "!! 请先重建 .venv（Python 3.14.7），依赖见 requirements.txt" >&2
   exit 1
 fi
+
+# 质量记录是发布资格的输入，不应等到 3.75 的昂贵产物核验之后才发现缺失。
+# 发布重试必须显式绑定本轮同源记录；只允许复用已固定候选，不允许用旧记录冒充。
+QUALITY_RECORD="${SF_QUALITY_RECORD:-}"
+if [ -z "$QUALITY_RECORD" ]; then
+  echo "!! 缺少 SF_QUALITY_RECORD：请绑定本轮质量记录后再发布" >&2
+  echo "   示例：SF_QUALITY_RECORD=\"$PROJ/build/quality-v${VERSION:-候选版本}.json\" ./build_release.sh --publish-prepared" >&2
+  exit 1
+fi
+if [ ! -f "$QUALITY_RECORD" ]; then
+  echo "!! SF_QUALITY_RECORD 不是文件：$QUALITY_RECORD" >&2
+  exit 1
+fi
+"$VENV_PY" tools/quality_evidence.py validate "$QUALITY_RECORD" \
+  || { echo "!! SF_QUALITY_RECORD 结构无效，未进入发布前置核验" >&2; exit 1; }
 
 # These checks are read-only and independent. Run them together so a normal
 # release does not pay independent startup/scan costs back-to-back. Each
@@ -184,6 +208,32 @@ fi
 # ---- 1) 版本号（唯一来源） ----
 VERSION="$("$VENV_PY" -c "import sf_constants as c; print(c.APP_VERSION)")"
 echo "== 版本号: v$VERSION =="
+
+RELEASE_STATE="${SF_RELEASE_STATE:-$PROJ/build/release-state-v${VERSION}.json}"
+RELEASE_REPORT="$RELEASE_STATE.report.json"
+if [ "$LOCAL_ONLY" -eq 0 ]; then
+  release_summary() {
+    local result=$?
+    trap - EXIT
+    if [ -f "$RELEASE_STATE" ]; then
+      if ! "$VENV_PY" tools/release_state.py report --state "$RELEASE_STATE" \
+        --out "$RELEASE_REPORT" --quality "$QUALITY_RECORD"; then
+        echo "!! 发布总报告生成失败，不能报告完整交付" >&2
+        [ "$result" -ne 0 ] || result=1
+      fi
+    fi
+    cleanup_prechecks
+    release_lock
+    exit "$result"
+  }
+  trap release_summary EXIT
+  if [ "$USE_PREPARED" -eq 1 ]; then
+    "$VENV_PY" tools/release_state.py validate --state "$RELEASE_STATE" --stage candidate_ready
+  else
+    "$VENV_PY" tools/release_state.py init --state "$RELEASE_STATE" --version "$VERSION"
+    "$VENV_PY" tools/release_state.py qualify-source --state "$RELEASE_STATE"
+  fi
+fi
 
 # ---- 2) 上一轮产物改名移走（避免 PyInstaller 批量删除触发拦截）----
 STAMP="$(date +%Y%m%d_%H%M%S)"
@@ -313,16 +363,8 @@ echo "== 3.75 macOS 26/27 二进制与 Qt 运行库兼容核验 =="
 "$VENV_PY" tools/verify_macos_compat.py "$PROJ/dist/$APP_BUNDLE" --runtime \
   || { echo "!! 包内系统门槛、架构或依赖不兼容，拒绝发布" >&2; exit 1; }
 
-# The record is mandatory even for retry/skip modes; only its structure is checked here.
-# Final evidence qualification waits until the APP, DMG, ZIP and OTA manifest exist.
-if [ -z "${SF_QUALITY_RECORD:-}" ]; then
-  echo "!! 缺少 SF_QUALITY_RECORD 修改单；质量证据不完整，拒绝生成 DMG、安装或发布" >&2
-  exit 1
-fi
-# 这里不能调用 verify：最终 ZIP/DMG 尚未生成，正式产物角色自然还不能核验。
-# 先校验记录结构；等候选产物全部生成后再调用 qualify。
-"$VENV_PY" tools/quality_evidence.py validate "$SF_QUALITY_RECORD" \
-  || { echo "!! 质量修改单结构无效，拒绝继续生成发布流程" >&2; exit 1; }
+# 记录结构已在最早的只读前置阶段校验；这里保留阶段说明，正式资格仍需等
+# APP、DMG、ZIP 和 OTA 清单全部固定后执行 qualify。
 
 # ---- 3.8) 首装与更新路线核验（v1.4.58 起）----
 # 为什么值得为它多花两分钟：对外那句「装完第一次就能打开」一直没有机器判据，只靠人
@@ -453,6 +495,8 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
 fi
 
 if [ "$PREPARE_ONLY" -eq 1 ]; then
+  "$VENV_PY" tools/release_state.py candidate --state "$RELEASE_STATE" --version "$VERSION" \
+    --app "$PROJ/dist/$APP_BUNDLE" --dmg "$DMG_OUT" --zip "$UPDATE_ZIP" --ota "$UPDATE_JSON"
   echo "== 仅制作候选产物：跳过正式资格、安装、桌面覆盖和远端发布 =="
   echo "   APP: $PROJ/dist/$APP_BUNDLE"
   echo "   DMG: $DMG_OUT"
@@ -464,8 +508,13 @@ fi
 # 产物角色在这里才全部存在。正式资格检查必须早于 /Applications、桌面清理和远端写入；
 # publish_update_release.py 还会在读取凭据前用同一个入口再核验一次固定字节。
 if [ "$LOCAL_ONLY" -eq 0 ]; then
-  "$VENV_PY" tools/quality_evidence.py qualify "$SF_QUALITY_RECORD" \
+  "$VENV_PY" tools/quality_evidence.py qualify "$QUALITY_RECORD" \
     || { echo "!! 正式候选资格未通过，拒绝安装、覆盖桌面或发布 OTA" >&2; exit 1; }
+  if [ "$USE_PREPARED" -eq 0 ]; then
+    "$VENV_PY" tools/release_state.py candidate --state "$RELEASE_STATE" --version "$VERSION" \
+      --app "$PROJ/dist/$APP_BUNDLE" --dmg "$DMG_OUT" --zip "$UPDATE_ZIP" --ota "$UPDATE_JSON"
+  fi
+  "$VENV_PY" tools/release_state.py begin-publish --state "$RELEASE_STATE" --quality "$QUALITY_RECORD"
 fi
 
 # BEGIN publish_desktop_dmg
@@ -629,5 +678,5 @@ elif [ -n "$SYNC_NOTE" ]; then
   echo "== 发版完成 v${VERSION}，但遗留一项：${SYNC_NOTE} =="
   echo "   修好后手工执行：git push origin $SRC_BRANCH"
 else
-  echo "== 发版完成 v$VERSION =="
+  echo "== 发版完成 v${VERSION}（发布动作完成，真实场景与渠道验收仍以发布总报告为准）=="
 fi

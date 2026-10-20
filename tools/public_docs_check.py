@@ -11,6 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from sf_constants import APP_VERSION  # noqa: E402
+from sf_update import require_numbered_notes, UpdateError  # noqa: E402
 
 GPL_SHA256 = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
 REQUIRED = {
@@ -55,6 +56,18 @@ def problems(root: Path, version: str) -> list[str]:
         bad.append("release_notes.txt: missing this release's changes")
     elif section[1].strip() not in texts.get("README.md", ""):
         bad.append("README.md: changes do not match this release's notes")
+    if section:
+        try:
+            require_numbered_notes(section[1].strip())
+        except UpdateError as exc:
+            bad.append("release_notes.txt: " + str(exc))
+        if len(re.sub(r"\s", "", section[0])) > 150:
+            bad.append("release_notes.txt: this release exceeds 150 characters")
+    guide = texts.get("docs/INSTALL.md", "")
+    if "本构建仅用于本机覆盖安装" not in guide:
+        for filename in (f"Skyrocket-V{version}.dmg", f"Skyrocket-{version}-SHA256SUMS.txt"):
+            if filename not in guide:
+                bad.append("docs/INSTALL.md: missing current artifact " + filename)
     return bad
 
 

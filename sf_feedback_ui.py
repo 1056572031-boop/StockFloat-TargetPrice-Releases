@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 
 from sf_feedback import FeedbackProtocolError, build_archive
 from sf_feedback_capture import (
-    CONSENT_VERSION, MAX_DESCRIPTION, package_files, read_upload_archive, validate_capture_context, validate_upload_receipt,
+    CONSENT_VERSION, MAX_DESCRIPTION, package_files, read_upload_archive, validate_upload_receipt,
 )
 from sf_feedback_outbox import FeedbackOutbox
 from sf_feedback_bundle import FULL_CONSENT_VERSION, read_diagnostics
@@ -263,9 +263,7 @@ class FeedbackDialog(GlassMixin, QDialog):
             self.upload_button.setToolTip("保留原反馈资料，开始新的反馈；不会立即上传。")
             self.upload_button.setEnabled(not busy)
             return
-        reason = self.validation_error or (self.status.text() if self.last_error in _BLOCKING_ERRORS else "")
-        self.description.setToolTip(self.validation_error)
-        self.upload_button.setToolTip(reason or (_FULL_UPLOAD_HINT if self.payload_version == 2 else _LEGACY_UPLOAD_HINT))
+        self.upload_button.setToolTip(_FULL_UPLOAD_HINT if self.payload_version == 2 else _LEGACY_UPLOAD_HINT)
         valid = self.preview_valid and self.preview_files is not None and len(self.description.toPlainText()) <= MAX_DESCRIPTION
         self.upload_button.setEnabled(bool(self.outbox is not None and self.last_error not in _BLOCKING_ERRORS
                                            and valid and not busy
@@ -346,8 +344,6 @@ class FeedbackDialog(GlassMixin, QDialog):
         self._update_enabled()
 
     def _apply_pending(self, row, packet):
-        if row["status"] != "receipt_persisted":
-            validate_capture_context(packet["manifest"], packet["state"])
         self.payload_version = row["envelope"]["diagnostic_payload_version"]
         self.snapshot = packet["state"]
         self.description.setPlainText(packet["files"]["problem.txt"])

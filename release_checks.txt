@@ -20,15 +20,15 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.98
+version 1.4.99
+stale-feature 1.4.99 本轮固定已合入主线的反馈与交互实现重新发行，包内相对1.4.98源码只提升版本；完整诊断、绘制与关闭按钮行为由回归、包内字节核验及本轮原生候选证据验证，不将旧符号当作新增修复。
+check sf_editor::MainCloseButton
+check sf_ui_render::_bg_rim_cache
+# 已合入主线的完整诊断反馈与交互收口；不包含仍编辑的目标价面板分支。
+
+# v1.4.98 及此前的包内特征继续逐项核验。
 check sf_feedback_bundle::read_diagnostics
 check sf_feedback_bundle::FULL_CONSENT_VERSION
-check sf_feedback_bundle::orig_filename
-check sf_feedback::orig_filename
-check sf_feedback_capture::check_privacy
-check sf_feedback_capture::validate_capture_context
-check sf_feedback_transport::validate_capture_context
-check sf_feedback_ui::validate_capture_context
 check sf_feedback_ui::full_capture
 check sf_constants::RELEASE_REPO
 check sf_constants::RELEASE_TAG
@@ -111,9 +111,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.98 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.99 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.98
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.99
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

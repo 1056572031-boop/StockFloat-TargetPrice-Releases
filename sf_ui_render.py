@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QFontInfo, QFontMetrics, QPainter,
                          QPainterPath, QPen, QBrush, QLinearGradient, QImage)
 from PyQt6.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QTimer
-from sf_constants import (R, GLASS_INSET, LIQUID_GLASS_INSET, BG_ALPHA_DEFAULT, FG_DIM, UP_RED_HEX, DOWN_GREEN_HEX,
+from sf_constants import (R, GLASS_INSET, LIQUID_GLASS_INSET, LIQUID_GLASS_RIM_RGB,
+                         BG_ALPHA_DEFAULT, FG_DIM, UP_RED_HEX, DOWN_GREEN_HEX,
                          BTN_ICON_PT)
 from renderer import liquid_glass_dim_path, _bottom_layout, price_pct_layout
 from sf_utils import fmt_pct
@@ -999,6 +1000,17 @@ class RenderMixin:
                     self._bg_path_ins_wh = key
                 p.fillPath(self._bg_path_ins, QColor(0, 0, 0, self._glass_dim()))
                 if liquid:
+                    # One concentric ring joins all four sides and corners. An
+                    # opaque neutral color replaces the uneven native highlight.
+                    rim_key = (w, h, LIQUID_GLASS_INSET, R)
+                    rim_cache = getattr(self, "_bg_rim_cache", None)
+                    if rim_cache is None or rim_cache[0] != rim_key:
+                        rim = QPainterPath(path)
+                        rim.addPath(self._bg_path_ins)
+                        rim.setFillRule(Qt.FillRule.OddEvenFill)
+                        rim_cache = (rim_key, rim)
+                        self._bg_rim_cache = rim_cache
+                    p.fillPath(rim_cache[1], QColor(*LIQUID_GLASS_RIM_RGB))
                     return
                 # 玻璃材质的受光只留在内侧 1px，随系统深浅外观实时变化；背景的
                 # 暖冷色仍由原生 NSVisualEffectView 负责，避免人为染色干扰行情可读性。

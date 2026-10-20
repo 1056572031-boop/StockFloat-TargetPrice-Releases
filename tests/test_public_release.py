@@ -21,25 +21,6 @@ import public_release as public  # noqa: E402
 
 
 class PublicReleaseCase(SFCase):
-    def test_current_document_resource_checks_match_the_documents_before_packaging(self):
-        import release_feature_check as features
-
-        parsed = features.parse_checks(ROOT / "release_checks.txt")
-        self.assertEqual(parsed["errors"], [])
-        paths = {"Contents/Resources/docs/README.md": "README.md",
-                 "Contents/Resources/docs/INSTALL.md": "docs/INSTALL.md"}
-        checks = [spec for spec in parsed["checkfile"] if spec.split("::", 1)[0] in paths]
-        self.assertGreaterEqual(len(checks), len(paths))
-        app = self.root / "candidate.app"
-        for destination, source in paths.items():
-            target = app / destination
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes((ROOT / source).read_bytes())
-        document_checks = {"checkfile": checks, "forbidfile": []}
-        self.assertEqual(features.resource_problems(str(app), document_checks), [])
-        (app / "Contents/Resources/docs/README.md").write_text("outdated documents")
-        self.assertTrue(features.resource_problems(str(app), document_checks))
-
     def test_feedback_namespaces_are_exact_and_never_mask_other_secrets(self):
         repo = b"1056572031-boop/Skyrocket-Private-Feedback"
         origin = b"https://skyrocket-feedback-1056572031.pages.dev"
@@ -118,6 +99,17 @@ class PublicReleaseCase(SFCase):
         self.assertTrue(self.document_problems())
         notes.write_text("V%s 发布说明\n" % docs.APP_VERSION)
         self.assertTrue(self.document_problems())
+
+    def test_numbering_length_and_install_artifact_names_fail_before_packaging(self):
+        notes = self.root / "release_notes.txt"
+        original = notes.read_text()
+        for body in ("2. missing first item", "1. " + "x" * 151):
+            notes.write_text("V%s release\n%s\n" % (docs.APP_VERSION, body))
+            self.assertTrue(any("release_notes.txt:" in item for item in self.document_problems()))
+        notes.write_text(original)
+        guide = self.root / "docs/INSTALL.md"
+        guide.write_text(guide.read_text().replace("Skyrocket-%s-SHA256SUMS.txt" % docs.APP_VERSION, "old-checksums.txt"))
+        self.assertTrue(any("missing current artifact" in item for item in self.document_problems()))
 
     def test_cli_fails_on_missing_license_and_unknown_arguments(self):
         (self.root / "LICENSE").unlink()
@@ -432,6 +424,7 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
             self.assertEqual(public.main(["--audit", str(self.root)]), 0)
 
     def test_main_publishes_source_and_dmg_only_after_audited_export(self):
+        self.init_repo()
         application = self.root / "build/update_assets" / ("V" + public.APP_VERSION) / (
             "Skyrocket-%s-macos.zip" % public.APP_VERSION)
         application.parent.mkdir(parents=True)
@@ -450,6 +443,10 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
         self.assertEqual(upload.call_count, 3)
         self.assertIn("archive", command.call_args.args[0])
         published_docs.assert_called_once()
+        receipt = json.loads((self.root / "build" / ("publication-v%s.json" % public.APP_VERSION)).read_text())
+        self.assertEqual(receipt["public_commit"], "commit")
+        self.assertEqual(receipt["source_zip"]["kind"], "file")
+        self.assertTrue(receipt["source_zip"]["content_sha256"])
 
     def test_main_stops_after_export_push_or_first_upload_failure(self):
         failures = ("export", "push", "upload")

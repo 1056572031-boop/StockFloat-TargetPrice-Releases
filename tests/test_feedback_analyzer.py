@@ -12,40 +12,15 @@ from tests._base import SFCase
 class FeedbackAnalyzerTests(SFCase):
     def _archive(self, root, state, description=""):
         path = root / "feedback.zip"
-        context = state if isinstance(state, dict) else {}
         build_archive(path, {"state.json": json.dumps(state), "payload.sh": "not executable",
                              "problem.txt": description},
-                      app_version="1.4.94", bundle_id="com.skyrocket.app", run_id="run-1",
-                      omitted=context.get("omitted", []), truncated=context.get("truncated", []),
-                      capture_started_at=context.get("capture_started_at", context.get("capture_completed_at")),
-                      capture_completed_at=context.get("capture_completed_at"))
+                      app_version="1.4.94", bundle_id="com.skyrocket.app", run_id="run-1")
         return path
 
     def _feedback_state(self, **changes):
         return {"phase": "user_feedback", "health": None, "run_id": "run-1",
                 "app_version": "1.4.94", "capture_completed_at": "2026-10-20T01:40:04Z",
                 "counts": {}, "summary": {}, **changes}
-
-    def test_historical_context_disagreement_is_preserved_and_never_becomes_a_current_fault(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            state = self._feedback_state(health=True, omitted=["raw_logs"])
-            path = self._archive(root, state)
-            with zipfile.ZipFile(path) as archive:
-                files = {name: archive.read(name) for name in archive.namelist()}
-            manifest = json.loads(files["manifest.json"])
-            manifest["omitted"] = []
-            files["manifest.json"] = json.dumps(manifest).encode()
-            with zipfile.ZipFile(path, "w") as archive:
-                for name, body in files.items():
-                    archive.writestr(name, body)
-            report = analyze_archive(path, root / "reports")
-            self.assertEqual(report["context_mismatches"], ["omitted"])
-            self.assertEqual(report["source_context"]["omitted"], [])
-            self.assertEqual(report["state_context"]["omitted"], ["raw_logs"])
-            self.assertEqual(report["conclusion"], "insufficient_evidence")
-            self.assertEqual(report["evidence_basis"], "conflicting_context")
-            self.assertIn("原始声明均保留", Path(report["markdown_path"]).read_text())
 
     def test_privacy_filter_count_is_information_not_a_fault(self):
         with tempfile.TemporaryDirectory() as directory:

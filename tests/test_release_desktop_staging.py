@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BEGIN = "# BEGIN publish_desktop_dmg"
 END = "# END publish_desktop_dmg"
 CALL = 'publish_desktop_dmg "$DMG_OUT" "$DESKTOP_DMG"'
-QUALIFY = 'tools/quality_evidence.py qualify "$SF_QUALITY_RECORD"'
+QUALIFY = 'tools/quality_evidence.py qualify "$QUALITY_RECORD"'
 
 
 def check_order(source):
@@ -50,6 +50,7 @@ class ReleaseDesktopStaging(SFCase):
     def test_prepared_and_normal_modes_share_delivery_after_qualification(self):
         # This check guards irreversible shell call order; executing the whole
         # production publisher would install/upload instead of testing a fixture.
+        self.assertIn('QUALITY_RECORD="${SF_QUALITY_RECORD:-}"', self.source)
         check_order(self.source)
         self.assertEqual(self.source.count(CALL), 1)
         for broken in (CALL + "\n" + self.source.replace(CALL, ""),
@@ -57,6 +58,21 @@ class ReleaseDesktopStaging(SFCase):
                        self.source.replace(QUALIFY, 'mkdir -p "$DESKTOP_OUTPUT_DIR"\n' + QUALIFY)):
             with self.subTest(mutation=broken[:60]), self.assertRaises(ValueError):
                 check_order(broken)
+
+    def test_release_state_guards_precede_build_and_irreversible_writes(self):
+        # The observable contract here is irreversible shell call order, not Python source shape.
+        source_qualified = 'tools/release_state.py qualify-source --state "$RELEASE_STATE"'
+        begin_publish = 'tools/release_state.py begin-publish --state "$RELEASE_STATE"'
+        prepared_check = 'tools/release_state.py validate --state "$RELEASE_STATE" --stage candidate_ready'
+        self.assertLess(self.source.index(source_qualified), self.source.index('hdiutil create'))
+        self.assertLess(self.source.index(prepared_check), self.source.index('hdiutil create'))
+        self.assertLess(self.source.index(QUALIFY), self.source.index(begin_publish))
+        self.assertLess(self.source.index(begin_publish), self.source.index(CALL))
+        self.assertLess(self.source.index(begin_publish), self.source.index('tools/publish_update_release.py --assets'))
+        self.assertGreater(self.source.index('tools/release_state.py candidate --state'),
+                           self.source.index('UPDATE_JSON="$UPDATE_ASSET_DIR/Skyrocket-update.json"'))
+        self.assertIn('trap release_summary EXIT', self.source)
+        self.assertIn('exit "$result"', self.source)
 
     def test_history_audit_and_its_failure_wait_precede_build_or_desktop_mutations(self):
         # The object under test is irreversible command order, not shell prose.

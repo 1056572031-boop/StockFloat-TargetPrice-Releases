@@ -297,6 +297,8 @@ class DialogFailureResults(SFCase):
             endpoint="https://receiver.example", capture_again=lambda: (_ for _ in ()).throw(OSError())))
 
     def test_private_state_is_not_exported_and_capture_failure_disables_upload(self):
+        self.dialog.description.setPlainText("x" * (ui.MAX_DESCRIPTION + 1))
+        self.assertFalse(self.dialog.upload_button.isEnabled())
         self.dialog.preview_files = None
         self.dialog._upload()  # discipline-ok(R5): disabled-click boundary under test
         self.assertIsNone(self.dialog.worker)
@@ -313,6 +315,8 @@ class DialogFailureResults(SFCase):
         self.assertEqual(self.dialog.last_error, "configuration_unavailable")
         self.dialog.outbox = None
         self.dialog._select_pending()  # discipline-ok(R5): failed storage initialization cannot load a queued package
+        self.dialog._upload()  # discipline-ok(R5): unavailable storage must reject direct submission too
+        self.assertIsNone(self.dialog.worker)
 
     def test_source_menu_capture_failure_has_visible_feedback(self):
         host = SimpleNamespace(width=lambda: 100, mapToGlobal=lambda point: point)

@@ -19,6 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools"))
+import quality_evidence as evidence
 HELPER = ROOT / "updater" / "update_helper.sh"
 
 
@@ -118,14 +120,56 @@ def stop_target(app: Path, executable: str) -> None:
 def sentinel(home: Path) -> tuple[Path, bytes]:
     home.mkdir()
     config = home / "config.json"
-    content = b'{"delivery_sentinel":"must-not-change","code":"000001"}\n'
+    content = (json.dumps({"delivery_sentinel": "must-not-change", "code": "sh600000",
+                          "x": 120, "y": 120, "h": 320, "bg": "glass",
+                          "alerts": [{"code": "sh600000", "direction": "above", "target": 999999.0,
+                                      "session_date": "2099-01-05", "state": "pending", "last_side": None}]},
+                         sort_keys=True) + "\n").encode()
     config.write_bytes(content)
     return config, content
 
 
 def check_sentinel(config: Path, content: bytes) -> None:
-    if config.is_symlink() or config.read_bytes() != content:
+    if config.is_symlink():
         raise RuntimeError("sentinel 配置被修改")
+    actual = config.read_bytes()
+    if actual != content:
+        raise RuntimeError("sentinel 配置被修改: " + json.dumps({
+            "expected": content.decode("utf-8", errors="replace")[:65536],
+            "actual": actual.decode("utf-8", errors="replace")[:65536],
+            "expected_sha256": hashlib.sha256(content).hexdigest(),
+            "actual_sha256": hashlib.sha256(actual).hexdigest()}, ensure_ascii=False))
+
+
+def readback_config(config: Path, content: bytes, app: Path | None = None) -> dict:
+    """在新进程用实际包内解析器（或源码对照）读回；不冒充界面验收。"""
+    check_sentinel(config, content)
+    expected = json.loads(content)
+    home = config.parent.resolve()
+    if not home.is_relative_to(Path(tempfile.gettempdir()).resolve()):
+        raise ValueError("配置读回只允许私有临时目录")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SF_", "GIT_"))}
+    env.update(HOME=str(home), SF_CONFIG_PATH=str(config), SF_LOG_PATH=str(home / "readback.log"),
+               SF_UNIVERSE_PATH=str(home / "securities.json"), SF_LAST_QUOTE_PATH=str(home / "last_quote.json"))
+    command = [str(ROOT / ".venv/bin/python3"), "-c",
+               ("import json; from sf_config import load_config, load_alerts; "
+                "print(json.dumps({'window': load_config(), 'alerts': load_alerts('sh600000')}))")]
+    if app is not None:
+        command = [str(ROOT / ".venv/bin/python3"), str(ROOT / "tools/config_bundle_readback.py"),
+                   "--app", str(app), "--config", str(config)]
+    result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True,
+                            check=True, timeout=30)
+    observed = json.loads(result.stdout)
+    bundle_version = observed.pop("bundle_version", None)
+    if app is not None and bundle_version != metadata(app)["CFBundleShortVersionString"]:
+        raise RuntimeError("配置解析器的包内版本与应用不一致")
+    wanted = {"window": [expected[key] for key in ("code", "x", "y", "h", "bg")],
+              "alerts": expected["alerts"]}
+    if observed != wanted:
+        raise RuntimeError("目标价或窗口设置无法完整读回")
+    check_sentinel(config, content)
+    return {"scope": "frozen_bundle_parser_new_process_not_ui" if app else "current_source_parser_new_process_not_ui",
+            "bundle_version": bundle_version, "observed": observed}
 
 
 def helper_route(archive: Path, version: str, old: Path, root: Path,
@@ -138,6 +182,7 @@ def helper_route(archive: Path, version: str, old: Path, root: Path,
     old_digest = hashlib.sha256((target / old_exe).read_bytes()).hexdigest()
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(target)])
     config, content = sentinel(root / "home")
+    baseline_readback = readback_config(config, content, target)
     result = root / "result.json"
     # A waited child supplies a genuinely dead PID, not an assumed-unused number.
     child = subprocess.Popen(["/usr/bin/true"])
@@ -173,8 +218,11 @@ def helper_route(archive: Path, version: str, old: Path, root: Path,
     # not merely that a directory or a helper status exists.
     observed = smoke(target)
     check_sentinel(config, content)
+    data_readback = readback_config(config, content, target)
     return {"helper": outcome, "helper_returncode": completed.returncode,
             "smoke": observed, "sentinel_unchanged": True,
+            "data_readback": data_readback,
+            "baseline_data_readback": baseline_readback,
             "version": info["CFBundleShortVersionString"]}
 
 
@@ -206,8 +254,13 @@ def verify(app: Path, archive: Path, out: Path, old: Path | None = None) -> int:
     report: dict = {"verified": False, "app": str(app), "zip": str(archive),
               "smoke": "not_run", "first_install": "not_run", "upgrade": "not_run",
               "rollback": "not_run", "scope": "本机临时安装；不代表跨机或 Gatekeeper 通过"}
+    report["matrix"] = {name: {"status": "unverified"} for name in
+                        ("candidate_startup", "fresh_install", "upgrade_install", "ota_forward",
+                         "ota_rollback", "user_data_readback", "old_app_restart")}
+    report["data_readback_boundary"] = "关键配置由实际旧包、升级包或回滚旧包内的解析器在新进程读回；不证明界面已显示这些设置"
     try:
-        with tempfile.TemporaryDirectory(prefix="sf_candidate_delivery_") as tmp:
+        report["artifacts"] = {"app": evidence.artifact_token(app), "zip": evidence.artifact_token(archive)}
+        with tempfile.TemporaryDirectory(prefix="sf_cd_") as tmp:
             root = Path(tmp).resolve()
             report["preflight"] = preflight(app, archive, root)
             require_helper(HELPER)
@@ -218,12 +271,18 @@ def verify(app: Path, archive: Path, out: Path, old: Path | None = None) -> int:
                 raise ValueError("旧包版本必须不同于候选")
             run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(old)])
             report["smoke"] = smoke(app)
+            report["matrix"]["candidate_startup"]["status"] = "passed"
             report["first_install"] = smoke(root / "copy" / "Skyrocket.app")
+            report["matrix"]["fresh_install"]["status"] = "passed"
             version = report["preflight"]["version"]
             report["upgrade"] = helper_route(archive, version, old, root / "upgrade")
+            for name in ("upgrade_install", "ota_forward"):
+                report["matrix"][name]["status"] = "passed"
             report["preflight"]["archive_verified"] = True
             report["rollback"] = helper_route(fault_archive(root, version), version, old,
                                                 root / "rollback", rollback=True)
+            for name in ("ota_rollback", "user_data_readback", "old_app_restart"):
+                report["matrix"][name]["status"] = "passed"
             report["verified"] = True
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         report["error"] = str(exc)

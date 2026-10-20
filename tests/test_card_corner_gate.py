@@ -94,7 +94,27 @@ class CornerRenderGateTests(SFCase):
         def previous(w, h, radius, inset):
             return smooth_round_rect_path(inset, inset, w - 2 * inset, h - 2 * inset, radius - inset)
         with mock.patch("sf_ui_render.liquid_glass_dim_path", previous):
-            self.assertEqual(len(gate.render_problems()), 6)
+            failures = gate.render_problems()
+        self.assertEqual(len({failure.split(":", 1)[0] for failure in failures}), 6)
+
+    def test_thick_native_rim_is_rejected_even_with_concentric_corners(self):
+        with mock.patch("sf_ui_render.LIQUID_GLASS_INSET", 2), \
+                mock.patch("sf_constants.LIQUID_GLASS_INSET", 2):
+            failures = gate.render_problems()
+        self.assertEqual(len([failure for failure in failures if "heavy rim" in failure]), 6)
+
+    def test_one_misshapen_inner_corner_is_rejected(self):
+        from renderer import liquid_glass_dim_path
+
+        def misshapen(w, h, radius, inset):
+            path = liquid_glass_dim_path(w, h, radius, inset)
+            if inset:
+                path.addRect(QRectF(1, 1, 4, 4))
+            return path
+
+        with mock.patch("sf_ui_render.liquid_glass_dim_path", misshapen):
+            failures = gate.render_problems()
+        self.assertTrue(any("symmetry=" in failure for failure in failures))
 
     def test_main_fallback_and_popups_share_the_reference_circle(self):
         class Host(RenderMixin, QWidget):

@@ -19,9 +19,29 @@ class ReleaseLockCleanup(SFCase):
         self.script.write_bytes((ROOT / "build_release.sh").read_bytes())
         self.lock = self.root / ".build_release_targetprice.lock"
 
-    def invoke(self):
-        return subprocess.run(["/bin/bash", str(self.script), "--invalid-lock-probe"],
+    def invoke(self, *args):
+        return subprocess.run(["/bin/bash", str(self.script), *(args or ("--invalid-lock-probe",))],
                               capture_output=True, text=True, timeout=10)
+
+    def test_exclusive_modes_reject_every_argument_order_before_environment_or_credentials(self):
+        for first, second in (("--local-only", "--prepare-only"),
+                              ("--local-only", "--publish-prepared"),
+                              ("--prepare-only", "--publish-prepared")):
+            for args in ((first, second), (second, first)):
+                with self.subTest(args=args):
+                    result = self.invoke(*args)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertFalse(self.lock.exists())
+
+    def test_no_install_is_preserved_regardless_of_prepared_mode_order(self):
+        # Execute only argument parsing and the owned lock, never build/install/publish commands.
+        prefix = self.script.read_text().split("PUBLIC_REGRESSION=", 1)[0]
+        for args in (("--no-install", "--publish-prepared"), ("--publish-prepared", "--no-install")):
+            result = subprocess.run(["/bin/bash", "-c", prefix + '\nprintf "install=%s\\n" "$DO_INSTALL"',
+                                     str(self.script), *args], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "install=0")
+            self.assertFalse(self.lock.exists())
 
     def test_repeated_early_exit_releases_own_pid_and_lock(self):
         for _ in range(2):
