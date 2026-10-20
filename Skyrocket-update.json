@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.97",
-  "published_at": "2026-10-19T14:38:02Z",
+  "version": "1.4.98",
+  "published_at": "2026-10-20T10:44:33Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 新增反馈问题：脱敏预览、同意确认、失败后本地重试。\n2. 加入私有反馈收件与分析，拒绝越权字段和凭据泄露。\n3. 放缓目标价彩虹提示并收紧窗口高度。",
+  "notes": "1. 反馈问题时自动附带更完整的诊断资料，方便排查异常。\n2. 简化反馈窗口，上传进度和结果通过弹窗提示。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.97-macos.zip",
-    "size": 26314777,
-    "sha256": "a09c1ea9c99002a3ecadd3db116fcac859d121d3d817b5103ecfdee9a34fdda1"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.98-macos.zip",
+    "size": 26335306,
+    "sha256": "d91a42172550d2bc43088dd9684b410402eaa793563526f697396b1d3144db6b"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "tGa0cVS9L4yu0Mqi5sAXRsaGSDncXo8AcZJwNZp5o6lusaqS9gwk/ZKwz8KQh97FZ6jr+TLqaLs5bNAIAzTKDA=="
+    "value": "kKVClrQCEuzAU46SznLF9JH7tKqPqGjPq/JqNH/giCdQFxj8/nPWZq3rxQl+CEE9N7bnfbtxmk+Yh4Cg9sGuDw=="
   }
 }
