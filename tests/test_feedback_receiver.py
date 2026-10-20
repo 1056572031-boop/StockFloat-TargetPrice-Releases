@@ -155,6 +155,7 @@ class FeedbackReceiverTests(SFCase):
         left2, right2 = socket.socketpair()
         self.addCleanup(left2.close)
         self.addCleanup(right2.close)
+        left2.settimeout(1)
         right2.sendall((16 * 1024 * 1024 + 1).to_bytes(8, "big"))
         with self.assertRaises(ReceiverError):
             _read_frame(left2)

@@ -41,7 +41,7 @@ _REAL_POPEN = subprocess.Popen
 
 def _fake_popen(args, *a, **k):
     """放行真实子进程（platform.platform() 依赖它），只吞掉"在访达中显示"。"""
-    if args and args[0] == "open":
+    if args and args[0] in ("open", "/usr/bin/open"):
         return None
     return _REAL_POPEN(args, *a, **k)
 
@@ -105,13 +105,13 @@ class _ExportCase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _export(self):
-        desktop = os.path.join(self.tmp, "Desktop", "Skyrocket")
+        desktop = os.path.join(self.tmp, "Desktop")
         os.makedirs(desktop, exist_ok=True)
-        with patch.object(m, "DESKTOP_OUTPUT_DIR", desktop):
+        with patch.dict(os.environ, {"HOME": self.tmp}):
             out = self.win._export_diagnostics()
         # 导出文件名前缀从产品常量现推（v1.4.55 全局改名 Skyrocket，写死的旧名
         # 会让这一族用例整批红，而报错内容完全看不出是改名）。
-        self.assertTrue(out.startswith(desktop + os.sep))
+        self.assertEqual(os.path.dirname(out), desktop)
         self.assertRegex(os.path.basename(out), r"^" + sf_constants.APP_DISPLAY_NAME
                          + r"-诊断-\d{8}_\d{6}\.zip$")
         self.assertIsNotNone(out, "诊断包未生成")

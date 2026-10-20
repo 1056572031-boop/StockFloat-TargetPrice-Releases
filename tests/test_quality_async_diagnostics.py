@@ -52,8 +52,10 @@ class AsyncDiagnosticsQualityTests(SFCase):
             QApplication.processEvents()
             return not member(case.win, "_diagnostics_exporting")
         self.assertTrue(wait_for(completed))
-        files = list((Path(case.home) / "Desktop" / "Skyrocket").glob("*.zip"))
+        desktop = Path(case.home) / "Desktop"
+        files = list(desktop.glob("*.zip"))
         self.assertEqual(len(files), 1)
+        self.assertEqual(list(desktop.iterdir()), files)
         with zipfile.ZipFile(files[0]) as archive:
             self.assertIn("export.json", archive.namelist())
             self.assertIn("diagnostics.txt", archive.namelist())
@@ -72,4 +74,4 @@ class AsyncDiagnosticsQualityTests(SFCase):
 
             self.assertTrue(wait_for(completed))
             finish.assert_called_once()
-        self.assertEqual(list((Path(case.home) / "Desktop" / "Skyrocket").iterdir()), [])
+        self.assertEqual(list((Path(case.home) / "Desktop").iterdir()), [])

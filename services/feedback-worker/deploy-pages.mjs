@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { REPOSITORY, validateInstallation } from './setup-github-app.mjs';
 import { readCloudflareToken } from './cloudflare-auth.mjs';
 import { pagesConfiguration } from './pages-configuration.mjs';
+import { verifyBuild } from './verify-build.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const wrangler = join(root, 'node_modules/.bin/wrangler');
 const { values } = parseArgs({ options: { configuration: { type: 'string' },
   'app-configuration': { type: 'string' }, directory: { type: 'string' }, enable: { type: 'boolean', default: false } } });
 if (!values.configuration || !values['app-configuration'] || !values.directory) throw new Error('Configuration, verified GitHub App and private deployment directory are required');
+const buildManifest = await verifyBuild(root);
 const config = JSON.parse(await fs.readFile(resolve(values.configuration), 'utf8'));
 const app = JSON.parse(await fs.readFile(resolve(values['app-configuration']), 'utf8'));
 const pages = pagesConfiguration(config, app, resolve(root, 'dist/pages'), values.enable);
@@ -49,6 +51,6 @@ const receipt = { repository: REPOSITORY, repository_count: 1, repository_select
   deployment_id: project.canonical_deployment?.id, environment: project.canonical_deployment?.environment,
   deployed_at: new Date().toISOString(), contains_client_credentials: false, private_key_logged: false,
   paid_plan_activated: false,
-  build_manifest: JSON.parse(await fs.readFile(join(root, 'dist/build-manifest.json'), 'utf8')) };
+  build_manifest: buildManifest };
 await fs.writeFile(join(directory, 'deployment-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
 console.log(JSON.stringify(receipt));

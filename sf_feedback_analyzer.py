@@ -7,6 +7,7 @@ import html
 import json
 import os
 import platform
+import re
 import tempfile
 import uuid
 import zipfile
@@ -15,9 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from sf_feedback import sha256_file, validate_archive
+from sf_feedback_bundle import read_diagnostics
 
-ANALYZER_SCHEMA_VERSION = 1
-ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v3"
+ANALYZER_SCHEMA_VERSION = 3
+ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v6"
 DEFAULT_RULESET = {
     "required_members": ["state.json"],
     "health_false_conclusion": "suspected_problem",
@@ -47,8 +49,28 @@ def _atomic_text(path: Path, text: str) -> None:
             del exc
 
 
-def _finding(code: str, severity: str, message: str) -> dict[str, str]:
+def _finding(code: str, severity: str, message: str) -> dict[str, Any]:
     return {"code": code, "severity": severity, "message": message}
+
+
+def diagnostic_evidence(content):
+    files = read_diagnostics(content)
+    snapshots = {name: value for name, value in files.items() if name.endswith(".json")}
+    text_evidence = {}
+    for name, text in files.items():
+        if not isinstance(text, str):
+            continue
+        lines = text.splitlines()
+        relevant = [line for line in lines if re.search(r"\b(?:ERROR|WARNING|CRITICAL)\b", line)]
+        if name.startswith("crash_reports/"):
+            relevant = lines
+        text_evidence[name] = {"line_count": len(lines), "matching_line_count": len(relevant),
+                               "tail": [line[:1000] for line in relevant[-40:]],
+                               "excerpt_truncated": len(relevant) > 40 or any(len(line) > 1000 for line in relevant[-40:])}
+    return {"archive_sha256": hashlib.sha256(content).hexdigest(),
+            "inventory": sorted(files), "snapshots": snapshots, "text_evidence": text_evidence,
+            "collection_issues": files["export.json"]["issues"],
+            "limitation": "日志与崩溃为历史线索，不自动认定属于本次反馈；原文保留在完整诊断附件中。"}
 
 
 def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLike[str] | str,
@@ -62,11 +84,16 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
     archive_hash = sha256_file(archive)
     run_id = uuid.uuid4().hex
     required = [str(item) for item in active_ruleset.get("required_members", [])]
-    findings: list[dict[str, str]] = []
+    findings: list[dict[str, Any]] = []
     state: dict[str, Any] | None = None
     description = ""
+    full_diagnostics = None
+    context_fields = ("app_version", "bundle_id", "run_id", "capture_started_at", "capture_completed_at", "omitted", "truncated")
+    context_mismatches: list[str] = []
     with zipfile.ZipFile(archive) as package:
         members = set(package.namelist())
+        if manifest["diagnostic_payload_version"] == 2:
+            full_diagnostics = diagnostic_evidence(package.read("diagnostics.zip"))
         if "problem.txt" in members:
             description = package.read("problem.txt").decode("utf-8", errors="replace")[:4000]
         missing = sorted(set(required) - members)
@@ -82,6 +109,9 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
             if isinstance(state, dict) and state.get("health") is False:
                 findings.append(_finding("health_false", "warning", "diagnostic health snapshot reports false"))
             if isinstance(state, dict) and state.get("phase") == "user_feedback":
+                context_mismatches = [key for key in context_fields if key in state and manifest.get(key) != state[key]]
+                if context_mismatches:
+                    findings.append(_finding("context_mismatch", "info", "清单与状态中的采集声明不一致：" + ", ".join(context_mismatches)))
                 summary = state.get("summary", {})
                 counts = state.get("counts", {})
                 if isinstance(summary, dict):
@@ -91,21 +121,50 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
                             findings.append(_finding("runtime_warning", "warning", name))
                 if isinstance(counts, dict):
                     for name, value in counts.items():
-                        if (type(value) is int and value > 0
-                                and any(word in name for word in ("fail", "error", "dropped"))):
-                            findings.append(_finding("historical_counter", "warning", str(name)[:96]))
+                        if type(value) is not int or value <= 0:
+                            continue
+                        if name.rsplit(".", 1)[-1] == "_secret_keys_dropped":
+                            item = _finding("privacy_filter", "info", str(name)[:96])
+                        elif any(word in name for word in ("fail", "error", "dropped")):
+                            item = _finding("historical_counter", "warning", str(name)[:96])
+                        else:
+                            continue
+                        item["value"] = value
+                        findings.append(item)
                 if not state.get("run_id") or not state.get("app_version") or not state.get("capture_completed_at"):
                     findings.append(_finding("missing_context", "warning", "session/version/time unavailable"))
-    if missing or any(item["code"] in ("invalid_state_json", "missing_context") for item in findings):
+    if missing or any(item["code"] in ("invalid_state_json", "missing_context", "context_mismatch") for item in findings):
         conclusion = str(active_ruleset.get("missing_member_conclusion", "insufficient_evidence"))
     elif any(item["code"] == "health_false" for item in findings):
         conclusion = str(active_ruleset.get("health_false_conclusion", "suspected_problem"))
-    elif any(item["code"] in ("runtime_warning", "historical_counter") for item in findings):
+    elif any(item["code"] == "runtime_warning" for item in findings):
         conclusion = "suspected_problem"
-    elif isinstance(state, dict) and state.get("phase") == "user_feedback" and state.get("health") is not True:
+    elif (any(item["code"] == "historical_counter" for item in findings)
+          or (isinstance(state, dict) and state.get("phase") == "user_feedback"
+              and state.get("health") is not True)):
         conclusion = "insufficient_evidence"
     else:
         conclusion = "no_known_issue"
+    codes = {item["code"] for item in findings}
+    evidence_basis = ("conflicting_context" if context_mismatches
+                      else "current_snapshot" if codes & {"health_false", "runtime_warning"}
+                      else "historical_only" if "historical_counter" in codes
+                      else "no_fault_signal")
+    # A sender's description is only a hint, never authority to exclude a case.
+    test_declared = description.strip().startswith((
+        "SYNTHETIC TEST ONLY.", "SYNTHETIC NATIVE UI TEST ONLY.",
+        "SYNTHETIC PUBLIC HTTPS TEST ONLY.", "SYNTHETIC MAXIMUM LEGAL TEST ONLY.",
+        "合成通知联调样本：不是用户报障",
+    ))
+    context = {key: manifest.get(key) for key in (
+        "app_version", "bundle_id", "run_id", "capture_started_at", "capture_completed_at",
+    )}
+    context.update({key: manifest.get(key, []) for key in ("omitted", "truncated")})
+    state_context = ({key: state[key] for key in context_fields if key in state} if isinstance(state, dict) else {})
+    summary = state.get("summary", {}) if isinstance(state, dict) else {}
+    runtime_summary = {key: summary[key] for key in (
+        "net_ok", "minute_stale", "price_is_fallback", "pct_unknown", "capture_issue_count",
+    ) if isinstance(summary, dict) and key in summary and type(summary[key]) in (bool, int)}
     report = {
         "analysis_schema_version": ANALYZER_SCHEMA_VERSION,
         "analysis_run_id": run_id,
@@ -118,20 +177,60 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
         "config_sha256": _canonical_hash({"required_members": required}),
         "conclusion": conclusion,
         "findings": findings,
+        "evidence_basis": evidence_basis,
+        "source_context": context,
+        "state_context": state_context,
+        "context_mismatches": context_mismatches,
+        "runtime_summary": runtime_summary,
+        "sample_classification": "unverified",
+        "test_declared_by_sender": test_declared,
+        "full_diagnostics": full_diagnostics,
         "user_description": description,
-        "limitation": "规则未检出不等于没有问题；历史计数不证明本次故障，视觉问题需独立取证。",
+        "limitation": ("规则未检出不等于没有问题；历史计数不证明本次故障；隐私过滤数量不代表功能故障或泄露。"
+                       "测试声明未经来源核实，不自动排除反馈；视觉问题需独立取证。"),
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
         "machine": platform.machine(),
     }
     output = Path(output_dir)
     json_path = output / f"analysis-{run_id}.json"
     md_path = output / f"analysis-{run_id}.md"
-    _atomic_text(json_path, json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+    _atomic_text(json_path, json.dumps(report, ensure_ascii=False, sort_keys=True,
+                                    indent=None if full_diagnostics is not None else 2) + "\n")
     _atomic_text(md_path, "# Diagnostic Analysis\n\n"
                  f"- Conclusion: `{conclusion}`\n"
                  f"- Archive SHA-256: `{archive_hash}`\n"
                  f"- Analyzer build: `{analyzer_build_id}`\n\n"
-                 + "\n".join(f"- {item['severity']}: {item['message']}" for item in findings)
+                 f"- Evidence basis: `{evidence_basis}`\n"
+                 "- Sample classification: `unverified` (需人工核实来源，不自动排除)\n"
+                 f"- Sender declares test: `{test_declared}` (仅来自不可信描述)\n"
+                 f"- Analyzer machine (not user device): `{platform.machine()}`\n\n"
+                 "## Source Context\n\n"
+                 + "\n".join(f"- {key}: <code>{html.escape(str(value))}</code>"
+                             for key, value in context.items())
+                 + ("\n\n## 采集声明差异\n\n原始声明均保留，不自动改写，也不据此认定本次功能故障。"
+                    "状态记录：<pre>" + html.escape(json.dumps(state_context, ensure_ascii=False, indent=2)) + "</pre>"
+                    if context_mismatches else "")
+                 + "\n\n## Runtime Summary\n\n"
+                 + ("\n".join(f"- {key}: `{value}`" for key, value in runtime_summary.items())
+                    or "未提供可用的当前状态。")
+                 + "\n\n## Findings\n\n"
+                 + "\n".join(
+                     f"- {item['severity']} [{item['code']}]: {html.escape(item['message'])}"
+                     + (f" (value={item['value']})" if "value" in item else "")
+                     for item in findings)
+                 + ("\n\n隐私过滤：已按规则排除字段，不据此判断功能失败或泄露。"
+                    if "privacy_filter" in codes else "")
+                 + ("\n\n历史计数仅供排查，无法确认发生时间、是否恢复或与本次反馈的关系。"
+                    if "historical_counter" in codes else "")
+                 + ("\n\n问题描述为空：尚不知道用户做了什么、看到了什么、期望什么。"
+                    if not description.strip() else "")
+                 + ("\n\n## 完整诊断资料\n\n"
+                    + "\n".join("- " + html.escape(name) for name in full_diagnostics["inventory"])
+                    + "\n\n采集问题：<pre>" + html.escape(json.dumps(
+                        full_diagnostics["collection_issues"], ensure_ascii=False, indent=2)) + "</pre>"
+                    + "\n\n运行、网络、存储等原始快照及日志/崩溃摘要见同名JSON报告。"
+                    + "\n\n" + full_diagnostics["limitation"]
+                    if full_diagnostics is not None else "\n\n此为旧版精简反馈，不含完整诊断附件。")
                  + "\n\n## User Description (Untrusted Text)\n\n<pre>"
                  + html.escape(description) + "</pre>\n\n" + report["limitation"] + "\n")
     report["json_path"] = str(json_path)

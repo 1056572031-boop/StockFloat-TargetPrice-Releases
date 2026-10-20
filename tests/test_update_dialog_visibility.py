@@ -27,6 +27,8 @@ _retry_space = alerts.NativeAlert._retry_active_space  # discipline-ok(R5): dete
 class _MenuHost(QWidget):
     contextMenuEvent: Any = window.FloatWindow.contextMenuEvent
     _on_ctx_menu_closed: Any = window.FloatWindow._on_ctx_menu_closed
+    _queue_feedback_open: Any = window.FloatWindow._queue_feedback_open
+    _open_feedback: Any = window.FloatWindow._open_feedback
     _check_updates_background: Any = _check
     _show_checking_dialog: Any = window.FloatWindow._show_checking_dialog
     _dispose_update_dialog: Any = window.FloatWindow._dispose_update_dialog

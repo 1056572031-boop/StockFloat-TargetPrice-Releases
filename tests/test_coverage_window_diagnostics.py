@@ -67,7 +67,7 @@ def _fake_popen(args, *a, **k):
     为什么不全打成 None：`platform.platform()` 内部也要走 subprocess，一并拦掉会让
     meta 生成失败 —— 那正是本文件要锁死的东西，不能让自家测试桩把它掩盖掉。
     """
-    if args and args[0] == "open":
+    if args and args[0] in ("open", "/usr/bin/open"):
         return None
     return _REAL_POPEN(args, *a, **k)
 
@@ -84,10 +84,7 @@ class DiagnosticsBranchCase(SFCase):
         super().setUp()
         self.tmp = tempfile.mkdtemp(prefix="sf_diag_branch_")
         self.home = os.path.join(self.tmp, "home")
-        # 真用户的 HOME 里一定有 Desktop（导出物默认落在其 Skyrocket 子目录）；
-        # 临时 HOME 不建它，导出会 FileNotFoundError 返回 None —— 那是夹具缺件，
-        # 不是被测行为。
-        os.makedirs(os.path.join(self.home, "Desktop", "Skyrocket"), exist_ok=True)
+        os.makedirs(os.path.join(self.home, "Desktop"), exist_ok=True)
         self.cfg_path = os.path.join(self.tmp, "config.json")
         self.log_path = os.path.join(self.tmp, "debug.log")
         with open(self.cfg_path, "w", encoding="utf-8") as f:
@@ -98,6 +95,7 @@ class DiagnosticsBranchCase(SFCase):
 
         self._patches = [
             mock.patch.dict(os.environ, {"HOME": self.home}),
+            mock.patch.object(sf_constants, "APP_SUPPORT_DIR", os.path.join(self.tmp, "support")),
             mock.patch.object(m, "load_config",
                               return_value=("sh600519", 100, 100, 200, "translucent")),
             mock.patch.object(m, "save_config", lambda *a, **k: None),
@@ -111,8 +109,6 @@ class DiagnosticsBranchCase(SFCase):
             mock.patch.object(m, "CONFIG_BACKUP_PATH", self.cfg_path + ".bak"),
             mock.patch.object(m, "LAST_QUOTE_PATH", os.path.join(self.tmp, "last_quote.json")),
             mock.patch.object(m, "LOG_PATH", self.log_path),
-            mock.patch.object(m, "DESKTOP_OUTPUT_DIR",
-                              os.path.join(self.home, "Desktop", "Skyrocket")),
             mock.patch.object(subprocess, "Popen", _fake_popen),
             # "在访达里显示"这条路径不是被检对象，拦掉即可
             mock.patch.object(m.QToolTip, "showText", lambda *a, **k: None),
@@ -154,10 +150,81 @@ class DiagnosticsBranchCase(SFCase):
         """真导一次，返回 zip 内的 {文件名: 文本}。"""
         out = self.win._export_diagnostics()  # discipline-ok(R5): 被测对象本身就是 GlassMixin/FloatWindow 的私有入口
         self.assertIsNotNone(out, "导出必须成功（返回 zip 路径）")
-        self.assertTrue(out.startswith(os.path.join(self.home, "Desktop", "Skyrocket")),
+        self.assertEqual(os.path.dirname(out), os.path.join(self.home, "Desktop"),
                         "产物必须落在被重定向的临时 HOME 里，不许写到真桌面")
         with zipfile.ZipFile(out) as z:
             return {name: z.read(name).decode("utf-8", "replace") for name in z.namelist()}
+
+    def test_feedback_capture_error_propagates_without_exporting_a_partial_file(self):
+        import sf_diagnostic_capture
+
+        with mock.patch.object(sf_diagnostic_capture, "prepare_diagnostics", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.win._export_diagnostics(prepare_only=True)  # discipline-ok(R5): feedback must observe collection failure instead of reporting an empty successful export
+        self.assertEqual(os.listdir(os.path.join(self.home, "Desktop")), [])
+
+    def test_feedback_embeds_every_byte_of_the_real_export_without_secret_values(self):
+        from pathlib import Path
+        from sf_feedback import build_archive, make_envelope
+        from sf_feedback_bundle import FULL_CONSENT_VERSION, read_diagnostics
+        from sf_feedback_capture import capture_snapshot, package_files, read_upload_archive
+        from sf_logging import RUN_ID
+
+        job = self.win._export_diagnostics(prepare_only=True)  # discipline-ok(R5): shared export capture is the behavior under test
+        job.path = os.path.join(self.tmp, "complete.zip")
+        job.finish()
+        original = Path(job.path).read_bytes()
+        diagnostics = read_diagnostics(original)
+        self.assertIn("runtime.json", diagnostics)
+        self.assertIn("network.json", diagnostics)
+        self.assertIn("config.json", diagnostics)
+        self.assertNotIn(_SECRET, json.dumps(diagnostics, ensure_ascii=False))
+        state = capture_snapshot(self.win, app_version=sf_constants.APP_VERSION,
+                                 bundle_id=sf_constants.BUNDLE_ID, run_id=RUN_ID)
+        files = package_files(state, "SYNTHETIC TEST ONLY. No real user data.")
+        files["diagnostics.zip"] = original
+        path = Path(self.tmp) / "feedback.zip"
+        build_archive(path, files, app_version=state["app_version"], bundle_id=state["bundle_id"],
+                      run_id=state["run_id"], omitted=state["omitted"], truncated=state["truncated"],
+                      capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"])
+        envelope = make_envelope(archive_path=path, app_version=state["app_version"],
+                                 outbox_id="a" * 32, consent_policy_version=FULL_CONSENT_VERSION)
+        self.assertEqual(read_upload_archive(path, envelope)["files"]["diagnostics.zip"], original)
+
+    def test_real_feedback_menu_handler_uploads_the_shared_export(self):
+        from pathlib import Path
+        import sf_feedback_ui
+        from sf_feedback_bundle import read_diagnostics
+        from sf_feedback_capture import read_upload_archive
+        from sf_feedback_github import GitHubInbox
+        from tests.test_feedback_pipeline import MemoryGitHub
+
+        original = sf_feedback_ui.FeedbackDialog
+        inbox = GitHubInbox(MemoryGitHub())
+        uploaded = []
+        def sender(_url, envelope, path):
+            uploaded.append(read_upload_archive(path, envelope))
+            return inbox.accept(envelope, Path(path).read_bytes())
+        def dialog_factory(*args, **kwargs):
+            kwargs.update(sender=sender, endpoint="https://receiver.example")
+            return original(*args, **kwargs)
+
+        with mock.patch.object(sf_feedback_ui, "FeedbackDialog", side_effect=dialog_factory), \
+                mock.patch("sf_system_alert.show_alert", return_value=None):
+            self.win._open_feedback()  # discipline-ok(R5): actual menu entry is the integration behavior under test
+            dialog = self.track_widget(self.win._feedback_dialog)  # discipline-ok(R5): inspect the dialog owned by the actual menu handler
+            self.assertEqual(dialog.storage_dir, Path(self.tmp) / "support" / "feedback")
+            dialog.description.setPlainText("SYNTHETIC TEST ONLY. No real user data.")
+            dialog.upload_button.click()
+            def finished():
+                _QAPP.processEvents()
+                return dialog.worker is None
+            self.assertTrue(wait_for(finished, timeout=5))
+            self.assertEqual(dialog.stage, "received")
+        self.assertEqual(len(uploaded), 1)
+        files = read_diagnostics(uploaded[0]["files"]["diagnostics.zip"])
+        self.assertIn("runtime.json", files)
+        self.assertIn("hello 诊断", files["debug.log"])
 
     # ---- targets.json：四类桶 ----
 
@@ -242,8 +309,18 @@ class DiagnosticsBranchCase(SFCase):
                 self.assertIsNone(archive.testzip(), "原子发布后的 ZIP 必须完整可读")
                 self.assertIn("diagnostics.txt", archive.namelist())
 
+    def test_export_goes_directly_to_desktop_without_creating_a_folder(self):
+        out = self.win._export_diagnostics()  # discipline-ok(R5): 验证真实诊断导出入口的落盘位置
+        desktop = os.path.join(self.home, "Desktop")
+        self.assertIsNotNone(out)
+        self.assertEqual(os.path.dirname(out), desktop)
+        self.assertEqual(os.listdir(desktop), [os.path.basename(out)])
+        with zipfile.ZipFile(out) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertIn("diagnostics.txt", archive.namelist())
+
     def test_write_failure_leaves_no_archive_or_temporary_file(self):
-        desktop = os.path.join(self.home, "Desktop", "Skyrocket")
+        desktop = os.path.join(self.home, "Desktop")
         before = set(os.listdir(desktop))
         with mock.patch.object(zipfile.ZipFile, "writestr", side_effect=OSError("disk full")):
             result = self.win._export_diagnostics()  # discipline-ok(R5): 被测对象本身就是私有入口
@@ -251,7 +328,7 @@ class DiagnosticsBranchCase(SFCase):
         self.assertEqual(set(os.listdir(desktop)), before)
 
     def test_publication_failure_preserves_an_existing_export(self):
-        desktop = os.path.join(self.home, "Desktop", "Skyrocket")
+        desktop = os.path.join(self.home, "Desktop")
         original = self.win._export_diagnostics()  # discipline-ok(R5): 被测对象本身就是私有入口
         with open(original, "rb") as stream:
             original_bytes = stream.read()

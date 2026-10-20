@@ -9,14 +9,14 @@ import time
 from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
 
 from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6 import sip
 from PyQt6.QtGui import QContextMenuEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QWidget
 
 import stock_float_window as window
 from sf_feedback import FeedbackProtocolError, build_archive
@@ -32,9 +32,17 @@ from tests.test_feedback_pipeline import MemoryGitHub, snapshot
 
 
 class _FeedbackCase(SFCase):
+    def setUp(self):
+        super().setUp()
+        self._feedback_alert_patch = patch("sf_system_alert.show_alert", return_value=None)
+        self._feedback_alert_patch.start()
+        self.addCleanup(self._feedback_alert_patch.stop)
+
     def tearDown(self):
         widgets = list(self._sf_widgets)  # discipline-ok(R5): drain deletion for this fixture's registered Qt widgets
         super().tearDown()
+        # Deliver native focus events while the closed windows are still alive.
+        QApplication.processEvents()
         for widget in reversed(widgets):
             try:
                 widget.deleteLater()
@@ -67,6 +75,7 @@ class DialogTests(_FeedbackCase):
             snapshot=snapshot(), storage_dir=self.temporary.name,
             endpoint=endpoint, sender=self.sender))
         dialog.show()
+        self.assertTrue(QTest.qWaitForWindowExposed(dialog, 1000), "feedback test window was never exposed")
         return dialog
 
     def finish(self, dialog=None):
@@ -77,11 +86,10 @@ class DialogTests(_FeedbackCase):
             dialog._poll()  # discipline-ok(R5): deliver this dialog's queued worker results deterministically
         self.assertIsNone(dialog.worker, "worker did not finish")
 
-    def test_no_consent_no_submission_and_actual_click_receives_bound_receipt(self):
-        self.assertFalse(self.dialog.upload_button.isEnabled())
+    def test_upload_does_not_require_manual_consent_and_receives_bound_receipt(self):
+        self.assertTrue(self.dialog.upload_button.isEnabled())
         self.dialog.description.setPlainText("刷新失败 password=secret-value")
         self.assertNotIn("secret-value", self.dialog.preview.toPlainText())
-        self.dialog.consent.setChecked(True)
         self.assertTrue(self.dialog.upload_button.isEnabled())
         QTest.mouseClick(self.dialog.upload_button, Qt.MouseButton.LeftButton)
         self.finish()
@@ -90,6 +98,82 @@ class DialogTests(_FeedbackCase):
         self.assertIn("不代表已分析或已修复", self.dialog.status.text())
         self.assertEqual(len(self.api.rows), 2)
         self.assertEqual(self.dialog.outbox.get(self.dialog.current_id)["status"], "receipt_persisted")
+
+    def test_feedback_controls_are_hidden_and_description_uses_product_language(self):
+        self.assertFalse(hasattr(self.dialog, "tabs"))
+        self.assertEqual(self.dialog.findChildren(QTabWidget), [])
+        self.assertFalse(self.dialog.preview.isVisible())
+        self.assertFalse(self.dialog.counter.isVisible())
+        self.assertFalse(self.dialog.consent.isVisible())
+        self.assertFalse(self.dialog.history.isVisible())
+        self.assertFalse(self.dialog.status.isVisible())
+        self.assertEqual(
+            [label.text() for label in self.dialog.findChildren(QLabel) if label.isVisible()],
+            ["反馈问题"],
+        )
+        self.assertEqual(
+            self.dialog.description.placeholderText(),
+            "告诉我们你遇到的问题或建议，这些信息将用于改进我们的产品。",
+        )
+
+    def test_upload_status_popups_replace_each_other_and_close_with_feedback(self):
+        progress, received = Mock(), Mock()
+        with patch("sf_system_alert.show_alert", side_effect=(progress, received)) as alerts:
+            self.dialog.upload_button.click()
+            self.assertEqual(alerts.call_args_list[0].kwargs["title"], "反馈上传中")
+            self.assertFalse(self.dialog.status.isVisible())
+            self.finish()
+            self.assertEqual(alerts.call_args_list[1].kwargs["title"], "反馈已上传")
+            progress.close.assert_called_once_with()
+            self.assertFalse(self.dialog.status.isVisible())
+            self.dialog.close()
+            received.close.assert_called_once_with()
+
+    def test_failed_upload_uses_popup_and_keeps_retry_available(self):
+        self.dialog.sender = Mock(side_effect=URLError("synthetic offline"))
+        with patch("sf_system_alert.show_alert") as alerts:
+            self.dialog.upload_button.click()
+            self.finish()
+        self.assertEqual(alerts.call_args.kwargs["title"], "反馈上传未完成")
+        self.assertFalse(self.dialog.status.isVisible())
+        self.assertTrue(self.dialog.upload_button.isEnabled())
+        self.assertEqual(self.dialog.upload_button.text(), "重试上传")
+        self.assertIsNotNone(self.dialog.outbox.get(self.dialog.current_id))
+
+    def test_uncertain_save_popup_does_not_claim_the_draft_was_not_saved(self):
+        with patch("sf_feedback_ui.FeedbackOutbox.enqueue", side_effect=OSError), patch(
+                "sf_system_alert.show_alert") as alerts:
+            self.dialog.upload_button.click()
+            self.finish()
+        self.assertEqual(self.dialog.stage, "uncertain")
+        self.assertIn("保存结果暂无法确认", alerts.call_args.kwargs["info"])
+        self.assertNotIn("尚未保存", alerts.call_args.kwargs["info"])
+        self.assertEqual(self.dialog.upload_button.text(), "核对并重试")
+
+    def test_unavailable_popup_does_not_change_a_verified_upload_result(self):
+        with patch("sf_system_alert.show_alert", side_effect=RuntimeError("synthetic popup failure")), \
+                self.assertLogs("sf_feedback_ui", level="WARNING") as records:
+            self.dialog.upload_button.click()
+            self.finish()
+        self.assertEqual(self.dialog.stage, "received")
+        self.assertEqual(self.dialog.outbox.get(self.dialog.current_id)["status"], "receipt_persisted")
+        self.assertEqual(sum("popup unavailable" in line for line in records.output), 2)
+        self.assertFalse(self.dialog.status.isVisible())
+
+    def test_broken_popup_handles_do_not_block_replacement_or_close(self):
+        progress, received = Mock(), Mock()
+        progress.close.side_effect = RuntimeError("synthetic close failure")
+        received.close.side_effect = RuntimeError("synthetic close failure")
+        with patch("sf_system_alert.show_alert", side_effect=(progress, received)), \
+                self.assertLogs("sf_feedback_ui", level="DEBUG") as records:
+            self.dialog.upload_button.click()
+            self.finish()
+            self.dialog.close()
+        progress.close.assert_called_once_with()
+        received.close.assert_called_once_with()
+        self.assertEqual(self.dialog.stage, "received")
+        self.assertFalse(self.dialog.isVisible())
+        self.assertEqual(sum("popup close failed" in line for line in records.output), 2)
 
     def test_preview_is_the_exact_sealed_description_even_if_identity_changes(self):
         needle = Needle("synthetic_operator", "<user>", False, "synthetic_operator")
@@ -110,18 +194,28 @@ class DialogTests(_FeedbackCase):
         automatic = sf_diag.collect(SimpleNamespace(_feedback_dialog=self.dialog))
         self.assertNotIn(marker, json.dumps(automatic, ensure_ascii=False))
 
-    def test_pending_extra_attachment_is_rejected_before_upload_is_enabled(self):
+    def test_pending_extra_attachment_cannot_be_sent_and_can_start_a_new_draft(self):
         path = Path(self.temporary.name) / "unexpected.zip"
         build_archive(path, {**package_files(snapshot(), "previewed"), "unexpected.txt": "not previewed"},
                       app_version="1.4.96", bundle_id="com.skyrocket.app", run_id="abcdef")
         row = self.dialog.outbox.enqueue(path, app_version="1.4.96", consent_policy_version=CONSENT_VERSION)
         replacement = self.make_dialog()
+        self.assertEqual(replacement.current_id, row["outbox_id"])
+        self.assertEqual(replacement.upload_button.text(), "新建反馈")
+        self.assertEqual(replacement.last_error, "local_package_invalid")
+        self.assertEqual(replacement.description.toPlainText(), "")
+        replacement.history.setCurrentIndex(0)
         replacement.description.setPlainText("unrelated previous draft")
         replacement.history.setCurrentIndex(replacement.history.findData(row["outbox_id"]))
         replacement.consent.setChecked(True)
-        self.assertFalse(replacement.upload_button.isEnabled())
+        self.assertEqual(replacement.upload_button.text(), "新建反馈")
         self.assertEqual(replacement.last_error, "local_package_invalid")
         self.assertEqual(replacement.description.toPlainText(), "")
+        replacement.upload_button.click()
+        self.assertIsNone(replacement.current_id)
+        self.assertEqual(replacement.stage, "draft")
+        self.assertEqual(self.api.rows, {})
+        self.assertTrue(Path(row["archive_path"]).is_file())
 
     def test_missing_preview_cache_never_transmits_or_reenables_submission(self):
         self.dialog.consent.setChecked(True)
@@ -148,9 +242,14 @@ class DialogTests(_FeedbackCase):
         self.dialog.history.setCurrentIndex(index)
         self.assertEqual(self.dialog.last_error, "local_package_invalid")
         self.assertNotIn("已收件", self.dialog.status.text())
-        self.assertFalse(self.dialog.upload_button.isEnabled())
+        self.assertEqual(self.dialog.upload_button.text(), "新建反馈")
+        previous_remote_count = len(self.api.rows)
+        self.dialog.upload_button.click()
+        self.assertEqual(len(self.api.rows), previous_remote_count)
+        self.assertEqual(self.dialog.stage, "draft")
+        self.assertIsNotNone(self.dialog.outbox.get(previous))
 
-    def test_editing_requires_new_consent_and_overlong_description_blocks_upload(self):
+    def test_editing_keeps_consent_hidden_and_overlong_description_blocks_upload(self):
         self.dialog.consent.setChecked(True)
         self.dialog.description.setPlainText("changed")
         self.assertFalse(self.dialog.consent.isChecked())
@@ -158,16 +257,18 @@ class DialogTests(_FeedbackCase):
         self.dialog.consent.setChecked(True)
         self.assertFalse(self.dialog.upload_button.isEnabled())
         self.assertIn("4000", self.dialog.status.text())
+        self.assertIn("4000", self.dialog.upload_button.toolTip())
+        self.assertIn("4000", self.dialog.description.toolTip())
         self.dialog.description.setPlainText("valid again")
         self.assertEqual(self.dialog.status.text(), "")
+        self.assertEqual(self.dialog.description.toolTip(), "")
 
-    def test_keyboard_submission_never_closes_or_submits_without_consent(self):
-        self.dialog.consent.setFocus()
-        QTest.keyClick(self.dialog.consent, Qt.Key.Key_Return)
+    def test_keyboard_submission_never_closes_and_upload_button_stays_explicit(self):
+        self.dialog.description.setFocus()
+        QTest.keyClick(self.dialog.description, Qt.Key.Key_Return)
         self.assertTrue(self.dialog.isVisible())
         self.assertEqual(self.dialog.outbox.pending(), [])
-        self.dialog.consent.setChecked(True)
-        QTest.keyClick(self.dialog.consent, Qt.Key.Key_Return)
+        QTest.mouseClick(self.dialog.upload_button, Qt.MouseButton.LeftButton)
         self.finish()
         self.assertEqual(self.dialog.stage, "received")
         self.assertEqual(self.dialog.upload_button.text(), "已上传")
@@ -232,6 +333,7 @@ class DialogTests(_FeedbackCase):
         self.assertEqual(diagnostics["last_failure_phase"], "worker_start")
 
     def test_archive_and_enqueue_failures_never_claim_durable_storage(self):
+        self.dialog.close()
         for target, phase in (("sf_feedback_ui.json.loads", "prepare"),
                               ("sf_feedback_ui.threading.Thread", "worker_start"),
                               ("sf_feedback_ui.tempfile.TemporaryDirectory", "archive"),
@@ -251,6 +353,7 @@ class DialogTests(_FeedbackCase):
                 self.assertEqual(dialog.last_failure_phase, phase)
                 self.assertNotIn("must-not-be-logged", dialog.status.text())
                 self.assertTrue(dialog.upload_button.isEnabled())
+                dialog.close()
 
     def test_enqueue_commit_then_readback_loss_recovers_same_record_and_original_bytes(self):
         enqueue = self.dialog.outbox.enqueue
@@ -376,7 +479,8 @@ class DialogTests(_FeedbackCase):
         self.dialog.close()
         replacement = self.make_dialog()
         self.assertEqual(self.api.rows, {})
-        replacement.history.setCurrentIndex(replacement.history.findData(old_id))
+        self.assertEqual(replacement.current_id, old_id)
+        self.assertFalse(replacement.history.isVisible())
         self.assertEqual(replacement.description.toPlainText(), "原现场")
         self.assertTrue(replacement.description.isReadOnly())
         replacement.consent.setChecked(True)
@@ -394,8 +498,12 @@ class DialogTests(_FeedbackCase):
         replacement = self.make_dialog()
         replacement.history.setCurrentIndex(replacement.history.findData(row["outbox_id"]))
         replacement.consent.setChecked(True)
-        self.assertFalse(replacement.upload_button.isEnabled())
+        self.assertEqual(replacement.upload_button.text(), "新建反馈")
         self.assertIn("损坏", replacement.status.text())
+        replacement.upload_button.click()
+        self.assertIsNone(replacement.current_id)
+        self.assertEqual(self.api.rows, {})
+        self.assertEqual(Path(row["archive_path"]).read_bytes(), b"corrupt")
 
     def test_new_feedback_clears_previous_success_without_losing_receipt(self):
         self.dialog.consent.setChecked(True)
@@ -419,19 +527,20 @@ class DialogTests(_FeedbackCase):
         self.assertEqual(self.dialog.stage, "received")
         self.assertIsNone(self.dialog.worker)
 
-    def test_new_case_clears_previous_success_and_requires_consent_again(self):
+    def test_new_case_clears_previous_success_without_requiring_consent(self):
         self.dialog.consent.setChecked(True)
         self.dialog.upload_button.click()
         self.finish()
         self.dialog.history.setCurrentIndex(0)
         self.assertEqual(self.dialog.status.text(), "")
-        self.assertTrue(self.dialog.consent.isEnabled())
+        self.assertFalse(self.dialog.consent.isEnabled())
         self.assertFalse(self.dialog.consent.isChecked())
 
 
 class _MenuHost(QWidget):
     contextMenuEvent: Any = window.FloatWindow.contextMenuEvent
     _on_ctx_menu_closed: Any = window.FloatWindow._on_ctx_menu_closed
+    _queue_feedback_open: Any = window.FloatWindow._queue_feedback_open
     _open_feedback: Any = window.FloatWindow._open_feedback
 
     def _force_fetch(self):
@@ -455,6 +564,7 @@ class MenuTests(_FeedbackCase):
                 menu = host._ctx_menu  # discipline-ok(R5): inspect the real menu held by the handler under test
                 action = next(a for a in menu.actions() if a.text() == "反馈问题")
                 QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+                QApplication.processEvents()
                 dialog = self.track_widget(host._feedback_dialog)  # discipline-ok(R5): inspect and clean up the dialog created by the real menu handler
                 self.assertTrue(dialog.isVisible())
                 dialog.description.setPlainText("draft")
@@ -473,3 +583,34 @@ class MenuTests(_FeedbackCase):
             replacement = vars(host)["_ctx_menu"]
             old.aboutToHide.emit()
         self.assertIs(vars(host)["_ctx_menu"], replacement)
+
+    def test_repeated_requests_queue_only_one_open_after_menu_event(self):
+        host = self.track_widget(_MenuHost())
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("sf_constants.APP_SUPPORT_DIR", directory), patch.object(
+                    host, "_open_feedback", wraps=host._open_feedback) as opened:  # discipline-ok(R5): observe the real deferred opener without replacing its behavior
+                host._queue_feedback_open()  # discipline-ok(R5): exercise deferred menu action
+                host._queue_feedback_open()  # discipline-ok(R5): repeated action before event delivery
+                opened.assert_not_called()
+                QApplication.processEvents()
+                opened.assert_called_once_with()
+                dialog = self.track_widget(vars(host)["_feedback_dialog"])
+                self.assertTrue(dialog.isVisible())
+                self.assertFalse(vars(host)["_feedback_open_pending"])
+
+    def test_reopening_closed_success_starts_a_new_feedback_without_history_selector(self):
+        host = self.track_widget(_MenuHost())
+        with tempfile.TemporaryDirectory() as directory, patch("sf_constants.APP_SUPPORT_DIR", directory):
+            host._open_feedback()  # discipline-ok(R5): exercise feedback window lifecycle
+            previous = self.track_widget(vars(host)["_feedback_dialog"])
+            previous.stage = "received"
+            host._open_feedback()  # discipline-ok(R5): visible completed window is only raised
+            self.assertIs(vars(host)["_feedback_dialog"], previous)
+            previous.close()
+            host._open_feedback()  # discipline-ok(R5): reopening completed feedback creates a new draft
+            current = self.track_widget(vars(host)["_feedback_dialog"])
+            self.assertIsNot(current, previous)
+            self.assertEqual(current.stage, "draft")
+            self.assertFalse(current.description.isReadOnly())
+            self.assertTrue(current.isVisible())
+            self.assertFalse(current.history.isVisible())

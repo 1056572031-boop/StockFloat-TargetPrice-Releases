@@ -91,6 +91,11 @@ class FeedbackOutbox:
                 destination.flush()
                 os.fsync(destination.fileno())
             os.replace(temporary, target)
+            descriptor = os.open(self.objects_dir, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
             return target
         finally:
             try:
@@ -117,6 +122,10 @@ class FeedbackOutbox:
                 return self.get(existing["outbox_id"])
             target = self._copy_archive(source, outbox_id)
             try:
+                from sf_feedback import sha256_file
+                validate_archive(target)
+                if sha256_file(target) != envelope["archive_sha256"]:
+                    raise FeedbackProtocolError("保存后的反馈包与封存内容不一致")
                 db.execute("""INSERT INTO outbox VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)""",
                             (outbox_id, envelope["idempotency_key"], str(target),
                              envelope["archive_sha256"], envelope["size_bytes"], app_version,

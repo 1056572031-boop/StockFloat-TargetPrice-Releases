@@ -14,11 +14,12 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, build_opener
 
 from sf_feedback import FeedbackProtocolError
-from sf_feedback_capture import FEEDBACK_REPOSITORY, read_upload_archive, validate_upload_receipt
+from sf_feedback_capture import FEEDBACK_REPOSITORY, read_upload_archive, validate_capture_context, validate_upload_receipt
 from sf_feedback_transport import MAX_UPLOAD_BYTES, NoRedirect
 
 REPOSITORY = FEEDBACK_REPOSITORY
 INBOX_TAG = "feedback-inbox-v1"
+MAX_RELEASE_ASSETS = 1000
 KEY_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
@@ -51,8 +52,9 @@ class GitHubAPI:
                    "Content-Type": "application/octet-stream" if upload else "application/json"}
         request = Request(url, data=body, headers=headers, method=method)
         opener = build_opener(NoRedirect())
+        timeout = 120 if binary and limit > 256 * 1024 else 30
         try:
-            response = opener.open(request, timeout=30)
+            response = opener.open(request, timeout=timeout)
         except HTTPError as exc:
             if not binary or exc.code not in (301, 302, 307):
                 raise GitHubRequestError(exc.code) from None
@@ -62,7 +64,7 @@ class GitHubAPI:
                     or parts.hostname != "release-assets.githubusercontent.com"):
                 raise FeedbackProtocolError("拒绝未知资产下载重定向") from None
             # Signed asset URLs never receive the administrator Authorization header.
-            response = opener.open(Request(location, headers={"User-Agent": headers["User-Agent"]}), timeout=30)
+            response = opener.open(Request(location, headers={"User-Agent": headers["User-Agent"]}), timeout=timeout)
         with response:
             payload = response.read(limit + 1)
         if len(payload) > limit:
@@ -113,7 +115,9 @@ def validate_submission(envelope: dict, archive: bytes):
     with tempfile.TemporaryDirectory(prefix="feedback-validate-") as directory:
         path = Path(directory) / "incoming.zip"
         path.write_bytes(archive)
-        return read_upload_archive(path, envelope)["manifest"]
+        packet = read_upload_archive(path, envelope)
+        validate_capture_context(packet["manifest"], packet["state"])
+        return packet["manifest"]
 
 
 class GitHubInbox:
@@ -134,6 +138,9 @@ class GitHubInbox:
             receipt_asset = assets.get(prefix + ".receipt.json")
             if archive_asset is None and receipt_asset is not None:
                 raise FeedbackProtocolError("案件对象缺失，不能返回已收件")
+            needed_assets = int(archive_asset is None) + int(receipt_asset is None)
+            if len(assets) + needed_assets > MAX_RELEASE_ASSETS:
+                raise FeedbackProtocolError("反馈收件箱附件名额不足，暂不写入新资料")
             if archive_asset is None:
                 if sum(a.endswith(".zip") for a in assets) >= self.max_cases:
                     raise FeedbackProtocolError("反馈收件箱已达到容量上限")
@@ -152,6 +159,8 @@ class GitHubInbox:
                     "repository": REPOSITORY, "asset_id": archive_asset["id"],
                     "consent_policy_version": envelope["consent_policy_version"],
                 }
+                if envelope["diagnostic_payload_version"] == 2:
+                    receipt["validation_scope"] = "container_sha256_and_member_catalog"
                 receipt_asset = self.api.upload(release["id"], prefix + ".receipt.json",
                                                 json.dumps(receipt, sort_keys=True).encode())
             receipt = json.loads(self.api.download(receipt_asset["id"], limit=64 * 1024))

@@ -2,6 +2,7 @@
 
 import io
 import plistlib
+import subprocess
 import tempfile
 import sys
 from pathlib import Path
@@ -37,6 +38,15 @@ class AdminToolTests(SFCase):
         self.assertNotIn("GITHUB_TOKEN", plist["EnvironmentVariables"])
         self.assertEqual(result["manifest"]["version"], sys.version.split()[0])
         self.assertFalse(result["activated"])
+
+    def test_installed_cli_starts_with_the_base_interpreter_and_only_its_snapshot(self):
+        result = install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh")
+        runtime = Path(result["runtime"])
+        process = subprocess.run([result["manifest"]["python"], "-B", str(runtime / "tools/feedback_agent.py"), "--help"],
+                                 cwd="/", env={"HOME": str(self.root), "PATH": "/usr/bin:/bin", "PYTHONNOUSERSITE": "1"},
+                                 capture_output=True, text=True, timeout=15, check=False)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertIn("--desktop-dir", process.stdout)
 
     def test_installer_rejects_changed_runtime_without_overwriting_it(self):
         first = install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh")
@@ -83,6 +93,21 @@ class AdminToolTests(SFCase):
                 patch("sys.stdout", new_callable=io.StringIO) as output:
             self.assertEqual(feedback_agent.main(), 0)
             self.assertNotIn("fake-admin-token", output.getvalue())
+
+    def test_storage_capacity_warning_reuses_the_single_notification_sync(self):
+        agent = Mock()
+        agent.run_once.return_value = {"ready": [], "failed": [], "discovered": 0,
+                                       "capacity": {"near_limit": True}}
+        notices = Mock()
+        notices.sync.return_value = {"submitted": ["backend"], "failed": []}
+        with patch("sys.argv", ["feedback_agent", "--data-dir", str(self.root), "--gh", "/absolute/gh"]), \
+                patch.object(feedback_agent.subprocess, "run", return_value=SimpleNamespace(stdout="fake-admin-token\n")), \
+                patch.object(feedback_agent, "FeedbackAgent", return_value=agent), \
+                patch.object(feedback_agent, "FeedbackNotifications", return_value=notices), \
+                patch.object(feedback_agent, "report_versions", return_value={}), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(feedback_agent.main(), 0)
+        notices.sync.assert_called_once_with({}, "storage_capacity")
 
     def test_service_cli_closes_server_after_interrupt(self):
         server = Mock()

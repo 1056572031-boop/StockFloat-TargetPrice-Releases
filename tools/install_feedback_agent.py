@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ("sf_feedback.py", "sf_feedback_capture.py", "sf_feedback_github.py",
+           "sf_feedback_bundle.py",
            "sf_feedback_transport.py", "sf_feedback_admin.py", "sf_feedback_analyzer.py",
            "sf_diag.py", "sf_privacy.py", "sf_feedback_notifications.py")
 LABEL = "com.skyrocket.feedback-agent"
@@ -25,6 +26,7 @@ def install(destination, gh_path, *, activate=False):
     destination.mkdir(parents=True, mode=0o700, exist_ok=True)
     files = {name: ROOT / name for name in MODULES}
     files["tools/feedback_agent.py"] = ROOT / "tools/feedback_agent.py"
+    files["tools/feedback_desktop_reports.py"] = ROOT / "tools/feedback_desktop_reports.py"
     fingerprint = hashlib.sha256(b"".join(path.read_bytes() for path in files.values())).hexdigest()
     runtime = destination / "runtimes" / fingerprint[:16]
     runtime.mkdir(parents=True, exist_ok=True)
@@ -42,9 +44,11 @@ def install(destination, gh_path, *, activate=False):
     plist = {
         "Label": LABEL,
         "ProgramArguments": [interpreter, "-B", str(runtime / "tools/feedback_agent.py"),
-                             "--data-dir", str(destination / "data"), "--gh", str(Path(gh_path).resolve())],
+                             "--data-dir", str(destination / "data"), "--gh", str(Path(gh_path).resolve()),
+                             "--desktop-dir", str(Path.home() / "Desktop/Skyrocket 用户反馈报告")],
         "WorkingDirectory": str(runtime), "RunAtLoad": True, "StartInterval": 1800,
-        "ProcessType": "Background", "EnvironmentVariables": {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin"},
+        "ProcessType": "Background", "EnvironmentVariables": {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin",
+                                                               "PYTHONNOUSERSITE": "1"},
         "StandardOutPath": str(destination / "agent.stdout.log"),
         "StandardErrorPath": str(destination / "agent.stderr.log"),
     }

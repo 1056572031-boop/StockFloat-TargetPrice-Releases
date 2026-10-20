@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { ZipWriter, Uint8ArrayWriter, Uint8ArrayReader } from '@zip.js/zip.js';
-import worker, { GitHubStore, INBOX_TAG, POLICY, REPOSITORY, digest, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
+import worker, { FULL_POLICY, GitHubStore, INBOX_TAG, POLICY, REPOSITORY, digest, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
 import { appJwt, manifest } from '../setup-github-app.mjs';
 
 const encoder = new TextEncoder();
@@ -17,9 +17,10 @@ const state = () => ({ app_version: '1.4.96', bundle_id: 'com.skyrocket.app', ru
   health: null, counts: { synthetic_error_count: 1 }, summary: { capture_issue_count: 0, loaded_modules: 1 },
   omitted: ['all_real_user_data'], truncated: [] });
 
-async function archiveFor({ text = 'SYNTHETIC TEST ONLY', value = state(), extra = false, wrongHash = false, symlink = false, problemName = 'problem.txt' } = {}) {
+async function archiveFor({ text = 'SYNTHETIC TEST ONLY', value = state(), extra = false, wrongHash = false, symlink = false, problemName = 'problem.txt', diagnostics = null } = {}) {
   const files = { 'state.json': encoder.encode(JSON.stringify(value)), 'problem.txt': encoder.encode(text) };
-  const meta = { schema_version: 1, diagnostic_payload_version: 1, app_version: value.app_version,
+  if (diagnostics) files['diagnostics.zip'] = diagnostics;
+  const meta = { schema_version: 1, diagnostic_payload_version: diagnostics ? 2 : 1, app_version: value.app_version,
     bundle_id: value.bundle_id, run_id: value.run_id, capture_started_at: value.capture_started_at,
     capture_completed_at: value.capture_completed_at, omitted: value.omitted, truncated: value.truncated,
     files: await Promise.all(Object.entries(files).map(async ([name, bytes]) => ({ name, size_bytes: bytes.length, sha256: wrongHash ? '0'.repeat(64) : await digest(bytes) }))) };
@@ -28,14 +29,54 @@ async function archiveFor({ text = 'SYNTHETIC TEST ONLY', value = state(), extra
   const writer = new ZipWriter(new Uint8ArrayWriter(), { useWebWorkers: false });
   for (const [name, bytes] of Object.entries(files)) {
     await writer.add(name === 'problem.txt' ? problemName : name, new Uint8ArrayReader(bytes), { useWebWorkers: false,
+      ...(name === 'diagnostics.zip' ? { level: 0 } : {}),
       ...(symlink && name === 'problem.txt' ? { unixMode: 0o120777 } : {}) });
   }
   const archive = await writer.close();
-  const envelope = { schema_version: 1, diagnostic_payload_version: 1, app_version: value.app_version,
-    consent_policy_version: POLICY, outbox_id: key(), idempotency_key: key(),
+  const envelope = { schema_version: 1, diagnostic_payload_version: diagnostics ? 2 : 1, app_version: value.app_version,
+    consent_policy_version: diagnostics ? FULL_POLICY : POLICY, outbox_id: key(), idempotency_key: key(),
     size_bytes: archive.length, archive_sha256: await digest(archive) };
   return { archive, envelope };
 }
+
+async function fullDiagnostics(extra = {}) {
+  const files = { 'diagnostics.txt': encoder.encode('SYNTHETIC COMPLETE DIAGNOSTICS ONLY'),
+    'runtime.json': encoder.encode('{"net_ok":true,"age":1.5}'), ...extra };
+  for (const name of ['network.json', 'startup_health.json', 'feedback.json', 'targets.json', 'glass.json',
+    'notify.json', 'universe.json', 'calendar.json', 'state.json', 'storage.json']) files[name] ??= encoder.encode('{}');
+  files['export.json'] = encoder.encode(JSON.stringify({ version: state().app_version, issues: [],
+    files: Object.entries(files).map(([name, bytes]) => ({ name, size_bytes: bytes.length })) }));
+  const writer = new ZipWriter(new Uint8ArrayWriter(), { useWebWorkers: false });
+  for (const [name, bytes] of Object.entries(files)) await writer.add(name, new Uint8ArrayReader(bytes), { useWebWorkers: false });
+  return writer.close();
+}
+
+test('full diagnostics preserve content with a distinct policy and old packets remain accepted', async () => {
+  const packet = await archiveFor({ diagnostics: await fullDiagnostics({ 'debug.log': encoder.encode('ERROR synthetic only') }) });
+  await validateArchive(packet.archive, packet.envelope);
+  const env = environment();
+  const remote = new FakeGitHub();
+  await withGitHub(remote, async () => {
+    const result = await worker.fetch(request(packet), env);
+    assert.equal(result.status, 200, await result.clone().text());
+    const receipt = await result.json();
+    assert.equal(receipt.consent_policy_version, FULL_POLICY);
+    assert.deepEqual([...remote.assets.values()].find(value => value.bytes.length === packet.archive.length).bytes, packet.archive);
+    const legacy = await archiveFor();
+    assert.equal((await worker.fetch(request(legacy), env)).status, 200);
+  });
+  env.DB.native.close();
+});
+
+test('full payload refuses wrong policy, nested traversal, bad JSON and mismatched capture context', async () => {
+  const packet = await archiveFor({ diagnostics: await fullDiagnostics() });
+  await assert.rejects(unpackRequest(wire({ ...packet, envelope: { ...packet.envelope, consent_policy_version: POLICY } })));
+  for (const extra of [{ '../escape.txt': encoder.encode('no') }, { 'runtime.json': encoder.encode('{"x":1,"x":2}') },
+    { 'payload.sh': encoder.encode('no') }]) {
+    const invalid = await archiveFor({ diagnostics: await fullDiagnostics(extra) });
+    await assert.rejects(validateArchive(invalid.archive, invalid.envelope));
+  }
+});
 
 function wire({ envelope, archive }) {
   const header = encoder.encode(JSON.stringify(envelope));
@@ -56,6 +97,7 @@ function database() {
 
 class FakeGitHub {
   assets = new Map();
+  uploadCount = 0;
   private = true;
   loseUpload = false;
   redirect = false;
@@ -86,6 +128,8 @@ class FakeGitHub {
     if (url.pathname.endsWith('/releases/1')) return json({ id: 1, tag_name: INBOX_TAG, draft: true });
     if (url.pathname.endsWith('/releases/1/assets')) {
       if (options.method === 'POST') {
+        this.uploadCount++;
+        if (this.assets.size >= 1000) return json({ error: 'release asset limit' }, 422);
         const name = url.searchParams.get('name');
         if ([...this.assets.values()].some(x => x.name === name)) return json({ error: 'exists' }, 422);
         const id = this.assets.size + 1;
@@ -95,7 +139,9 @@ class FakeGitHub {
         if (this.loseUpload) { this.loseUpload = false; throw new Error('lost response after object stored'); }
         return json({ id, name, size: bytes.length }, 201);
       }
-      return json([...this.assets.values()].map(({ bytes, ...rest }) => rest));
+      const page = Number(url.searchParams.get('page') || 1);
+      const perPage = Number(url.searchParams.get('per_page') || 100);
+      return json([...this.assets.values()].slice((page - 1) * perPage, page * perPage).map(({ bytes, ...rest }) => rest));
     }
     const match = /\/releases\/assets\/(\d+)$/.exec(url.pathname);
     if (match) {
@@ -106,6 +152,55 @@ class FakeGitHub {
     throw new Error('Unexpected GitHub route');
   };
 }
+
+function fillUnrelatedAssets(remote, total) {
+  while (remote.assets.size < total) {
+    const id = remote.assets.size + 1;
+    remote.assets.set(id, { id, name: `unrelated-${id}.txt`, size: 0, bytes: new Uint8Array() });
+  }
+}
+
+test('storage needs two asset slots and refuses before creating a partial case', async () => {
+  const packet = await archiveFor();
+  const remote = new FakeGitHub();
+  fillUnrelatedAssets(remote, 999);
+  const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+  await assert.rejects(() => store.publish(packet.envelope, packet.archive), error => error.code === 'inbox_asset_capacity');
+  assert.equal(remote.uploadCount, 0);
+  assert.equal(remote.assets.size, 999);
+});
+
+test('one remaining slot completes an existing ZIP and full storage still permits receipt readback', async () => {
+  const packet = await archiveFor();
+  const remote = new FakeGitHub();
+  remote.assets.set(1, { id: 1, name: `feedback-${packet.envelope.idempotency_key}.zip`,
+    size: packet.archive.length, bytes: packet.archive });
+  fillUnrelatedAssets(remote, 999);
+  const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+  const receipt = await store.publish(packet.envelope, packet.archive);
+  assert.equal(remote.assets.size, 1000);
+  assert.equal(remote.uploadCount, 1);
+  assert.deepEqual(await store.publish(packet.envelope, packet.archive), receipt);
+  assert.equal(remote.uploadCount, 1);
+});
+
+test('plaintext description credentials are rejected before GitHub or case creation', async () => {
+  for (const text of ['-----BEGIN ' + 'PRIVATE KEY-----\ncontrolled-test-secret', 'Authorization=Bearer controlled-test-secret']) {
+    const packet = await archiveFor({ text });
+    const env = environment();
+    const remote = new FakeGitHub();
+    try {
+      await withGitHub(remote, async () => {
+        const response = await worker.fetch(request(packet), env);
+        assert.equal(response.status, 422);
+        assert.equal((await response.json()).error, 'diagnostic_secret');
+      });
+      assert.equal(remote.mintCount, 0);
+      assert.equal(remote.assets.size, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 0);
+    } finally { env.DB.native.close(); }
+  }
+});
 
 function environment() {
   return { ENABLED: 'true', DB: database(), GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: String(++installationSequence),
@@ -235,6 +330,30 @@ test('failed GitHub response releases only its own lease and can retry', async (
     assert.equal(env.DB.native.prepare('SELECT state FROM cases').get().state, 'unknown');
     assert.equal((await worker.fetch(request(packet), env)).status, 200);
     assert.equal(remote.assets.size, 2);
+  });
+  env.DB.native.close();
+});
+
+test('daily byte protection refuses before GitHub and does not leak a reservation', async t => {
+  const RealDate = globalThis.Date;
+  const fixed = '2026-01-02T12:00:00Z';
+  globalThis.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [fixed])); }
+    static now() { return RealDate.parse(fixed); }
+  };
+  t.after(() => { globalThis.Date = RealDate; });
+  const packet = await archiveFor();
+  const env = environment();
+  const day = new Date().toISOString().slice(0, 10) + ':bytes';
+  env.DB.native.prepare('INSERT INTO budget VALUES (?, ?)').run(day, 256 * 1024 * 1024);
+  const remote = new FakeGitHub();
+  await withGitHub(remote, async () => {
+    const refused = await worker.fetch(request(packet), env);
+    assert.equal(refused.status, 429);
+    assert.equal((await refused.json()).error, 'daily_byte_budget');
+    assert.equal(remote.mintCount, 0);
+    env.DB.native.prepare('UPDATE budget SET requests=0 WHERE day=?').run(day);
+    assert.equal((await worker.fetch(request(packet), env)).status, 200);
   });
   env.DB.native.close();
 });

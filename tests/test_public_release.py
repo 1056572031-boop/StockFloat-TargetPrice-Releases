@@ -21,6 +21,25 @@ import public_release as public  # noqa: E402
 
 
 class PublicReleaseCase(SFCase):
+    def test_current_document_resource_checks_match_the_documents_before_packaging(self):
+        import release_feature_check as features
+
+        parsed = features.parse_checks(ROOT / "release_checks.txt")
+        self.assertEqual(parsed["errors"], [])
+        paths = {"Contents/Resources/docs/README.md": "README.md",
+                 "Contents/Resources/docs/INSTALL.md": "docs/INSTALL.md"}
+        checks = [spec for spec in parsed["checkfile"] if spec.split("::", 1)[0] in paths]
+        self.assertGreaterEqual(len(checks), len(paths))
+        app = self.root / "candidate.app"
+        for destination, source in paths.items():
+            target = app / destination
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((ROOT / source).read_bytes())
+        document_checks = {"checkfile": checks, "forbidfile": []}
+        self.assertEqual(features.resource_problems(str(app), document_checks), [])
+        (app / "Contents/Resources/docs/README.md").write_text("outdated documents")
+        self.assertTrue(features.resource_problems(str(app), document_checks))
+
     def test_feedback_namespaces_are_exact_and_never_mask_other_secrets(self):
         repo = b"1056572031-boop/Skyrocket-Private-Feedback"
         origin = b"https://skyrocket-feedback-1056572031.pages.dev"

@@ -132,7 +132,6 @@ from sf_utils import _drop_flash_due
 # ---- 模块化拆分 sf_constants：显式导入（含私有名） ----
 from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TINY_PRICE,
                           APP_DISPLAY_NAME, APP_VERSION, CONFIG_BACKUP_PATH, CONFIG_PATH,
-                          DESKTOP_OUTPUT_DIR,
                           # v1.4.41 复核 F2：守卫"采不到画面"的判中断时长与自愈退避。
                           # 从 sf_constants 直取（唯一来源），不绕 sf_presence 转发。
                           FACE_GUARD_FIRST_FRAME_SEC, FACE_GUARD_MENU_TEXT,
@@ -2081,7 +2080,10 @@ QMenu::separator {
         # 说的"诊断包"对齐，不再一个叫法两个名字。
         _set_menu_icon(m.addAction("导出诊断包",
                                   lambda: self._export_diagnostics(background=True)), "diag")
-        _set_menu_icon(m.addAction("反馈问题", lambda: self._open_feedback()), "diag")
+        # The menu must finish closing before feedback capture creates another
+        # top-level window. Creating it inside QMenu's mouse handler can lose
+        # the first click while the native menu backend is being torn down.
+        _set_menu_icon(m.addAction("反馈问题", self._queue_feedback_open), "diag")
         m.addSeparator()
         # 版本号：灰色禁用项（不可点击），从打包后 .app 的 Info.plist 读取，
         # 开发态（无 Info.plist）回退 sf_constants.APP_VERSION。
@@ -2097,21 +2099,34 @@ QMenu::separator {
         m.aboutToHide.connect(lambda menu=m: self._on_ctx_menu_closed(menu))
         m.popup(e.globalPos())  # PyQt6 适配：QContextMenuEvent 无 globalPosition()，用 globalPos()
 
+    def _queue_feedback_open(self):
+        """Open feedback after the context menu has completed its close event."""
+        if getattr(self, "_feedback_open_pending", False):
+            return
+        self._feedback_open_pending = True
+        QTimer.singleShot(0, self._open_feedback)
+
     def _open_feedback(self):
+        self._feedback_open_pending = False
         from sf_feedback_capture import capture_snapshot
         from sf_feedback_ui import FeedbackDialog
         from sf_constants import APP_SUPPORT_DIR, FEEDBACK_ENDPOINT
         from sf_logging import RUN_ID
         dialog = getattr(self, "_feedback_dialog", None)
+        if dialog is not None and dialog.stage == "received" and not dialog.isVisible():
+            dialog.deleteLater()
+            self._feedback_dialog = None
+            dialog = None
         if dialog is None:
             try:
                 snapshot = capture_snapshot(self, app_version=_bundle_version(),
-                                            bundle_id=BUNDLE_ID, run_id=RUN_ID)
+                                            bundle_id=BUNDLE_ID, run_id=RUN_ID, index_only=True)
                 dialog = FeedbackDialog(
                     self, snapshot=snapshot,
                     storage_dir=os.path.join(APP_SUPPORT_DIR, "feedback"), endpoint=FEEDBACK_ENDPOINT,
+                    diagnostic_capture=lambda _: self._export_diagnostics(prepare_only=True),
                     capture_again=lambda: capture_snapshot(
-                        self, app_version=_bundle_version(), bundle_id=BUNDLE_ID, run_id=RUN_ID))
+                        self, app_version=_bundle_version(), bundle_id=BUNDLE_ID, run_id=RUN_ID, index_only=True))
                 self._feedback_dialog = dialog
             except Exception as exc:
                 log_line("feedback capture failed: %s" % type(exc).__name__, "ERROR")
@@ -2711,7 +2726,7 @@ QMenu::separator {
                         "available": [av.x(), av.y(), av.width(), av.height()]})
         return out
 
-    def _export_diagnostics(self, background=False):
+    def _export_diagnostics(self, background=False, *, prepare_only=False):
         """导出诊断包：config + 日志 + 近期崩溃报告（含正文关键段）打包为 zip 到桌面，
         便于反馈问题时快速定位原因（可观测性）。
 
@@ -2719,7 +2734,7 @@ QMenu::separator {
         把 ~/Library/Logs/DiagnosticReports 下本应用（StockFloat* .ips/.crash）
         最近 7 天内优先的 1~2 份报告的关键段（异常类型/终止原因/崩溃线程与主线程
         堆栈/二进制镜像关键行，每份 ≤200KB）写入 zip 的 crash_reports/ 目录，
-        原"文件名+时间"清单保留在 diagnostics.txt 作索引。诊断包写入桌面的 Skyrocket 文件夹。"""
+        原"文件名+时间"清单保留在 diagnostics.txt 作索引。诊断包直接写入桌面，不创建外层文件夹。"""
         if background and getattr(self, "_diagnostics_exporting", False):
             return None
         out = None
@@ -2727,13 +2742,14 @@ QMenu::separator {
         try:
             from sf_diagnostic_capture import DiagnosticSources, prepare_diagnostics
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            requested = os.path.join(DESKTOP_OUTPUT_DIR,
+            requested = os.path.join(os.path.expanduser("~/Desktop"),
                                      "%s-诊断-%s.zip" % (APP_DISPLAY_NAME, ts))
             output_dir = os.path.dirname(requested)
-            os.makedirs(output_dir, exist_ok=True)
-            fd, temp_out = tempfile.mkstemp(
-                prefix=".%s-" % os.path.basename(requested), suffix=".tmp", dir=output_dir)
-            os.close(fd)
+            if not prepare_only:
+                os.makedirs(output_dir, exist_ok=True)
+                fd, temp_out = tempfile.mkstemp(
+                    prefix=".%s-" % os.path.basename(requested), suffix=".tmp", dir=output_dir)
+                os.close(fd)
             sources = DiagnosticSources(
                 config_path=CONFIG_PATH,
                 config_backup_path=CONFIG_BACKUP_PATH,
@@ -2769,6 +2785,9 @@ QMenu::separator {
                 bundle_id=BUNDLE_ID,
             )
             z = prepare_diagnostics(self, temp_out, sources)
+            if prepare_only:
+                return z
+            assert temp_out is not None
             if background:
                 worker = self._diagnostics_controller.start(
                     z, temp_out, requested, self.diagnostics_ready.emit)
@@ -2793,6 +2812,8 @@ QMenu::separator {
                 pass
             return out
         except Exception as exc:
+            if prepare_only:
+                raise
             log_line("diagnostics export error: %r" % (exc,), "ERROR")
             try:
                 QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 10)),

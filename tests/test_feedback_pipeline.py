@@ -48,6 +48,13 @@ class MemoryGitHub:
     def assets(self, release_id):
         return copy.deepcopy(list(self.rows.values()))
 
+    def fill_unrelated_assets(self, total):
+        identity = max(self.rows, default=0) + 1
+        while len(self.rows) < total:
+            self.rows[identity] = {"id": identity, "name": "unrelated-%d.txt" % identity, "size": 0}
+            self.bodies[identity] = b""
+            identity += 1
+
     def upload(self, release_id, name, data):
         if any(row["name"] == name for row in self.rows.values()):
             raise FeedbackProtocolError("asset exists")
@@ -80,7 +87,9 @@ class PipelineCase(SFCase):
         state = snapshot() if state is None else state
         path = self.root / (uuid.uuid4().hex + ".zip")
         build_archive(path, package_files(state, text), app_version=state["app_version"],
-                      bundle_id=state["bundle_id"], run_id=state["run_id"])
+                      bundle_id=state["bundle_id"], run_id=state["run_id"],
+                      omitted=state["omitted"], truncated=state["truncated"],
+                      capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"])
         envelope = make_envelope(archive_path=path, app_version=state["app_version"],
                                  outbox_id=uuid.uuid4().hex, consent_policy_version=CONSENT_VERSION)
         return path, envelope
@@ -118,6 +127,26 @@ class CaptureTests(PipelineCase):
 
 
 class GitHubStorageTests(PipelineCase):
+    def test_asset_slots_are_checked_for_both_zip_and_receipt_before_writes(self):
+        path, envelope = self.package()
+        self.api.fill_unrelated_assets(999)
+        with patch.object(self.api, "upload", wraps=self.api.upload) as upload:
+            with self.assertRaisesRegex(FeedbackProtocolError, "附件名额不足"):
+                self.inbox.accept(envelope, path.read_bytes())
+            upload.assert_not_called()
+        self.assertEqual(len(self.api.rows), 999)
+
+    def test_last_asset_slot_can_finish_an_orphan_and_full_store_can_return_existing_receipt(self):
+        path, envelope = self.package()
+        self.api.upload(1, "feedback-" + envelope["idempotency_key"] + ".zip", path.read_bytes())
+        self.api.fill_unrelated_assets(999)
+        with patch.object(self.api, "upload", wraps=self.api.upload) as upload:
+            receipt = self.inbox.accept(envelope, path.read_bytes())
+            self.assertEqual(upload.call_count, 1)
+            self.assertEqual(len(self.api.rows), 1000)
+            self.assertEqual(self.inbox.accept(envelope, path.read_bytes()), receipt)
+            self.assertEqual(upload.call_count, 1)
+
     def test_remote_readback_receipt_idempotency_and_conflicting_hash(self):
         path, envelope = self.package()
         receipt = self.inbox.accept(envelope, path.read_bytes())
@@ -225,6 +254,14 @@ class ClientRecoveryTests(PipelineCase):
 
 
 class HttpAndAgentTests(PipelineCase):
+    def test_backend_reports_capacity_from_actual_assets_without_adding_network_calls(self):
+        self.api.fill_unrelated_assets(900)
+        result = FeedbackAgent(self.api, self.root / "capacity-admin", analyzer=analyze_archive).run_once()
+        self.assertEqual(result["capacity"], {"asset_count": 900, "asset_limit": 1000,
+            "remaining_asset_slots": 100, "slots_per_new_case": 2, "near_limit": True})
+        self.assertEqual(result["discovered"], 0)
+        self.assertEqual(result["failed"], [])
+
     def test_cross_process_style_wire_to_github_to_local_report(self):
         path, envelope = self.package()
         admission = Admission(self.root / "limits.db")
@@ -242,7 +279,7 @@ class HttpAndAgentTests(PipelineCase):
         result = agent.run_once()
         self.assertEqual(result["failed"], [])
         self.assertEqual(result["ready"][0]["case_id"], receipt["case_id"])
-        self.assertEqual(result["ready"][0]["conclusion"], "suspected_problem")
+        self.assertEqual(result["ready"][0]["conclusion"], "insufficient_evidence")
         self.assertTrue(Path(result["ready"][0]["report"]).is_file())
         self.assertEqual(FeedbackAgent(self.api, self.root / "admin", analyzer=analyze_archive).run_once()["ready"], [])
 
@@ -284,6 +321,24 @@ class HttpAndAgentTests(PipelineCase):
             second = agent.run_once()
         self.assertEqual(len(second["ready"]), 1)
         self.assertNotEqual(first["ready"][0]["report"], second["ready"][0]["report"])
+
+    def test_analyzer_upgrade_reanalyzes_cache_and_preserves_old_report(self):
+        path, envelope = self.package()
+        self.inbox.accept(envelope, path.read_bytes())
+
+        def previous_analyzer(archive, output):
+            return analyze_archive(archive, output, analyzer_build_id="skyrocket-feedback-analyzer-github-v3")
+
+        first = FeedbackAgent(self.api, self.root / "admin", analyzer=previous_analyzer).run_once()
+        old_path = Path(first["ready"][0]["report"])
+        old_bytes = old_path.read_bytes()
+        agent = FeedbackAgent(self.api, self.root / "admin", analyzer=analyze_archive)
+        second = agent.run_once()
+        self.assertEqual(second["failed"], [])
+        self.assertEqual(len(second["ready"]), 1)
+        self.assertNotEqual(Path(second["ready"][0]["report"]), old_path)
+        self.assertEqual(old_path.read_bytes(), old_bytes)
+        self.assertEqual(agent.run_once()["ready"], [])
 
     def _cached_corruption_does_not_starve(self, column):
         path, envelope = self.package()
@@ -336,7 +391,7 @@ class HttpAndAgentTests(PipelineCase):
         path, _ = self.package(text="<script>alert('untrusted')</script>")
         report = analyze_isolated(path, self.root / "sandbox-reports")
         self.assertEqual(report["archive_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
-        self.assertEqual(report["conclusion"], "suspected_problem")
+        self.assertEqual(report["conclusion"], "insufficient_evidence")
         self.assertIn("&lt;script&gt;", Path(report["markdown_path"]).read_text())
 
     def test_unknown_health_degrades_to_insufficient_not_no_problem(self):

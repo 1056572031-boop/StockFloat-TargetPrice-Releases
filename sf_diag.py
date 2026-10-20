@@ -96,7 +96,7 @@ _URL_CREDENTIAL_RE = re.compile(
 )
 _SECRET_VALUE_RE = re.compile(
     r"([\"']?(?:token|api[_-]?key|secret|sign(?:ature)?|password|passwd|credential|cookie|auth(?:code)?|session|jwt|ticket)"
-    r"[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;&\"']+)",
+    r"[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\\r\n])*\"?|'(?:\\.|[^'\\\r\n])*'?|[^\s,;&\"']+)",
     re.IGNORECASE,
 )
 _QUERY_SECRET_RE = re.compile(
@@ -198,6 +198,11 @@ def identity_needles(issues: list[str]) -> tuple[Needle, ...]:
 def scrub_text(text: str, needles: tuple[Needle, ...]) -> str:
     """把身份串换成标记。路径类换成 `~`（目录结构要留着可判代次），账号名换成 `<user>`。"""
     result = redact_urls_in_text(text)
+    result = re.sub(r"-----BEGIN " + r"(?:[A-Z]+ )?PRIVATE KEY-----.*?-----END "
+                    + r"(?:[A-Z]+ )?PRIVATE KEY-----", "<REDACTED>", result, flags=re.DOTALL)
+    result = re.sub(r"\A.*?-----END " + r"(?:[A-Z]+ )?PRIVATE KEY-----", "<REDACTED>", result, flags=re.DOTALL)
+    result = re.sub(r"-----BEGIN " + r"(?:[A-Z]+ )?PRIVATE KEY-----.*\Z", "<REDACTED>", result, flags=re.DOTALL)
+    result = re.sub(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b", "<REDACTED>", result)
     for needle in needles:
         if needle.hint and needle.hint not in result:
             continue
@@ -219,7 +224,7 @@ def scrub_text(text: str, needles: tuple[Needle, ...]) -> str:
     if "authorization" in lower:
         result = re.sub(
             r"[\"']?\bauthorization\b[\"']?\s*[:=]\s*"
-            r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
+            r"(?:\"(?:\\.|[^\"\\\r\n])*\"?|'(?:\\.|[^'\\\r\n])*'?|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
             "Authorization=<REDACTED>", result, flags=re.IGNORECASE,
         )
     if "?" in result or "&" in result:

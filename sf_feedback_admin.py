@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sf_feedback import FeedbackProtocolError, _atomic_replace, validate_archive, validate_receipt
-from sf_feedback_github import KEY_PATTERN, REPOSITORY
+from sf_feedback_github import KEY_PATTERN, MAX_RELEASE_ASSETS, REPOSITORY
 from sf_feedback_analyzer import ANALYZER_BUILD_ID, DEFAULT_RULESET, _canonical_hash
 
 
@@ -49,7 +49,8 @@ def analyze_isolated(archive, output):
                    literal(Path(archive).resolve().parent), literal(output), literal(output))
     code = ("import sys,json; sys.path.insert(0,sys.argv[1]); "
             "from sf_feedback_analyzer import analyze_archive; "
-            "print(json.dumps(analyze_archive(sys.argv[2],sys.argv[3])))")
+            "r=analyze_archive(sys.argv[2],sys.argv[3]); "
+            "print(json.dumps({k:v for k,v in r.items() if k != 'full_diagnostics'}))")
     interpreter = str(Path(vars(sys).get("_base_executable", sys.executable)).resolve())
     command = [str(sandbox), "-p", profile, interpreter, "-I", "-B", "-c", code,
                str(root), str(Path(archive).resolve()), str(output)]
@@ -202,7 +203,7 @@ class FeedbackAgent:
                 if (asset is None or asset["name"] != case_id + ".zip"
                         or asset["size"] != receipt["size_bytes"]):
                     raise FeedbackProtocolError("案件对象缺失或大小不匹配")
-                body = self.api.download(asset["id"])
+                body = self.api.download(asset["id"], limit=receipt["size_bytes"])
                 if (len(body) != receipt["size_bytes"]
                         or hashlib.sha256(body).hexdigest() != receipt["archive_sha256"]):
                     raise FeedbackProtocolError("下载的反馈包校验失败")
@@ -225,4 +226,7 @@ class FeedbackAgent:
                     db.execute("UPDATE queue SET status='failed', error=? WHERE case_id=?",
                                (type(exc).__name__, case_id))
                 failed.append(case_id)
-        return {"ready": ready, "failed": failed, "discovered": len(rows)}
+        return {"ready": ready, "failed": failed, "discovered": len(rows),
+                "capacity": {"asset_count": len(assets), "asset_limit": MAX_RELEASE_ASSETS,
+                             "remaining_asset_slots": max(0, MAX_RELEASE_ASSETS - len(assets)),
+                             "slots_per_new_case": 2, "near_limit": len(assets) >= MAX_RELEASE_ASSETS - 100}}

@@ -17,15 +17,16 @@ import tempfile
 import unicodedata
 import uuid
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Protocol, cast
 
 SCHEMA_VERSION = 1
 DIAGNOSTIC_PAYLOAD_VERSION = 1
 DEFAULT_CONSENT_POLICY_VERSION = "feedback-consent-v1"
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+MAX_FULL_ARCHIVE_BYTES = 32 * 1024 * 1024
 MAX_MEMBER_BYTES = 2 * 1024 * 1024
 MAX_MEMBER_COUNT = 64
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -115,6 +116,24 @@ def sha256_file(path: os.PathLike[str] | str) -> str:
     return digest.hexdigest()
 
 
+class _ZipMetadata(Protocol):
+    _EndRecData: Callable[[BinaryIO], list[Any] | None]
+    _ECD_ENTRIES_TOTAL: int
+    _ECD_SIZE: int
+
+
+def check_zip_directory(stream, maximum_members):
+    # Bound ZipInfo allocation before the pinned stdlib constructs entry objects.
+    metadata = cast(_ZipMetadata, zipfile)
+    end = metadata._EndRecData(stream)
+    if end is None:
+        raise FeedbackProtocolError("archive is not a valid ZIP")
+    if end[metadata._ECD_ENTRIES_TOTAL] > maximum_members:
+        raise FeedbackProtocolError("archive contains too many members")
+    if end[metadata._ECD_SIZE] > 256 * 1024:
+        raise FeedbackProtocolError("archive central directory exceeds the size limit")
+
+
 def _atomic_replace(path: Path, writer) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
@@ -161,12 +180,13 @@ def build_archive(path: os.PathLike[str] | str, files: Mapping[str, bytes | str]
         if name in prepared or name.casefold() in {key.casefold() for key in prepared}:
             raise FeedbackProtocolError("archive member name collision")
         data = raw_data.encode("utf-8") if isinstance(raw_data, str) else bytes(raw_data)
-        if len(data) > MAX_MEMBER_BYTES:
+        limit = MAX_FULL_ARCHIVE_BYTES if name == "diagnostics.zip" else MAX_MEMBER_BYTES
+        if len(data) > limit:
             raise FeedbackProtocolError("archive member exceeds the size limit: " + name)
         prepared[name] = data
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "diagnostic_payload_version": DIAGNOSTIC_PAYLOAD_VERSION,
+        "diagnostic_payload_version": 2 if "diagnostics.zip" in prepared else DIAGNOSTIC_PAYLOAD_VERSION,
         "app_version": str(app_version),
         "bundle_id": str(bundle_id),
         "run_id": str(run_id),
@@ -185,7 +205,8 @@ def build_archive(path: os.PathLike[str] | str, files: Mapping[str, bytes | str]
     def write(stream):
         with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
             for name, data in prepared.items():
-                archive.writestr(name, data)
+                archive.writestr(name, data, compress_type=(zipfile.ZIP_STORED if name == "diagnostics.zip"
+                                                          else zipfile.ZIP_DEFLATED))
             archive.writestr("manifest.json", manifest_bytes)
 
     target = Path(path)
@@ -198,8 +219,10 @@ def build_archive(path: os.PathLike[str] | str, files: Mapping[str, bytes | str]
 def validate_archive(path: os.PathLike[str] | str) -> dict[str, Any]:
     target = Path(path)
     size = target.stat().st_size
-    if size < 1 or size > MAX_ARCHIVE_BYTES:
+    if size < 1 or size > MAX_FULL_ARCHIVE_BYTES:
         raise FeedbackProtocolError("archive exceeds the size limit")
+    with target.open("rb") as stream:
+        check_zip_directory(stream, MAX_MEMBER_COUNT)
     try:
         with zipfile.ZipFile(target) as archive:
             infos = archive.infolist()
@@ -207,14 +230,17 @@ def validate_archive(path: os.PathLike[str] | str) -> dict[str, Any]:
                 raise FeedbackProtocolError("archive contains too many members")
             names: list[str] = []
             for info in infos:
-                name = _safe_member_name(info.filename)
+                name = _safe_member_name(info.orig_filename)
                 if name in names or name.casefold() in {item.casefold() for item in names}:
                     raise FeedbackProtocolError("archive member name collision")
                 names.append(name)
                 mode = (info.external_attr >> 16) & 0xFFFF
                 if stat.S_ISLNK(mode) or info.flag_bits & 0x1:
                     raise FeedbackProtocolError("archive contains a link or encrypted member")
-                if info.file_size > MAX_MEMBER_BYTES:
+                if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    raise FeedbackProtocolError("archive contains an unsupported compression method")
+                limit = MAX_FULL_ARCHIVE_BYTES if name == "diagnostics.zip" else MAX_MEMBER_BYTES
+                if info.file_size > limit:
                     raise FeedbackProtocolError("archive member exceeds the size limit")
             if "manifest.json" not in names:
                 raise FeedbackProtocolError("archive manifest is missing")
@@ -226,8 +252,13 @@ def validate_archive(path: os.PathLike[str] | str) -> dict[str, Any]:
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise FeedbackProtocolError("manifest is not valid UTF-8 JSON") from exc
             if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION \
-                    or manifest.get("diagnostic_payload_version") != DIAGNOSTIC_PAYLOAD_VERSION:
+                    or manifest.get("diagnostic_payload_version") not in (1, 2):
                 raise FeedbackProtocolError("unsupported manifest version")
+            if manifest["diagnostic_payload_version"] == 1 and size > MAX_ARCHIVE_BYTES:
+                raise FeedbackProtocolError("legacy archive exceeds the size limit")
+            if manifest["diagnostic_payload_version"] == 2 and set(names) != {
+                    "manifest.json", "state.json", "problem.txt", "diagnostics.zip"}:
+                raise FeedbackProtocolError("full archive members are incomplete")
             declared = manifest.get("files")
             if not isinstance(declared, list) or len(declared) != len(names) - 1:
                 raise FeedbackProtocolError("manifest file list does not match the archive")
@@ -259,11 +290,11 @@ def validate_archive(path: os.PathLike[str] | str) -> dict[str, Any]:
 def make_envelope(*, archive_path: os.PathLike[str] | str, app_version: str,
                   outbox_id: str, consent_policy_version: str = DEFAULT_CONSENT_POLICY_VERSION,
                   idempotency_key: str | None = None) -> dict[str, Any]:
-    validate_archive(archive_path)
+    manifest = validate_archive(archive_path)
     target = Path(archive_path)
     return {
         "schema_version": SCHEMA_VERSION,
-        "diagnostic_payload_version": DIAGNOSTIC_PAYLOAD_VERSION,
+        "diagnostic_payload_version": manifest["diagnostic_payload_version"],
         "idempotency_key": idempotency_key or uuid.uuid4().hex,
         "archive_sha256": sha256_file(target),
         "size_bytes": target.stat().st_size,

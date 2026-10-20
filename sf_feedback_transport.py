@@ -10,9 +10,9 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from sf_feedback import FeedbackProtocolError
-from sf_feedback_capture import read_upload_archive, validate_upload_receipt
+from sf_feedback_capture import read_upload_archive, validate_capture_context, validate_upload_receipt
 
-MAX_UPLOAD_BYTES = 256 * 1024
+MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 
 
@@ -32,7 +32,9 @@ def endpoint_url(url: str, *, allow_loopback=False) -> str:
 
 def submit_https(url, envelope, archive_path, *, allow_loopback=False):
     url = endpoint_url(url, allow_loopback=allow_loopback)
-    read_upload_archive(archive_path, envelope)
+    packet = read_upload_archive(archive_path, envelope)
+    validate_capture_context(packet["manifest"], packet["state"])
+    del packet
     archive = Path(archive_path).read_bytes()
     if len(archive) > MAX_UPLOAD_BYTES:
         raise FeedbackProtocolError("反馈包超过上传大小限制")
@@ -44,7 +46,8 @@ def submit_https(url, envelope, archive_path, *, allow_loopback=False):
     request = Request(url, data=struct.pack("!I", len(header)) + header + archive,
                       headers={"Content-Type": "application/vnd.skyrocket.feedback-v1",
                                "User-Agent": "Skyrocket-Feedback/1", "Accept": "application/json"}, method="POST")
-    with build_opener(NoRedirect()).open(request, timeout=30) as response:
+    timeout = 120 if envelope["diagnostic_payload_version"] == 2 else 30
+    with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
         if response.status != 200:
             raise FeedbackProtocolError("反馈服务没有返回已收件回执")
         payload = response.read(MAX_RESPONSE_BYTES + 1)

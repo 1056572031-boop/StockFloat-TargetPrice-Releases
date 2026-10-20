@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-19",
+  "updated": "2026-10-20",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4288,6 +4288,46 @@
       "recurrence_reviewed_on": "2026-10-17",
       "recurrence_review_method": "当前测试断言静态核对+原台账修复/反控证据；非逐条原生重演，风险为保守审查评级而非概率",
       "recurrence_audited": "2026-10-17 当前判据静态复核；非逐项原生重演"
+    },
+    {
+      "id": "N15",
+      "symptom": "反馈分析器将正常隐私过滤记录标为疑似故障，历史计数也直接升级为当前问题",
+      "component": "diagnostics",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "原始快照时间为2026-10-20T01:40:04Z，不等于发现时间。此前对话已发现但无可独立证明的发现时刻，本次按实际记账时刻登记，不补估定位耗时。问题在管理分析器，不据此认定客户端更新失败。",
+      "found_version": "1.4.97",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "分析器按计数名称包含fail/error/dropped和正数一概触发疑似故障，未区分隐私过滤元数据与历史错误；原有测试只验证健康真假和报告落盘，缺少真实正常快照的隐私计数反例。首次发现和根因均在此前无秒级证据的分析中已发生，本次命令只是补记账，不用于定位耗时。",
+      "defense_added": "源码已区分隐私过滤、历史计数和当前异常；补充tests/test_feedback_analyzer.py正反例及tests/test_feedback_pipeline.py旧缓存失效/原报告保留测试。关联断言通过不代替完整关卡；后台独立快照尚未更新，本条未关闭。",
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "locate_unknown_reason": "首次现象与根因在此前对话已确认，但没有独立秒级时刻证据；本轮开条及根因命令是补记账，不代表28秒定位。",
+      "timestamp_audit": {
+        "audited_on": "2026-10-20",
+        "classification": "bookkeeping_not_duration",
+        "original_observed_at": "2026-10-20 10:01:10+08:00",
+        "original_rootcause_at": "2026-10-20 10:01:38+08:00",
+        "reason": "命令执行前已发现并写清根因，两戳均为补记账时刻",
+        "result": "真实首次发现和定位时刻未知，保留null并排除定位时长统计"
+      },
+      "source": "桌面反馈 feedback-5dac422f03f5410b92ee32cf860fb94b；原始 ZIP SHA256 5e71ca8482bff424bcce4e9cff541ee0e0976293ea7537459da6b1e618b319bf；分析器 github-v3",
+      "evidence": "verified",
+      "rootcause_origin": "unknown",
+      "recurrence_risk": "中",
+      "recurrence_verdict": "已有本地正反例，完整关卡与实际后台更新待验",
+      "recurrence_guard_refs": [
+        "tests/test_feedback_analyzer.py",
+        "tests/test_feedback_pipeline.py"
+      ],
+      "recurrence_liar_check": "隐私精确例外不得吞掉其他丢弃或错误计数；测试自声明不得自动排除反馈；历史计数不得冒充当前异常。",
+      "recurrence_next_action": "保留并行界面修改，解决兼容测试后，在正式版正常退出的安全条件下完成完整关卡，再更新独立后台快照并读回真实报告。",
+      "recurrence_reviewed_on": "2026-10-20",
+      "recurrence_review_method": "源码及关联断言和7个哈希匹配原始包的隔离重分析；完整关卡未通过，不代表后台已生效"
     }
   ],
   "rounds": [
@@ -4889,6 +4929,16 @@
         "完整回归 4565 项、变更覆盖 3973/3973、发布前候选门禁"
       ],
       "zero_reason": "本轮新增功能与发布链改动均由完整回归、产物特征、闭包、冒烟和圆角门禁覆盖；本轮未发现新的已发布线上逃逸。"
+    },
+    {
+      "version": "1.4.98",
+      "date": "2026-10-20",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "完整诊断ZIP原字节对拍、保存后哈希读回、新旧包及隐私策略兼容、凭据残留和损坏包反例、离线大包测试、线上验收单POST预算与按原编号读回。"
+      ],
+      "zero_reason": "本轮是尚未发布的完整诊断反馈改造；目前没有v1.4.98线上用户样本，0仅表示未登记该版已发布逃逸，不代表上线后没有故障。实施中被测试发现的问题保留首败记录，不冒充线上逃逸。N15仍保留既有管理分析修正记录，不自动关闭真实用户问题。"
     }
   ],
   "comparison_policy": {

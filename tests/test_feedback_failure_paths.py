@@ -209,6 +209,22 @@ class StorageFailures(PipelineCase):
 
 
 class ClientFailureResults(PipelineCase):
+    def test_packet_growing_after_validation_is_rejected_before_network(self):
+        path, envelope = self.package()
+        validate = transport.read_upload_archive
+
+        def grow_after_validation(*args):
+            result = validate(*args)
+            with path.open("r+b") as stream:
+                stream.truncate(transport.MAX_UPLOAD_BYTES + 1)
+            return result
+
+        with patch.object(transport, "read_upload_archive", side_effect=grow_after_validation), \
+                patch.object(transport, "build_opener") as opened:
+            with self.assertRaisesRegex(FeedbackProtocolError, "超过上传大小限制"):
+                transport.submit_https("https://synthetic.invalid/v1/feedback", envelope, path)
+            opened.assert_not_called()
+
     def response(self, data, status=200):
         response = Mock()
         response.__enter__ = Mock(return_value=response)
@@ -274,12 +290,14 @@ class DialogFailureResults(SFCase):
 
     def setUp(self):
         super().setUp()
+        self.track_patch(patch("sf_system_alert.show_alert", return_value=None))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.dialog = self.track_widget(ui.FeedbackDialog(snapshot=snapshot(), storage_dir=self.temp.name,
             endpoint="https://receiver.example", capture_again=lambda: (_ for _ in ()).throw(OSError())))
 
     def test_private_state_is_not_exported_and_capture_failure_disables_upload(self):
+        self.dialog.preview_files = None
         self.dialog._upload()  # discipline-ok(R5): disabled-click boundary under test
         self.assertIsNone(self.dialog.worker)
         owner = SimpleNamespace(_feedback_dialog=self.dialog)

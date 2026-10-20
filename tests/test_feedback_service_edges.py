@@ -55,7 +55,8 @@ class FeedbackServiceEdgeCandidates(SFCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             archive = root / "too-large.zip"
-            archive.write_bytes(b"x" * (16 * 1024 * 1024 + 1))
+            from sf_feedback import MAX_ARCHIVE_BYTES
+            archive.write_bytes(b"x" * (MAX_ARCHIVE_BYTES + 1))
             envelope = {"schema_version": 1}
             with self.assertRaises(ReceiverError):
                 submit(root / "missing.sock", envelope, archive)

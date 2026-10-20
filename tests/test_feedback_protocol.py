@@ -295,14 +295,14 @@ class FeedbackProtocolTests(SFCase):
                 self.assertFalse(target.exists())
 
     def test_validator_rejects_archive_and_member_size_limits(self):
-        from sf_feedback import MAX_ARCHIVE_BYTES, MAX_MEMBER_BYTES
+        from sf_feedback import MAX_FULL_ARCHIVE_BYTES, MAX_MEMBER_BYTES
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "oversized.zip"
             path.touch()
             with self.assertRaisesRegex(FeedbackProtocolError, "archive exceeds"):
                 validate_archive(path)
             with path.open("wb") as stream:
-                stream.truncate(MAX_ARCHIVE_BYTES + 1)
+                stream.truncate(MAX_FULL_ARCHIVE_BYTES + 1)
             with self.assertRaisesRegex(FeedbackProtocolError, "archive exceeds"):
                 validate_archive(path)
             with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:

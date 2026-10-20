@@ -25,6 +25,16 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.98
+skip sf_feedback 无独立可变业务状态的协议与归档函数；封存、保存和提交状态由 feedback.json 及 outbox 恢复测试验证。
+skip sf_feedback_bundle 完整诊断ZIP白名单、容量及凭据残留校验纯函数；校验失败由 feedback.json 的阶段与错误类别、主窗日志和上传弹窗体现，不收集包内容作为额外运行态。
+skip sf_feedback_outbox 本地私有队列不进入诊断附件；保存与恢复状态由 feedback.json 输出，文件读回哈希与跨进程测试验证持久性。
+skip sf_feedback_capture 显式投影、脱敏和包校验函数；失败由 feedback.json、上传结果弹窗及日志留痕，无独立可变业务状态。
+skip sf_feedback_transport HTTPS发送与回执校验函数；阶段由 feedback.json 和 outbox 输出，地址及正文不进入额外诊断。
+skip sf_feedback_github 仅服务端与维护者工具使用的私有存储适配器；管理凭据不进入客户端，远端读回结果由工具收据记录。
+skip sf_feedback_admin 仅维护者本机队列工具使用；隔离失败和案件状态通过命令返回及独立报告记录，不进入用户诊断附件。
+skip sf_feedback_analyzer 隔离离线分析函数；完整诊断快照与有界日志线索写入案件报告，不属于客户端常驻状态。
+
 version 1.4.97
 skip sf_feedback 纯协议校验和原子归档函数；提交阶段和失败计数由 feedback.json 导出，不包含包内容或任何凭据。
 skip sf_feedback_outbox 本地私有 SQLite 队列不进入附件；当前提交阶段、存储可用性和失败计数由 feedback.json 导出，恢复行为由跨进程测试验证。

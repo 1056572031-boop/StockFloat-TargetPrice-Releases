@@ -7,7 +7,7 @@ _SECRET_HINTS = ("token", "secret", "password", "passwd", "apikey", "api_key",
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+")
 _VALUE_RE = re.compile(
     r"([\"']?(?:token|api[_-]?key|secret|sign(?:ature)?|password|passwd|credential|cookie|auth(?:code)?|session|jwt|ticket)"
-    r"[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;&\"']+)",
+    r"[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\\r\n])*\"?|'(?:\\.|[^'\\\r\n])*'?|[^\s,;&\"']+)",
     re.IGNORECASE)
 
 
@@ -52,6 +52,6 @@ def scrub_secrets(text, marker="<REDACTED>"):
     result = redact_urls_in_text(text, marker)
     result = re.sub(
         r"[\"']?\bauthorization\b[\"']?\s*[:=]\s*"
-        r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
+        r"(?:\"(?:\\.|[^\"\\\r\n])*\"?|'(?:\\.|[^'\\\r\n])*'?|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
         "Authorization=" + marker, result, flags=re.IGNORECASE)
     return _VALUE_RE.sub(lambda match: match.group(1) + marker, result)
