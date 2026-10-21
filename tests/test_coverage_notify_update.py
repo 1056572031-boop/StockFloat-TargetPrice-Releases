@@ -630,11 +630,19 @@ class NotifyCase(SFCase):
         super().tearDown()
 
     def _fake_un(self, auth_status=2, request_raises=None):
-        """auth_status=2 是 authorized。不显式设的话 MagicMock 的 int() 是 1 = denied，
-        deliver() 会在授权分支直接返回 "denied"，后面全是假绿。"""
+        """按真实接口从 settings 读取授权；同步完成回调供投递分支测试使用。
+
+        每次换桩也清缓存，避免同一用例内的状态枚举被上一轮授权答案覆盖。
+        """
+        sf_notify.reset_delivery_probe()
         sf_notify.UNUserNotificationCenter = mock.MagicMock()
-        sf_notify.UNUserNotificationCenter.currentNotificationCenter() \
-            .authorizationStatus.return_value = auth_status
+        center = sf_notify.UNUserNotificationCenter.currentNotificationCenter()
+        # center 没有此接口，禁止 MagicMock 自动造出旧的错误形状。
+        del center.authorizationStatus
+        settings = mock.Mock(spec=["authorizationStatus"])
+        settings.authorizationStatus.return_value = auth_status
+        center.getNotificationSettingsWithCompletionHandler_.side_effect = \
+            lambda callback: callback(settings)
         sf_notify.UNMutableNotificationContent = mock.MagicMock()
         sf_notify.UNNotificationRequest = mock.MagicMock()
         sf_notify.NSString = mock.MagicMock()
@@ -756,10 +764,11 @@ class TestAuthorizationStatus(NotifyCase):
         for code, expect in ((0, "notDetermined"), (1, "denied"),
                              (2, "authorized"), (3, "provisional"),
                              (4, "ephemeral"), (99, "unknown")):
-            queued = self._fake_un()
-            sf_notify.UNUserNotificationCenter.currentNotificationCenter() \
-                .authorizationStatus.return_value = code
-            self.assertEqual(sf_notify.authorization_status(), expect, code)
+            with self.subTest(code=code):
+                self._fake_un(auth_status=code)
+                self.assertEqual(sf_notify.authorization_status(), expect, code)
+                center = sf_notify.UNUserNotificationCenter.currentNotificationCenter()
+                center.getNotificationSettingsWithCompletionHandler_.assert_called_once()
 
     def test_a_broken_center_reports_unknown_rather_than_raising(self):
         """通知侧任何异常都不能把行情 tick 带崩。"""
@@ -835,6 +844,14 @@ def types_namespace():
 
 
 class TestDeliverRouting(NotifyCase):
+    def test_unknown_settings_remain_pending_instead_of_fallback(self):
+        self._fake_un(auth_status=99)
+        center = sf_notify.UNUserNotificationCenter.currentNotificationCenter()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as osa:
+            self.assertEqual(sf_notify.deliver("t", "s", "b", "pending-key"), "pending")
+            osa.assert_not_called()
+        center.addNotificationRequest_withCompletionHandler_.assert_not_called()
+
     def test_un_route_returns_un_and_registers_the_click_handler(self):
         self._fake_un()
         center = sf_notify.UNUserNotificationCenter.currentNotificationCenter()
@@ -849,10 +866,8 @@ class TestDeliverRouting(NotifyCase):
 
     def test_denied_authorization_wins_over_the_osascript_fallback(self):
         """R48：用户关掉通知后，即便 UN 投递失败过也不能绕过他的选择。"""
-        self._fake_un()
+        self._fake_un(auth_status=1)
         sf_notify._USE_OSASCRIPT = True
-        center = sf_notify.UNUserNotificationCenter.currentNotificationCenter()
-        center.authorizationStatus.return_value = 1        # denied
         with mock.patch.object(sf_notify, "_deliver_osascript") as osa:
             self.assertEqual(sf_notify.deliver("t", "s", "b"), "denied")
         self.assertEqual(osa.call_count, 0)

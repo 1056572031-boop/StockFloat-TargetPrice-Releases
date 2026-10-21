@@ -268,8 +268,16 @@ class TargetPanel(GlassMixin, QWidget):
         root.addLayout(top)
         root.addSpacing(TITLE_GAP)
 
+        # 按方向隐藏完整输入行；间距随容器消失，不留下空白占位。
+        self.target_input_area = QWidget()
+        input_layout = QVBoxLayout(self.target_input_area)
+        input_layout.setContentsMargins(0, 0, 0, 12)
+        input_layout.setSpacing(INPUT_ROW_GAP)
+        root.addWidget(self.target_input_area)
+
         # 涨到（红色 #ff5252，与主界面涨色一致）
-        row_up = QHBoxLayout()
+        self.row_up = QWidget()
+        row_up = QHBoxLayout(self.row_up)
         lab_up = QLabel("涨到")
         lab_up.setFixedWidth(DIRECTION_W)
         lab_up.setStyleSheet("color:%s;font-size:%dpx;font-weight:bold;" % (UP_RED, PANEL_FONT_PX))
@@ -289,11 +297,11 @@ class TargetPanel(GlassMixin, QWidget):
         row_up.setContentsMargins(0, 0, 0, 0)
         self.input_up_group = TargetInputGroup(self.edit_up, self.btn_up)
         row_up.addWidget(self.input_up_group, 1)
-        root.addLayout(row_up)
-        root.addSpacing(INPUT_ROW_GAP)
+        input_layout.addWidget(self.row_up)
 
         # 跌到（绿色 #4caf50，与主界面跌色一致）
-        row_dn = QHBoxLayout()
+        self.row_dn = QWidget()
+        row_dn = QHBoxLayout(self.row_dn)
         lab_dn = QLabel("跌到")
         lab_dn.setFixedWidth(DIRECTION_W)
         lab_dn.setStyleSheet("color:%s;font-size:%dpx;font-weight:bold;" % (DOWN_GREEN, PANEL_FONT_PX))
@@ -311,8 +319,7 @@ class TargetPanel(GlassMixin, QWidget):
         row_dn.setContentsMargins(0, 0, 0, 0)
         self.input_dn_group = TargetInputGroup(self.edit_dn, self.btn_dn)
         row_dn.addWidget(self.input_dn_group, 1)
-        root.addLayout(row_dn)
-        root.addSpacing(4)
+        input_layout.addWidget(self.row_dn)
 
         # D1：回车即添加
         self.edit_up.returnPressed.connect(lambda: self._add(TARGET_DIR_ABOVE))
@@ -324,7 +331,6 @@ class TargetPanel(GlassMixin, QWidget):
         self.list_box = QVBoxLayout()
         self.list_box.setContentsMargins(0, 0, 0, 0)
         self.list_box.setSpacing(LIST_ROW_GAP)
-        root.addSpacing(8)
         root.addLayout(self.list_box)
 
         # D9：独立状态行（错误/成功/提示），不再复用列表行。
@@ -762,12 +768,15 @@ class TargetPanel(GlassMixin, QWidget):
             log_swallow("target_panel._update_buttons", _swallow_exc)
 
     def _update_inputs(self):
-        """v1.2.84：每个方向达到 3 条后隐藏 + 按钮并禁用对应输入框。"""
+        """每方向满额隐藏整行，两方向都满时收起整个新增区域。"""
         up = sum(1 for a in self._pending if a.get("direction") == TARGET_DIR_ABOVE)
         dn = sum(1 for a in self._pending if a.get("direction") == TARGET_DIR_BELOW)
         up_full = up >= MAX_PER_DIR
         dn_full = dn >= MAX_PER_DIR
         try:
+            self.row_up.setVisible(not up_full)
+            self.row_dn.setVisible(not dn_full)
+            self.target_input_area.setVisible(not (up_full and dn_full))
             self.edit_up.setEnabled(not up_full)
             self.btn_up.setVisible(not up_full)
             self.edit_dn.setEnabled(not dn_full)

@@ -219,8 +219,9 @@ POPUP_SECONDARY_BG = "rgba(255,255,255,0.10)"
 POPUP_SECONDARY_HOVER = "rgba(255,255,255,0.18)"
 POPUP_SECONDARY_PRESSED = "rgba(255,255,255,0.24)"
 POPUP_PRIMARY_BG = ACCENT_BLUE_HEX   # 与右键菜单选中行同一份来源（v1.4.64，复核 F6）
-POPUP_PRIMARY_HOVER = "#5c88ff"
-POPUP_PRIMARY_PRESSED = "#3f6fe8"
+# 2026-10-21：跟着 ACCENT_BLUE_HEX 一起沿用旧的逐通道明暗差（悬停更亮、按下更暗）。
+POPUP_PRIMARY_HOVER = "#4275ff"
+POPUP_PRIMARY_PRESSED = "#255ce8"
 POPUP_FG = "#efefef"
 # 与 sf_constants.FG_HINT_HEX 同一个值，不再各写一份（v1.4.64，全方位复核 F6）：
 # 这一族"提示小字灰"此前在 sf_editor / target_panel / 这里各存了一份字面量。

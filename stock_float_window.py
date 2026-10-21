@@ -96,6 +96,7 @@ from sf_face_guard_controller import FaceGuardController
 
 # ---- 模块化拆分 sf_runtime（v1.2.41 上帝类拆分第三步）：App Nap 省电 / 置顶 / 缩 Dock 运行状态 ----
 from sf_runtime import RuntimeState, restore_ui_interval
+from sf_performance import PerformanceMonitor
 from sf_maintenance import BackgroundMaintenance
 from sf_anim_driver import AnimDriver
 from sf_stock_transition import StockTransition
@@ -707,6 +708,13 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
     diagnostics_ready = pyqtSignal(object)
     maintenance_wakeup = pyqtSignal()
 
+    # 收展动画期间的重复整窗帧合并：resizeEvent 每次都会排一次整窗帧，并把序号加一；
+    # 呼吸灯时钟自己再排一次就是同一个 vsync 周期里的第二帧（实测展开时约 30% 的相邻
+    # 绘制间隔小于 8ms，屏幕只有 60Hz，多出来的帧根本不会被显示）。
+    # 放在类上而不是 __init__：绕过构造的测试替身也读得到默认值。
+    _resize_paint_seq = 0
+    _dot_seen_resize_seq = 0
+
     # v1.2.41：_minimized 状态下沉 sf_runtime.RuntimeState，property 保持旧字段名兼容
     @property
     def _minimized(self):
@@ -1289,6 +1297,8 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # wrapper 捕获子线程异常并带频率限制自动恢复（见 _quote_loop_wrapper）。
         self._quote_runtime.start(self._quote_loop_wrapper, self._minute_loop_wrapper)
 
+        self._performance_monitor = PerformanceMonitor(self)
+        self._performance_monitor.start()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
         # v1.2.43 第1项：设为精确模式 —— CoarseTimer 有 5% 容差，兜底看门狗也要
@@ -1473,6 +1483,9 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         self._chart_changed = True
         self._sync_glass_frame()
         self.update()
+        # 整窗帧已排队：序号供呼吸灯时钟判断本周期是否已被覆盖（见 _dot_tick）。
+        # 必须放在 update() 之后，序号只表示「这一帧确实排上了」。
+        self._resize_paint_seq += 1
 
     # ---------- 绘制 ----------
 
@@ -4652,6 +4665,8 @@ QMenu::separator {
         try:
             if self._dot_armed() and self._dot_should_run():
                 if not self._dot_timer.isActive():
+                    # 起表时对齐已见序号：停表期间发生的 resizeEvent 不能算作「本周期已覆盖」。
+                    self._dot_seen_resize_seq = self._resize_paint_seq
                     self._dot_timer.start()
             elif self._dot_timer.isActive():
                 self._dot_timer.stop()
@@ -4710,6 +4725,16 @@ QMenu::separator {
             except Exception:
                 pass
             self.update()
+            return
+        # 收展动画进行中，动画每帧的 resize 已经排过一次整窗帧（resizeEvent 里），
+        # 自己再排一次就是同一个 vsync 周期里的第二帧。只在「上个节拍到现在确有
+        # resizeEvent」时才跳过：动画某帧高度没变化、没有 resizeEvent 时，这里照常
+        # 排帧，所以呼吸灯不会因此少一帧。只限收展动画：拖动拉伸时 resizeEvent
+        # 节奏不均，跳过会让呼吸灯跟着变稀，那条路径保持原样。
+        seq = self._resize_paint_seq
+        covered = seq != self._dot_seen_resize_seq
+        self._dot_seen_resize_seq = seq
+        if covered and self._layout_anim_to != self._layout_anim_from:
             return
         self.update()
 
@@ -6111,6 +6136,9 @@ QMenu::separator {
         aboutToQuit 与 quit() 共用（幂等，重复调用直接返回）。
         """
         controller = getattr(self, "_update_controller", None)
+        performance = getattr(self, "_performance_monitor", None)
+        if performance is not None:
+            performance.stop()
         if controller is not None:
             controller.stop()
         if getattr(self, "_threads_stopped", False):

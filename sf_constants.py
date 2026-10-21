@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.100'
+APP_VERSION = '1.4.101'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -503,7 +503,10 @@ BTN_ICON_DEVICE_RATIO = 2.0      # 出图倍率：与 Retina 的 1pt=2px 对齐
 MENU_ICON_PT = 16
 MENU_ICON_CONTENT_SCALE = 0.65
 MENU_ICON_DEVICE_RATIO = 2.0
-UP_RED_HEX = '#ff5252'
+# 2026-10-21 对比度微调：涨色 #ff5252 -> #ff5858。按 v1.4.100 真机截图里最亮的玻璃底
+# (44,44,44) 实测，旧值对它只有 4.38:1（低于小字 4.5:1），新值 4.51:1，肉眼几乎看不出差别。
+# 判据的底色仍用纯黑做不了数：纯黑上旧值有 6.58:1，那是宽松侧的假平安。
+UP_RED_HEX = '#ff5858'
 DOWN_GREEN_HEX = '#4caf50'
 # 次要文字灰：旧值 #6b7280 对纯黑只有 4.34:1（报告按真渲染取到 4.1:1），低于小字 4.5:1。
 # 新值实测对面板底 #1d1e20 = 4.98:1、对纯黑 = 6.27:1，两条底都过 AA；
@@ -511,7 +514,9 @@ DOWN_GREEN_HEX = '#4caf50'
 # FG_DIM_HEX（v1.4.60，复核 F6）：同一个值的字符串形态，给 Qt 样式表用 ——
 # 菜单里「点不动的那几行」原先还写着旧值 #6b7280，就是这一族提亮漏的最后一处。
 # 唯一来源仍是这两行，样式表里不许再手写 hex。
-FG_DIM_HEX = '#848d9c'
+# 2026-10-21：#848d9c -> #8a93a1。对真机最亮玻璃底 (44,44,44) 旧值 4.17:1，新值 4.50:1；
+# 「已触发」标签的黑字压在它上面，对比度同步升到 6.77:1，不会反向变差。
+FG_DIM_HEX = '#8a93a1'
 FG_DIM = QColor(FG_DIM_HEX)
 # ---- 文字与控件的灰阶（v1.4.64，全方位复核 F6）----
 # 为什么现在收：AGENTS §5.2-6 那句"次要文字灰只有一个来源、样式表里不许再手写 hex"
@@ -537,11 +542,17 @@ FG_WARN_HEX = '#b7becd'      # 面板警告行文字
 # 新值 #80899b 实测对面板底 #1d1e20 = 4.74:1（留 0.24 的余量，不是踩线过关），
 # 相对亮度是启用提示灰 #9aa3b5 的 0.683 倍 —— 仍明显更暗，"点不动"这件事照样看得出来。
 FG_DISABLED_HEX = '#80899b'
-ACCENT_BLUE_HEX = '#4f7cff'   # 主操作蓝：菜单选中行与弹窗「确定」钮同一个值，此前各写一份
+# 2026-10-21 对比度微调：两颗带白字的实心钮，静止态白字对比度都不到 4.5:1。
+# 蓝 #4f7cff(3.71) -> #3569ff(4.55)；红 #e5484d(3.91) -> #e12f35(4.51)。
+# 悬停/按下沿用旧的逐通道明暗差，保持「悬停更亮、按下更暗」的反馈次序：
+# 若只改静止色，旧按下色 #3f6fe8 会比新静止色还浅，按下就没有加深反馈了。
+# 悬停态仍低于 4.5（蓝 4.02 / 红 3.92）：悬停本来就比静止更亮，硬压到 4.5 要放弃
+# 「悬停变亮」，那是另一个设计取舍，本轮没做。
+ACCENT_BLUE_HEX = '#3569ff'   # 主操作蓝：菜单选中行与弹窗「确定」钮同一个值，此前各写一份
 MENU_SEPARATOR_HEX = '#3b4256'
-DANGER_BG_HEX = '#e5484d'    # 「再点一次确认清空」那颗红钮（三态一组，不拆散）
-DANGER_HOVER_HEX = '#f2555a'
-DANGER_PRESSED_HEX = '#cc3d42'
+DANGER_BG_HEX = '#e12f35'    # 「再点一次确认清空」那颗红钮（三态一组，不拆散）
+DANGER_HOVER_HEX = '#ee3c42'
+DANGER_PRESSED_HEX = '#c8242a'
 BG_MODE_DEFAULT = 'glass'
 # v1.2.35：毛玻璃暗化加深 —— 用户反馈太透光。调大玻璃层上叠加的黑色 alpha
 # （数值越大越暗、透过桌面内容越少；暗色系统 150、浅色系统 185 兼顾白字对比度）

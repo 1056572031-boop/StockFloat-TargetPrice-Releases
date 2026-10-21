@@ -46,10 +46,61 @@ class ApprovedPanelDesign(SFCase):
         self.assertEqual(panel.edit_dn.placeholderText(), "多少钱或 -5%")
         self.assertEqual(panel.btn_up.width(), panel.btn_up.height())
         self.assertEqual(panel.btn_up.height(), panel.input_up_group.height())
-        self.assertEqual(panel.input_dn_group.y() - panel.input_up_group.y() - panel.input_up_group.height(), TP.INPUT_ROW_GAP)
+        up_top = panel.input_up_group.mapTo(panel, QPoint()).y()
+        dn_top = panel.input_dn_group.mapTo(panel, QPoint()).y()
+        self.assertEqual(dn_top - up_top - panel.input_up_group.height(), TP.INPUT_ROW_GAP)
         for label in panel.findChildren(QLabel):
-            if label.parent() is panel and label.text() in ("涨到", "跌到"):
+            if label.parentWidget() in (panel.row_up, panel.row_dn):
                 self.assertTrue(label.font().bold())
+
+    def test_full_direction_hides_entire_row_and_delete_restores_it(self):
+        for direction, edit_name, row_name, other_name, prices in (
+                (C.TARGET_DIR_ABOVE, "edit_up", "row_up", "row_dn", (120, 121, 122)),
+                (C.TARGET_DIR_BELOW, "edit_dn", "row_dn", "row_up", (110, 111, 112))):
+            with self.subTest(direction=direction):
+                panel = self.panel()
+                edit = getattr(panel, edit_name)
+                row = getattr(panel, row_name)
+                other = getattr(panel, other_name)
+                for price in prices:
+                    edit.setText(str(price))
+                    panel._add(direction)  # discipline-ok(R5): 驱动现有新增动作，观察真实控件可见性
+                self.app.processEvents()
+                self.assertFalse(row.isVisible())
+                self.assertFalse(edit.isVisible())
+                self.assertTrue(other.isVisible())
+                self.assertTrue(panel.target_input_area.isVisible())
+                panel._remove_one(direction, prices[-1])  # discipline-ok(R5): 驱动删除后恢复的真实刷新链
+                self.app.processEvents()
+                self.assertTrue(row.isVisible())
+                self.assertTrue(edit.isVisible())
+                self.assertTrue(edit.isEnabled())
+                self.assertTrue(other.isVisible())
+
+    def test_all_six_hide_area_and_delete_restores_only_available_direction(self):
+        saved = ([self.sample(target=value) for value in (120, 121, 122)]
+                 + [self.sample(C.TARGET_DIR_BELOW, target=value) for value in (110, 111, 112)])
+        for direction, available, full, value in (
+                (C.TARGET_DIR_ABOVE, "row_up", "row_dn", 122),
+                (C.TARGET_DIR_BELOW, "row_dn", "row_up", 112)):
+            with self.subTest(direction=direction):
+                panel = self.panel(saved)
+                self.assertFalse(panel.target_input_area.isVisible())
+                first = panel.list_box.itemAt(0).widget()
+                full_top = first.mapTo(panel, QPoint()).y()
+                panel._remove_one(direction, value)  # discipline-ok(R5): 验证满额删除后整区域恢复
+                self.app.processEvents()
+                self.assertTrue(panel.target_input_area.isVisible())
+                self.assertTrue(getattr(panel, available).isVisible())
+                self.assertFalse(getattr(panel, full).isVisible())
+                first = panel.list_box.itemAt(0).widget()
+                restored_top = first.mapTo(panel, QPoint()).y()
+                self.assertEqual(restored_top - full_top, panel.target_input_area.height(),
+                                 "隐藏新增区必须移除整块布局高度，不留下占位")
+        empty_stock = self.panel(code="600519")
+        self.assertTrue(empty_stock.row_up.isVisible())
+        self.assertTrue(empty_stock.row_dn.isVisible())
+        self.assertTrue(empty_stock.target_input_area.isVisible())
 
     def test_distance_text_is_white_and_hit_pill_is_black_regular(self):
         for direction in (C.TARGET_DIR_ABOVE, C.TARGET_DIR_BELOW):

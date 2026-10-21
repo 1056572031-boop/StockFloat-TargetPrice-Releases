@@ -843,10 +843,9 @@ class RenderMixin:
         _line_path_key: tuple | None = None
 
         def paintEvent(self, e):
-            # v1.2.45：绘制路径外层兜底 —— 内部任何异常一律捕获、写 ERROR 日志后吞掉，
-            # 绝不向 Qt 事件循环逃逸。此前局部重绘漏导 QRect 触发 NameError 从
-            # paintEvent 逃逸，破坏 C++ 渲染 flush 链，导致 QBackingStore::flush
-            # 空指针 EXC_BAD_ACCESS (SIGSEGV @ 0x0) 整 app 闪退（v1.2.44 用户现场）。
+            # 绘制异常不得逃逸到 Qt flush 链；计时仅用于有界诊断，不改变绘制节拍。
+            monitor = getattr(self, "_performance_monitor", None)
+            paint_started = time.monotonic() if monitor is not None else 0.0
             try:
                 self._paint_event_inner(e)
                 # v1.4.33：首帧锚点（一次）。没有它，"进程活着但屏幕上什么都没有"
@@ -876,6 +875,12 @@ class RenderMixin:
                         QTimer.singleShot(0, self._recover_after_paint_error)
                 except Exception:
                     pass
+            finally:
+                if monitor is not None:
+                    try:
+                        monitor.record_paint((time.monotonic() - paint_started) * 1000.0)
+                    except Exception as exc:
+                        log_swallow("sf_ui_render.performance_record", exc)
 
         def _recover_after_paint_error(self):
             """绘制异常后的下一帧恢复：不让临时绘制故障变成长期空白窗口。"""

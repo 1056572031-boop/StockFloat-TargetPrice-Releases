@@ -275,6 +275,14 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
             # 唯一的外发通路，所以走 field_evidence（内含同一份诊断，不重复算）。
             "face_guard": _field("face_guard", window.face_guard_field_evidence),
         }
+        performance_monitor = getattr(window, "_performance_monitor", None)
+        runtime["performance"] = _field(
+            "performance",
+            (performance_monitor.export if performance_monitor is not None
+             else lambda: {"available": False, "schema": "performance.v1",
+                           "reason": "no window performance monitor was started"}),
+            None,
+        )
         # ---- 诊断补全：分时恢复现场（台账 S52 那一族的远程取证）----
         # 此前只有 minute_failures / minute_thread_alive 两个数，答不出
         # "现在是不是停在重试中、曲线是不是昨天的、数据多旧、请求还在不在飞、
@@ -341,10 +349,7 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
         runtime["render"] = {
             "fonts": _field("render.fonts", lambda: sources.font_diagnostics(), None),
             "paint": _field("render.paint", lambda: sources.paint_diagnostics(), None),
-            # 近两天核对补的一条（v1.4.69 菜单行首图标）：那一版的失效形状是
-            # "行首一片空白"或"静默退回无图标 + 勾号"，而包里此前只说字体与绘制
-            # 降级，说不清"图标到底出图了没有、是哪一行没出"。读的是缓存本身，
-            # **不调 menu_images()** —— 取诊断不该顺手把图标全建一遍（那是跑业务）。
+            # 只读取图标缓存，不在导出诊断时创建图标或触发业务。
             "menu_icons": _field("render.menu_icons", sources.menu_icon_evidence, None),
         }
         # ---- 诊断补全：手势粘滞与工具窗/屏幕几何 ----

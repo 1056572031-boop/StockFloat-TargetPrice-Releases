@@ -4399,6 +4399,36 @@
       "locate_unknown_reason": "用户原始失败未稳定复现；已验证显示时序与失活策略盲区，但尚不能将其确定为用户现场唯一根因，定位时长保持未知。",
       "source": "用户于2026-10-21本会话反馈",
       "evidence": "verified"
+    },
+    {
+      "id": "N19",
+      "symptom": "反馈诊断中通知授权状态查询接口报错，授权状态为unknown",
+      "component": "通知",
+      "channel": "online_user",
+      "introduced_version": null,
+      "introduced_note": null,
+      "found_version": "1.4.99",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "authorizationStatus属于UNNotificationSettings而非UNUserNotificationCenter；原夹具直接在center伪造同名同步方法，遮蔽真实异步接口。2026-10-21本轮前段已通过真实反馈日志与框架元数据确认根因，原确认时刻未独立留戳，本次为补记，不可当定位时长。",
+      "defense_added": null,
+      "observed_at": "2026-10-21T14:07:33+08:00",
+      "observed_origin": "log",
+      "rootcause_at": null,
+      "locate_unknown_reason": "根因已在本轮前段确认，但真实确认时刻未独立留戳；15:04:42为补记时刻，不是定位终点，不计定位时长。",
+      "source": "feedback:59323c71ca824508a7487d0db295a02a run=2b4fc1 debug.log 2026-10-21 14:07:33.361",
+      "evidence": "verified",
+      "rootcause_origin": "unknown",
+      "timestamp_audit": [
+        {
+          "field": "rootcause_at",
+          "original": "2026-10-21 15:04:42+08:00",
+          "reason": "补记时刻误作真实定位终点，保留审计并退回null"
+        }
+      ]
     }
   ],
   "rounds": [
@@ -5030,6 +5060,20 @@
         "N18：Show后原生复核、失活不隐藏与Space加入后前置；两个真实按钮全屏探针通过，不把源码验证冒充安装版现场收口。"
       ],
       "zero_reason": "本版尚未发行，无本版新发现逃逸；本轮修复的是1.4.99反馈N18，唯一现场根因未稳定复现，仍保持开放。"
+    },
+    {
+      "version": "1.4.101",
+      "date": "2026-10-21",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "目标价满额输入按方向整行隐藏及删除恢复；行为测试验证各方向与全部满额布局无占位。",
+        "未授权摄像头时先查授权再枚举设备：tests/test_face_guard_auth_before_enumeration.py 覆盖未授权、拒绝、受限、重试与读不出授权分支。",
+        "呼吸灯与收展动画重复排帧去重：tests/test_dot_tick_layout_coalescing.py。",
+        "反馈性能证据与通知授权异步查询：tests/test_performance_diagnostics.py、tests/test_notify.py、tests/test_feedback_analyzer.py。",
+        "对比度微调：判据底色由纯黑改为真机最亮玻璃底 (44,44,44)，tests/test_v1459_color_tokens.py 新增两颗实心钮白字与悬停/按下明暗次序判据；蓝红按钮悬停态仍低于 4.5:1，未处理。"
+      ],
+      "zero_reason": "本版尚未发行，无本版新发现逃逸；0 仅表示未登记本版线上逃逸，不代表上线后无故障，真实场景缺口仍按未验证保留。"
     }
   ],
   "comparison_policy": {

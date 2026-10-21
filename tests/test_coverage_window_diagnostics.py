@@ -248,12 +248,25 @@ class DiagnosticsBranchCase(SFCase):
         self.assertTrue(body["minimized"])
         self.assertEqual(body["window"]["width"], self.win.width())
         self.assertEqual(body["window"]["height"], self.win.height())
+        performance = body["performance"]
+        self.assertEqual(performance["schema"], "performance.v1")
+        self.assertTrue(performance["available"])
+        self.assertIn("retained_from_monotonic", performance["window"])
+        self.assertIn("paint", performance)
         # 人脸守卫是"没在跑也看不出区别"的功能：诊断包里没有它的现场，
         # 用户报"没生效"就只能让他复现一遍。
         self.assertIn("face_guard", body)
         for key in ("available", "enabled_by_user", "camera_held", "state", "stalled"):
             self.assertIn(key, body["face_guard"],
                           "face_guard 少一个字段，远程就少一条能判的口径：%s" % key)
+
+    def test_performance_getter_failure_is_named_in_export_issues(self):
+        monitor = self.win._performance_monitor  # discipline-ok(R5): 对内部采集器种错，验证导出失败不会静默缺键
+        with mock.patch.object(monitor, "export", side_effect=RuntimeError("sample unavailable")):
+            files = self._export()
+        self.assertIsNone(json.loads(files["runtime.json"])["performance"])
+        self.assertTrue(any("runtime.performance" in issue
+                            for issue in json.loads(files["export.json"])["issues"]))
 
     # ---- storage.json：存在 / 不存在 / 读不动，三种回答要各自正确 ----
 

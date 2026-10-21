@@ -38,6 +38,12 @@ except ImportError:                            # 以包形式被 discover 导入
 
 WCAG_SMALL_TEXT_MIN = 4.5   # WCAG 2.1 AA 对正常字号文本的对比度下限（不是本仓自定的口味值）
 
+# 真机实测的最亮玻璃底（2026-10-21）：v1.4.100 卡片圆角验收留下的原生截图里，液态玻璃叠在
+# 浅色壁纸上的面板主导色。sf_glass.POPUP_SURFACE_RGB 是 (0,0,0) 的"兼容占位"，拿它判对比度
+# 等于站在最宽松的一侧：涨色在纯黑上 6.58:1，在这块真实底上只有 4.38:1（旧值 #ff5252）。
+# 这个数不是玻璃参数，只是判据的参照底；玻璃材质与暗化度本轮没动，也不该由它反向决定。
+MEASURED_GLASS_FLOOR_RGB = (44, 44, 44)
+
 
 def _contrast(fg, bg):
     """WCAG 2.1 对比度：(L_lighter + 0.05) / (L_darker + 0.05)。"""
@@ -53,6 +59,11 @@ def _contrast(fg, bg):
     b = lum(bg)
     hi, lo = max(a, b), min(a, b)
     return (hi + 0.05) / (lo + 0.05)
+
+
+def _rgb_of(hex_color):
+    col = QColor(hex_color)
+    return (col.red(), col.green(), col.blue())
 
 
 class TestBusinessColorsAreSingleSource(SFCase):
@@ -77,11 +88,47 @@ class TestBusinessColorsAreSingleSource(SFCase):
         self.assertEqual(tp.DOWN_GREEN, R.GREEN.name(), "面板跌色与主卡不同源")
 
     def test_both_business_colors_clear_aa_on_the_panel_surface(self):
-        """合并颜色不能把对比度一起合掉：两个底色上都要 ≥ 4.5:1。"""
-        bg = G.POPUP_SURFACE_RGB
-        for label, col in (("涨色", R.RED), ("跌色", R.GREEN)):
-            self.assertGreaterEqual(_contrast(col, bg), WCAG_SMALL_TEXT_MIN,
-                                    "%s %s 对面板底只有 %.2f:1" % (label, col.name(), _contrast(col, bg)))
+        """合并颜色不能把对比度一起合掉：兼容占位底与真机最亮玻璃底上都要 ≥ 4.5:1。"""
+        surfaces = {"兼容占位底": G.POPUP_SURFACE_RGB, "真机最亮玻璃底": MEASURED_GLASS_FLOOR_RGB}
+        for sname, bg in surfaces.items():
+            for label, col in (("涨色", R.RED), ("跌色", R.GREEN)):
+                self.assertGreaterEqual(
+                    _contrast(col, bg), WCAG_SMALL_TEXT_MIN,
+                    "%s %s 对%s只有 %.2f:1" % (label, col.name(), sname, _contrast(col, bg)))
+
+
+class TestSolidButtonsKeepReadableWhiteText(SFCase):
+    """带白字的两颗实心钮（蓝「立即生效」、红「确认清空」）：静止态白字 ≥ 4.5:1。
+
+    悬停态刻意不在此列：悬停比静止更亮，白字对比度天然更低（蓝 4.02 / 红 3.92），
+    硬压到 4.5 要放弃「悬停变亮」，是单独的设计取舍。这里只守「按下比静止更暗」的次序，
+    因为只改静止色而忘了按下色时，按下就会比静止更浅、反馈消失。
+    """
+
+    @staticmethod
+    def _lum_of(hex_color):
+        col = QColor(hex_color)
+        return _contrast(col, (0, 0, 0))   # 对纯黑的比值随亮度单调，只拿来比大小
+
+    def test_static_state_white_text_clears_aa(self):
+        for label, hexv in (("蓝钮 ACCENT_BLUE", C.ACCENT_BLUE_HEX), ("红钮 DANGER_BG", C.DANGER_BG_HEX)):
+            got = _contrast(QColor("#ffffff"), _rgb_of(hexv))
+            self.assertGreaterEqual(got, WCAG_SMALL_TEXT_MIN,
+                                    "%s %s 白字只有 %.2f:1" % (label, hexv, got))
+
+    def test_pressed_is_darker_than_static_for_both_buttons(self):
+        pairs = (("蓝钮", C.ACCENT_BLUE_HEX, G.POPUP_PRIMARY_PRESSED),
+                 ("红钮", C.DANGER_BG_HEX, C.DANGER_PRESSED_HEX))
+        for label, static, pressed in pairs:
+            self.assertLess(self._lum_of(pressed), self._lum_of(static),
+                            "%s 按下色 %s 不比静止色 %s 更暗，按下反馈没了" % (label, pressed, static))
+
+    def test_hover_is_lighter_than_static_for_both_buttons(self):
+        pairs = (("蓝钮", C.ACCENT_BLUE_HEX, G.POPUP_PRIMARY_HOVER),
+                 ("红钮", C.DANGER_BG_HEX, C.DANGER_HOVER_HEX))
+        for label, static, hover in pairs:
+            self.assertGreater(self._lum_of(hover), self._lum_of(static),
+                               "%s 悬停色 %s 不比静止色 %s 更亮" % (label, hover, static))
 
 
 class TestDimForegroundIsReadable(SFCase):
@@ -92,7 +139,8 @@ class TestDimForegroundIsReadable(SFCase):
         cls._app = QApplication.instance() or QApplication([])
 
     def test_clears_aa_on_both_reference_backdrops(self):
-        surfaces = {"面板底（sf_glass 真值）": G.POPUP_SURFACE_RGB, "纯黑": (0, 0, 0)}
+        surfaces = {"面板底（sf_glass 真值）": G.POPUP_SURFACE_RGB, "纯黑": (0, 0, 0),
+                    "真机最亮玻璃底": MEASURED_GLASS_FLOOR_RGB}
         for name, bg in surfaces.items():
             got = _contrast(C.FG_DIM, bg)
             self.assertGreaterEqual(

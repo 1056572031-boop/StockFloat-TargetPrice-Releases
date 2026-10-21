@@ -15,9 +15,12 @@
 """
 
 import collections
+import math
 import subprocess
 import threading
 import time
+import uuid
+from typing import Any
 
 from sf_logging import log_line
 from sf_quote import _beijing_now, price_decimals
@@ -149,10 +152,22 @@ _USE_OSASCRIPT = False
 # 但调用点（目标价命中提醒）只关心成败，返回值过去被丢弃 —— 于是"横幅到底发出去没"
 # 在诊断包里零证据（台账 S34：整条 UN 路线静默坏死几十个版本，现场只有一行
 # 会被轮转挤掉的 WARNING）。计数与末次通道在投递那一刻就地落账。
-_DELIVER_COUNTS = {"un": 0, "osascript": 0, "denied": 0, "error": 0}
+_DELIVER_COUNTS = {"un": 0, "osascript": 0, "denied": 0, "error": 0, "pending": 0}
 _DELIVER_LAST = ""
 _DELIVER_LAST_AT = 0.0
 _DELIVERY_LOCK = threading.Lock()
+# authorizationStatus 只能从 UNNotificationSettings 异步取得；缓存是诊断/刷新策略，
+# 不是性能验收门槛。短 TTL 既避免每次到价都发起查询，也让系统设置变更最终可见。
+_AUTH_CACHE_TTL_SEC = 5.0
+# A completion callback is not guaranteed to arrive (for example when the
+# notification daemon disappears).  Bound the in-flight lease as well as the
+# result cache so one lost callback cannot suppress all future queries.
+_AUTH_QUERY_TTL_SEC = 5.0
+_AUTH_STATUS_CACHE = "unknown"
+_AUTH_STATUS_CACHE_AT = 0.0
+_AUTH_QUERY_STARTED_AT = 0.0
+_AUTH_QUERY_IN_FLIGHT = False
+_AUTH_QUERY_GENERATION = 0
 # 下面两个 OrderedDict 都按插入序淘汰到 256 条：identifier 里带日期与价位，
 # 组合数随使用天数无上限增长，不封顶就是一条长挂机下的内存泄漏。
 _FALLBACK_KEYS = collections.OrderedDict()
@@ -161,19 +176,121 @@ _FALLBACK_KEYS_MAX = 256
 # 点击较早通知会错误执行最后一条通知的回调。
 _CLICK_HANDLERS = collections.OrderedDict()
 _CLICK_HANDLERS_MAX = 256
+# 未知授权只排队，不借另一身份绕过系统授权。最老条目在满 256 条时淘汰；
+# 60 秒后提醒已失去即时性，直接丢弃并计数（绝不转 osascript）。无后台表：
+# 下一次 deliver / diagnostics / settings 回调负责过期与查询重试。
+_PENDING: collections.OrderedDict[str, tuple[float, str, str, str, Any]] = collections.OrderedDict()
+_PENDING_MAX = 256
+_PENDING_TTL_SEC = 60.0
+_PENDING_COUNTS: collections.Counter[str] = collections.Counter()
+_PENDING_FLUSH_SCHEDULED = False
+_PENDING_EPOCH = 0
+_PENDING_SENDING: set[str] = set()
+
+
+def _expire_pending_locked():
+    now = time.monotonic()
+    for key, item in list(_PENDING.items()):
+        if now - item[0] >= _PENDING_TTL_SEC:
+            del _PENDING[key]
+            _PENDING_COUNTS["expired"] += 1
+
+
+def _record_channel(channel):
+    global _DELIVER_LAST, _DELIVER_LAST_AT
+    with _DELIVERY_LOCK:
+        _DELIVER_COUNTS[channel] = _DELIVER_COUNTS.get(channel, 0) + 1
+        _DELIVER_LAST = channel
+        _DELIVER_LAST_AT = time.time()
+
+
+def _schedule_pending_flush():
+    """Settings callbacks run off-main: only the existing main queue may build UN objects.
+
+    Entries stay in the bounded queue until claimed on main; duplicate callbacks and
+    concurrent diagnostics cannot schedule two flushes. Never hold the state lock
+    across ObjC calls (including a potentially synchronous completion callback).
+    """
+    global _PENDING_FLUSH_SCHEDULED
+    with _DELIVERY_LOCK:
+        _expire_pending_locked()
+        if _AUTH_STATUS_CACHE == "denied":
+            _PENDING_COUNTS["denied"] += len(_PENDING)
+            _PENDING.clear()
+        if (not _PENDING or _PENDING_FLUSH_SCHEDULED or
+                _AUTH_STATUS_CACHE not in ("authorized", "provisional", "ephemeral")):
+            return
+        generation = _PENDING_EPOCH
+        _PENDING_FLUSH_SCHEDULED = True
+
+    def flush():
+        global _PENDING_FLUSH_SCHEDULED
+        try:
+            while True:
+                with _DELIVERY_LOCK:
+                    if generation != _PENDING_EPOCH:
+                        return
+                    _expire_pending_locked()
+                    if (_AUTH_STATUS_CACHE not in ("authorized", "provisional", "ephemeral")
+                            or not _PENDING):
+                        return
+                    key, item = _PENDING.popitem(last=False)
+                    _PENDING_SENDING.add(key)
+                # Recheck authorization through the normal route before sending;
+                # a refusal received after scheduling always wins over fallback.
+                try:
+                    result = _deliver_impl(item[1], item[2], item[3],
+                                           semantic_key=key, on_click=item[4],
+                                           _pending_claim=True)
+                finally:
+                    with _DELIVERY_LOCK:
+                        _PENDING_SENDING.discard(key)
+                _record_channel(result)
+                with _DELIVERY_LOCK:
+                    _PENDING_COUNTS["flushed"] += int(result != "pending")
+                if result == "pending":
+                    return
+        except Exception as exc:
+            _record_channel("error")
+            log_line("notify pending flush error: %r" % (exc,), "WARNING")
+        finally:
+            with _DELIVERY_LOCK:
+                if generation == _PENDING_EPOCH:
+                    _PENDING_FLUSH_SCHEDULED = False
+
+    try:
+        post, queue = dispatch_async, dispatch_get_main_queue
+        if not callable(post) or not callable(queue):
+            raise RuntimeError("UN main queue unavailable")
+        post(queue(), flush)
+    except Exception as exc:
+        with _DELIVERY_LOCK:
+            if generation == _PENDING_EPOCH:
+                _PENDING_FLUSH_SCHEDULED = False
+                _PENDING_COUNTS["dispatch_error"] += 1
+        log_line("notify pending dispatch error: %r" % (exc,), "WARNING")
 
 
 def reset_delivery_probe():
-    """复位「UN 投递失败 → 永久降级 osascript」的探测状态（测试专用）。
-
-    R48：该标志置真后永不复位，测试进程内一条用例探测失败会污染后续全部用例，
-    让它们全部走 osascript 分支 —— 看起来"通知逻辑测过了"，实际测的是降级路径。
-    """
-    global _USE_OSASCRIPT
+    """复位投递探测状态及测试隔离所需的异步授权缓存。"""
+    global _USE_OSASCRIPT, _AUTH_STATUS_CACHE, _AUTH_STATUS_CACHE_AT
+    global _PENDING_FLUSH_SCHEDULED, _PENDING_EPOCH
+    global _AUTH_QUERY_STARTED_AT, _AUTH_QUERY_IN_FLIGHT, _AUTH_QUERY_GENERATION
     with _DELIVERY_LOCK:
+        _PENDING.clear()
+        _PENDING_SENDING.clear()
+        _PENDING_COUNTS.clear()
+        _PENDING_EPOCH += 1
+        _PENDING_FLUSH_SCHEDULED = False
         _USE_OSASCRIPT = False
         _FALLBACK_KEYS.clear()
         _CLICK_HANDLERS.clear()
+        _AUTH_STATUS_CACHE = "unknown"
+        _AUTH_STATUS_CACHE_AT = 0.0
+        _AUTH_QUERY_STARTED_AT = 0.0
+        _AUTH_QUERY_IN_FLIGHT = False
+        _AUTH_QUERY_GENERATION += 1
+
 
 # 模块级单例 delegate：防止回调丢失（v6 §5.2）。
 _DELEGATE = None
@@ -186,22 +303,102 @@ def target_notification_title(name, code):
 
 
 def authorization_status():
-    """返回 'authorized' / 'denied' / 'notDetermined' / 'provisional' / 'unknown'。
-    UN 不可用时视 'denied' 处理（只走彩虹，不弹窗）。"""
-    _ensure_un()
-    if _UN_UNAVAILABLE:
-        return "denied"
+    """Return the cached status and start a bounded, non-blocking refresh.
+
+    TTLs are cache/retry policy, not a performance acceptance threshold; no
+    thread waits for the callback. Expired positive answers become unknown;
+    delivery remains pending until an explicit positive authorization answer.
+    A known denied answer remains denied until a new system answer replaces it:
+    unknown would otherwise let deliver bypass that refusal via osascript.
+    """
     try:
+        _ensure_un()
+        if _UN_UNAVAILABLE:
+            return "denied"
         center = _un_center()
-        if center is None:
-            return "denied"          # 没有 bundle 身份：只走彩虹，不弹横幅（与 UN 不可用同口径）
-        st = center.authorizationStatus()
-        mapping = {0: "notDetermined", 1: "denied", 2: "authorized",
-                   3: "provisional", 4: "ephemeral"}
-        return mapping.get(int(st), "unknown")
     except Exception as exc:
-        log_line("notify auth status error: %r" % (exc,), "WARNING")
+        log_line("notify auth center error: %r" % (exc,), "WARNING")
+        with _DELIVERY_LOCK:
+            return "denied" if _AUTH_STATUS_CACHE == "denied" else "unknown"
+    if center is None:
+        return "denied"
+
+    now = time.monotonic()
+    global _AUTH_QUERY_IN_FLIGHT, _AUTH_QUERY_STARTED_AT, _AUTH_QUERY_GENERATION
+    with _DELIVERY_LOCK:
+        cached = _AUTH_STATUS_CACHE
+        cache_fresh = (cached != "unknown" and
+                       now - _AUTH_STATUS_CACHE_AT < _AUTH_CACHE_TTL_SEC)
+        if cache_fresh:
+            return cached
+        if _AUTH_QUERY_IN_FLIGHT:
+            query_fresh = now - _AUTH_QUERY_STARTED_AT < _AUTH_QUERY_TTL_SEC
+            if query_fresh:
+                return "denied" if cached == "denied" else "unknown"
+            _PENDING_COUNTS["query_lost"] += 1
+            # The callback lease expired.  Start a new generation below;
+            # the old callback may still arrive, but cannot clear or publish
+            # this query.
+        _AUTH_QUERY_GENERATION += 1
+        generation = _AUTH_QUERY_GENERATION
+        _AUTH_QUERY_IN_FLIGHT = True
+        _AUTH_QUERY_STARTED_AT = now
+
+    def _settings_done(settings):
+        global _AUTH_QUERY_IN_FLIGHT, _AUTH_QUERY_STARTED_AT
+        global _AUTH_STATUS_CACHE, _AUTH_STATUS_CACHE_AT
+        try:
+            raw = settings.authorizationStatus()
+            mapping = {0: "notDetermined", 1: "denied", 2: "authorized",
+                       3: "provisional", 4: "ephemeral"}
+            status = mapping.get(int(raw), "unknown")
+        except Exception as exc:
+            log_line("notify auth settings error: %r" % (exc,), "WARNING")
+            status = "unknown"
+        with _DELIVERY_LOCK:
+            if (generation != _AUTH_QUERY_GENERATION or
+                    not _AUTH_QUERY_IN_FLIGHT or
+                    time.monotonic() - _AUTH_QUERY_STARTED_AT >= _AUTH_QUERY_TTL_SEC):
+                return
+            _AUTH_QUERY_IN_FLIGHT = False
+            _AUTH_QUERY_STARTED_AT = 0.0
+            if status != "unknown" or _AUTH_STATUS_CACHE != "denied":
+                _AUTH_STATUS_CACHE = status
+            _AUTH_STATUS_CACHE_AT = time.monotonic()
+        _schedule_pending_flush()
+
+    try:
+        center.getNotificationSettingsWithCompletionHandler_(_settings_done)
+    except Exception as exc:
+        with _DELIVERY_LOCK:
+            # A synchronous failure from an old generation must not release a
+            # newer query that was started concurrently.
+            if generation == _AUTH_QUERY_GENERATION:
+                _AUTH_QUERY_IN_FLIGHT = False
+                _AUTH_QUERY_STARTED_AT = 0.0
+        log_line("notify auth settings query error: %r" % (exc,), "WARNING")
+    with _DELIVERY_LOCK:
+        if _AUTH_STATUS_CACHE == "denied":
+            return "denied"
+        if (not _AUTH_QUERY_IN_FLIGHT and
+                time.monotonic() - _AUTH_STATUS_CACHE_AT < _AUTH_CACHE_TTL_SEC):
+            return _AUTH_STATUS_CACHE
         return "unknown"
+
+
+def _refresh_authorization_status():
+    """Invalidate the old answer before checking the result of authorization."""
+    global _AUTH_STATUS_CACHE, _AUTH_STATUS_CACHE_AT
+    global _AUTH_QUERY_IN_FLIGHT, _AUTH_QUERY_STARTED_AT, _AUTH_QUERY_GENERATION
+    with _DELIVERY_LOCK:
+        # Keep a known refusal fail-closed while invalidating its freshness.
+        if _AUTH_STATUS_CACHE != "denied":
+            _AUTH_STATUS_CACHE = "unknown"
+        _AUTH_STATUS_CACHE_AT = float("-inf")
+        _AUTH_QUERY_IN_FLIGHT = False
+        _AUTH_QUERY_STARTED_AT = 0.0
+        _AUTH_QUERY_GENERATION += 1
+    authorization_status()
 
 
 def delivery_stats():
@@ -220,16 +417,32 @@ def delivery_stats():
     # 没有 bundle 身份时**绝不问 UN**：`+[UNUserNotificationCenter ...]` 在那里抛的是
     # ObjC 异常，Python 兜不住（见 sf_logging.has_bundle_identity 的实测说明）。
     # 源码态/测试报 "no_bundle"，与"问了系统、系统说没授权"是两件事，不许混成 unknown。
-    if not has_bundle_identity():
-        auth = "no_bundle"
-    else:
-        try:
-            auth = authorization_status()
-        except Exception as exc:
-            log_line("notify delivery_stats auth failed: %r" % (exc,), "WARNING")
-            auth = "unknown"
+    with _DELIVERY_LOCK:
+        cached_auth = _AUTH_STATUS_CACHE
+        cache_age = max(0.0, time.monotonic() - _AUTH_STATUS_CACHE_AT)
+        cache_fresh = cached_auth != "unknown" and cache_age < _AUTH_CACHE_TTL_SEC
+        pending = {
+            "size": len(_PENDING), "limit": _PENDING_MAX,
+            "ttl_sec": _PENDING_TTL_SEC, "counts": dict(_PENDING_COUNTS),
+            "oldest_age_sec": max((time.monotonic() - v[0] for v in _PENDING.values()),
+                                  default=0.0),
+            "query_in_flight": _AUTH_QUERY_IN_FLIGHT,
+            "query_age_sec": (max(0.0, time.monotonic() - _AUTH_QUERY_STARTED_AT)
+                              if _AUTH_QUERY_IN_FLIGHT else 0.0),
+        }
+        counts = dict(_DELIVER_COUNTS)
+        last, last_at = _DELIVER_LAST, _DELIVER_LAST_AT
+    # Diagnostics are deliberately observational: do not start an authorization
+    # query, expire pending entries, or schedule a flush here.  The delivery and
+    # authorization entry points own those state transitions.
+    auth = "no_bundle" if not has_bundle_identity() else cached_auth if cache_fresh else "unknown"
     return {
+        "pending": pending,
         "authorization": auth,
+        "authorization_cache": {"value": cached_auth, "fresh": cache_fresh,
+                                "age_sec": cache_age if math.isfinite(cache_age) else None,
+                                "ttl_sec": _AUTH_CACHE_TTL_SEC,
+                                "source": "UNNotificationSettings asynchronous cache"},
         "un_available": bool(_UN_UNAVAILABLE),
         "degraded_osascript": bool(_USE_OSASCRIPT),
         "counts": counts,
@@ -252,6 +465,7 @@ def request_authorization():
 
         def _handler(granted, error):
             log_line("UN authorization granted=%s error=%r" % (granted, error))
+            _refresh_authorization_status()
         try:
             center.requestAuthorizationWithOptions_completionHandler_(
                 7, _handler)  # alert(1) | sound(2) | badge(4)
@@ -322,7 +536,9 @@ def _install_delegate(center):
 
 
 def deliver(title, subtitle, body, semantic_key=None, on_click=None):
-    """投递一条通知。返回 'un' / 'osascript' / 'denied' / 'error'。
+    """投递一条通知。返回 'un' / 'osascript' / 'denied' / 'error' / 'pending'。
+
+    pending 仅代表已排队，并非 UN 成功；授权后补送不依赖业务再次触发 hit。
 
     - UN 不可用或已探测到 UN 投递失败 → osascript 降级；
     - 授权 denied → 直接 'denied'（只走彩虹，不弹窗）；
@@ -348,7 +564,8 @@ def deliver(title, subtitle, body, semantic_key=None, on_click=None):
     return result
 
 
-def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None):
+def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
+                  _pending_claim=False):
     """deliver() 的原始实现，行为与拆分前逐位一致（计时/计数在 deliver 外层）。"""
     global _USE_OSASCRIPT
     _ensure_un()
@@ -356,22 +573,49 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None):
         # UN 框架缺失（PyObjC 不可用）：osascript 是唯一的横幅出路。
         # 这不是"用户拒绝"，不应被下面的 denied 分支挡掉。
         return _deliver_osascript(title, subtitle, body)
+    with _DELIVERY_LOCK:
+        _expire_pending_locked()
+    semantic_key = semantic_key or "target-" + uuid.uuid4().hex
+    with _DELIVERY_LOCK:
+        if not _pending_claim and semantic_key in _PENDING_SENDING:
+            _PENDING_COUNTS["deduplicated"] += 1
+            return "pending"
     status = authorization_status()
+    with _DELIVERY_LOCK:
+        if _AUTH_STATUS_CACHE == "denied":
+            status = "denied"
     if status == "denied":
         # R48：授权被拒**必须**优先于降级判定。原实现先判 `_USE_OSASCRIPT or
         # _UN_UNAVAILABLE`，于是 UN 投递失败永久降级后，即使用户在系统设置里
         # 关掉了通知，仍会继续弹 osascript 横幅 —— 等于绕过用户的明确选择。
+        with _DELIVERY_LOCK:
+            _PENDING_COUNTS["denied"] += len(_PENDING)
+            _PENDING.clear()
         return "denied"
     if status not in ("authorized", "provisional", "ephemeral"):
-        # 只有这三种状态才真的能出横幅。`notDetermined`（首次设目标价时
-        # requestAuthorizationWithOptions 是**异步**的，授权框还没答复就命中价位
-        # 是超短线的常态）与 `unknown`（探测本身抛错）走 UN 会被系统静默丢弃：
-        # addRequest 不报错、也不显示，deliver 照旧返回 'un'，调用方据此把条目
-        # 置为已触发 → **这一天的提醒彻底消失，且日志里一行痕迹都没有**。
-        # 未授权 ≠ 已拒绝，用户没表态时不能替他选"不打扰"，所以补发 osascript。
-        log_line("notify: UN 尚未授权(status=%s)，本次改走 osascript 补发" % status,
-                 "WARNING")
-        return _deliver_osascript(title, subtitle, body)
+        with _DELIVERY_LOCK:
+            # Query completion may have raced the snapshot above. Recheck under
+            # the same lock used by settings before enqueuing or dropping.
+            if _AUTH_STATUS_CACHE == "denied":
+                return "denied"
+            if semantic_key in _PENDING:
+                _PENDING_COUNTS["deduplicated"] += 1
+            else:
+                _PENDING[semantic_key] = (time.monotonic(), title, subtitle, body, on_click)
+                _PENDING_COUNTS["enqueued"] += 1
+                while len(_PENDING) > _PENDING_MAX:
+                    _PENDING.popitem(last=False)
+                    _PENDING_COUNTS["overflow"] += 1
+        _schedule_pending_flush()
+        return "pending"
+    if status in ("authorized", "provisional", "ephemeral"):
+        with _DELIVERY_LOCK:
+            already_pending = semantic_key in _PENDING
+            if already_pending:
+                _PENDING_COUNTS["deduplicated"] += 1
+        if already_pending:
+            _schedule_pending_flush()
+            return "pending"
     if _USE_OSASCRIPT:
         return _deliver_osascript(title, subtitle, body)
     try:
@@ -398,6 +642,8 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None):
         req = UNNotificationRequest.requestWithIdentifier_content_trigger_(
             ident, content, None)
         fallback_key = ident
+        with _DELIVERY_LOCK:
+            epoch = _PENDING_EPOCH
 
         def _done(error):
             if error is None:
@@ -405,6 +651,9 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None):
             log_line("UN deliver error: %r; fallback osascript" % (error,), "WARNING")
             global _USE_OSASCRIPT
             with _DELIVERY_LOCK:
+                if epoch != _PENDING_EPOCH or _AUTH_STATUS_CACHE == "denied":
+                    return
+                _CLICK_HANDLERS.pop(ident, None)
                 _USE_OSASCRIPT = True
                 if fallback_key in _FALLBACK_KEYS:
                     return
@@ -419,7 +668,11 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None):
         return "un"
     except Exception as exc:
         log_line("notify deliver error: %r; fallback osascript" % (exc,), "WARNING")
-        _USE_OSASCRIPT = True
+        with _DELIVERY_LOCK:
+            _CLICK_HANDLERS.pop(semantic_key, None)
+            if _AUTH_STATUS_CACHE == "denied":
+                return "denied"
+            _USE_OSASCRIPT = True
         return _deliver_osascript(title, subtitle, body)
 
 

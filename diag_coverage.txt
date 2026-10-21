@@ -25,6 +25,9 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.101
+skip sf_feedback_analyzer 离线分析函数；按运行编号分开本次与历史、采集缺失说明写入案件报告，不属于客户端常驻运行态。
+
 version 1.4.100
 skip sf_feedback 无独立可变业务状态的协议与归档函数；校验失败由 feedback.json 的阶段与错误类别输出。
 skip sf_feedback_bundle ZIP目录、容量与凭据校验纯函数；拒绝原因通过 feedback.json 的阶段与错误类别和上传结果提示输出，不采集包内容。

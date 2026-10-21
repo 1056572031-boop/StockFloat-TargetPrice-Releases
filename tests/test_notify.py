@@ -17,9 +17,9 @@ import sf_notify
 # wait_for / wait_until_false：超时带现场，负向断言从"那一会儿没发生"升级为
 # "持续观察也没发生"。
 try:
-    from _base import wait_for, wait_until_false
+    from _base import SFCase, fixed_clock, wait_for, wait_until_false
 except ImportError:  # pragma: no cover - 包模式导入时走这里
-    from tests._base import wait_for, wait_until_false
+    from tests._base import SFCase, fixed_clock, wait_for, wait_until_false
 
 
 class TestSemanticKey(unittest.TestCase):
@@ -29,37 +29,31 @@ class TestSemanticKey(unittest.TestCase):
         return datetime.datetime(y, m, d, 10, 0)
 
     def test_key_contains_date(self):
-        with mock.patch.object(sf_notify, "_beijing_now",
-                               return_value=self._bj(2026, 9, 7)):
+        with fixed_clock(self._bj(2026, 9, 7), module_names=("sf_notify",)):
             key = sf_notify.semantic_key("above", 1600)
         self.assertEqual(key, "target-unknown-above-1600.00-20260907")
 
     def test_different_stocks_same_target_have_different_keys(self):
-        with mock.patch.object(sf_notify, "_beijing_now",
-                               return_value=self._bj(2026, 9, 7)):
+        with fixed_clock(self._bj(2026, 9, 7), module_names=("sf_notify",)):
             self.assertNotEqual(
                 sf_notify.semantic_key("above", 1600, "sh600519"),
                 sf_notify.semantic_key("above", 1600, "sz000001"))
 
     def test_same_price_different_day_is_a_different_key(self):
-        with mock.patch.object(sf_notify, "_beijing_now",
-                               return_value=self._bj(2026, 9, 7)):
+        with fixed_clock(self._bj(2026, 9, 7), module_names=("sf_notify",)):
             k1 = sf_notify.semantic_key("above", 1600)
-        with mock.patch.object(sf_notify, "_beijing_now",
-                               return_value=self._bj(2026, 9, 8)):
+        with fixed_clock(self._bj(2026, 9, 8), module_names=("sf_notify",)):
             k2 = sf_notify.semantic_key("above", 1600)
         self.assertNotEqual(k1, k2, "同价位次日再触发必须是一条全新通知")
 
     def test_stable_within_same_day(self):
         """同一天同一价位保持稳定，才能真正起到去重作用。"""
-        with mock.patch.object(sf_notify, "_beijing_now",
-                               return_value=self._bj(2026, 9, 7)):
+        with fixed_clock(self._bj(2026, 9, 7), module_names=("sf_notify",)):
             self.assertEqual(sf_notify.semantic_key("above", 1600),
                              sf_notify.semantic_key("above", 1600.0))
 
     def test_direction_and_price_both_matter(self):
-        with mock.patch.object(sf_notify, "_beijing_now",
-                               return_value=self._bj(2026, 9, 7)):
+        with fixed_clock(self._bj(2026, 9, 7), module_names=("sf_notify",)):
             self.assertNotEqual(sf_notify.semantic_key("above", 1600),
                                 sf_notify.semantic_key("below", 1600))
             self.assertNotEqual(sf_notify.semantic_key("above", 1600),
@@ -210,7 +204,7 @@ class TestNotificationClickRouting(unittest.TestCase):
         class Response:
             def notification(self):
                 return Notification()
-        self.assertEqual(sf_notify._notification_identifier(Response()), "target-a")
+        self.assertEqual(sf_notify._notification_identifier(Response()), "target-a")  # discipline-ok(R5): test the private adapter because no public identifier reader exists
 
     def test_click_handlers_are_keyed_by_notification_identifier(self):
         calls = []
@@ -231,8 +225,516 @@ class TestAuthorizationApi(unittest.TestCase):
         self.assertNotIn("requestAuthorizationWithCompletionHandler_", src)
 
 
-class TestUnavailableDegradation(unittest.TestCase):
+class _SettingsStub:
+    def __init__(self, status):
+        self._status = status
+
+    def authorizationStatus(self):
+        return self._status
+
+
+class _AsyncSettingsCenter:
+    def __init__(self):
+        self.callbacks = []
+        self.auth_callback = None
+
+    def getNotificationSettingsWithCompletionHandler_(self, callback):
+        self.callbacks.append(callback)
+
+    def requestAuthorizationWithOptions_completionHandler_(self, _options, callback):
+        self.auth_callback = callback
+
+
+class TestAsyncAuthorizationStatus(SFCase):
+    def setUp(self):
+        super().setUp()
+        sf_notify.reset_delivery_probe()
+        self.center = _AsyncSettingsCenter()
+        self.clock_value = 1000.0
+        self.patchers = [
+            mock.patch.object(sf_notify, "_ensure_un"),
+            mock.patch.object(sf_notify.time, "monotonic", side_effect=lambda: self.clock_value),
+            mock.patch.object(sf_notify, "_UN_UNAVAILABLE", False),
+            mock.patch.object(sf_notify, "_un_center", return_value=self.center),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        self.addCleanup(lambda: [patcher.stop() for patcher in reversed(self.patchers)])
+
+    def tearDown(self):
+        sf_notify.reset_delivery_probe()
+        super().tearDown()
+
+    def _pending_fixture(self):
+        # Only main-queue work may create UN content/delegate; manually pump it
+        # after the real delayed settings callback, never invoke ObjC in a worker.
+        self.main_jobs = []
+        self.sent = []
+        for patcher in (
+                mock.patch.object(sf_notify, "dispatch_get_main_queue", return_value="main"),
+                mock.patch.object(sf_notify, "dispatch_async",
+                                  side_effect=lambda q, fn: self.main_jobs.append(fn)),
+                mock.patch.object(sf_notify, "_install_delegate"),
+                mock.patch.object(sf_notify, "UNMutableNotificationContent"),
+                mock.patch.object(sf_notify, "UNNotificationRequest"),
+                mock.patch.object(sf_notify, "NSString"),
+                mock.patch.object(sf_notify, "has_bundle_identity", return_value=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.center.addNotificationRequest_withCompletionHandler_ = \
+            lambda req, done: self.sent.append((req, done, threading.get_ident()))
+
+    def test_delayed_authorized_flushes_after_hit_without_a_second_delivery(self):
+        self._pending_fixture()
+        click = mock.Mock()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            self.assertEqual(sf_notify.deliver("T", "S", "B", "hit", click), "pending")
+            self.assertEqual(self.sent, [])
+            callback = self.center.callbacks[0]
+            worker = threading.Thread(target=lambda: callback(_SettingsStub(2)))
+            worker.start()
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(self.sent, [], "settings worker must not build/send UN")
+            self.assertEqual(len(self.main_jobs), 1)
+            callback(_SettingsStub(2))
+            self.main_jobs.pop()()
+            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(self.sent[0][2], threading.get_ident())
+            fallback.assert_not_called()
+            stats = sf_notify.delivery_stats()
+            self.assertEqual(stats["pending"]["size"], 0)
+            self.assertEqual(stats["pending"]["counts"]["flushed"], 1)
+
+    def test_first_denied_never_escapes_through_osascript(self):
+        self._pending_fixture()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            self.assertEqual(sf_notify.deliver("T", "", "B", "hit"), "pending")
+            self.center.callbacks[0](_SettingsStub(1))
+            self.assertEqual(sf_notify.deliver("T", "", "B", "hit"), "denied")
+            self.assertEqual(self.sent, [])
+            self.assertEqual(self.main_jobs, [])
+            stats = sf_notify.delivery_stats()["pending"]
+            self.assertEqual(stats["size"], 0)
+            self.assertEqual(stats["counts"]["denied"], 1)
+            fallback.assert_not_called()
+
+    def test_not_determined_deduplicates_and_does_not_register_click(self):
+        self._pending_fixture()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            for _ in range(3):
+                self.assertEqual(sf_notify.deliver("T", "", "B", "hit", mock.Mock()),
+                                 "pending")
+            self.center.callbacks[0](_SettingsStub(0))
+            stats = sf_notify.delivery_stats()["pending"]
+            self.assertEqual(stats["size"], 1)
+            self.assertEqual(stats["counts"]["deduplicated"], 2)
+            self.assertFalse(sf_notify._CLICK_HANDLERS)  # discipline-ok(R5): no public click-registration reader
+            fallback.assert_not_called()
+
+    def test_pending_bound_expiry_and_lost_query_are_visible_in_diagnostics(self):
+        self._pending_fixture()
+        for _ in range(258):
+            self.assertEqual(sf_notify.deliver("T", "", "B"), "pending")
+        stats = sf_notify.delivery_stats()["pending"]
+        self.assertEqual(stats["size"], 256)
+        self.assertEqual(stats["counts"]["overflow"], 2)
+        self.clock_value += 5.0
+        sf_notify.deliver("T", "", "B", "query-retry-trigger")
+        stats = sf_notify.delivery_stats()["pending"]
+        self.assertEqual(stats["counts"]["query_lost"], 1)
+        self.assertEqual(len(self.center.callbacks), 2)
+        self.clock_value += 60.0
+        sf_notify.deliver("T", "", "B", "expiry-trigger")
+        stats = sf_notify.delivery_stats()["pending"]
+        self.assertEqual(stats["size"], 1)
+        self.assertEqual(stats["counts"]["expired"], 256)
+
+    def test_delivery_stats_marks_expired_authorization_without_refreshing(self):
+        sf_notify.authorization_status()
+        self.center.callbacks[-1](_SettingsStub(2))
+        self.clock_value += 10.0
+        with mock.patch.object(sf_notify, "has_bundle_identity", return_value=True):
+            stats = sf_notify.delivery_stats()
+        self.assertEqual(stats["authorization"], "unknown")
+        self.assertEqual(stats["authorization_cache"]["value"], "authorized")
+        self.assertFalse(stats["authorization_cache"]["fresh"])
+        self.assertEqual(stats["authorization_cache"]["age_sec"], 10.0)
+        self.assertEqual(len(self.center.callbacks), 1)
+
+    def test_delivery_stats_is_read_only_with_authorized_pending(self):
+        self._pending_fixture()
+        sf_notify.deliver("T", "", "B", "pending")
+        self.center.callbacks[-1](_SettingsStub(2))
+        queued_jobs = list(self.main_jobs)
+        with mock.patch.object(sf_notify, "authorization_status",
+                               side_effect=AssertionError("diagnostics must not query")), \
+             mock.patch.object(sf_notify, "_schedule_pending_flush",
+                               side_effect=AssertionError("diagnostics must not flush")), \
+             mock.patch.object(sf_notify, "_expire_pending_locked",
+                               side_effect=AssertionError("diagnostics must not expire")), \
+             mock.patch.object(sf_notify, "_deliver_osascript",
+                               side_effect=AssertionError("diagnostics must not fallback")):
+            self.clock_value += 3.0
+            stats = sf_notify.delivery_stats()
+        self.assertEqual(stats["authorization"], "authorized")
+        self.assertEqual(stats["pending"]["size"], 1)
+        self.assertEqual(stats["pending"]["oldest_age_sec"], 3.0)
+        self.assertEqual(self.main_jobs, queued_jobs)
+
+    def test_denied_after_flush_scheduled_wins_and_reset_cancels_old_jobs(self):
+        self._pending_fixture()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            sf_notify.deliver("T", "", "B", "hit")
+            self.center.callbacks[-1](_SettingsStub(2))
+            sf_notify._refresh_authorization_status()  # discipline-ok(R5): re-enter the private refresh to model a concurrent generation
+  # discipline-ok(R5): force a fresh system answer while a main-queue job is pending
+            self.center.callbacks[-1](_SettingsStub(1))
+            self.main_jobs.pop()()
+            self.assertEqual(self.sent, [])
+            sf_notify.reset_delivery_probe()
+            sf_notify.deliver("T", "", "B", "new")
+            self.center.callbacks[-1](_SettingsStub(2))
+            sf_notify.reset_delivery_probe()
+            self.main_jobs.pop()()
+            self.assertEqual(self.sent, [])
+            fallback.assert_not_called()
+
+    def test_concurrent_settings_and_diagnostics_schedule_only_one_flush(self):
+        self._pending_fixture()
+        sf_notify.deliver("T", "", "B", "same")
+        callback = self.center.callbacks[-1]
+        workers = [threading.Thread(target=lambda: callback(_SettingsStub(2)))
+                   for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+        sf_notify.delivery_stats()
+        self.assertEqual(sf_notify.deliver("T", "", "B", "same"), "pending")
+        self.assertEqual(len(self.main_jobs), 1)
+        self.main_jobs.pop()()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_unknown_then_async_settings_status(self):
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 1)
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 1, "在途查询必须去重")
+        self.center.callbacks[0](_SettingsStub(2))
+        self.assertEqual(sf_notify.authorization_status(), "authorized")
+        self.assertEqual(len(self.center.callbacks), 1, "缓存有效期内不应重复查询")
+
+    def test_settings_denied_wins_over_fallback(self):
+        self.center.callbacks.append(None)
+        callback = sf_notify.authorization_status
+        self.assertEqual(callback(), "unknown")
+        self.center.callbacks[-1](_SettingsStub(1))
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            self.assertEqual(sf_notify._deliver_impl("T", "", "B"), "denied")  # discipline-ok(R5): verify denial uses cached authorization without invoking fallback
+            fallback.assert_not_called()
+
+    def test_query_failure_releases_in_flight_and_late_callback_is_ignored_after_reset(self):
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        old_callback = self.center.callbacks[0]
+        sf_notify.reset_delivery_probe()
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 2)
+        old_callback(_SettingsStub(1))
+        self.assertEqual(sf_notify.authorization_status(), "unknown", "旧测试回调不得污染新缓存")
+        self.center.callbacks[1](_SettingsStub(3))
+        self.assertEqual(sf_notify.authorization_status(), "provisional")
+
+    def test_request_authorization_completion_refreshes_cache(self):
+        with mock.patch.object(sf_notify, "_install_delegate"), \
+             mock.patch.object(sf_notify, "_refresh_authorization_status") as refresh:
+            sf_notify.request_authorization()
+            self.assertIsNotNone(self.center.auth_callback)
+            self.center.auth_callback(False, RuntimeError("denied"))
+        refresh.assert_called_once_with()
+
+    def test_lost_callback_expires_and_old_callback_cannot_publish(self):
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        old_callback = self.center.callbacks[0]
+        self.clock_value += sf_notify._AUTH_QUERY_TTL_SEC  # discipline-ok(R5): private TTL is the contract boundary under the injected monotonic clock  # query policy boundary, no real sleep
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 2)
+        old_callback(_SettingsStub(2))
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 2, "旧回调不能释放新查询")
+        self.center.callbacks[1](_SettingsStub(1))
+        old_callback(_SettingsStub(2))
+        self.assertEqual(sf_notify.authorization_status(), "denied")
+
+    def test_callback_after_lease_without_new_query_is_ignored(self):
+        sf_notify.authorization_status()
+        self.clock_value += sf_notify._AUTH_QUERY_TTL_SEC  # discipline-ok(R5): private TTL is the contract boundary under the injected monotonic clock
+        self.center.callbacks[0](_SettingsStub(2))
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 2)
+
+    def test_expired_authorized_is_unknown_but_denied_stays_fail_closed(self):
+        for raw, expected in ((2, "unknown"), (1, "denied")):
+            with self.subTest(raw=raw):
+                sf_notify.reset_delivery_probe()
+                sf_notify.authorization_status()
+                self.center.callbacks[-1](_SettingsStub(raw))
+                self.clock_value += sf_notify._AUTH_CACHE_TTL_SEC  # discipline-ok(R5): private TTL is the contract boundary under the injected monotonic clock
+                self.assertEqual(sf_notify.authorization_status(), expected)
+                with mock.patch.object(sf_notify, "_deliver_osascript",
+                                       return_value="osascript") as fallback:
+                    result = sf_notify.deliver("T", "", "B")
+                    self.assertEqual(result, "pending" if raw == 2 else "denied")
+                    fallback.assert_not_called()
+
+    def test_fresh_negative_cache_refreshes_after_authorization_completion(self):
+        for raw in (0, 1):
+            with self.subTest(raw=raw):
+                sf_notify.reset_delivery_probe()
+                sf_notify.authorization_status()
+                old_callback = self.center.callbacks[-1]
+                old_callback(_SettingsStub(raw))
+                before = len(self.center.callbacks)
+                with mock.patch.object(sf_notify, "_install_delegate"):
+                    sf_notify.request_authorization()
+                    self.center.auth_callback(True, None)
+                self.assertEqual(len(self.center.callbacks), before + 1)
+                old_callback(_SettingsStub(raw))
+                self.center.callbacks[-1](_SettingsStub(2))
+                self.assertEqual(sf_notify.authorization_status(), "authorized")
+
+    def test_old_synchronous_failure_cannot_release_new_query(self):
+        def start_new_then_fail(callback):
+            self.center.callbacks.append(callback)
+            # Reentrant refresh deterministically models a concurrent new generation.
+            self.center.getNotificationSettingsWithCompletionHandler_ = self.center.callbacks.append
+            sf_notify._refresh_authorization_status()  # discipline-ok(R5): re-enter the private refresh to model a concurrent generation
+
+            raise RuntimeError("old query failed")
+
+        self.center.getNotificationSettingsWithCompletionHandler_ = start_new_then_fail
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 2)
+        self.center.callbacks[0](_SettingsStub(1))
+        self.center.callbacks[1](_SettingsStub(2))
+        self.assertEqual(sf_notify.authorization_status(), "authorized")
+
+    def test_center_exception_is_logged_and_does_not_escape(self):
+        with mock.patch.object(sf_notify, "_un_center", side_effect=RuntimeError("center")), \
+             mock.patch.object(sf_notify, "log_line") as log:
+            self.assertEqual(sf_notify.authorization_status(), "unknown")
+        log.assert_called_once()
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(len(self.center.callbacks), 1)
+
+    def test_known_denied_survives_center_or_settings_failure(self):
+        sf_notify.authorization_status()
+        self.center.callbacks[-1](_SettingsStub(1))
+        self.clock_value += sf_notify._AUTH_CACHE_TTL_SEC  # discipline-ok(R5): private TTL is the contract boundary under the injected monotonic clock
+        with mock.patch.object(sf_notify, "_un_center", side_effect=RuntimeError("center")):
+            self.assertEqual(sf_notify.authorization_status(), "denied")
+        self.assertEqual(sf_notify.authorization_status(), "denied")
+        self.center.callbacks[-1](None)
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            self.assertEqual(sf_notify.deliver("T", "", "B"), "denied")
+            fallback.assert_not_called()
+
+    def test_synchronous_query_failure_allows_retry(self):
+        self.center.getNotificationSettingsWithCompletionHandler_ = mock.Mock(
+            side_effect=RuntimeError("settings unavailable"))
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(self.center.getNotificationSettingsWithCompletionHandler_.call_count, 2)
+
+    def test_missing_center_is_fail_closed_without_starting_query(self):
+        with mock.patch.object(sf_notify, "_un_center", return_value=None):
+            self.assertEqual(sf_notify.authorization_status(), "denied")
+        self.assertEqual(self.center.callbacks, [])
+
+    def test_authorization_race_denial_wins_before_pending_enqueue(self):
+        def status_then_refuse():
+            with sf_notify._DELIVERY_LOCK:  # discipline-ok(R5): model the authorization answer racing with the delivery snapshot
+                sf_notify._AUTH_STATUS_CACHE = "denied"  # discipline-ok(R5): seed the cache at the lock boundary under test
+            return "unknown"
+
+        with mock.patch.object(sf_notify, "authorization_status",
+                               side_effect=status_then_refuse):
+            self.assertEqual(sf_notify._deliver_impl("T", "", "B", "race"), "denied")  # discipline-ok(R5): exercise the lock-protected authorization race
+        self.assertNotIn("race", sf_notify._PENDING)  # discipline-ok(R5): no public pending-key reader exposes this race outcome
+
+    def test_pending_sending_duplicate_is_coalesced(self):
+        with sf_notify._DELIVERY_LOCK:  # discipline-ok(R5): inspect the in-flight claim set because no public duplicate state is exposed
+            sf_notify._PENDING_SENDING.add("in-flight")  # discipline-ok(R5): seed the claimed key at the concurrency boundary under test
+        self.addCleanup(lambda: sf_notify._PENDING_SENDING.discard("in-flight"))  # discipline-ok(R5): clean the claimed-key fixture because no public reset hook exists
+        self.assertEqual(sf_notify._deliver_impl("T", "", "B", "in-flight"), "pending")  # discipline-ok(R5): inspect the in-flight set because no public duplicate state is exposed
+        self.assertEqual(sf_notify.delivery_stats()["pending"]["counts"]["deduplicated"], 1)
+
+    def test_flush_pauses_when_authorization_expires_and_resumes_after_query(self):
+        self._pending_fixture()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            self.assertEqual(sf_notify.deliver("T", "S", "B", "first"), "pending")
+            self.assertEqual(sf_notify.deliver("T2", "", "B2", "second"), "pending")
+            self.center.callbacks[-1](_SettingsStub(2))
+            self.clock_value += sf_notify._AUTH_CACHE_TTL_SEC  # discipline-ok(R5): advance the real cache policy boundary to force reauthorization during flush
+            self.main_jobs.pop()()
+            stats = sf_notify.delivery_stats()["pending"]
+            self.assertEqual(stats["size"], 2)
+            self.assertEqual(stats["counts"].get("flushed", 0), 0)
+            self.assertEqual(self.sent, [])
+            self.assertEqual(self.main_jobs, [], "pending result must stop rather than spin")
+            self.center.callbacks[-1](_SettingsStub(2))
+            self.assertEqual(len(self.main_jobs), 1, "paused flush must release its lease")
+            self.main_jobs.pop()()
+            self.assertEqual(len(self.sent), 2)
+            self.assertEqual(sf_notify.delivery_stats()["pending"]["size"], 0)
+            fallback.assert_not_called()
+
+    def test_denied_callback_between_snapshot_and_enqueue_prevents_pending(self):
+        self._pending_fixture()
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        callback = self.center.callbacks[-1]
+        real_lock = sf_notify._DELIVERY_LOCK  # discipline-ok(R5): wrap the real lock to inject a settings callback at the enqueue boundary, without timing guesses
+        state = {"armed": False, "entries": 0}
+
+        class CallbackAtEnqueueLock:
+            def __enter__(self):
+                if state["armed"]:
+                    state["entries"] += 1
+                    if state["entries"] == 2:
+                        state["armed"] = False
+                        callback(_SettingsStub(1))
+                return real_lock.__enter__()
+
+            def __exit__(self, *args):
+                return real_lock.__exit__(*args)
+
+        def snapshot_unknown():
+            state["armed"] = True
+            return "unknown"
+
+        with mock.patch.object(sf_notify, "_DELIVERY_LOCK", CallbackAtEnqueueLock()), \
+             mock.patch.object(sf_notify, "authorization_status", side_effect=snapshot_unknown), \
+             mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            self.assertEqual(sf_notify.deliver("T", "", "B", "race"), "denied")
+        self.assertEqual(state["entries"], 2)
+        self.assertEqual(sf_notify.delivery_stats()["pending"]["size"], 0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.main_jobs, [])
+        fallback.assert_not_called()
+
+    def test_completion_error_from_old_epoch_cannot_degrade_new_delivery(self):
+        self._pending_fixture()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            self.assertEqual(sf_notify.deliver("T", "", "B", "old"), "pending")
+            self.center.callbacks[-1](_SettingsStub(2))
+            self.main_jobs.pop()()
+            old_completion = self.sent[-1][1]
+            sf_notify.reset_delivery_probe()
+            old_completion(RuntimeError("stale delivery failure"))
+            self.assertFalse(sf_notify.delivery_stats()["degraded_osascript"])
+            self.assertEqual(sf_notify.deliver("new", "", "body", "new"), "pending")
+            self.center.callbacks[-1](_SettingsStub(2))
+            self.main_jobs.pop()()
+            self.assertEqual(len(self.sent), 2)
+            fallback.assert_not_called()
+
+    def test_denied_completion_error_never_falls_back_or_degrades(self):
+        self._pending_fixture()
+        with mock.patch.object(sf_notify, "_deliver_osascript") as fallback:
+            sf_notify.deliver("T", "", "B", "hit")
+            self.center.callbacks[-1](_SettingsStub(2))
+            self.main_jobs.pop()()
+            completion = self.sent[-1][1]
+            self.clock_value += sf_notify._AUTH_CACHE_TTL_SEC  # discipline-ok(R5): expire authorization so a real settings callback can publish denial
+            self.assertEqual(sf_notify.authorization_status(), "unknown")
+            self.center.callbacks[-1](_SettingsStub(1))
+            completion(RuntimeError("delivery failed after denial"))
+            self.assertFalse(sf_notify.delivery_stats()["degraded_osascript"])
+            self.assertEqual(sf_notify.deliver("T", "", "B", "later"), "denied")
+            fallback.assert_not_called()
+
+    def test_un_creation_or_submission_exception_falls_back_unless_denied(self):
+        self._pending_fixture()
+        for stage in ("creation", "submission"):
+            for denied in (False, True):
+                with self.subTest(stage=stage, denied=denied):
+                    sf_notify.reset_delivery_probe()
+                    sf_notify.authorization_status()
+                    self.center.callbacks[-1](_SettingsStub(2))
+                    click = mock.Mock()
+
+                    def fail(*args):
+                        if denied:
+                            self.clock_value += sf_notify._AUTH_CACHE_TTL_SEC  # discipline-ok(R5): model a real denial callback arriving inside the failing ObjC call
+                            sf_notify.authorization_status()
+                            self.center.callbacks[-1](_SettingsStub(1))
+                        raise RuntimeError(stage + " failed")
+
+                    target, method = ((sf_notify.UNMutableNotificationContent, "alloc")
+                                      if stage == "creation" else
+                                      (self.center, "addNotificationRequest_withCompletionHandler_"))
+                    # A delegate sentinel lets submission register the real click
+                    # handler; failure must remove it rather than leave a dead route.
+                    with mock.patch.object(sf_notify, "_DELEGATE", object()), \
+                         mock.patch.object(target, method, side_effect=fail), \
+                         mock.patch.object(sf_notify, "_deliver_osascript",
+                                           return_value="osascript") as fallback, \
+                         mock.patch.object(sf_notify, "log_line") as log:
+                        result = sf_notify.deliver("T", "S", "B", "failed", click)
+                    self.assertEqual(result, "denied" if denied else "osascript")
+                    self.assertEqual(sf_notify.delivery_stats()["degraded_osascript"],
+                                     not denied)
+                    self.assertNotIn("failed", sf_notify._CLICK_HANDLERS)  # discipline-ok(R5): no public click-registration reader exists; failure must remove the registered callback
+                    click.assert_not_called()
+                    log.assert_called_once_with(
+                        "notify deliver error: RuntimeError('%s failed'); fallback osascript" % stage,
+                        "WARNING")
+                    if denied:
+                        fallback.assert_not_called()
+                    else:
+                        fallback.assert_called_once_with("T", "S", "B")
+
+    def test_lost_flush_records_error_and_releases_schedule(self):
+        self._pending_fixture()
+        errors_before = sf_notify.delivery_stats()["counts"]["error"]
+        self.assertEqual(sf_notify.deliver("T", "", "B", "flush-error"), "pending")
+        self.center.callbacks[-1](_SettingsStub(2))
+        self.assertEqual(len(self.main_jobs), 1)
+        with mock.patch.object(sf_notify, "_deliver_impl",
+                               side_effect=RuntimeError("flush failed")), \
+             mock.patch.object(sf_notify, "log_line") as log:
+            self.main_jobs.pop()()
+        self.assertEqual(sf_notify.delivery_stats()["counts"]["error"], errors_before + 1)
+        self.assertFalse(sf_notify._PENDING_FLUSH_SCHEDULED)  # discipline-ok(R5): no public flush-state reader exposes release of the scheduled lease
+        log.assert_called_once_with(
+            "notify pending flush error: RuntimeError('flush failed')", "WARNING")
+        self.assertEqual(sf_notify.delivery_stats()["pending"]["size"], 0)
+        self.assertEqual(sf_notify.deliver("retry", "", "B", "flush-error"), "un",
+                         "failed flush must release the sending claim for the same key")
+        self.assertEqual(len(self.sent), 1)
+
+
+class TestAuthorizationGuard(SFCase):
+    def setUp(self):
+        super().setUp()
+
+    def test_real_center_is_not_touched_without_bundle_identity(self):
+        real_center = mock.Mock()
+        with mock.patch.object(sf_notify, "UNUserNotificationCenter", real_center), \
+             mock.patch.object(sf_notify, "_UN_REAL_CLASS", real_center), \
+             mock.patch.object(sf_notify, "has_bundle_identity", return_value=False):
+            self.assertIsNone(sf_notify._un_center())
+            real_center.currentNotificationCenter.assert_not_called()
+
+
+class TestUnavailableDegradation(SFCase):
     """UN 不可用时：视作 denied，走 osascript，不得抛异常。"""
+
+    def setUp(self):
+        super().setUp()
+
 
     def test_denied_status_when_un_unavailable(self):
         with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", True):

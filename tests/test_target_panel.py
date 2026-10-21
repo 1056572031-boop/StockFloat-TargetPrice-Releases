@@ -1105,7 +1105,7 @@ class TestV1287Features(unittest.TestCase):
     def test_status_text_uses_only_white_or_gray(self):
         """面板提示语只允许白色/灰色，不使用红绿黄等业务颜色。"""
         s = " ".join(target_panel.STATUS_STYLE.values()).lower()
-        for forbidden in ("#ff5252", "#4caf50", "#f5a623", "#6fe06f"):
+        for forbidden in ("#ff5252", "#ff5858", "#4caf50", "#f5a623", "#6fe06f"):
             self.assertNotIn(forbidden, s)
         self.assertIn("#ffffff", s)
         self.assertIn("#9aa2b8", s)

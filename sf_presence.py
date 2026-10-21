@@ -698,13 +698,10 @@ class FacePresenceMonitor:
         self._cls = cls
 
         self.state = STATE_STARTING
-        device = _camera_devices(cls)
-        if device is None:
-            self.state = STATE_NO_CAMERA
-            self.last_error = "没有可用的摄像头设备"
-            log_line("face_guard no camera", "WARNING")
-            return self.state
-
+        # 先查授权，再枚举摄像头（2026-10-21 调序）。没有授权就起不了会话，枚举只是白付代价：
+        # 实测启动后约 2.5 秒这里首次枚举时，AVFoundation 往主队列投了一个等设备列表的块，
+        # 主线程停 0.2~0.55 秒；未授权的用户还会每约 2 秒重试一次，每次都先枚举。
+        # 读不出授权状态时 camera_access_status 返回 unsupported，照旧落到下面的枚举，行为不变。
         status = camera_access_status()
         if status in (STATE_DENIED, STATE_RESTRICTED):
             # 不静默降级成"看起来开了其实没跑"：状态直接给界面显示，并留日志。
@@ -728,6 +725,13 @@ class FacePresenceMonitor:
             log_line_throttled("face_guard.needs_auth",
                                "face_guard 未授权：不主动弹系统框，等用户在菜单里主动开启时再请求",
                                level="WARNING", every=30)
+            return self.state
+
+        device = _camera_devices(cls)
+        if device is None:
+            self.state = STATE_NO_CAMERA
+            self.last_error = "没有可用的摄像头设备"
+            log_line("face_guard no camera", "WARNING")
             return self.state
 
         try:
