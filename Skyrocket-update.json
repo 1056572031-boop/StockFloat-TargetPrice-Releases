@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.99",
-  "published_at": "2026-10-20T16:47:23Z",
+  "version": "1.4.100",
+  "published_at": "2026-10-21T06:57:21Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 反馈问题可附带更完整的脱敏诊断资料，并显示上传进度和结果。\n2. 优化目标价彩虹提示、窗口留白和关闭按钮效果。",
+  "notes": "1. 修复全屏时目标价与替换股票窗口无法弹出的问题。\n2. 上传反馈后立即收起输入窗口，简化并居中提示文字。\n3. 检查更新时仅保留取消按钮，加强反馈隐私保护。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.99-macos.zip",
-    "size": 26334085,
-    "sha256": "7b45c11e113a35407cd747060d03f1f1b220c717f54e1affb21d1a2f7a31c368"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.100-macos.zip",
+    "size": 26341943,
+    "sha256": "4344e8c2f8e50f3540c2154361f1ca7a258785e97e90247e8e589d83e1abc93a"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "IXhg21ZI7AEv0uArk9ASAc2gNMB8dZl+Wi4PiPoZ9KFYilNkyaM6oKGcg83/Tm7Oe/uPqPutYDf031l9dJajAg=="
+    "value": "onNslSSHyQwCF0CEBOcfXs9qPadv6+kvuR1FuxtKJ1aPhq+ZN0dVcXM3EC8rPHXrNFMctU58rN3QkO0I+TxTBQ=="
   }
 }
