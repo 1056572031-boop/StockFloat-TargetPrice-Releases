@@ -1,6 +1,7 @@
 """Full diagnostic parity, bounded parsing and old/new feedback compatibility."""
 
 import io
+import hashlib
 import json
 import struct
 import tempfile
@@ -18,6 +19,7 @@ from sf_feedback_outbox import FeedbackOutbox
 from tests._base import SFCase, wait_for
 from tests.test_feedback_pipeline import snapshot
 from tests.test_feedback_pipeline import MemoryGitHub
+from tests.test_feedback_dialog import _FeedbackCase
 from sf_feedback_github import GitHubInbox
 from sf_feedback_ui import FeedbackDialog
 
@@ -59,6 +61,158 @@ def full_packet(root, content=None):
 
 
 class FullDiagnosticProtocolTests(SFCase):
+    def test_legacy_declaration_disagreement_remains_readable_but_never_reaches_http(self):
+        from sf_feedback_transport import submit_https
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = snapshot()
+            path = Path(directory) / "historical.zip"
+            build_archive(path, package_files(state, "historical synthetic archive"),
+                          app_version=state["app_version"], bundle_id=BUNDLE_ID, run_id=state["run_id"],
+                          capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"])
+            envelope = make_envelope(archive_path=path, app_version=state["app_version"], outbox_id="a" * 32,
+                                     consent_policy_version=CONSENT_VERSION)
+            original = path.read_bytes()
+            packet = read_upload_archive(path, envelope)
+            self.assertEqual(packet["manifest"]["omitted"], [])
+            self.assertEqual(packet["state"]["omitted"], ["raw_logs"])
+            with patch("sf_feedback_transport.build_opener") as opened:
+                with self.assertRaises(FeedbackProtocolError):
+                    submit_https("https://synthetic.invalid/v1/feedback", envelope, path)
+                opened.assert_not_called()
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_raw_zero_byte_member_names_are_rejected_before_name_truncation(self):
+        class RawNameInfo(zipfile.ZipInfo):
+            def _encodeFilenameFlags(self):
+                return self.orig_filename.encode(), self.flag_bits
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = diagnostic_bytes()
+            with zipfile.ZipFile(io.BytesIO(original)) as package:
+                files = {name: package.read(name) for name in package.namelist()}
+            forged = io.BytesIO()
+            with zipfile.ZipFile(forged, "w") as package:
+                for name, body in files.items():
+                    info = RawNameInfo(name + "\x00hidden") if name == "runtime.json" else name
+                    package.writestr(info, body)
+            with self.assertRaises(PrivacyRejected):
+                read_diagnostics(forged.getvalue())
+            path, _, _ = full_packet(root)
+            with zipfile.ZipFile(path) as package:
+                outer = {name: package.read(name) for name in package.namelist()}
+            with zipfile.ZipFile(path, "w") as package:
+                for name, body in outer.items():
+                    package.writestr(RawNameInfo(name + "\x00hidden") if name == "problem.txt" else name, body)
+            with self.assertRaises(FeedbackProtocolError):
+                validate_archive(path)
+
+    def test_inventory_names_and_byte_counts_have_strict_types(self):
+        for value in (True, 1.0, [], None):
+            with self.subTest(value=value):
+                def malformed(exported):
+                    item = next(item for item in exported["files"] if item["name"] == "runtime.json")
+                    item["name" if isinstance(value, list) or value is None else "size_bytes"] = value
+                with self.assertRaises(PrivacyRejected):
+                    read_diagnostics(diagnostic_bytes({"runtime.json": b"0"}, change_export=malformed))
+
+    def test_full_preflight_matches_receiver_storage_and_metadata_limits(self):
+        from sf_feedback_transport import submit_https
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _, _ = full_packet(root)
+            with zipfile.ZipFile(path) as archive:
+                files = {name: archive.read(name) for name in archive.namelist()}
+            for changed in ("diagnostics.zip", "manifest.json", "state.json"):
+                with self.subTest(changed=changed):
+                    forged = root / (changed + ".zip")
+                    modified = dict(files)
+                    if changed == "state.json":
+                        modified[changed] += b" " * (32 * 1024 + 1 - len(modified[changed]))
+                        manifest = json.loads(modified["manifest.json"])
+                        for item in manifest["files"]:
+                            if item["name"] == changed:
+                                item.update(size_bytes=len(modified[changed]), sha256=hashlib.sha256(modified[changed]).hexdigest())
+                        modified["manifest.json"] = json.dumps(manifest).encode()
+                    if changed == "manifest.json":
+                        modified[changed] += b" " * (16 * 1024 + 1 - len(modified[changed]))
+                    with zipfile.ZipFile(forged, "w", zipfile.ZIP_DEFLATED) as archive:
+                        for name, body in modified.items():
+                            compression = zipfile.ZIP_DEFLATED if changed == name == "diagnostics.zip" else (
+                                zipfile.ZIP_STORED if name == "diagnostics.zip" else zipfile.ZIP_DEFLATED)
+                            archive.writestr(name, body, compress_type=compression)
+                    envelope = make_envelope(archive_path=forged, app_version=APP_VERSION, outbox_id="a" * 32,
+                                             consent_policy_version=FULL_CONSENT_VERSION)
+                    with patch("sf_feedback_transport.build_opener") as opened:
+                        with self.assertRaises(PrivacyRejected):
+                            submit_https("https://synthetic.invalid/v1/feedback", envelope, forged)
+                        opened.assert_not_called()
+
+    def test_incomplete_private_keys_and_quoted_authorization_are_fully_scrubbed(self):
+        import sf_diag
+        from sf_feedback_capture import clean_description
+        from sf_privacy import scrub_secrets
+
+        secret = "controlled-test-secret-value"
+        pem = "-----BEGIN " + "PRIVATE KEY-----\n" + secret
+        for text in (pem, 'Authorization="Bearer ' + secret, "Authorization='Basic " + secret):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, clean_description(text))
+                self.assertNotIn(secret, sf_diag.scrub_text(text, ()))
+        self.assertNotIn(secret, scrub_secrets('Authorization="Bearer ' + secret))
+        self.assertNotIn(secret, scrub_secrets("Authorization='Basic " + secret))
+
+    def test_unredacted_sealed_descriptions_are_blocked_before_any_http_request(self):
+        from sf_feedback_transport import submit_https
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for full in (False, True):
+                state = snapshot()
+                state["app_version"] = APP_VERSION
+                for text in ("-----BEGIN " + "PRIVATE KEY-----\ncontrolled-test-secret",
+                             "Authorization=Bearer controlled-test-secret"):
+                    with self.subTest(full=full, text=text):
+                        files = package_files(state, "safe description")
+                        files["problem.txt"] = text
+                        if full:
+                            files["diagnostics.zip"] = diagnostic_bytes()
+                        path = root / "description.zip"
+                        build_archive(path, files, app_version=APP_VERSION, bundle_id=BUNDLE_ID, run_id=state["run_id"],
+                                      omitted=state["omitted"], truncated=state["truncated"],
+                                      capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"])
+                        envelope = make_envelope(archive_path=path, app_version=APP_VERSION, outbox_id="a" * 32,
+                                                 consent_policy_version=FULL_CONSENT_VERSION if full else CONSENT_VERSION)
+                        with patch("sf_feedback_transport.build_opener") as opened:
+                            with self.assertRaises(PrivacyRejected):
+                                submit_https("https://synthetic.invalid/v1/feedback", envelope, path)
+                            opened.assert_not_called()
+
+    def test_conflicting_manifest_and_snapshot_context_is_rejected_locally(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _, _ = full_packet(root)
+            with zipfile.ZipFile(path) as archive:
+                files = {name: archive.read(name) for name in archive.namelist()}
+            original = json.loads(files["manifest.json"])
+            changes = {"capture_started_at": "2026-10-18T00:00:00Z",
+                       "capture_completed_at": "2026-10-19T00:00:01Z",
+                       "omitted": ["camera"], "truncated": ["counters"]}
+            for field, value in changes.items():
+                with self.subTest(field=field):
+                    modified = {**original, field: value}
+                    forged = root / (field + ".zip")
+                    with zipfile.ZipFile(forged, "w", zipfile.ZIP_DEFLATED) as archive:
+                        for name, body in files.items():
+                            archive.writestr(name, json.dumps(modified).encode() if name == "manifest.json" else body,
+                                             compress_type=zipfile.ZIP_STORED if name == "diagnostics.zip" else zipfile.ZIP_DEFLATED)
+                    envelope = make_envelope(archive_path=forged, app_version=APP_VERSION, outbox_id="a" * 32,
+                                             consent_policy_version=FULL_CONSENT_VERSION)
+                    with self.assertRaises(PrivacyRejected):
+                        read_upload_archive(forged, envelope)
+
     def test_full_index_does_not_run_the_legacy_collector_or_claim_unknown_counts(self):
         with patch("sf_feedback_capture.sf_diag.collect", side_effect=RuntimeError("synthetic unavailable")) as collect:
             state = capture_snapshot(None, app_version=APP_VERSION, bundle_id=BUNDLE_ID, run_id="abcdef", index_only=True)
@@ -280,7 +434,7 @@ class FullDiagnosticProtocolTests(SFCase):
                     read_diagnostics(output.getvalue())
 
 
-class FullDiagnosticDialogTests(SFCase):
+class FullDiagnosticDialogTests(_FeedbackCase):
     @classmethod
     def setUpClass(cls):
         cls.app = cls.ensure_qapp()
@@ -300,6 +454,28 @@ class FullDiagnosticDialogTests(SFCase):
             self.app.processEvents()
             return dialog.worker is None
         self.assertTrue(wait_for(finished, timeout=5))
+
+    def test_legacy_context_disagreement_preserves_packet_and_offers_a_new_draft(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = snapshot()
+            path = root / "historical.zip"
+            build_archive(path, package_files(state, "historical synthetic archive"),
+                          app_version=state["app_version"], bundle_id=BUNDLE_ID, run_id=state["run_id"],
+                          capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"])
+            store = FeedbackOutbox(root / "outbox.sqlite3", root / "objects")
+            row = store.enqueue(path, app_version=state["app_version"], consent_policy_version=CONSENT_VERSION)
+            sealed = Path(row["archive_path"])
+            original = sealed.read_bytes()
+            sent = []
+            dialog = self.track_widget(FeedbackDialog(snapshot=state, storage_dir=root,
+                endpoint="https://synthetic.invalid/v1/feedback", sender=lambda *args: sent.append(args)))
+            self.assertEqual(dialog.last_error, "local_package_invalid")
+            self.assertEqual(dialog.upload_button.text(), "新建反馈")
+            dialog.upload_button.click()
+            self.assertEqual(dialog.stage, "draft")
+            self.assertEqual(sealed.read_bytes(), original)
+            self.assertEqual(sent, [])
 
     def test_disabled_handler_cannot_create_a_worker_or_pending_packet(self):
         with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None):

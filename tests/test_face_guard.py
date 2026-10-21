@@ -1035,6 +1035,11 @@ class TestWindowWiring(SFCase):
             # 顺手把构造参数记下来：`on_sample` 是"数完新快照就判"的唯一接线，
             # 桩不镜像它，事件驱动那条用例就是在测空气。
             patch.object(sf_presence, "FacePresenceMonitor", self._make_monitor),
+            # 屏幕锁定/休眠探测必须桩死：它读的是本机瞬时电源状态。显示器一睡，
+            # 守卫每拍在这一步提前 return，这一类"收窗/中断判定"会整体误红
+            # （2026-10-21 实测：屏幕锁着时 13 条红，屏幕醒着全绿，代码一字未改）。
+            # 真验锁屏的那几条用例各自再把这一桩显式改成 True/False/_boom。
+            patch.object(sf_presence, "screen_unavailable", lambda: False),
             # 缩小/恢复会动 Dock 图标与 App Nap，这些与本轮要证的事无关
             patch.object(m, "show_dock", lambda: None),
             patch.object(m.FloatWindow, "_close_target_panel"),

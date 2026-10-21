@@ -41,6 +41,8 @@ class _FeedbackCase(SFCase):
     def tearDown(self):
         widgets = list(self._sf_widgets)  # discipline-ok(R5): drain deletion for this fixture's registered Qt widgets
         super().tearDown()
+        # Deliver native focus events while the closed windows are still alive.
+        QApplication.processEvents()
         for widget in reversed(widgets):
             try:
                 widget.deleteLater()
@@ -73,6 +75,7 @@ class DialogTests(_FeedbackCase):
             snapshot=snapshot(), storage_dir=self.temporary.name,
             endpoint=endpoint, sender=self.sender))
         dialog.show()
+        self.assertTrue(QTest.qWaitForWindowExposed(dialog, 1000), "feedback test window was never exposed")
         return dialog
 
     def finish(self, dialog=None):
@@ -108,6 +111,9 @@ class DialogTests(_FeedbackCase):
             [label.text() for label in self.dialog.findChildren(QLabel) if label.isVisible()],
             ["反馈问题"],
         )
+        self.assertEqual(self.dialog.title.alignment(), Qt.AlignmentFlag.AlignCenter)
+        self.assertEqual(self.dialog.description.document().defaultTextOption().alignment(),
+                         Qt.AlignmentFlag.AlignHCenter)
         self.assertEqual(
             self.dialog.description.placeholderText(),
             "告诉我们你遇到的问题或建议，这些信息将用于改进我们的产品。",
@@ -117,10 +123,13 @@ class DialogTests(_FeedbackCase):
         progress, received = Mock(), Mock()
         with patch("sf_system_alert.show_alert", side_effect=(progress, received)) as alerts:
             self.dialog.upload_button.click()
+            self.assertFalse(self.dialog.isVisible(), "点击上传后应立即隐藏反馈窗口")
             self.assertEqual(alerts.call_args_list[0].kwargs["title"], "反馈上传中")
             self.assertFalse(self.dialog.status.isVisible())
             self.finish()
             self.assertEqual(alerts.call_args_list[1].kwargs["title"], "反馈已上传")
+            self.assertNotIn("下载和分析将在维护者电脑进行", alerts.call_args_list[1].kwargs["info"])
+            self.assertTrue(alerts.call_args_list[1].kwargs["info"].startswith("反馈编号："))
             progress.close.assert_called_once_with()
             self.assertFalse(self.dialog.status.isVisible())
             self.dialog.close()
@@ -246,7 +255,7 @@ class DialogTests(_FeedbackCase):
         self.assertEqual(self.dialog.stage, "draft")
         self.assertIsNotNone(self.dialog.outbox.get(previous))
 
-    def test_editing_requires_new_consent_and_overlong_description_blocks_upload(self):
+    def test_editing_keeps_consent_hidden_and_overlong_description_blocks_upload(self):
         self.dialog.consent.setChecked(True)
         self.dialog.description.setPlainText("changed")
         self.assertFalse(self.dialog.consent.isChecked())
@@ -254,8 +263,11 @@ class DialogTests(_FeedbackCase):
         self.dialog.consent.setChecked(True)
         self.assertFalse(self.dialog.upload_button.isEnabled())
         self.assertIn("4000", self.dialog.status.text())
+        self.assertIn("4000", self.dialog.upload_button.toolTip())
+        self.assertIn("4000", self.dialog.description.toolTip())
         self.dialog.description.setPlainText("valid again")
         self.assertEqual(self.dialog.status.text(), "")
+        self.assertEqual(self.dialog.description.toolTip(), "")
 
     def test_keyboard_submission_never_closes_and_upload_button_stays_explicit(self):
         self.dialog.description.setFocus()
@@ -327,6 +339,7 @@ class DialogTests(_FeedbackCase):
         self.assertEqual(diagnostics["last_failure_phase"], "worker_start")
 
     def test_archive_and_enqueue_failures_never_claim_durable_storage(self):
+        self.dialog.close()
         for target, phase in (("sf_feedback_ui.json.loads", "prepare"),
                               ("sf_feedback_ui.threading.Thread", "worker_start"),
                               ("sf_feedback_ui.tempfile.TemporaryDirectory", "archive"),
@@ -346,6 +359,7 @@ class DialogTests(_FeedbackCase):
                 self.assertEqual(dialog.last_failure_phase, phase)
                 self.assertNotIn("must-not-be-logged", dialog.status.text())
                 self.assertTrue(dialog.upload_button.isEnabled())
+                dialog.close()
 
     def test_enqueue_commit_then_readback_loss_recovers_same_record_and_original_bytes(self):
         enqueue = self.dialog.outbox.enqueue

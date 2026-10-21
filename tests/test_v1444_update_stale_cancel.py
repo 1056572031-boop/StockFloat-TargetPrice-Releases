@@ -169,7 +169,7 @@ class CheckingDialogCanBeCancelled(SFCase):
         self.assertEqual(closed, [box])
 
     def test_checking_dialog_offers_a_cancel_button(self):
-        """框上必须有「取消」，且默认键仍是「好」（蓝色主键不能被取消占掉）。"""
+        """等待框只保留「取消」，不再提供「好」按钮。"""
         _ensure_qapp()
         import sf_system_alert
         captured = {}
@@ -189,8 +189,8 @@ class CheckingDialogCanBeCancelled(SFCase):
         with patch.object(sf_system_alert, "show_alert", fake_show_alert), \
              patch.object(sf_system_alert, "bundled_icon_path", return_value=None):
             _show_checking(host)
-        self.assertIn("取消", captured.get("buttons", ()))
-        self.assertEqual(captured.get("default"), "好")
+        self.assertEqual(captured.get("buttons"), ("取消",))
+        self.assertEqual(captured.get("default"), "取消")
         self.assertEqual(captured.get("cancel"), "取消")
         self.assertTrue(callable(captured.get("on_result")),
                         "点击结果必须转投主线程队列，不能在 AppKit 回调里直接动状态")

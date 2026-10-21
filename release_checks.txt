@@ -20,11 +20,17 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.99
-stale-feature 1.4.99 本轮固定已合入主线的反馈与交互实现重新发行，包内相对1.4.98源码只提升版本；完整诊断、绘制与关闭按钮行为由回归、包内字节核验及本轮原生候选证据验证，不将旧符号当作新增修复。
+version 1.4.100
+check sf_glass::_after_show
 check sf_editor::MainCloseButton
 check sf_ui_render::_bg_rim_cache
-# 已合入主线的完整诊断反馈与交互收口；不包含仍编辑的目标价面板分支。
+check sf_feedback_bundle::orig_filename
+check sf_feedback::orig_filename
+check sf_feedback_capture::check_privacy
+check sf_feedback_capture::validate_capture_context
+check sf_feedback_transport::validate_capture_context
+check sf_feedback_ui::validate_capture_context
+# 已合入主线的完整诊断反馈与交互收口，并包含目标价面板 AC 定稿。
 
 # v1.4.98 及此前的包内特征继续逐项核验。
 check sf_feedback_bundle::read_diagnostics
@@ -111,9 +117,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.99 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.100 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.99
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.100
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code
@@ -267,12 +273,8 @@ stale-feature 1.4.63 本轮改动全在打包资产（DMG 卷内脚本的图标�
 # target_panel.PANEL_FONT_PX，判据读 Qt 真生效的 font().pixelSize()（像素零变化是硬约束，
 # 本机实测 96dpi 下 12px 与 9pt 等宽，所以这不是改字号，只是把"散落"消掉）。
 check target_panel::PANEL_FONT_PX
-# 497a5b9：目标价列表的"已触发"移到**行首** —— 右省略截断时先切百分比，不许切状态
-# （2026-10-10 云端实测被切成「已触…」）。这条改动只挪了一个字面量的位置，而
-# co_names 对纯字面量天生无感 —— 所以把标记文字收成一个具名常量（唯一来源，
-# 用例也引用它），产物层才有真东西可查。行为判据在
-# tests/test_target_panel.py::test_hit_marker_survives_row_truncation。
-check target_panel::HIT_MARKER_PREFIX
+# 独立状态标签保留完整「已触发」，不参与价位的省略截断。
+check target_panel::HIT_MARKER_TEXT
 # sf_quote 那个按次取模的旧阈值常量必须真的不在包里：它自 v1.4.60 改按时间节流后无消费者，
 # 注释却还写着"按次计" —— 没人读又说过时话的常量比不写更坏。
 forbid sf_quote::DEGRADED_SOURCE_ALERT_AFTER

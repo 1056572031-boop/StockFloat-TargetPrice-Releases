@@ -7,7 +7,7 @@
   "mypy:sf_crashreport.py:var-annotated": 1,
   "mypy:sf_editor.py:union-attr": 2,
   "mypy:sf_editor.py:var-annotated": 1,
-  "mypy:sf_glass.py:attr-defined": 28,
+  "mypy:sf_glass.py:attr-defined": 27,
   "mypy:sf_glass.py:has-type": 1,
   "mypy:sf_icons.py:assignment": 1,
   "mypy:sf_icons.py:var-annotated": 1,
@@ -27,12 +27,12 @@
   "mypy:sf_ui_render.py:assignment": 1,
   "mypy:sf_ui_render.py:attr-defined": 76,
   "mypy:sf_ui_render.py:call-overload": 3,
-  "mypy:sf_ui_render.py:has-type": 7,
+  "mypy:sf_ui_render.py:has-type": 6,
   "mypy:sf_ui_render.py:index": 1,
   "mypy:sf_ui_render.py:var-annotated": 1,
   "mypy:sf_universe.py:var-annotated": 4,
   "mypy:sf_update.py:arg-type": 2,
-  "mypy:stock_float_window.py:assignment": 8,
+  "mypy:stock_float_window.py:assignment": 7,
   "mypy:stock_float_window.py:attr-defined": 2,
   "mypy:stock_float_window.py:call-arg": 2,
   "mypy:stock_float_window.py:index": 1,
@@ -41,7 +41,7 @@
   "mypy:stock_float_window.py:var-annotated": 2,
   "mypy:target_panel.py:arg-type": 2,
   "mypy:target_panel.py:assignment": 1,
-  "mypy:target_panel.py:union-attr": 6,
+  "mypy:target_panel.py:union-attr": 5,
   "mypy:targets.py:arg-type": 2,
   "mypy:targets.py:var-annotated": 1,
   "mypy:tools/coldstart_bench.py:attr-defined": 1,
@@ -80,5 +80,5 @@
   "mypy:tools/verify_bundle_consts.py:var-annotated": 1,
   "ruff:stock_float_window.py:F401": 9
  },
- "total": 311
+ "total": 307
 }

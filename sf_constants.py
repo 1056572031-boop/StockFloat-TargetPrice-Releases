@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.99'
+APP_VERSION = '1.4.100'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -521,6 +521,9 @@ FG_DIM = QColor(FG_DIM_HEX)
 # 现在每个用途一个具名 token，值全部沿用原样（唯一改动视觉的是下面 FG_DISABLED_HEX），
 # 判据在 tests/test_style_hex_tokens.py：样式表字符串里出现裸 hex 直接判红（硬零，
 # 不留基线 —— 留基线等于承认还可以有下一处）。
+TARGET_PLACEHOLDER_UP_HEX = '#b16460'
+TARGET_PLACEHOLDER_DOWN_HEX = '#558155'
+TARGET_HIT_TEXT_HEX = '#000000'
 FG_BRIGHT_HEX = '#ffffff'    # 标题与彩色按钮上的白字
 FG_TEXT_HEX = '#e5e9f0'      # 常规正文 / 次级按钮文字
 FG_FIELD_HEX = '#d8dce5'     # 输入框与可点条目的正常文字

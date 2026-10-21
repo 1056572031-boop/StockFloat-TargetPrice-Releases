@@ -52,6 +52,6 @@ def scrub_secrets(text, marker="<REDACTED>"):
     result = redact_urls_in_text(text, marker)
     result = re.sub(
         r"[\"']?\bauthorization\b[\"']?\s*[:=]\s*"
-        r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
+        r"(?:\"(?:\\.|[^\"\\\r\n])*\"?|'(?:\\.|[^'\\\r\n])*'?|digest[^\r\n]*|(?:bearer\s+|basic\s+)?[^\s,;]+)",
         "Authorization=" + marker, result, flags=re.IGNORECASE)
     return _VALUE_RE.sub(lambda match: match.group(1) + marker, result)

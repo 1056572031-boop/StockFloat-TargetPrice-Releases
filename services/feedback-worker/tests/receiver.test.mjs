@@ -97,6 +97,7 @@ function database() {
 
 class FakeGitHub {
   assets = new Map();
+  uploadCount = 0;
   private = true;
   loseUpload = false;
   redirect = false;
@@ -127,6 +128,8 @@ class FakeGitHub {
     if (url.pathname.endsWith('/releases/1')) return json({ id: 1, tag_name: INBOX_TAG, draft: true });
     if (url.pathname.endsWith('/releases/1/assets')) {
       if (options.method === 'POST') {
+        this.uploadCount++;
+        if (this.assets.size >= 1000) return json({ error: 'release asset limit' }, 422);
         const name = url.searchParams.get('name');
         if ([...this.assets.values()].some(x => x.name === name)) return json({ error: 'exists' }, 422);
         const id = this.assets.size + 1;
@@ -136,7 +139,9 @@ class FakeGitHub {
         if (this.loseUpload) { this.loseUpload = false; throw new Error('lost response after object stored'); }
         return json({ id, name, size: bytes.length }, 201);
       }
-      return json([...this.assets.values()].map(({ bytes, ...rest }) => rest));
+      const page = Number(url.searchParams.get('page') || 1);
+      const perPage = Number(url.searchParams.get('per_page') || 100);
+      return json([...this.assets.values()].slice((page - 1) * perPage, page * perPage).map(({ bytes, ...rest }) => rest));
     }
     const match = /\/releases\/assets\/(\d+)$/.exec(url.pathname);
     if (match) {
@@ -147,6 +152,55 @@ class FakeGitHub {
     throw new Error('Unexpected GitHub route');
   };
 }
+
+function fillUnrelatedAssets(remote, total) {
+  while (remote.assets.size < total) {
+    const id = remote.assets.size + 1;
+    remote.assets.set(id, { id, name: `unrelated-${id}.txt`, size: 0, bytes: new Uint8Array() });
+  }
+}
+
+test('storage needs two asset slots and refuses before creating a partial case', async () => {
+  const packet = await archiveFor();
+  const remote = new FakeGitHub();
+  fillUnrelatedAssets(remote, 999);
+  const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+  await assert.rejects(() => store.publish(packet.envelope, packet.archive), error => error.code === 'inbox_asset_capacity');
+  assert.equal(remote.uploadCount, 0);
+  assert.equal(remote.assets.size, 999);
+});
+
+test('one remaining slot completes an existing ZIP and full storage still permits receipt readback', async () => {
+  const packet = await archiveFor();
+  const remote = new FakeGitHub();
+  remote.assets.set(1, { id: 1, name: `feedback-${packet.envelope.idempotency_key}.zip`,
+    size: packet.archive.length, bytes: packet.archive });
+  fillUnrelatedAssets(remote, 999);
+  const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+  const receipt = await store.publish(packet.envelope, packet.archive);
+  assert.equal(remote.assets.size, 1000);
+  assert.equal(remote.uploadCount, 1);
+  assert.deepEqual(await store.publish(packet.envelope, packet.archive), receipt);
+  assert.equal(remote.uploadCount, 1);
+});
+
+test('plaintext description credentials are rejected before GitHub or case creation', async () => {
+  for (const text of ['-----BEGIN ' + 'PRIVATE KEY-----\ncontrolled-test-secret', 'Authorization=Bearer controlled-test-secret']) {
+    const packet = await archiveFor({ text });
+    const env = environment();
+    const remote = new FakeGitHub();
+    try {
+      await withGitHub(remote, async () => {
+        const response = await worker.fetch(request(packet), env);
+        assert.equal(response.status, 422);
+        assert.equal((await response.json()).error, 'diagnostic_secret');
+      });
+      assert.equal(remote.mintCount, 0);
+      assert.equal(remote.assets.size, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 0);
+    } finally { env.DB.native.close(); }
+  }
+});
 
 function environment() {
   return { ENABLED: 'true', DB: database(), GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: String(++installationSequence),

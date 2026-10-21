@@ -6,6 +6,7 @@ export const INBOX_TAG = 'feedback-inbox-v1';
 export const POLICY = 'github-private-feedback-v1';
 export const FULL_POLICY = 'github-private-feedback-full-v2';
 export const MAX_UPLOAD = 32 * 1024 * 1024;
+export const MAX_RELEASE_ASSETS = 1000;
 const MAX_HEADER = 64 * 1024;
 const KEY = /^[a-f0-9]{32}$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -245,7 +246,9 @@ export async function validateArchive(archive, envelope, deepDiagnostics = true)
     const exported = await validateDiagnostics(files.get('diagnostics.zip'), deepDiagnostics);
     if (exported && exported.version !== envelope.app_version) reject('diagnostic_version');
   }
-  if ([...utf8.decode(files.get('problem.txt'))].length > 4000) reject('description_limit');
+  const description = utf8.decode(files.get('problem.txt'));
+  checkDiagnosticPrivacy(description);
+  if ([...description].length > 4000) reject('description_limit');
   return state;
 }
 
@@ -317,6 +320,8 @@ export class GitHubStore {
     let zip = assets.get(caseId + '.zip');
     let receiptAsset = assets.get(caseId + '.receipt.json');
     if (!zip && receiptAsset) reject('storage_missing', 503);
+    const neededAssets = Number(!zip) + Number(!receiptAsset);
+    if (assets.size + neededAssets > MAX_RELEASE_ASSETS) reject('inbox_asset_capacity', 429);
     if (!zip) {
       if ([...assets.keys()].filter(x => x.endsWith('.zip')).length >= 1000) reject('inbox_capacity', 503);
       zip = await this.request(`/releases/${this.releaseId}/assets?name=${caseId}.zip`, { method: 'POST', body: archive, upload: true });

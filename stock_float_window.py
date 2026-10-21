@@ -2282,9 +2282,9 @@ QMenu::separator {
         关不掉的框。
 
         v1.4.44 起带「取消」：清单超时从 5 秒放宽到 12 秒 × 2 次之后，最坏要 24 秒
-        才有答复，这期间用户应当能明确地不再等。按「取消」立刻收框并作废这一次的
-        答复；按「好」只是关掉框，诉求仍然有效。网络线程不打断（半途掐连接是另一类
-        资源问题），它回来只更新状态与日志。
+        才有答复，这期间用户应当能明确地不再等。等待框只保留「取消」，按下后
+        立刻收框并作废这一次的答复。网络线程不打断（半途掐连接是另一类资源问题），
+        它回来只更新状态与日志。
         """
         if not isinstance(self, QWidget) or QApplication.instance() is None:
             return
@@ -2300,12 +2300,12 @@ QMenu::separator {
         self._update_check_dialog_token = token
         self._update_check_dialog = sf_system_alert.show_alert(
             title="软件更新", text="正在检查更新，请稍候…",
-            buttons=("取消", "好"), default="好", cancel="取消",
+            buttons=("取消",), default="取消", cancel="取消",
             icon_path=sf_system_alert.bundled_icon_path(),
             on_result=lambda button: self._q_put(("update_check_cancel", (button, token))))
 
     def _handle_update_check_cancel(self, button):
-        """「正在检查更新」被按下：两颗键都收框，只有「取消」作废这一次的答复。"""
+        """等待框点击结果：收框，且「取消」作废这一次的答复；兼容旧框回调。"""
         if isinstance(button, tuple):
             button, token = button
             # A queued response from a replaced/finished dialog cannot cancel its successor.

@@ -25,6 +25,15 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.100
+skip sf_feedback 无独立可变业务状态的协议与归档函数；校验失败由 feedback.json 的阶段与错误类别输出。
+skip sf_feedback_bundle ZIP目录、容量与凭据校验纯函数；拒绝原因通过 feedback.json 的阶段与错误类别和上传结果提示输出，不采集包内容。
+skip sf_feedback_capture 显式投影与上传前校验函数；失败由 feedback.json、上传结果提示和日志留痕，无独立常驻状态。
+skip sf_feedback_transport HTTPS发送及采集声明校验函数；阶段与失败类别由 feedback.json 和本地队列输出，不额外导出地址或正文。
+skip sf_feedback_github 服务端及维护者工具使用的私有存储适配器；容量拒绝由调用方错误结果与后台报告记录，不将管理凭据带入客户端。
+skip sf_feedback_admin 维护者本机管理工具；剩余附件名额与案件状态通过命令返回及独立报告记录，不进入用户诊断附件。
+skip sf_feedback_analyzer 离线分析函数；声明冲突及原始声明写入案件报告，不属于客户端常驻运行态。
+
 version 1.4.99
 
 version 1.4.98

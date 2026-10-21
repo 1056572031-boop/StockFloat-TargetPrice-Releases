@@ -33,6 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from tests._base import SFCase    # noqa: E402
 
 import sf_glass                   # noqa: E402
+import sf_presence              # noqa: E402
 from sf_constants import BG_LIQUID_GLASS_DIM, LIQUID_GLASS_OPACITY, R  # noqa: E402
 
 _TOP_LEVEL = sf_glass._TOP_WINDOW_LEVEL   # discipline-ok(R5): 层级期望值只有一个来源，取实现里那一份
@@ -78,6 +79,11 @@ class GlassSetupChainTest(SFCase):
                                        (proc.stderr or "")[-200:]))
 
     def _run(self, mode):
+        # 这一档跑的是真 WindowServer 合成：子进程建真窗口并问在屏列表。
+        # 屏幕锁定或主显示器休眠时系统根本不当真窗上屏，markers 会缺 —— 那测的是电源状态不是产品。
+        # 2026-10-21 实测：屏幕锁着时本类两条自愈用例误红，屏幕醒着一字未改全绿。
+        if sf_presence.screen_unavailable():
+            raise unittest.SkipTest("本机屏幕锁定或主显示器休眠，真合成证据取不到")
         proc, markers = _spawn(mode)
         self.assertNotIn("error", markers,
                          "子进程抛异常：%s（stderr 尾部：%s）"

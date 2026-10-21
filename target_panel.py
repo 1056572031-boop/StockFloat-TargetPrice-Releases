@@ -38,21 +38,24 @@ v1.2.81 优化（P1/P2）：
 
 import unicodedata
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPainter, QColor, QPen
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QSizePolicy)
 
 from sf_constants import (TARGET_DIR_ABOVE, TARGET_DIR_BELOW,
                          UP_RED_HEX, DOWN_GREEN_HEX,
                          FG_BRIGHT_HEX, FG_FIELD_HEX, FG_INFO_HEX, FG_HINT_HEX,
-                         FG_ERROR_HEX, FG_WARN_HEX, FG_DISABLED_HEX,
+                         FG_ERROR_HEX, FG_WARN_HEX, FG_DISABLED_HEX, FG_DIM_HEX,
+                         TARGET_PLACEHOLDER_UP_HEX, TARGET_PLACEHOLDER_DOWN_HEX,
+                         TARGET_HIT_TEXT_HEX,
                          DANGER_BG_HEX, DANGER_HOVER_HEX, DANGER_PRESSED_HEX)
 from sf_config import load_alerts
 from targets import (make_alert, validate_alert, _valid_price,
                      distance_pct, STATE_PENDING, STATE_HIT, _same_slot)
 from sf_glass import (GlassMixin, PopupLineEdit, paint_popup_surface, popup_stylesheet,
-                      prepare_popup_surface, POPUP_INPUT_H, POPUP_TARGET_INPUT_W)
+                      prepare_popup_surface, POPUP_TARGET_INPUT_W,
+                      POPUP_INPUT_FOCUS_RGB)
 from sf_logging import log_line, log_swallow
 from sf_quote import price_decimals
 from sf_editor import MainCloseButton
@@ -60,11 +63,11 @@ from sf_editor import MainCloseButton
 TARGET_INPUT_W = POPUP_TARGET_INPUT_W  # 与替换股票共用 100px 输入宽度
 PANEL_W = 206          # 容纳 100px 输入框、标签、加号与左右留白的最小面板宽度
 MARGIN_X = 14          # 编辑窗左右内边距；与主窗内容留白语义一致
-MARGIN_Y = 12
-ROW_DEL_W = 22         # 逐条删除按钮宽
-ROW_SPACING = 4        # 单行内：文字与删除按钮的水平间距
-LIST_ROW_GAP = 3       # 框选区：目标价条目之间的垂直间距（收回过大的留白）
-LIST_STATUS_GAP = 4    # 框选区：目标价列表与底部提示语之间的垂直间距
+MARGIN_Y = 11
+ROW_DEL_W = 20         # 逐条删除按钮宽
+ROW_SPACING = 6        # 单行内：文字与删除按钮的水平间距
+LIST_ROW_GAP = 0       # 框选区：目标价条目之间的垂直间距（收回过大的留白）
+LIST_STATUS_GAP = 6    # 框选区：目标价列表与底部提示语之间的垂直间距
 MAX_PER_DIR = 3        # v1.2.84：每个方向（涨到/跌到）最多允许的目标价条数
 # v1.2.87：与主界面保持一致的视觉令牌
 NUM_FONT = "D-DIN"         # 主界面数字字体（Datto 官方 D-DIN，启动已注册；数字按定宽格绘制）
@@ -76,10 +79,15 @@ NUM_FONT = "D-DIN"         # 主界面数字字体（Datto 官方 D-DIN，启动
 # 面板不参与那套降档 —— 混成一个数反而会把两侧的行为绑死。像素观感零变化是这条
 # 收拢的硬约束，判据见 tests/test_v1462_tail_cleanup.py。
 PANEL_FONT_PX = 12
-# v1.4.62：已触发标记的文字，唯一来源在这里（与上面 PANEL_FONT_PX 同一个道理：
-# 散在函数里的字面量既没法被产物核验查到，也没法被用例引用）。
-# 它必须带在**行首**：列表行按右省略截断，排在尾部的字段是宽度不够时第一个消失的。
-HIT_MARKER_PREFIX = "已触发 "
+TARGET_INPUT_H = 30
+INPUT_ROW_GAP = 10
+DIRECTION_W = 24
+TITLE_GAP = 12
+BUTTON_H = 32
+BUTTON_GAP = 8
+ROW_PRICE_W = 42
+ROW_MAIN_H = 22
+HIT_MARKER_TEXT = "已触发"
 # v1.4.59（走查 S8）：值必须与主卡 **同一份来源**（sf_constants 的涨跌色）。
 # 旧的 "#ff6b6b" 与主卡 #ff5252 同屏并存，而这里注释却写着"与主界面涨色一致"。
 UP_RED = UP_RED_HEX        # 涨相关文本（面板"涨到"标签、列表条目、输入框前景）
@@ -101,7 +109,7 @@ class AddIconButton(QPushButton):
     """灰底自绘细线加号，几何不依赖字体，始终精确居中。"""
     def __init__(self, parent=None):
         super().__init__("", parent)
-        self.setFixedSize(POPUP_INPUT_H, POPUP_INPUT_H)
+        self.setFixedSize(TARGET_INPUT_H, TARGET_INPUT_H)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def paintEvent(self, event):
@@ -111,12 +119,80 @@ class AddIconButton(QPushButton):
         # 同一个灰阶也走 token：这颗加号的禁用态原先手写 #5a6072（2.66:1），
         # 与样式表里那两处是同一个缺陷，提亮后与它们同值。
         col = QColor(FG_DISABLED_HEX) if not self.isEnabled() else QColor(FG_FIELD_HEX)
-        p.setPen(QPen(col, 1.5, Qt.PenStyle.SolidLine,
+        p.setPen(QPen(col, 2.0, Qt.PenStyle.SolidLine,
                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         c = self.rect().center()
-        r = 4
+        r = 5
         p.drawLine(c.x() - r, c.y(), c.x() + r, c.y())
         p.drawLine(c.x(), c.y() - r, c.x(), c.y() + r)
+
+
+class DeleteIconButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__("", parent)
+        self.setFixedSize(ROW_DEL_W, ROW_DEL_W)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = FG_BRIGHT_HEX if self.isEnabled() else FG_DISABLED_HEX
+        p.setPen(QPen(QColor(color), 1.8, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        center = (self.width() - 1) / 2
+        p.drawLine(QPointF(center - 2.8, center - 2.8), QPointF(center + 2.8, center + 2.8))
+        p.drawLine(QPointF(center - 2.8, center + 2.8), QPointF(center + 2.8, center - 2.8))
+        p.end()
+
+
+class TargetValueLabel(QLabel):
+    def set_value(self, text):
+        self.setToolTip(text)
+        self.setText(self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, self.width()))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.set_value(self.toolTip())
+
+
+class TargetInputGroup(QWidget):
+    def __init__(self, edit, button):
+        super().__init__()
+        self.edit = edit
+        self.setFixedHeight(TARGET_INPUT_H)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(edit)
+        layout.addStretch(1)
+        layout.addWidget(button)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(255, 255, 255, 20 if self.edit.isEnabled() else 9))
+        border = QColor(*POPUP_INPUT_FOCUS_RGB) if self.edit.hasFocus() else QColor(154, 163, 181, 66)
+        p.setPen(QPen(border, 1))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 9, 9)
+        p.end()
+
+
+class TargetLineEdit(PopupLineEdit):
+    def paintEvent(self, event):
+        QLineEdit.paintEvent(self, event)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.update()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.update()
 
 
 class TargetPanel(GlassMixin, QWidget):
@@ -161,6 +237,9 @@ class TargetPanel(GlassMixin, QWidget):
         self._apply_blocked = bool(apply_blocked_fn and apply_blocked_fn())
         self._limits_fn = limits_fn                      # callable()->(limit_up,limit_down) 或 None
         self._build()
+        self._distance_timer = QTimer(self)
+        self._distance_timer.setInterval(250)
+        self._distance_timer.timeout.connect(self._refresh_distance)
         self._reload()
         self._refresh_list()
         # 状态行保留空白占位（高度恒定），避免出提示时面板跳高
@@ -171,14 +250,14 @@ class TargetPanel(GlassMixin, QWidget):
         self.setFixedWidth(self._panel_w)
         root = QVBoxLayout(self)
         root.setContentsMargins(MARGIN_X, MARGIN_Y, MARGIN_X, MARGIN_Y)
-        root.setSpacing(6)                       # v1.2.87：由 8 收窄到 6，缩短框选区域间距
+        root.setSpacing(0)
 
         # 顶部行：左「目标价」标题（与主界面股票名称同字号 12pt）+ 右侧关闭按钮（✕）
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         self.title_label = QLabel("目标价")
         self.title_label.setStyleSheet("color:%s;font-size:%dpx;font-weight:bold;"
-                                       % (FG_BRIGHT_HEX, PANEL_FONT_PX))
+                                       % (FG_BRIGHT_HEX, PANEL_FONT_PX + 1))
         top.addWidget(self.title_label)
         top.addStretch(1)
         self.btn_close_x = MainCloseButton()
@@ -187,47 +266,53 @@ class TargetPanel(GlassMixin, QWidget):
         self.btn_close_x.clicked.connect(self._on_close_x)
         top.addWidget(self.btn_close_x)
         root.addLayout(top)
+        root.addSpacing(TITLE_GAP)
 
         # 涨到（红色 #ff5252，与主界面涨色一致）
         row_up = QHBoxLayout()
         lab_up = QLabel("涨到")
-        lab_up.setFixedWidth(30)
-        lab_up.setStyleSheet("color:%s;font-size:%dpx;" % (UP_RED, PANEL_FONT_PX))
-        self.edit_up = PopupLineEdit()
-        # 输入框缩短为 36px；右侧 AddIconButton 同高同宽，保证正方形比例。
-        self.edit_up.setFixedSize(TARGET_INPUT_W, POPUP_INPUT_H)
+        lab_up.setFixedWidth(DIRECTION_W)
+        lab_up.setStyleSheet("color:%s;font-size:%dpx;font-weight:bold;" % (UP_RED, PANEL_FONT_PX))
+        self.edit_up = TargetLineEdit()
+        self.edit_up.setFixedSize(TARGET_INPUT_W, TARGET_INPUT_H)
         self.edit_up.setAccessibleName("涨到目标价输入框")
         self.edit_up.setObjectName("up")        # 涨相关文本红色
         # 恢复占位提示：v1.2.87 为收紧布局删掉了它，但 S2 之后"引导用户先输入"
         # 的责任已由焦点转移到输入框文案上 —— 没有占位符时，"+5%" 这类相对
         # 涨跌幅快捷输入（P1-3）完全没有入口提示，新用户只会输绝对价。
-        self.edit_up.setPlaceholderText("价格或 +5%")
+        self.edit_up.setPlaceholderText("多少钱或 +5%")
         self.btn_up = AddIconButton()
         self.btn_up.setAccessibleName("添加涨到目标价")
         self.btn_up.setObjectName("plus")
         row_up.addWidget(lab_up)
-        row_up.addWidget(self.edit_up)
-        row_up.addWidget(self.btn_up)
+        row_up.setSpacing(ROW_SPACING)
+        row_up.setContentsMargins(0, 0, 0, 0)
+        self.input_up_group = TargetInputGroup(self.edit_up, self.btn_up)
+        row_up.addWidget(self.input_up_group, 1)
         root.addLayout(row_up)
+        root.addSpacing(INPUT_ROW_GAP)
 
         # 跌到（绿色 #4caf50，与主界面跌色一致）
         row_dn = QHBoxLayout()
         lab_dn = QLabel("跌到")
-        lab_dn.setFixedWidth(30)
-        lab_dn.setStyleSheet("color:%s;font-size:%dpx;" % (DOWN_GREEN, PANEL_FONT_PX))
-        self.edit_dn = PopupLineEdit()
+        lab_dn.setFixedWidth(DIRECTION_W)
+        lab_dn.setStyleSheet("color:%s;font-size:%dpx;font-weight:bold;" % (DOWN_GREEN, PANEL_FONT_PX))
+        self.edit_dn = TargetLineEdit()
         # 与“涨到”输入框保持同一紧凑高度，不改变文本字号或字重。
-        self.edit_dn.setFixedSize(TARGET_INPUT_W, POPUP_INPUT_H)
+        self.edit_dn.setFixedSize(TARGET_INPUT_W, TARGET_INPUT_H)
         self.edit_dn.setAccessibleName("跌到目标价输入框")
         self.edit_dn.setObjectName("dn")        # 跌相关文本绿色
-        self.edit_dn.setPlaceholderText("价格或 -5%")
+        self.edit_dn.setPlaceholderText("多少钱或 -5%")
         self.btn_dn = AddIconButton()
         self.btn_dn.setAccessibleName("添加跌到目标价")
         self.btn_dn.setObjectName("plus")
         row_dn.addWidget(lab_dn)
-        row_dn.addWidget(self.edit_dn)
-        row_dn.addWidget(self.btn_dn)
+        row_dn.setSpacing(ROW_SPACING)
+        row_dn.setContentsMargins(0, 0, 0, 0)
+        self.input_dn_group = TargetInputGroup(self.edit_dn, self.btn_dn)
+        row_dn.addWidget(self.input_dn_group, 1)
         root.addLayout(row_dn)
+        root.addSpacing(4)
 
         # D1：回车即添加
         self.edit_up.returnPressed.connect(lambda: self._add(TARGET_DIR_ABOVE))
@@ -239,6 +324,7 @@ class TargetPanel(GlassMixin, QWidget):
         self.list_box = QVBoxLayout()
         self.list_box.setContentsMargins(0, 0, 0, 0)
         self.list_box.setSpacing(LIST_ROW_GAP)
+        root.addSpacing(8)
         root.addLayout(self.list_box)
 
         # D9：独立状态行（错误/成功/提示），不再复用列表行。
@@ -246,7 +332,9 @@ class TargetPanel(GlassMixin, QWidget):
         root.addSpacing(LIST_STATUS_GAP)
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(STATUS_STYLE["info"])
+        self.status_label.setFixedHeight(12)
         root.addWidget(self.status_label)
+        root.addSpacing(7)
 
         # D12：底部按钮等宽（立即生效=蓝色主按钮 / 清空=灰色次按钮，与主线路一致）
         btns = QHBoxLayout()
@@ -256,22 +344,25 @@ class TargetPanel(GlassMixin, QWidget):
         self.btn_apply = QPushButton("立即生效")
         self.btn_apply.setAccessibleName("立即生效保存目标价")
         self.btn_apply.setObjectName("ok")
-        # 与「替换股票」弹窗按钮完全同构：内容宽度、7px 圆角、7x16 内边距，
-        # 右对齐排列；不再拉伸成两块占满整行的大按钮。
         for b in (self.btn_clear, self.btn_apply):
-            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            b.setFixedHeight(BUTTON_H)
         self.btn_clear.clicked.connect(self._clear)
         self.btn_apply.clicked.connect(self._apply)
-        btns.addStretch()
-        btns.addWidget(self.btn_clear)
-        btns.addWidget(self.btn_apply)
+        btns.setContentsMargins(0, 0, 0, 0)
+        btns.setSpacing(BUTTON_GAP)
+        btns.addWidget(self.btn_clear, 1)
+        btns.addWidget(self.btn_apply, 1)
         root.addLayout(btns)
         self._update_tab_order()
 
         # 两个编辑窗口统一走共享视觉令牌；目标价仅追加业务色和紧凑图标按钮规则。
         # 涨跌前景色单独拼一段再串进去：这一段带 %s，而整条 QSS 里其余规则都含字面
         # 大括号与十六进制色值，末尾统一 % 会被这些字符带偏（也读不清是哪处在插值）。
-        up_dn_qss = "QLineEdit#up{color:%s;}QLineEdit#dn{color:%s;}" % (UP_RED, DOWN_GREEN)
+        up_dn_qss = (
+            "QLineEdit#up{color:%s;placeholder-text-color:%s;}"
+            "QLineEdit#dn{color:%s;placeholder-text-color:%s;}"
+            % (UP_RED, TARGET_PLACEHOLDER_UP_HEX, DOWN_GREEN, TARGET_PLACEHOLDER_DOWN_HEX))
         # 危险态（"再点一次确认清空"那颗红钮）三态一组，颜色同样从 sf_constants 取。
         # 与 up_dn_qss 同一形状单独拼：整条 QSS 末尾统一 % 会被其余规则里的
         # 字面大括号带偏（下面 262 行那条注释说的就是这件事）。
@@ -283,7 +374,7 @@ class TargetPanel(GlassMixin, QWidget):
                DANGER_PRESSED_HEX, FG_BRIGHT_HEX))
         del_qss = (
             "QPushButton#del{background:rgba(255,255,255,0.10);color:%s;"
-            "padding:0;font-size:11px;}"
+            "padding:0;border-radius:6px;font-size:11px;}"
             "QPushButton#del:hover{background:rgba(255,255,255,0.16);color:%s;}"
             "QPushButton#del:pressed{background:rgba(255,255,255,0.22);color:%s;}"
             "QPushButton#del:disabled{background:rgba(255,255,255,0.04);color:%s;}"
@@ -291,10 +382,12 @@ class TargetPanel(GlassMixin, QWidget):
         self.setStyleSheet(popup_stylesheet(
             "QLineEdit{font-family:'D-DIN';font-size:%dpx;}" % PANEL_FONT_PX
             + up_dn_qss + danger_qss +
-            "QPushButton#plus{background:rgba(255,255,255,0.10);padding:0;}"
+            "QPushButton#plus{background:rgba(255,255,255,0.10);padding:0;border-radius:9px;}"
             "QPushButton#plus:hover{background:rgba(255,255,255,0.16);}"
             "QPushButton#plus:pressed{background:rgba(255,255,255,0.22);}"
             "QPushButton#plus:disabled{background:rgba(255,255,255,0.04);}"
+            + "QPushButton#cancel,QPushButton#ok{padding:0;color:%s;}" % FG_BRIGHT_HEX
+            + "QPushButton#cancel:disabled,QPushButton#ok:disabled{color:%s;}" % FG_DISABLED_HEX
             + del_qss))
 
     def _update_tab_order(self):
@@ -402,100 +495,117 @@ class TargetPanel(GlassMixin, QWidget):
         self._set_status("有未生效的修改，请先点「立即生效」", "warn")
 
     # ---------- 显示 ----------
-    def _row_text_width(self):
-        """单行文本可用宽度（减去删除按钮与间距），用于省略号截断。"""
-        return self._panel_w - 2 * MARGIN_X - ROW_DEL_W - ROW_SPACING
-
     def _refresh_list(self):
-        """重绘目标价列表：逐行 [方向+价位+距目标%] + [删除 ✕]。
-
-        无条目时列表区域保持为空；极端输入（如 1e308）按行宽省略号截断，保证面板高度恒定。
-        """
-        # 清空现有行（可能是 widget，也可能是 sub-layout）
         while self.list_box.count():
             item = self.list_box.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-                continue
-            lay = item.layout()
-            if lay is not None:
-                while lay.count():
-                    ci = lay.takeAt(0)
-                    cw = ci.widget()
-                    if cw is not None:
-                        cw.deleteLater()
-
-        if not self._pending:
-            self._update_buttons()
-            self._update_inputs()
-            return
-
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
         price = self.current_price_fn() if self.current_price_fn else None
-        show_pct = _valid_price(price)
-        avail = self._row_text_width()
-        for a in self._pending:
-            op = "↑" if a.get("direction") == TARGET_DIR_ABOVE else "↓"
-            try:
-                t = float(a.get("target", 0))
-            except (TypeError, ValueError):
-                continue
-            txt = ("%s %%.%df" % (op, self._price_decimals)) % t
-            # P1-2：实时距目标价差%（价格可信时才显示）
-            if show_pct:
-                d = distance_pct(price, t)
-                if d is not None:
-                    txt += " (%+.1f%%)" % d
-            if a.get("state") == STATE_HIT:
-                # 标记放行首，见 HIT_MARKER_PREFIX 那条注释。触发点：2026-10-10 云端
-                # 复检机上字体度量略宽，实测被切成「↑ 1600.00 (+0.0%) 已触…」，
-                # 本机恰好放得下，所以这个边界从没在用户面前露出过。
-                txt = HIT_MARKER_PREFIX + txt
-            # 此处算一次方向，下方删除按钮的“涨到/跌到”文案复用同一结果
-            is_up = a.get("direction") == TARGET_DIR_ABOVE
-            col = UP_RED if is_up else DOWN_GREEN
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(ROW_SPACING)
-            lab = QLabel(txt)
-            # v1.2.87：按方向红/绿着色（与主界面涨红跌绿一致）；数字用 D-DIN
-            lab.setStyleSheet("color:%s;font-size:%dpx;font-family:\"D-DIN\";" % (col, PANEL_FONT_PX))
-            lab.setWordWrap(False)
-            # 单行省略号截断：防极端数值把面板撑出屏幕
-            fm = lab.fontMetrics()
-            lab.setText(fm.elidedText(txt, Qt.TextElideMode.ElideRight, avail))
-            row.addWidget(lab, 1)
-            # P2-1：逐条删除（沿用主按钮风格 #del）
-            del_btn = QPushButton("✕")
-            del_btn.setAccessibleName("删除%s目标价 %.{}f".format(self._price_decimals) % ("涨到" if is_up else "跌到", t))
-            del_btn.setObjectName("del")
-            del_btn.setFixedWidth(ROW_DEL_W)
-            direction = a.get("direction")
-            target = t
-            del_btn.clicked.connect(
-                lambda _checked=False, d=direction, tg=target: self._remove_one(d, tg))
-            row.addWidget(del_btn, 0)
-            self.list_box.addLayout(row)
+        self._display_price = price if _valid_price(price) else None
+        for target in self._pending:
+            row = self._target_row(target, self._display_price)
+            self.list_box.addWidget(row)
         self._update_tab_order()
         self._update_buttons()
         self._update_inputs()
+        self.adjustSize()
+
+    def _target_row(self, target, price):
+        row = QWidget()
+        row.setObjectName("targetRow")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 7, 0, 6)
+        layout.setSpacing(0)
+        main = QWidget()
+        main.setFixedHeight(ROW_MAIN_H)
+        line = QHBoxLayout(main)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(ROW_SPACING)
+        is_up = target.get("direction") == TARGET_DIR_ABOVE
+        hit = target.get("state") == STATE_HIT
+        color = FG_HINT_HEX if hit else (UP_RED if is_up else DOWN_GREEN)
+        direction = QLabel("涨到" if is_up else "跌到")
+        direction.setObjectName("targetDirection")
+        direction.setFixedWidth(DIRECTION_W)
+        direction.setStyleSheet("color:%s;font-size:%dpx;" % (color, PANEL_FONT_PX))
+        amount = float(target["target"])
+        price_text = ("%%.%df" % self._price_decimals) % amount
+        value = QLabel()
+        value.setObjectName("targetPrice")
+        value.setFixedWidth(ROW_PRICE_W)
+        value.setStyleSheet('color:%s;font-weight:bold;font-family:"D-DIN";' % color)
+        price_font = QFont(NUM_FONT)
+        price_font.setPixelSize(16)
+        price_font.setBold(True)
+        value.setFont(price_font)
+        available = self._panel_w - 2 * MARGIN_X - DIRECTION_W - ROW_DEL_W - 3 * ROW_SPACING - 30
+        value.ensurePolished()
+        needed = value.fontMetrics().horizontalAdvance(price_text) + 1
+        if needed > ROW_PRICE_W:
+            value.setFixedWidth(min(needed, available))
+        value.setText(value.fontMetrics().elidedText(price_text, Qt.TextElideMode.ElideRight, value.width()))
+        value.setToolTip(price_text)
+        pct = TargetValueLabel()
+        pct.setObjectName("targetPct")
+        pct.setStyleSheet('color:%s;font-size:12px;font-weight:bold;font-family:"D-DIN";' % color)
+        pct.setMinimumWidth(0)
+        pct.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        if price is not None:
+            distance = distance_pct(price, amount)
+            if distance is not None:
+                pct.set_value("%+.1f%%" % distance)
+        for label in (direction, value, pct):
+            label.setProperty("targetColor", color)
+        line.addWidget(direction, 0, Qt.AlignmentFlag.AlignBaseline)
+        line.addWidget(value, 0, Qt.AlignmentFlag.AlignBaseline)
+        line.addWidget(pct, 1, Qt.AlignmentFlag.AlignBaseline)
+        delete = DeleteIconButton()
+        delete.setObjectName("del")
+        delete.setAccessibleName("删除%s目标价 %s" % (direction.text(), price_text))
+        delete.clicked.connect(lambda _checked=False, d=target.get("direction"), t=amount: self._remove_one(d, t))
+        line.addWidget(delete, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(main)
+        sub = QWidget()
+        sub.setObjectName("targetDistanceRow")
+        detail = QHBoxLayout(sub)
+        detail.setContentsMargins(0, 0, 0, 0)
+        detail.setSpacing(0)
+        label = QLabel("距现价")
+        label.setObjectName("targetDistanceLabel")
+        label.setStyleSheet("color:%s;font-size:10px;" % FG_BRIGHT_HEX)
+        distance_text = ("%%.%df" % self._price_decimals) % abs(amount - price) if price is not None else "--"
+        distance_value = QLabel(distance_text)
+        distance_value.setObjectName("targetDistance")
+        distance_value.setStyleSheet('color:%s;font-size:11px;font-family:"D-DIN";' % FG_BRIGHT_HEX)
+        distance_value.setMaximumWidth(70 if not hit else 40)
+        distance_value.ensurePolished()
+        distance_value.setText(distance_value.fontMetrics().elidedText(distance_text, Qt.TextElideMode.ElideRight, distance_value.maximumWidth()))
+        unit = QLabel("元")
+        unit.setObjectName("targetDistanceUnit")
+        unit.setStyleSheet("color:%s;font-size:10px;" % FG_BRIGHT_HEX)
+        detail.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+        detail.addSpacing(4)
+        detail.addWidget(distance_value, 0, Qt.AlignmentFlag.AlignVCenter)
+        detail.addSpacing(2)
+        detail.addWidget(unit, 0, Qt.AlignmentFlag.AlignVCenter)
+        marker = QLabel(HIT_MARKER_TEXT)
+        marker.setObjectName("targetHit")
+        marker.setStyleSheet("color:%s;background:%s;font-size:9px;font-weight:normal;border-radius:3px;padding:0 4px;" % (TARGET_HIT_TEXT_HEX, FG_DIM_HEX))
+        marker.setFixedHeight(16)
+        marker.setVisible(hit)
+        detail.addSpacing(8)
+        detail.addWidget(marker, 0, Qt.AlignmentFlag.AlignVCenter)
+        detail.addStretch(1)
+        sub.setFixedHeight(16)
+        layout.addWidget(sub)
+        return row
 
     def _list_text(self):
-        """汇总列表可见文本（测试用，避免依赖内部 QLabel 数量）。"""
-        parts = []
-        for i in range(self.list_box.count()):
-            item = self.list_box.itemAt(i)
-            w = item.widget() if item is not None else None
-            if isinstance(w, QLabel):
-                parts.append(w.text())
-                continue
-            lay = item.layout() if item is not None else None
-            if lay is not None:
-                for j in range(lay.count()):
-                    cw = lay.itemAt(j).widget()
-                    if isinstance(cw, QLabel):
-                        parts.append(cw.text())
-        return "\n".join(parts)
+        return "\n".join(" ".join(label.text() for label in self.list_box.itemAt(i).widget().findChildren(QLabel)
+                                  if not label.isHidden())
+                         for i in range(self.list_box.count()))
 
     def _set_controls_enabled(self, enabled):
         """统一启用/禁用面板内**全部**可交互控件（含列表行内的逐条删除 ✕）。
@@ -534,15 +644,49 @@ class TargetPanel(GlassMixin, QWidget):
                         self._pending[i] = dict(item, state=l.get("state"))
                         changed = True
                     break
-        if changed:
-            self._refresh_list()
+        price = self.current_price_fn() if self.current_price_fn else None
+        price = price if _valid_price(price) else None
+        if changed or price != self._display_price:
+            self._display_price = price
+            for index, target in enumerate(self._pending):
+                item = self.list_box.itemAt(index)
+                assert item is not None
+                row = item.widget()
+                assert row is not None
+                hit = target.get("state") == STATE_HIT
+                color = FG_HINT_HEX if hit else (UP_RED if target.get("direction") == TARGET_DIR_ABOVE else DOWN_GREEN)
+                for name in ("targetDirection", "targetPrice", "targetPct"):
+                    label = row.findChild(QLabel, name)
+                    assert label is not None
+                    label.setStyleSheet(label.styleSheet().replace(label.property("targetColor"), color))
+                    label.setProperty("targetColor", color)
+                marker = row.findChild(QLabel, "targetHit")
+                assert marker is not None
+                marker.setVisible(hit)
+                pct = row.findChild(TargetValueLabel, "targetPct")
+                assert pct is not None
+                distance = distance_pct(price, target["target"]) if price is not None else None
+                pct.set_value("%+.1f%%" % distance if distance is not None else "")
+                value = row.findChild(QLabel, "targetDistance")
+                assert value is not None
+                text = (("%%.%df" % self._price_decimals) % abs(target["target"] - price)
+                        if price is not None else "--")
+                value.setText(value.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight,
+                                                           value.maximumWidth()))
+
+    def _refresh_distance(self):
+        if self.isVisible() and not self._locked:
+            try:
+                self.sync_alerts([])
+            except Exception as exc:
+                log_swallow("target_panel._refresh_distance", exc)
 
     def show_calendar_sync_hint(self, status):
         """显示交易日历的非阻断状态；用户仍可继续编辑和保存目标价。"""
         if status == "syncing":
             self._set_status("交易日历正在后台同步，暂按周末规则判断", "info")
         elif status == "degraded":
-            self._set_status("交易日历同步失败，暂按周末规则判断；将自动重试", "warn")
+            self._set_status("日历同步失败，将自动重试", "warn")
 
     def _set_status(self, text, kind="info"):
         try:
@@ -581,6 +725,7 @@ class TargetPanel(GlassMixin, QWidget):
         self._sync_glass_frame(force_mask=True)
 
     def hideEvent(self, event):
+        self._distance_timer.stop()
         try:
             self._close_glass()
         except Exception as exc:
@@ -980,6 +1125,7 @@ class TargetPanel(GlassMixin, QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._distance_timer.start()
         # v1.2.87：首帧后延迟注入毛玻璃（复用 GlassMixin，非 macOS 自动降级）
         if getattr(self, "_glass_pending", False):
             self._glass_pending = False

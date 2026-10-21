@@ -611,9 +611,11 @@ def join_active_space(widget):
         want = popup_join_all_spaces_behavior(nsw.collectionBehavior())
         if int(nsw.collectionBehavior()) != want:
             nsw.setCollectionBehavior_(want)
+        nsw.setHidesOnDeactivate_(False)
         if bool(nsw.isOnActiveSpace()):
             return "ok:behavior=%d" % want
         cgs_add_window_to_space(int(nsw.windowNumber()))
+        nsw.orderFrontRegardless()
         return "ok:cgs_added behavior=%d" % want
     except Exception as exc:
         # 这一族失效的形状就是"功能不见了、界面上零报错"，必须留痕（§6.9）
@@ -724,9 +726,16 @@ class _SpaceJoinFilter(QObject):
             if (event.type() == QEvent.Type.Show
                     and isinstance(obj, QWidget) and obj.isWindow()):
                 watch_active_space(obj)
+                if native_cocoa_active():
+                    # Qt 后续的 raise/activate 可能重写原生属性，须在 Show 完成后复核。
+                    QTimer.singleShot(0, lambda widget=obj: self._after_show(widget))
         except Exception as exc:
             log_swallow("sf_glass._SpaceJoinFilter", exc)
         return False
+
+    def _after_show(self, widget):
+        if not sip.isdeleted(widget) and widget.isVisible():
+            watch_active_space(widget)
 
 
 _SPACE_JOIN: dict = {"app": None, "filter": None}

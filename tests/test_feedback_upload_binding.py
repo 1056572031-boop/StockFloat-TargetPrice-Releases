@@ -22,8 +22,11 @@ class UploadBindingTests(SFCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.path = self.root / "valid.zip"
-        build_archive(self.path, package_files(snapshot(), "synthetic only"),
-                      app_version="1.4.96", bundle_id="com.skyrocket.app", run_id="abcdef")
+        state = snapshot()
+        build_archive(self.path, package_files(state, "synthetic only"),
+                      app_version="1.4.96", bundle_id="com.skyrocket.app", run_id="abcdef",
+                      omitted=state["omitted"], truncated=state["truncated"],
+                      capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"])
         self.envelope = make_envelope(archive_path=self.path, app_version="1.4.96",
                                       outbox_id="a" * 32, consent_policy_version=CONSENT_VERSION)
 

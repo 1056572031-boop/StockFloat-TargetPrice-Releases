@@ -111,7 +111,7 @@ class TestTargetPanel(unittest.TestCase):
         p = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600)])
         p.edit_up.setText("abc")
         p._add(TARGET_DIR_ABOVE)
-        self.assertIn("↑ 1600.00", p._list_text())
+        self.assertIn("涨到 1600.00", p._list_text())
         self.assertIn("请输入有效价格", p.status_label.text())
 
     # ---------- D1 回车添加 ----------
@@ -206,7 +206,7 @@ class TestTargetPanel(unittest.TestCase):
         p._clear()                                   # 第二次：执行但落盘失败
         self.assertIn("清空失败", p.status_label.text())
         self.assertEqual(len(p._pending), 1)         # 内存未被清空
-        self.assertIn("↑ 1600.00", p._list_text())
+        self.assertIn("涨到 1600.00", p._list_text())
         self.assertEqual(p.btn_clear.text(), "确认清空")   # 仍处于可重试状态
 
     # ---------- showEvent 路径 ----------
@@ -326,13 +326,16 @@ class TestTargetPanel(unittest.TestCase):
         p = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1e308, state="hit")],
                        price=1600.0)
         text = p._list_text()  # discipline-ok(R5): 判据是"用户在列表里看到什么"，而面板对外的可读文本只有这个出口（同文件既有 D10 用例同口径）
-        marker = target_panel.HIT_MARKER_PREFIX.strip()
+        marker = target_panel.HIT_MARKER_TEXT
         self.assertTrue(marker, "标记文字被换成空串了 —— 下面三条断言会集体空跑")
         self.assertIn("…", text, "前提没成立：这一行根本没被截断，等于空跑")
         self.assertIn(marker, text,
                       "状态标记被省略号吃掉了 —— 用户看不出这条已经触发过")
-        self.assertLess(text.index(marker), text.index("…"),
-                        "标记必须在截断点之前：排在后面的字段才是该被切的")
+        marker_labels = [lab for lab in p.findChildren(QLabel) if lab.text() == marker]
+        self.assertEqual(len(marker_labels), 1)
+        marker_labels[0].ensurePolished()
+        self.assertGreaterEqual(marker_labels[0].sizeHint().width(),
+                                marker_labels[0].fontMetrics().horizontalAdvance(marker))
 
     def test_same_direction_multiple_preserved(self):
         """P1-4：配置里同方向多条不同价位 → 全部保留（不再收敛为一条）。"""
@@ -608,8 +611,8 @@ class TestInstrumentPricePrecision(unittest.TestCase):
         p.edit_dn.setText("4.619")
         p._add(TARGET_DIR_BELOW)
         self.assertEqual([a["target"] for a in p._pending], [4.621, 4.619])
-        self.assertIn("↑ 4.621", p._list_text())
-        self.assertIn("↓ 4.619", p._list_text())
+        self.assertIn("涨到 4.621", p._list_text())
+        self.assertIn("跌到 4.619", p._list_text())
 
     def test_hk_and_convertible_bond_use_three_decimals(self):
         for code in ("hk00700", "sh113001", "sz123001", "sz160001"):
@@ -933,9 +936,11 @@ class TestV1287Features(unittest.TestCase):
         p.show()
 
         def center_pixel(w):
+            QApplication.processEvents()
             img = p.grab().toImage()
-            pt = w.mapTo(p, w.rect().center())
-            return img.pixelColor(pt.x(), pt.y()).name()
+            point = w.mapTo(p, w.rect().center())
+            scale = img.devicePixelRatio()
+            return img.pixelColor(round(point.x() * scale), round(point.y() * scale)).name()
 
         p.btn_clear.setEnabled(False)
         off = center_pixel(p.btn_clear)
@@ -1032,10 +1037,10 @@ class TestV1287Features(unittest.TestCase):
         p = self._make()
         self.assertEqual(sf_glass.POPUP_INPUT_H, 36)
         for edit, plus in ((p.edit_up, p.btn_up), (p.edit_dn, p.btn_dn)):
-            self.assertEqual(edit.minimumHeight(), sf_glass.POPUP_INPUT_H)
-            self.assertEqual(edit.maximumHeight(), sf_glass.POPUP_INPUT_H)
-            self.assertEqual(plus.width(), sf_glass.POPUP_INPUT_H)
-            self.assertEqual(plus.height(), sf_glass.POPUP_INPUT_H)
+            self.assertEqual(edit.minimumHeight(), target_panel.TARGET_INPUT_H)
+            self.assertEqual(edit.maximumHeight(), target_panel.TARGET_INPUT_H)
+            self.assertEqual(plus.width(), target_panel.TARGET_INPUT_H)
+            self.assertEqual(plus.height(), target_panel.TARGET_INPUT_H)
             self.assertEqual(plus.width(), plus.height())
 
     def test_target_panel_has_no_hard_region_mask(self):
@@ -1048,9 +1053,9 @@ class TestV1287Features(unittest.TestCase):
         """框选区只拉开纵向间距：列表行 7px，列表与提示语 10px。"""
         p = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600),
                               _saved(TARGET_DIR_BELOW, 1400)])
-        self.assertEqual(p.list_box.spacing(), target_panel.LIST_ROW_GAP)
-        self.assertEqual(target_panel.LIST_ROW_GAP, 3)
-        self.assertEqual(target_panel.LIST_STATUS_GAP, 4)
+        self.assertEqual(p.list_box.spacing(), 0)
+        self.assertEqual(target_panel.LIST_ROW_GAP, 0)
+        self.assertEqual(target_panel.LIST_STATUS_GAP, 6)
         self.assertLess(target_panel.LIST_ROW_GAP, 7)
         self.assertLess(target_panel.LIST_STATUS_GAP, 10)
 
@@ -1106,32 +1111,22 @@ class TestV1287Features(unittest.TestCase):
         self.assertIn("#9aa2b8", s)
 
     def test_bottom_buttons_match_editor_alignment(self):
-        """目标价底部按钮与替换股票弹窗一致：内容宽、右对齐，不占满整行。"""
+        """底部按钮等宽并撑满面板内容区。"""
         p = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600)])
         self.assertEqual(p.btn_clear.sizePolicy().horizontalPolicy(),
-                         QSizePolicy.Policy.Fixed)
+                         QSizePolicy.Policy.Expanding)
         self.assertEqual(p.btn_apply.sizePolicy().horizontalPolicy(),
-                         QSizePolicy.Policy.Fixed)
+                         QSizePolicy.Policy.Expanding)
         p.show()
         QApplication.processEvents()
-        self.assertLess(p.btn_clear.width() + p.btn_apply.width(), p.width())
+        self.assertEqual(p.btn_clear.width(), p.btn_apply.width())
+        self.assertEqual(p.btn_apply.geometry().right(), p.width() - target_panel.MARGIN_X - 1)
         p.close()
 
     @staticmethod
     def _collect_labels(p):
-        out = []
-        for i in range(p.list_box.count()):
-            item = p.list_box.itemAt(i)
-            w = item.widget() if item is not None else None
-            if isinstance(w, QLabel):
-                out.append(w)
-            lay = item.layout() if item is not None else None
-            if lay is not None:
-                for j in range(lay.count()):
-                    cw = lay.itemAt(j).widget()
-                    if isinstance(cw, QLabel):
-                        out.append(cw)
-        return out
+        return [label for i in range(p.list_box.count())
+                for label in p.list_box.itemAt(i).widget().findChildren(QLabel)]
 
 
 class TestRuntimeSyncAndLock(unittest.TestCase):
@@ -1171,7 +1166,8 @@ class TestRuntimeSyncAndLock(unittest.TestCase):
     def test_sync_alerts_does_not_drop_user_pending_edits(self):
         """同步只回写状态，不得删掉用户新增但尚未生效的条目。"""
         p = self._make([_saved(TARGET_DIR_ABOVE, 1600)])
-        p._pending.append(_saved(TARGET_DIR_BELOW, 1400))
+        p.edit_dn.setText("1400")
+        p.btn_dn.click()
         p.sync_alerts([_saved(TARGET_DIR_ABOVE, 1600, state="hit")])
         self.assertEqual(len(p._pending), 2)
 

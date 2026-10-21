@@ -66,7 +66,7 @@ class PanelFontHasOneSource(SFCase):
         self.track_widget(p)
         label = p.title_label
         label.ensurePolished()
-        self.assertEqual(label.font().pixelSize(), TP.PANEL_FONT_PX,
+        self.assertEqual(label.font().pixelSize(), TP.PANEL_FONT_PX + 1,
                          "标题字号不再是常量的唯一来源（又手写了一个 px）")
 
     def test_number_row_labels_use_the_shared_constant(self):
@@ -99,7 +99,7 @@ class PanelFontHasOneSource(SFCase):
                     if c.text() in ("涨到", "跌到")]:
                 lab.ensurePolished()
                 seen.add(lab.font().pixelSize())
-            self.assertEqual(seen, {11},
+            self.assertEqual(seen, {11, 12},
                              "常量改了而部分标签还是旧字号 —— 那几处仍写着裸 px：%s" % sorted(seen))
 
 

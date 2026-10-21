@@ -230,7 +230,7 @@ def validate_archive(path: os.PathLike[str] | str) -> dict[str, Any]:
                 raise FeedbackProtocolError("archive contains too many members")
             names: list[str] = []
             for info in infos:
-                name = _safe_member_name(info.filename)
+                name = _safe_member_name(info.orig_filename)
                 if name in names or name.casefold() in {item.casefold() for item in names}:
                     raise FeedbackProtocolError("archive member name collision")
                 names.append(name)

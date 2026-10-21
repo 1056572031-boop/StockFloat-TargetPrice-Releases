@@ -19,7 +19,7 @@ from sf_feedback import sha256_file, validate_archive
 from sf_feedback_bundle import read_diagnostics
 
 ANALYZER_SCHEMA_VERSION = 3
-ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v5"
+ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v6"
 DEFAULT_RULESET = {
     "required_members": ["state.json"],
     "health_false_conclusion": "suspected_problem",
@@ -88,6 +88,8 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
     state: dict[str, Any] | None = None
     description = ""
     full_diagnostics = None
+    context_fields = ("app_version", "bundle_id", "run_id", "capture_started_at", "capture_completed_at", "omitted", "truncated")
+    context_mismatches: list[str] = []
     with zipfile.ZipFile(archive) as package:
         members = set(package.namelist())
         if manifest["diagnostic_payload_version"] == 2:
@@ -107,6 +109,9 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
             if isinstance(state, dict) and state.get("health") is False:
                 findings.append(_finding("health_false", "warning", "diagnostic health snapshot reports false"))
             if isinstance(state, dict) and state.get("phase") == "user_feedback":
+                context_mismatches = [key for key in context_fields if key in state and manifest.get(key) != state[key]]
+                if context_mismatches:
+                    findings.append(_finding("context_mismatch", "info", "清单与状态中的采集声明不一致：" + ", ".join(context_mismatches)))
                 summary = state.get("summary", {})
                 counts = state.get("counts", {})
                 if isinstance(summary, dict):
@@ -128,7 +133,7 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
                         findings.append(item)
                 if not state.get("run_id") or not state.get("app_version") or not state.get("capture_completed_at"):
                     findings.append(_finding("missing_context", "warning", "session/version/time unavailable"))
-    if missing or any(item["code"] in ("invalid_state_json", "missing_context") for item in findings):
+    if missing or any(item["code"] in ("invalid_state_json", "missing_context", "context_mismatch") for item in findings):
         conclusion = str(active_ruleset.get("missing_member_conclusion", "insufficient_evidence"))
     elif any(item["code"] == "health_false" for item in findings):
         conclusion = str(active_ruleset.get("health_false_conclusion", "suspected_problem"))
@@ -141,7 +146,8 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
     else:
         conclusion = "no_known_issue"
     codes = {item["code"] for item in findings}
-    evidence_basis = ("current_snapshot" if codes & {"health_false", "runtime_warning"}
+    evidence_basis = ("conflicting_context" if context_mismatches
+                      else "current_snapshot" if codes & {"health_false", "runtime_warning"}
                       else "historical_only" if "historical_counter" in codes
                       else "no_fault_signal")
     # A sender's description is only a hint, never authority to exclude a case.
@@ -154,6 +160,7 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
         "app_version", "bundle_id", "run_id", "capture_started_at", "capture_completed_at",
     )}
     context.update({key: manifest.get(key, []) for key in ("omitted", "truncated")})
+    state_context = ({key: state[key] for key in context_fields if key in state} if isinstance(state, dict) else {})
     summary = state.get("summary", {}) if isinstance(state, dict) else {}
     runtime_summary = {key: summary[key] for key in (
         "net_ok", "minute_stale", "price_is_fallback", "pct_unknown", "capture_issue_count",
@@ -172,6 +179,8 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
         "findings": findings,
         "evidence_basis": evidence_basis,
         "source_context": context,
+        "state_context": state_context,
+        "context_mismatches": context_mismatches,
         "runtime_summary": runtime_summary,
         "sample_classification": "unverified",
         "test_declared_by_sender": test_declared,
@@ -198,6 +207,9 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
                  "## Source Context\n\n"
                  + "\n".join(f"- {key}: <code>{html.escape(str(value))}</code>"
                              for key, value in context.items())
+                 + ("\n\n## 采集声明差异\n\n原始声明均保留，不自动改写，也不据此认定本次功能故障。"
+                    "状态记录：<pre>" + html.escape(json.dumps(state_context, ensure_ascii=False, indent=2)) + "</pre>"
+                    if context_mismatches else "")
                  + "\n\n## Runtime Summary\n\n"
                  + ("\n".join(f"- {key}: `{value}`" for key, value in runtime_summary.items())
                     or "未提供可用的当前状态。")

@@ -87,6 +87,12 @@ class _FakeNSWindow:
         self._behavior = int(value)
         self.writes.append(("setCollectionBehavior_", int(value)))
 
+    def setHidesOnDeactivate_(self, value):
+        self.writes.append(("setHidesOnDeactivate_", value))
+
+    def orderFrontRegardless(self):
+        self.writes.append(("orderFrontRegardless",))
+
     def isOnActiveSpace(self):
         return self._on_active
 
@@ -135,6 +141,18 @@ class JoinActiveSpace(SFCase):
         out, cgs = self._run(fake)
         self.assertEqual(cgs, [99])
         self.assertIn("cgs_added", out)
+
+    def test_tools_do_not_hide_when_browser_stays_active(self):
+        fake = _FakeNSWindow()
+        self._run(fake)
+        self.assertIn(("setHidesOnDeactivate_", False), fake.writes)
+        self.assertNotIn(("orderFrontRegardless",), fake.writes)
+
+    def test_private_space_join_is_followed_by_front_order(self):
+        fake = _FakeNSWindow(on_active_space=False)
+        self._run(fake, cgs=lambda number: fake.writes.append(("cgs", number)))
+        self.assertEqual(fake.writes[-2:], [("cgs", fake.windowNumber()),
+                                          ("orderFrontRegardless",)])
 
     def test_no_nswindow_is_reported_not_raised(self):
         with mock.patch.object(sf_glass, "native_cocoa_active", lambda: True), \
@@ -272,10 +290,44 @@ class FilterWiring(SFCase):
         self.assertIn(top, [c.args[0] for c in watch.call_args_list],
                       "顶层窗 Show 了却没补齐 —— 右键菜单就是这一条路")
 
+    def test_show_is_rechecked_after_native_properties_are_reset(self):
+        sf_glass.install_space_join_filter(self._app)
+        top = self.track_widget(QWidget(None))
+        fake = _FakeNSWindow()
+        with mock.patch.object(sf_glass, "native_cocoa_active", return_value=True), \
+                mock.patch.object(sf_glass, "content_ns_window", return_value=fake):
+            top.show()
+            fake.setCollectionBehavior_(258)
+            fake.writes.clear()
+            QApplication.processEvents()
+        self.assertIn(("setCollectionBehavior_", 257), fake.writes)
+        self.assertIn(("setHidesOnDeactivate_", False), fake.writes)
+        self.assertNotIn(("orderFrontRegardless",), fake.writes)
+
+    def test_offscreen_show_does_not_schedule_native_work(self):
+        sf_glass.install_space_join_filter(self._app)
+        top = self.track_widget(QWidget(None))
+        with mock.patch.object(sf_glass, "native_cocoa_active", return_value=False), \
+                mock.patch.object(sf_glass.QTimer, "singleShot") as deferred:
+            top.show()
+        deferred.assert_not_called()
+
+    def test_closed_window_is_not_reopened_by_deferred_check(self):
+        sf_glass.install_space_join_filter(self._app)
+        top = self.track_widget(QWidget(None))
+        with mock.patch.object(sf_glass, "native_cocoa_active", return_value=True), \
+                mock.patch.object(sf_glass, "watch_active_space") as watch:
+            top.show()
+            top.close()
+            watch.reset_mock()
+            QApplication.processEvents()
+        watch.assert_not_called()
+
     def test_child_widget_show_does_not_trigger_it(self):
         self.assertTrue(sf_glass.install_space_join_filter(self._app))
         parent = self.track_widget(QWidget(None))
         parent.show()
+        QApplication.processEvents()
         with mock.patch.object(sf_glass, "watch_active_space") as watch:
             child = QWidget(parent)
             child.show()

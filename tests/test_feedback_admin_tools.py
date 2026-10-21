@@ -94,6 +94,21 @@ class AdminToolTests(SFCase):
             self.assertEqual(feedback_agent.main(), 0)
             self.assertNotIn("fake-admin-token", output.getvalue())
 
+    def test_storage_capacity_warning_reuses_the_single_notification_sync(self):
+        agent = Mock()
+        agent.run_once.return_value = {"ready": [], "failed": [], "discovered": 0,
+                                       "capacity": {"near_limit": True}}
+        notices = Mock()
+        notices.sync.return_value = {"submitted": ["backend"], "failed": []}
+        with patch("sys.argv", ["feedback_agent", "--data-dir", str(self.root), "--gh", "/absolute/gh"]), \
+                patch.object(feedback_agent.subprocess, "run", return_value=SimpleNamespace(stdout="fake-admin-token\n")), \
+                patch.object(feedback_agent, "FeedbackAgent", return_value=agent), \
+                patch.object(feedback_agent, "FeedbackNotifications", return_value=notices), \
+                patch.object(feedback_agent, "report_versions", return_value={}), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(feedback_agent.main(), 0)
+        notices.sync.assert_called_once_with({}, "storage_capacity")
+
     def test_service_cli_closes_server_after_interrupt(self):
         server = Mock()
         server.serve_forever.side_effect = KeyboardInterrupt

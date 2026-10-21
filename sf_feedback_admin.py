@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sf_feedback import FeedbackProtocolError, _atomic_replace, validate_archive, validate_receipt
-from sf_feedback_github import KEY_PATTERN, REPOSITORY
+from sf_feedback_github import KEY_PATTERN, MAX_RELEASE_ASSETS, REPOSITORY
 from sf_feedback_analyzer import ANALYZER_BUILD_ID, DEFAULT_RULESET, _canonical_hash
 
 
@@ -226,4 +226,7 @@ class FeedbackAgent:
                     db.execute("UPDATE queue SET status='failed', error=? WHERE case_id=?",
                                (type(exc).__name__, case_id))
                 failed.append(case_id)
-        return {"ready": ready, "failed": failed, "discovered": len(rows)}
+        return {"ready": ready, "failed": failed, "discovered": len(rows),
+                "capacity": {"asset_count": len(assets), "asset_limit": MAX_RELEASE_ASSETS,
+                             "remaining_asset_slots": max(0, MAX_RELEASE_ASSETS - len(assets)),
+                             "slots_per_new_case": 2, "near_limit": len(assets) >= MAX_RELEASE_ASSETS - 100}}

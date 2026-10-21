@@ -95,6 +95,7 @@ class DiagnosticsBranchCase(SFCase):
 
         self._patches = [
             mock.patch.dict(os.environ, {"HOME": self.home}),
+            mock.patch.object(sf_constants, "APP_SUPPORT_DIR", os.path.join(self.tmp, "support")),
             mock.patch.object(m, "load_config",
                               return_value=("sh600519", 100, 100, 200, "translucent")),
             mock.patch.object(m, "save_config", lambda *a, **k: None),
@@ -212,6 +213,7 @@ class DiagnosticsBranchCase(SFCase):
                 mock.patch("sf_system_alert.show_alert", return_value=None):
             self.win._open_feedback()  # discipline-ok(R5): actual menu entry is the integration behavior under test
             dialog = self.track_widget(self.win._feedback_dialog)  # discipline-ok(R5): inspect the dialog owned by the actual menu handler
+            self.assertEqual(dialog.storage_dir, Path(self.tmp) / "support" / "feedback")
             dialog.description.setPlainText("SYNTHETIC TEST ONLY. No real user data.")
             dialog.upload_button.click()
             def finished():

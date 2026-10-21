@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 
 from sf_feedback import FeedbackProtocolError, build_archive
 from sf_feedback_capture import (
-    CONSENT_VERSION, MAX_DESCRIPTION, package_files, read_upload_archive, validate_upload_receipt,
+    CONSENT_VERSION, MAX_DESCRIPTION, package_files, read_upload_archive, validate_capture_context, validate_upload_receipt,
 )
 from sf_feedback_outbox import FeedbackOutbox
 from sf_feedback_bundle import FULL_CONSENT_VERSION, read_diagnostics
@@ -102,9 +102,15 @@ class FeedbackDialog(GlassMixin, QDialog):
         layout.setSpacing(12)
         self.title = QLabel("反馈问题", self)
         self.title.setObjectName("feedbackTitle")
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self.title)
         self.description = QPlainTextEdit(self)
+        document = self.description.document()
+        if document is not None:
+            text_option = document.defaultTextOption()
+            text_option.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            document.setDefaultTextOption(text_option)
         self.description.setTabChangesFocus(True)
         self.description.setAccessibleName("问题描述（可选）")
         self.description.setPlaceholderText("告诉我们你遇到的问题或建议，这些信息将用于改进我们的产品。")
@@ -263,7 +269,9 @@ class FeedbackDialog(GlassMixin, QDialog):
             self.upload_button.setToolTip("保留原反馈资料，开始新的反馈；不会立即上传。")
             self.upload_button.setEnabled(not busy)
             return
-        self.upload_button.setToolTip(_FULL_UPLOAD_HINT if self.payload_version == 2 else _LEGACY_UPLOAD_HINT)
+        reason = self.validation_error or (self.status.text() if self.last_error in _BLOCKING_ERRORS else "")
+        self.description.setToolTip(self.validation_error)
+        self.upload_button.setToolTip(reason or (_FULL_UPLOAD_HINT if self.payload_version == 2 else _LEGACY_UPLOAD_HINT))
         valid = self.preview_valid and self.preview_files is not None and len(self.description.toPlainText()) <= MAX_DESCRIPTION
         self.upload_button.setEnabled(bool(self.outbox is not None and self.last_error not in _BLOCKING_ERRORS
                                            and valid and not busy
@@ -344,6 +352,8 @@ class FeedbackDialog(GlassMixin, QDialog):
         self._update_enabled()
 
     def _apply_pending(self, row, packet):
+        if row["status"] != "receipt_persisted":
+            validate_capture_context(packet["manifest"], packet["state"])
         self.payload_version = row["envelope"]["diagnostic_payload_version"]
         self.snapshot = packet["state"]
         self.description.setPlainText(packet["files"]["problem.txt"])
@@ -406,6 +416,8 @@ class FeedbackDialog(GlassMixin, QDialog):
             self.results.put(("failed", _failure("prepare", exc)))
             self._poll()
             return
+        # Hide without closing: the dialog owns the upload worker and result timer.
+        self.hide()
         self.description.setReadOnly(True)
         self.history.setEnabled(False)
         self.consent.setEnabled(False)
@@ -525,7 +537,7 @@ class FeedbackDialog(GlassMixin, QDialog):
                 self._show_feedback_status(
                     "反馈已上传",
                     "反馈已成功提交。",
-                    "反馈编号：%s\n下载和分析将在维护者电脑进行。" % value["case_id"],
+                    "反馈编号：%s" % value["case_id"],
                 )
             else:
                 if value["phase"] == "capture" and self.current_id is None:

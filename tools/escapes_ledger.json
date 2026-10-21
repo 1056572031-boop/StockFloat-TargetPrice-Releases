@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-20",
+  "updated": "2026-10-21",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -1569,12 +1569,14 @@
       "introduced_version": "1.2.95",
       "introduced_note": "为 v1.2.95 第 8 轮走查的「拿旧 dist 打新 DMG」事故而生，但闸门自身一直没有自检",
       "found_version": "1.4.45",
-      "fixed_version": null,
+      "fixed_version": "1.4.46",
       "failed_lines": [
         "verify"
       ],
       "why_missed": "它守的是发版链上不可逆的一步（DMG/安装/OTA），却没有任何一条断言证明它会拒绝旧产物",
-      "defense_added": "--self-test 9 类输入：旧包/坏 plist/缺 Info.plist/路径不存在/只带 V 前缀 全部必须被拒，同版本与带首尾空白的同版本必须放行，退出码 0/1/2 各归位；tests/test_release_gates.py 再用 dist/ 真产物对一个不可能的版本号判不匹配",
+      "defense_added": [
+        "tools/dist_version_check.py --self-test 九类输入（旧包/坏 plist/缺 plist/不存在路径/V 前缀必拒，同版本与带空白同版本放行，退出码 0/1/2 各归位）+ tests/test_release_gates.py::test_version_gate_can_fail 拿 dist/ 真产物对 0.0.0 判不匹配"
+      ],
       "observed_at": null,
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
@@ -3582,13 +3584,13 @@
       "introduced_version": "unknown",
       "introduced_note": "2026-10-12 v1.4.64 发版后跑随机顺序档抓到；本轮对 sf_editor.py 的改动只有样式表字符串（同一批色值、零行为变化），已按 diff 排除归因",
       "found_version": "1.4.64",
-      "fixed_version": null,
+      "fixed_version": "1.4.67",
       "failed_lines": [
         "verify"
       ],
       "why_missed": "该用例把 sf_universe.match_confident 打成空表来断言拒绝未知代码，但 do_search 里还有一条不经过 match_confident 的分支能给出代码；默认顺序下先跑的那批用例没把这条分支的入口状态准备好，换顺序才踩到 —— 也就是说红的是**夹具对全局状态的隐式依赖**，不是产品逻辑。本轮只登记复现配方（seed=1464 两次都红、单模块跑绿、默认顺序此前绿），未归因到具体污染源",
       "defense_added": [
-        "**未修**。这一条登记的是复现配方与判据缺口，不是防线落点：① 复现 = SF_RANDOM_ORDER=1 SF_RANDOM_SEED=1464 ./run_tests.sh（两次都红同一枚）；② 归因方向 = 该用例对 sf_universe 全局状态的隐式依赖，最小复现做法是把可疑模块与该用例两两同跑；③ 下一轮起发版前随机顺序档必须绿，否则不许出包"
+        "tests/test_coverage_icons_editor.py 目标用例显式桩住 sf_universe.covers_segment/index_ready/match_confident 与 sf_quote.fetch_quote（f19d19b，2026-10-13，当时版本位 1.4.67）；本轮 seed=1464 全序 4718 条 OK、该用例执行且通过，默认序在 5270a89 提交钩子里全绿"
       ],
       "observed_at": "2026-10-12 13:28:43+08:00",
       "observed_origin": "now",
@@ -4337,12 +4339,14 @@
       "introduced_version": null,
       "introduced_note": null,
       "found_version": "1.4.97",
-      "fixed_version": null,
+      "fixed_version": "1.4.98",
       "failed_lines": [
         "verify"
       ],
       "why_missed": "液态玻璃暗化层固定内缩2逻辑像素，留下4物理像素的未暗化原生受光环，内外两条对比强烈的圆弧产生厚重、不均匀观感；现有判据只检查外轮廓越界和同心几何，不限制未暗化环宽度，也不检查内沿对称。源码Cocoa已复现，原截图运行对象未独立取证。",
-      "defense_added": null,
+      "defense_added": [
+        "tests/test_liquid_glass.py::test_straight_edges_have_the_same_thin_profile_along_the_whole_card + test_liquid_rim_reuses_geometry_and_preserves_painter_state"
+      ],
       "observed_at": "2026-10-20 15:08:21+08:00",
       "observed_origin": "now",
       "rootcause_at": "2026-10-20 15:08:34+08:00",
@@ -4359,12 +4363,14 @@
       "introduced_version": null,
       "introduced_note": null,
       "found_version": "1.4.97",
-      "fixed_version": null,
+      "fixed_version": "1.4.98",
       "failed_lines": [
         "verify"
       ],
       "why_missed": "两个弹窗共享MainCloseButton：悬浮底板由QPushButton样式表绘制，图标绘制只开SmoothPixmapTransform，没有为底板开启QPainter抗锯齿；固定24px源图在1x屏上又经缩小采样。旧测试只断言样式表含颜色/圆角和图像尺寸，没有对悬浮边缘及目标DPR逐像素比较。新增普通/悬浮/按下/禁用态、1x/2x、20/26px参考像素和非抗锯齿反例验证通过；源码验证不等于装机通过。",
-      "defense_added": null,
+      "defense_added": [
+        "tests/test_popup_close_paint.py：三尺寸×1x/2x×四状态的悬停像素与参考图逐点全等 + test_jagged_hover_is_not_accepted_as_the_reference（关掉抗锯齿的参考图必须不等价）"
+      ],
       "observed_at": "2026-10-20 15:33:10+08:00",
       "observed_origin": "now",
       "rootcause_at": "2026-10-20 15:38:14+08:00",
@@ -4372,6 +4378,27 @@
       "source": "2026-10-20 用户截图 codex-clipboard-674dd818-cb6d-496b-8c60-9c7ed3024773.png 与 codex-clipboard-ce3cc056-9abd-48b4-91f0-685c246c837b.png；两个弹窗共享 sf_editor.MainCloseButton",
       "evidence": "verified",
       "rootcause_origin": "now"
+    },
+    {
+      "id": "N18",
+      "symptom": "全屏网页上点击悬浮窗目标价与替换股票按钮，二级窗口无法正常显示",
+      "component": "未归类",
+      "channel": "online_user",
+      "introduced_version": null,
+      "introduced_note": null,
+      "found_version": "1.4.99",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "既有判据只覆盖Show瞬间的Space接线，没有覆盖随后原生属性被改写、工具窗失活隐藏及真实输入；本机未稳定复现用户原始失败，不能认定唯一根因。",
+      "defense_added": "增加Show完成后的Cocoa复核、失活不隐藏及加入Space后的前置；旧实现三项负向判据失败，修复后两个真实弹窗在Chrome全屏Space持续在屏并接收控件输入；尚待安装版用户路径复验。",
+      "observed_at": "2026-10-21 09:49:35+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "用户原始失败未稳定复现；已验证显示时序与失活策略盲区，但尚不能将其确定为用户现场唯一根因，定位时长保持未知。",
+      "source": "用户于2026-10-21本会话反馈",
+      "evidence": "verified"
     }
   ],
   "rounds": [
@@ -4993,6 +5020,16 @@
         "沿用已合入的反馈隐私、容量、回执、绘制交互与发布状态判据；本轮重新建立固定候选及真实升级回滚证据，不将历史测试当本版已验。"
       ],
       "zero_reason": "v1.4.99尚未发布，无该版线上观察窗口；0仅表示未登记本版线上逃逸，不代表上线后无故障，不关闭已有未验证条目。"
+    },
+    {
+      "version": "1.4.100",
+      "date": "2026-10-21",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "N18：Show后原生复核、失活不隐藏与Space加入后前置；两个真实按钮全屏探针通过，不把源码验证冒充安装版现场收口。"
+      ],
+      "zero_reason": "本版尚未发行，无本版新发现逃逸；本轮修复的是1.4.99反馈N18，唯一现场根因未稳定复现，仍保持开放。"
     }
   ],
   "comparison_policy": {

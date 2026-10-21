@@ -232,16 +232,43 @@ class TestPsBundleParsing(unittest.TestCase):
                       sweep.running_bundle_paths(),
                       "ps 输出格式或解析逻辑变了，'跳过正在运行副本'已静默失效")
 
+    def test_installed_copy_is_parsed_from_one_snapshot(self):
+        """安装位置那份必须被认出来 —— 判定与断言都取自同一份进程表快照。
+
+        旧写法（2026-10-21 随机顺序档实测红在此）有两条洞：
+        ① 用例自己查一次 ps、再让产品函数查一次：两次快照之间只要有人启动或退出
+           正式版，断言量的就不是同一件事，于是"偶发红"取决于机器上此刻有谁在跑；
+        ② 按「app 名字出现在 ps 里」判"正式版在跑"：同一款程序可以同时从
+           `/Applications` 与发布树的 `dist/` 里跑，那是两个不同路径 —— 本轮就是
+           验包时 dist/ 那份在跑，被当成安装版在跑却断言找不到安装路径。
+        真实 ps 输出格式的覆盖在 `test_live_ps_output_parses_something`（Finder 常驻）。
+        """
+        installed = os.path.realpath("/Applications/%s" % sweep.APP_DIR_NAME)
+        text = ("/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder\n"
+                "%s/Contents/MacOS/whatever\n" % installed)
+
+        class _PS:
+            stdout = text
+
+        with patch.object(sweep.subprocess, "run", return_value=_PS()):
+            self.assertIn(installed, sweep.running_bundle_paths())
+
     @unittest.skipUnless(os.path.isdir("/Applications/%s" % sweep.APP_DIR_NAME),
                          "本机未安装正式版")
     def test_running_official_app_is_detected(self):
-        """正式版在跑时必须在集合里；没在跑则跳过（15:00 会自动关闭）。"""
-        probe = subprocess.run(["/bin/ps", "-Ao", "comm="],
-                               capture_output=True, text=True)
-        if sweep.APP_DIR_NAME not in probe.stdout:
-            self.skipTest("正式版当前未运行，无法断言")
-        self.assertIn("/Applications/%s" % sweep.APP_DIR_NAME,
-                      sweep.running_bundle_paths())
+        """本机安装版此刻确实在跑时，产品函数要从**一次**采样里报出安装路径。
+
+        这一条是环境相关的补充核验：不在跑就带理由跳过，绝不因为"没在跑"判通过。
+        """
+        text = subprocess.run(["/bin/ps", "-Ao", "comm="],
+                              capture_output=True, text=True).stdout
+        installed = os.path.realpath("/Applications/%s" % sweep.APP_DIR_NAME)
+        if installed not in text:
+            other = sorted({p for p in sweep.bundle_paths_from_ps(text)
+                            if sweep.APP_DIR_NAME in p})
+            self.skipTest("正式版未从安装位置运行（本机在跑的那份：%s）"
+                          % (", ".join(other) or "无"))
+        self.assertIn(installed, sweep.bundle_paths_from_ps(text))
 
 
 class TestSweepSwitch(unittest.TestCase):

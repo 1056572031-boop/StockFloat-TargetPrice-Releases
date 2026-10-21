@@ -626,3 +626,54 @@ class TestLocalReleaseBoundaries(SFCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _ceiling_line_problems(line):
+    """真渲染那侧的上限公式该长什么样：必须对绝对上限与产品常量取小。缺任何一侧都算问题。"""
+    problems = []
+    if line is None:
+        return ["找不到上限赋值（公式被挪走或整行删掉）"]
+    if "min(" not in line:
+        problems.append("上限不是取小 → 判据回到单向跟着常量走")
+    if "GAP_CEILING_PX" not in line:
+        problems.append("上限里没了绝对值 → 常量改大就能把松垮间距判成合理（台账 G07）")
+    if "BOTTOM_ROW_GAP" not in line:
+        problems.append("上限里没了产品常量 → 今天的收紧口径漂移")
+    return problems
+
+
+class TestBottomGapCeilingShape(SFCase):
+    """像素关卡 `main()` 里那行上限公式的形状锁。
+
+    为什么这里必须用源码形状锁而不是行为断言（§6 第 2 条要求写明守的是什么）：
+    这条公式的唯一调用点在 `main()`，而 `main()` 要真建窗口离屏渲染才走到；
+    `--self-test` 按它自己的契约**不许导入产品模块**（那条解耦本身是被验对象），
+    所以自检永远看不见这一行 —— 行为断言在这个形状上拿不到输入。
+    于是出现过这样一局：摘掉 `min(` 后全链路没有任何一条用例能变红。
+    同族先例：§5.7 的「净空公式只许有一份实现」。
+    """
+
+    TOOL = "verify_bottom_gap_px.py"
+
+    def _real_ceiling_line(self):
+        import pathlib as pl
+        import re
+        src = (pl.Path(__file__).resolve().parent.parent / "tools" / self.TOOL).read_text()
+        for line in src.splitlines():
+            if re.search(r"^\s*ceiling\s*=\s*", line):
+                return line
+        return None
+
+    def test_ceiling_line_keeps_both_sides_of_the_min(self):
+        problems = _ceiling_line_problems(self._real_ceiling_line())
+        self.assertEqual(problems, [], "上限公式放宽路径重新打开：" + "；".join(problems))
+
+    def test_the_shape_lock_itself_can_fail(self):
+        """三条放宽写法各演一遍，锁必须逐条抓到（不然它就是条永不失败的检查）。"""
+        for bad in ("        ceiling = R.BOTTOM_ROW_GAP + 3",          # 摘掉 min：跟着常量跑
+                    "        ceiling = GAP_CEILING_PX + R.BOTTOM_ROW_GAP",  # 绝对值被加成而不是取小
+                    "        ceiling = max(GAP_CEILING_PX, R.BOTTOM_ROW_GAP + 3)",
+                    None):
+            with self.subTest(line=bad):
+                self.assertTrue(_ceiling_line_problems(bad),
+                                "这条锁抓不到该种的错：%r" % (bad,))

@@ -13,12 +13,18 @@ from typing import Any
 import sf_diag
 from sf_feedback import PrivacyRejected, project_snapshot, utc_now, validate_archive, validate_receipt
 from sf_privacy import scrub_secrets
-from sf_feedback_bundle import FULL_CONSENT_VERSION, MAX_DIAGNOSTIC_BYTES, read_diagnostics
+from sf_feedback_bundle import FULL_CONSENT_VERSION, MAX_DIAGNOSTIC_BYTES, check_privacy, read_diagnostics
 
 MAX_DESCRIPTION = 4000
 CONSENT_VERSION = "github-private-feedback-v1"
 FEEDBACK_REPOSITORY = "1056572031-boop/Skyrocket-Private-Feedback"
+CAPTURE_CONTEXT_FIELDS = ("capture_started_at", "capture_completed_at", "omitted", "truncated")
 _COUNTER = re.compile(r"(?:^|_)(?:count|counts|fail|fails|failures|retries|dropped|errors)$", re.IGNORECASE)
+
+
+def validate_capture_context(manifest, state):
+    if any(manifest[key] != state[key] for key in CAPTURE_CONTEXT_FIELDS):
+        raise PrivacyRejected("反馈清单与状态声明不一致，禁止发送")
 
 
 def clean_description(text: str) -> str:
@@ -148,10 +154,13 @@ def read_upload_archive(path, envelope=None):
             if not full and "diagnostic_attachments" in manifest.get("truncated", []):
                 raise PrivacyRejected("旧版反馈不能声明完整附件裁剪")
             if full:
+                limits.update({"manifest.json": 16 * 1024, "state.json": 32 * 1024})
                 limits["diagnostics.zip"] = MAX_DIAGNOSTIC_BYTES
             if set(archive.namelist()) != set(limits) or any(
                     archive.getinfo(name).file_size > limit for name, limit in limits.items()):
                 raise PrivacyRejected("反馈包包含未批准或过大的附件")
+            if full and archive.getinfo("diagnostics.zip").compress_type != zipfile.ZIP_STORED:
+                raise PrivacyRejected("完整诊断附件必须原字节存放，不重复压缩")
             required = {"schema_version", "diagnostic_payload_version", "app_version", "bundle_id", "run_id",
                         "capture_started_at", "capture_completed_at", "files", "omitted", "truncated"}
             if (set(manifest) != required or any(set(entry) != {"name", "size_bytes", "sha256"}
@@ -166,11 +175,14 @@ def read_upload_archive(path, envelope=None):
                 raise PrivacyRejected("旧版反馈不能声明完整附件裁剪")
             if any(manifest[key] != state[key] for key in ("app_version", "bundle_id", "run_id")):
                 raise PrivacyRejected("反馈清单与状态身份不一致")
+            if full:
+                validate_capture_context(manifest, state)
             validate_uploaded_snapshot({**state, **{key: manifest[key] for key in (
                 "capture_started_at", "capture_completed_at", "omitted", "truncated")}})
             description = archive.read("problem.txt").decode("utf-8")
             if len(description) > MAX_DESCRIPTION:
                 raise PrivacyRejected("问题描述过长")
+            check_privacy(description)
             diagnostic_bytes = archive.read("diagnostics.zip") if full else None
             if full:
                 diagnostic_files = read_diagnostics(diagnostic_bytes)
