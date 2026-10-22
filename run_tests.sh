@@ -59,6 +59,104 @@ if [ -n "${SF_GUARD_PROBE:-}" ]; then
   exit 0
 fi
 
+# ---- 互斥：同一时间只许一轮完整回归（2026-10-21）----
+# 为什么：两个会话同时起整档时，五个落盘路径在同一个 TMPDIR 下互相 rm -f，同一棵树的
+# build/.coverage-provenance.json 又被后起一轮的 begin 覆盖成 invalid。当天 12:30~12:56
+# 起了四轮，三轮的覆盖率结论被判"来源不可信"，每轮白烧约 9 分钟，谁都没拿到干净结论。
+# 做法：两把符号链接锁。ln -s 是原子创建，目标里写「pid|进程启动时刻|工作目录」，
+# 不存在"刚建出来还是空的"那一瞬。一把按临时目录算（保护共享的 sf_*_test 文件），
+# 一把按本棵树的 build/ 算（保护覆盖率回执）。拿不到就退出码 75，不排队、不抢、不删别人的锁。
+# 只有持有者已不在、或 pid 被别的进程复用（启动时刻对不上）才算陈旧；启动时刻读不到时
+# 退回只看进程是否还在（读不到不等于已陈旧）；回收时再抢一个
+# 互斥目录，免得两个人同时回收时把对方刚建好的活锁当成陈旧的拆掉。
+SF_LOCK_TMP_PATH=""
+SF_LOCK_TREE_PATH=""
+SF_LOCK_RECORD=""
+sf_lstart_of() {
+  LC_ALL=C ps -p "$1" -o lstart= 2>/dev/null | awk '{$1=$1; print}'
+}
+sf_lock_owner_alive() {
+  local pid="${1%%|*}" rest="${1#*|}" recorded now
+  case "$pid" in ""|*[!0-9]*) return 1 ;; esac
+  recorded="${rest%%|*}"
+  now="$(sf_lstart_of "$pid")"
+  # 两边的启动时刻都读得到：严格比对，对不上就是 pid 被别的进程复用，不是持有者。
+  if [ -n "$recorded" ] && [ -n "$now" ]; then
+    [ "$now" = "$recorded" ]
+    return
+  fi
+  # 任何一边读不到（写锁时 ps 取不到、或现在取不到）就证明不了 pid 被复用。
+  # 此时不能按「陈旧」回收一个可能还活着的持有者（那等于互斥悄悄失效、两轮并跑），
+  # 退回只看这个进程是否还在：在就拒绝，不在才算陈旧。宁可误拦，不可放行。
+  kill -0 "$pid" 2>/dev/null
+}
+sf_lock_refuse() {
+  local who="${2%%|*}" rest="${2#*|}"
+  echo "!! 已有另一轮完整回归占着${1}（进程 ${who}，启动于 ${rest%%|*}，目录 ${rest#*|}）。" >&2
+  echo "!! 两轮同时跑会共用临时配置与覆盖率回执，谁都拿不到可信结论；请等它结束后再跑。" >&2
+  echo "!! 只有确认那个进程已不存在、锁却还在时，才可手动处理锁文件；不要强杀别人的回归。" >&2
+  exit 75
+}
+sf_lock_acquire() {
+  local lock="$1" label="$2" record="$3" existing tries=0
+  while [ "$tries" -lt 6 ]; do
+    if ln -s "$record" "$lock" 2>/dev/null; then return 0; fi
+    existing="$(readlink "$lock" 2>/dev/null || true)"
+    if [ -n "$existing" ] && sf_lock_owner_alive "$existing"; then
+      sf_lock_refuse "$label" "$existing"
+    fi
+    if [ -n "$existing" ] && mkdir "${lock}.reclaim" 2>/dev/null; then
+      # 抢到回收权后再核一次：这条记录仍是刚才那条陈旧的，才拆。
+      if [ "$(readlink "$lock" 2>/dev/null || true)" = "$existing" ]; then
+        rm -f "$lock"
+      fi
+      rmdir "${lock}.reclaim" 2>/dev/null || true
+    else
+      sleep 0.2
+    fi
+    tries=$((tries + 1))
+  done
+  echo "!! 取不到互斥锁（${label}）：${lock} 的状态反复变化，或回收通道被占用。" >&2
+  echo "!! 请确认没有别的回归在跑；${lock}.reclaim 若是遗留目录且无人在回收，可手动移走。" >&2
+  exit 75
+}
+sf_lock_release() {
+  # 只拆自己建的：目标记录仍是自己的才删，别人接手后的锁不动。
+  local item
+  for item in "$SF_LOCK_TMP_PATH" "$SF_LOCK_TREE_PATH"; do
+    [ -n "$item" ] || continue
+    if [ "$(readlink "$item" 2>/dev/null || true)" = "$SF_LOCK_RECORD" ]; then
+      rm -f "$item"
+    fi
+  done
+  return 0
+}
+SF_LOCK_ROOT="${TMPDIR:-/tmp}"
+if [ -n "${SF_QUALITY_SESSION_DIR:-}" ] && [ -d "$SF_QUALITY_SESSION_DIR" ]; then
+  SF_LOCK_ROOT="$SF_QUALITY_SESSION_DIR"
+fi
+SF_LOCK_TREE_ROOT="$(pwd)/build"
+# SF_LOCK_PROBE=1：只验互斥，取到锁就走。锁目录只在探针模式下才可改道（SF_LOCK_PROBE_DIR），
+# 否则一枚环境变量就能把两把锁挪走、等于关掉互斥；整轮真跑时这个变量不起任何作用。
+if [ -n "${SF_LOCK_PROBE:-}" ] && [ -n "${SF_LOCK_PROBE_DIR:-}" ]; then
+  SF_LOCK_ROOT="$SF_LOCK_PROBE_DIR"
+  SF_LOCK_TREE_ROOT="$SF_LOCK_PROBE_DIR"
+fi
+mkdir -p "$SF_LOCK_ROOT" "$SF_LOCK_TREE_ROOT" || { echo "!! 无法创建互斥锁目录" >&2; exit 1; }
+SF_LOCK_RECORD="$$|$(sf_lstart_of "$$")|$(pwd -P)"
+trap sf_lock_release EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+SF_LOCK_TMP_PATH="${SF_LOCK_ROOT%/}/sf_run_tests.lock"
+sf_lock_acquire "$SF_LOCK_TMP_PATH" "共享临时目录 ${SF_LOCK_ROOT}" "$SF_LOCK_RECORD"
+SF_LOCK_TREE_PATH="${SF_LOCK_TREE_ROOT%/}/.run_tests.tree.lock"
+sf_lock_acquire "$SF_LOCK_TREE_PATH" "本棵工作树的 build/" "$SF_LOCK_RECORD"
+if [ -n "${SF_LOCK_PROBE:-}" ]; then
+  echo "== 互斥探针：已取得两把锁 =="
+  exit 0
+fi
+
 # 只接受质量执行器创建的会话边界；普通环境变量不构成删除配置文件的授权。
 if [ -n "${SF_QUALITY_SESSION_DIR:-}" ]; then
   "$PY" -c '

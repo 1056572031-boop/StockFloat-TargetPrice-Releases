@@ -323,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
         return self_test()
     if not args.app or not args.zip or not args.out or not args.old_app:
         parser.error("必须同时提供 --app --zip --out --old-app")
+    # --out 是报告文件路径。传成目录时，冒烟、首装、升级、回退都会先跑完，到最后写报告才
+    # IsADirectoryError，整段白跑还留下一条红的执行凭据；所以在做任何事之前就拒绝。
+    if args.out.endswith(os.sep) or Path(args.out).is_dir():
+        parser.error("--out 必须是报告文件路径（例如 build/release-vX.Y.Z/delivery.json），不是目录: %s"
+                     % args.out)
     return verify(Path(args.app).resolve(), Path(args.zip).resolve(), Path(args.out).resolve(),
                   Path(args.old_app).resolve())
 

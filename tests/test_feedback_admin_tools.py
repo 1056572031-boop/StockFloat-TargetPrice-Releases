@@ -32,7 +32,7 @@ class AdminToolTests(SFCase):
         self.assertTrue((runtime / "sf_feedback_admin.py").is_file())
         self.assertTrue((runtime / "tools/feedback_agent.py").is_file())
         plist = plistlib.loads(Path(result["plist"]).read_bytes())
-        self.assertEqual(plist["StartInterval"], 30 * 60)
+        self.assertEqual(plist["StartInterval"], 15 * 60)
         self.assertIn(str(runtime / "tools/feedback_agent.py"), plist["ProgramArguments"])
         self.assertFalse(any(".venv" in value for value in plist["ProgramArguments"]))
         self.assertNotIn("GITHUB_TOKEN", plist["EnvironmentVariables"])
@@ -66,6 +66,94 @@ class AdminToolTests(SFCase):
             with self.assertRaises(RuntimeError):
                 install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh", activate=True)
             self.assertEqual(existing.read_bytes(), b"unrelated existing job")
+
+    def _activated_agent(self, run):
+        """Install once so the LaunchAgent file exists, then forget the setup calls."""
+        install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh", activate=True)
+        run.reset_mock()
+        return self.root / "home/Library/LaunchAgents/com.skyrocket.feedback-agent.plist"
+
+    def test_replace_backs_up_unloads_and_loads_the_new_agent(self):
+        old = plistlib.dumps({"Label": install_feedback_agent.LABEL, "StartInterval": 1800})
+        with patch.object(Path, "home", return_value=self.root / "home"), \
+                patch.object(install_feedback_agent.subprocess, "run") as run:
+            existing = self._activated_agent(run)
+            existing.write_bytes(old)
+            result = install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh",
+                                                    activate=True, replace=True)
+        self.assertEqual([call.args[0][1] for call in run.call_args_list], ["bootout", "bootstrap"])
+        self.assertTrue(result["replaced"])
+        backup = Path(result["backup"])
+        self.assertEqual(backup.read_bytes(), old)
+        self.assertEqual(backup.parent, (self.root / "agent").resolve())
+        self.assertEqual(plistlib.loads(existing.read_bytes())["StartInterval"], 15 * 60)
+
+    def test_replace_refuses_a_job_that_is_not_ours_and_touches_nothing(self):
+        with patch.object(Path, "home", return_value=self.root / "home"), \
+                patch.object(install_feedback_agent.subprocess, "run") as run:
+            existing = self._activated_agent(run)
+            for foreign in (plistlib.dumps({"Label": "com.example.other"}), b"not a plist at all"):
+                with self.subTest(foreign=foreign[:12]):
+                    existing.write_bytes(foreign)
+                    with self.assertRaises(RuntimeError):
+                        install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh",
+                                                       activate=True, replace=True)
+                    self.assertEqual(existing.read_bytes(), foreign)
+                    run.assert_not_called()
+        self.assertEqual(list((self.root / "agent").glob("*.replaced-*.plist")), [])
+
+    def test_failed_load_puts_the_previous_agent_back(self):
+        old = plistlib.dumps({"Label": install_feedback_agent.LABEL, "StartInterval": 1800})
+        verbs = []
+
+        def fake_run(args, **kwargs):
+            verbs.append(args[1])
+            if args[1] == "bootstrap" and verbs.count("bootstrap") == 1:
+                raise subprocess.CalledProcessError(5, args)
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(Path, "home", return_value=self.root / "home"), \
+                patch.object(install_feedback_agent.subprocess, "run") as run:
+            existing = self._activated_agent(run)
+            existing.write_bytes(old)
+            run.side_effect = fake_run
+            with self.assertRaises(RuntimeError):
+                install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh",
+                                               activate=True, replace=True)
+        self.assertEqual(verbs, ["bootout", "bootstrap", "bootstrap"])
+        self.assertEqual(existing.read_bytes(), old)
+
+    def test_replace_never_overwrites_an_existing_backup(self):
+        old = plistlib.dumps({"Label": install_feedback_agent.LABEL, "StartInterval": 1800})
+        fixed_clock = SimpleNamespace(strftime=lambda fmt: "FIXED")
+        with patch.object(Path, "home", return_value=self.root / "home"), \
+                patch.object(install_feedback_agent.subprocess, "run") as run, \
+                patch.object(install_feedback_agent, "time", fixed_clock):
+            existing = self._activated_agent(run)
+            existing.write_bytes(old)
+            taken = self.root / "agent/com.skyrocket.feedback-agent.replaced-FIXED.plist"
+            taken.write_bytes(b"earlier backup")
+            with self.assertRaises(RuntimeError):
+                install_feedback_agent.install(self.root / "agent", "/usr/local/bin/gh",
+                                               activate=True, replace=True)
+        self.assertEqual(taken.read_bytes(), b"earlier backup")
+        self.assertEqual(existing.read_bytes(), old)
+        run.assert_not_called()
+
+    def test_replace_flag_needs_activation_and_is_passed_through(self):
+        base = ["install_feedback_agent", "--destination", str(self.root / "agent"), "--gh", "/absolute/gh"]
+        with patch("sys.argv", base + ["--replace"]), patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit) as stop:
+                install_feedback_agent.main()
+        self.assertEqual(stop.exception.code, 2)
+        self.assertFalse((self.root / "agent").exists())
+        with patch("sys.argv", base + ["--activate", "--replace"]), \
+                patch.object(install_feedback_agent, "install", return_value={"ok": True}) as fake_install, \
+                patch.object(install_feedback_agent.os, "umask"), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            install_feedback_agent.main()
+        self.assertTrue(fake_install.call_args.kwargs["activate"])
+        self.assertTrue(fake_install.call_args.kwargs["replace"])
 
     def test_bootstrap_only_creates_private_policy_and_draft_inbox(self):
         api = Mock(spec=GitHubAPI)

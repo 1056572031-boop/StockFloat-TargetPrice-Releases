@@ -67,9 +67,9 @@
   "mypy:tools/static_gate.py:return-value": 1,
   "mypy:tools/test_discipline_scan.py:attr-defined": 4,
   "mypy:tools/test_discipline_scan.py:var-annotated": 1,
-  "mypy:tools/test_runner.py:assignment": 3,
+  "mypy:tools/test_runner.py:assignment": 2,
   "mypy:tools/test_runner.py:misc": 1,
-  "mypy:tools/test_runner.py:var-annotated": 2,
+  "mypy:tools/test_runner.py:var-annotated": 1,
   "mypy:tools/typing_latency_probe.py:arg-type": 4,
   "mypy:tools/typing_latency_probe.py:attr-defined": 2,
   "mypy:tools/typing_latency_probe.py:call-overload": 3,
@@ -80,5 +80,5 @@
   "mypy:tools/verify_bundle_consts.py:var-annotated": 1,
   "ruff:stock_float_window.py:F401": 9
  },
- "total": 307
+ "total": 305
 }

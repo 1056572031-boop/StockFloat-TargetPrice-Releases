@@ -77,6 +77,61 @@ class TestBranchMergeWorkflow(SFCase):
         return Path(self.git("rev-parse", "--path-format=absolute", "--git-path",
                              "hooks/pre-commit", cwd=cwd).stdout.strip())
 
+    def hook_compile_fixture(self, *, bad=False):
+        """Real hook in a disposable repo; the interpreter and run_tests.sh are logging stubs."""
+        hook = self.repo / "git-hooks/pre-commit"
+        hook.parent.mkdir(exist_ok=True)
+        shutil.copyfile(ROOT / "git-hooks/pre-commit", hook)
+        hook.chmod(0o755)
+        calls = self.repo / "compile-calls.log"
+        stub = self.write(".venv/bin/python3", (
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then echo "Python stub"; exit 0; fi\n'
+            f'printf "%s\\n" "--CALL--" >> "{calls}"\n'
+            'shift 2\n'
+            'for f in "$@"; do\n'
+            f'  printf "%s\\n" "$f" >> "{calls}"\n'
+            f'  case "$f" in *bad.py) exit 1;; esac\n'
+            "done\n"))
+        stub.chmod(0o755)
+        runner = self.write("run_tests.sh", '#!/bin/sh\nprintf ran > tests-ran\n')
+        runner.chmod(0o755)
+        included = ["a.py", "dir with space/b.py", "sub/build/nested.py", "sub/backups/nested.py"]
+        excluded = ["backups/x.py", ".venv/lib/x.py", ".pyenvs/x.py", "build/x.py",
+                    "dist/x.py", "pkg/__pycache__/x.py"]
+        for name in included + excluded + (["bad.py"] if bad else []):
+            self.write(name, "VALUE = 1\n")
+        return calls, included, excluded
+
+    def read_compile_calls(self, calls):
+        batches, current = [], None
+        for line in calls.read_text(encoding="utf-8").splitlines():
+            if line == "--CALL--":
+                current = []
+                batches.append(current)
+            else:
+                current.append(line)
+        return batches
+
+    def test_pre_commit_compiles_the_project_python_set_in_one_batch_with_exclusions(self):
+        calls, included, excluded = self.hook_compile_fixture()
+        result = self.run_command(["/bin/bash", str(self.repo / "git-hooks/pre-commit")])
+        batches = self.read_compile_calls(calls)
+        self.assertEqual(len(batches), 1, "every project file must share one interpreter start")
+        seen = sorted(path.removeprefix("./") for path in batches[0])
+        self.assertEqual(seen, sorted(included))
+        for name in excluded:
+            self.assertNotIn(name, seen, result.stdout)
+        self.assertEqual((self.repo / "tests-ran").read_text(), "ran")
+
+    def test_pre_commit_stops_before_the_test_gate_when_one_batched_file_fails(self):
+        calls, _included, _excluded = self.hook_compile_fixture(bad=True)
+        result = self.run_command(["/bin/bash", str(self.repo / "git-hooks/pre-commit")],
+                                  expected=1)
+        self.assertIn("py_compile", result.stdout + result.stderr)
+        self.assertEqual(len(self.read_compile_calls(calls)), 1)
+        self.assertFalse((self.repo / "tests-ran").exists())
+
     def test_no_ff_no_commit_stops_before_moving_mainline_and_commit_runs_hook(self):
         source = self.source_branch()
         hook = self.hook_path()

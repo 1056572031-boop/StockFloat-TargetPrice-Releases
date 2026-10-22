@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock  # 用到 unittest.mock.patch；只写 import unittest 时单跑本模块会 AttributeError，整档靠别的模块先导入才没事
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

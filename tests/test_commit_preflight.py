@@ -5,12 +5,13 @@ import contextlib
 import io
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest import mock
 
 from tests._base import SFCase
-from tools.commit_preflight import inspect_repo, main
+from tools.commit_preflight import inspect_repo, main, screen_state
 from tools.gate_stamp import git_env
 
 
@@ -272,3 +273,74 @@ class TestCommitPreflight(SFCase):
         self.git("update-ref", "-d", "refs/replace/" + self.base)
         self.git("config", "core.sparseCheckout", "true")
         self.assert_blocked("special_checkout_configuration")
+
+    def test_locked_screen_warns_but_never_blocks_the_commit(self):
+        report = self.inspect(screen_probe=lambda: {"locked": True, "display_asleep": False})
+        self.assertTrue(report["checks_passed"], report)
+        self.assertEqual(report["warnings"],
+                         ["screen_locked_full_gate_may_fail_for_unrelated_reasons"])
+
+    def test_sleeping_display_warns_separately_from_a_locked_session(self):
+        report = self.inspect(screen_probe=lambda: {"locked": False, "display_asleep": True})
+        self.assertTrue(report["checks_passed"], report)
+        self.assertEqual(report["warnings"],
+                         ["display_asleep_full_gate_may_fail_for_unrelated_reasons"])
+
+    def test_unreadable_screen_state_is_named_not_reported_as_awake(self):
+        report = self.inspect(screen_probe=lambda: {"locked": None, "display_asleep": False})
+        self.assertTrue(report["checks_passed"], report)
+        self.assertEqual(report["warnings"], ["screen_state_unreadable"])
+
+    def test_awake_readable_screen_has_no_warnings(self):
+        report = self.inspect(screen_probe=lambda: {"locked": False, "display_asleep": False})
+        self.assertEqual(report["warnings"], [])
+        self.assertEqual(report["screen"], {"locked": False, "display_asleep": False})
+
+    def test_screen_state_is_reported_even_when_an_early_check_stops_the_probe(self):
+        # Retry enabled stops the probe before any git call; the screen line must still be there.
+        with mock.patch.dict(os.environ, {"SF_RERUN_FAILED": "1"}):
+            report = self.inspect(screen_probe=lambda: {"locked": True, "display_asleep": False})
+        self.assertFalse(report["checks_passed"], report)
+        self.assertEqual(report["screen"]["locked"], True)
+        self.assertIn("screen_locked_full_gate_may_fail_for_unrelated_reasons", report["warnings"])
+
+    def test_screen_state_without_quartz_reports_unknown_for_both(self):
+        with mock.patch.dict(sys.modules, {"Quartz": None}):
+            self.assertEqual(screen_state(), {"locked": None, "display_asleep": None})
+
+    def test_one_unreadable_signal_does_not_hide_the_other(self):
+        class FakeQuartz:
+            @staticmethod
+            def CGSessionCopyCurrentDictionary():
+                raise RuntimeError("no session")
+
+            @staticmethod
+            def CGMainDisplayID():
+                return 1
+
+            @staticmethod
+            def CGDisplayIsAsleep(_display):
+                return True
+
+        with mock.patch.dict(sys.modules, {"Quartz": FakeQuartz}):
+            self.assertEqual(screen_state(), {"locked": None, "display_asleep": True})
+
+    def test_unreadable_display_does_not_hide_a_locked_session(self):
+        class FakeQuartz:
+            @staticmethod
+            def CGSessionCopyCurrentDictionary():
+                return {"CGSSessionScreenIsLocked": 1}
+
+            @staticmethod
+            def CGMainDisplayID():
+                raise RuntimeError("no display")
+
+        with mock.patch.dict(sys.modules, {"Quartz": FakeQuartz}):
+            self.assertEqual(screen_state(), {"locked": True, "display_asleep": None})
+
+    def test_live_probe_returns_only_booleans_or_none(self):
+        # Not asserting the machine's real state, only the shape other tools rely on.
+        state = screen_state()
+        self.assertEqual(sorted(state), ["display_asleep", "locked"])
+        for value in state.values():
+            self.assertIn(value, (True, False, None))

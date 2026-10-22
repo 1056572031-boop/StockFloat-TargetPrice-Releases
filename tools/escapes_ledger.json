@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-21",
+  "updated": "2026-10-22",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -1538,12 +1538,14 @@
       "introduced_version": null,
       "introduced_note": "工具自 v1.2.63 起就这么写；v1.4.33 起进 run_tests.sh 第 0.5 关，直到本轮复盘才被看出来",
       "found_version": "1.4.45",
-      "fixed_version": null,
+      "fixed_version": "1.4.101",
       "failed_lines": [
         "verify"
       ],
       "why_missed": "全仓对这个关卡 0 条用例、0 次 --self-test（triage 实测：引用次数 0）；同类根子在 G01/G03/D-30 已出现过，但没有一条规则拦「判据引用被验对象的输出」",
-      "defense_added": "判据改成 min(GAP_CEILING_PX=8, BOTTOM_ROW_GAP+3)：今天的强度一点没放松（仍是 5px），但常量变大不再放宽判据；judge() 纯函数化 + --self-test 9 类判定（33px/超上限 1px/上限收紧到 5px 全部必须判红，实测形态与 6px 在默认上限下必须放行，且断言自检进程不导入 sf_ui_render）；tests/test_release_gates.py 每轮跑这条自检",
+      "defense_added": [
+        "防线二：tests/test_arch_constraints.py::TestBottomGapCeilingShape 源码形状锁（5270a89），实测为 1.4.101 发布头 70d3b69 的祖先"
+      ],
       "observed_at": null,
       "rootcause_at": null,
       "locate_unknown_reason": "关卡类缺陷没有「用户第一次看见现象」的时刻可追认，它占用的是挂账版本数这一口径（见潜伏跨度）",
@@ -3732,7 +3734,7 @@
       "introduced_version": "1.4.58",
       "introduced_note": "observed_at 取本轮第一次前台实测的时刻（与同分钟的前台探针产物同时钟）；rootcause 戳打在台账登记时，所以这一族的定位时长要读成「同一轮会话内」，不是精确分钟数。潜伏 1.4.58→1.4.68 共 11 版；OTA 包里不含 .command，所以只伤害拿 DMG 手装的人（新装、≤1.4.58 必须手动装的机器、以及人工转发 DMG 的场合）",
       "found_version": "1.4.68",
-      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "fixed_version": "1.4.69",
       "failed_lines": [
         "verify"
       ],
@@ -3780,7 +3782,7 @@
       "introduced_version": "1.4.58",
       "introduced_note": "同 S53 的时刻口径。校验对源包做实测只要 0.072 秒，前置没有代价",
       "found_version": "1.4.68",
-      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "fixed_version": "1.4.69",
       "failed_lines": [
         "verify"
       ],
@@ -3828,7 +3830,7 @@
       "introduced_version": "1.4.58",
       "introduced_note": "开发机 shell 没设 LANG → 永远不复现；用户终端 LANG=zh_CN.UTF-8（AppleLocale=zh_CN）→ 必现。同批全仓 7 处（含 build_release.sh 四处与两枚 tools/*.command），那些是开发侧不进产物",
       "found_version": "1.4.68",
-      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "fixed_version": "1.4.69",
       "failed_lines": [
         "verify"
       ],
@@ -3876,7 +3878,7 @@
       "introduced_version": "1.4.58",
       "introduced_note": "低危：正常路径下递归清除会成功，所以是「动作与核验范围不一致」这一族，不是每次都咬人",
       "found_version": "1.4.68",
-      "fixed_version": "未出包：随下一版 DMG（负责人 2026-10-13 定「等下一版自然带出」）",
+      "fixed_version": "1.4.69",
       "failed_lines": [
         "verify"
       ],
@@ -3924,7 +3926,7 @@
       "introduced_version": "1.4.58",
       "introduced_note": "与 verify_dmg_pyz 无脑 PASS 五十多版同一族：闸门宣称覆盖面大于实际覆盖面。修法是路线 5→9 条 + 九条全在 zh_CN.UTF-8 下跑 + 变异 S10「关卡退回 C locale 必须红」",
       "found_version": "1.4.68",
-      "fixed_version": "1.4.68（关卡侧本轮即生效，不依赖出包）",
+      "fixed_version": "1.4.69",
       "failed_lines": [
         "verify"
       ],
@@ -4387,12 +4389,14 @@
       "introduced_version": null,
       "introduced_note": null,
       "found_version": "1.4.99",
-      "fixed_version": null,
+      "fixed_version": "1.4.100",
       "failed_lines": [
         "verify"
       ],
       "why_missed": "既有判据只覆盖Show瞬间的Space接线，没有覆盖随后原生属性被改写、工具窗失活隐藏及真实输入；本机未稳定复现用户原始失败，不能认定唯一根因。",
-      "defense_added": "增加Show完成后的Cocoa复核、失活不隐藏及加入Space后的前置；旧实现三项负向判据失败，修复后两个真实弹窗在Chrome全屏Space持续在屏并接收控件输入；尚待安装版用户路径复验。",
+      "defense_added": [
+        "防线二：Show 之后的 Cocoa 复核与续补节拍判据 tests/test_popup_fullscreen_space.py；修复提交 22fbe94 实测为 1.4.100 发布头 0a14092 与 1.4.101 发布头 70d3b69 的祖先。装机版真机复验仍未做，不冒充已验收"
+      ],
       "observed_at": "2026-10-21 09:49:35+08:00",
       "observed_origin": "now",
       "rootcause_at": null,
@@ -4408,13 +4412,15 @@
       "introduced_version": null,
       "introduced_note": null,
       "found_version": "1.4.99",
-      "fixed_version": null,
+      "fixed_version": "1.4.101",
       "failed_lines": [
         "verify",
         "locate"
       ],
       "why_missed": "authorizationStatus属于UNNotificationSettings而非UNUserNotificationCenter；原夹具直接在center伪造同名同步方法，遮蔽真实异步接口。2026-10-21本轮前段已通过真实反馈日志与框架元数据确认根因，原确认时刻未独立留戳，本次为补记，不可当定位时长。",
-      "defense_added": null,
+      "defense_added": [
+        "防线一/二：授权状态改按 UNNotificationSettings 异步取，判据 tests/test_review_fixes_20261012.py 与反馈诊断补强用例（e5ce171 实测为 70d3b69 的祖先）"
+      ],
       "observed_at": "2026-10-21T14:07:33+08:00",
       "observed_origin": "log",
       "rootcause_at": null,
@@ -4429,6 +4435,29 @@
           "reason": "补记时刻误作真实定位终点，保留审计并退回null"
         }
       ]
+    },
+    {
+      "id": "N20",
+      "symptom": "通知授权尚未答复时命中的目标价，横幅被排队后超时丢弃且不再补提醒（目标价已先记为已触发）",
+      "component": "通知",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.101",
+      "introduced_note": null,
+      "found_version": "1.4.101",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "异步授权改造把『未答复』从立即补发改成排队，用例把新口径当成契约；没有任何用例断言『授权未答复时命中的目标价仍要有一条横幅』，也没有验收看目标价已先落盘记为已触发这一事实。",
+      "defense_added": [],
+      "observed_at": "2026-10-22 09:16:38+08:00",
+      "observed_origin": "now",
+      "rootcause_at": null,
+      "locate_unknown_reason": "根因在 2026-10-22 每日复核的代码走读中确认，没有独立日志锚点可证明确认时刻；开条时刻只是记账时刻，不计定位时长。",
+      "source": "2026-10-22 每日复核：sf_notify._PENDING_TTL_SEC 与 stock_float_window._evaluate_targets 代码走读，未在装机版复现",
+      "evidence": "verified",
+      "rootcause_origin": "unknown"
     }
   ],
   "rounds": [
@@ -5074,6 +5103,20 @@
         "对比度微调：判据底色由纯黑改为真机最亮玻璃底 (44,44,44)，tests/test_v1459_color_tokens.py 新增两颗实心钮白字与悬停/按下明暗次序判据；蓝红按钮悬停态仍低于 4.5:1，未处理。"
       ],
       "zero_reason": "本版尚未发行，无本版新发现逃逸；0 仅表示未登记本版线上逃逸，不代表上线后无故障，真实场景缺口仍按未验证保留。"
+    },
+    {
+      "version": "1.4.102",
+      "date": "2026-10-22",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "品牌标志图标：tests/test_coverage_icons_editor.py::TestAppIcon 覆盖标志取色（橙红与墨、无蓝）、留边、缺 QtSvg 时退回旧图标、图标落盘失败不影响返回值；改坏渲染分支必红。",
+        "铃铛提醒气泡改版：tests/test_bell_bubble_rows.py 与 tests/test_target_bubble_live.py 覆盖排序、百分比列、随行情刷新与不重开已关气泡。",
+        "反馈窗居中与无按钮上传提示：tests/test_feedback_dialog.py、tests/test_coverage_native_alert_layout.py。",
+        "到价提醒在通知授权未答复时的兜底：tests/test_notify.py（立即兜底、排队转移、超时送出、拒绝优先）；台账 N20 的修复版本待本改动随正式发行后再填。",
+        "升级助手清理改名前回退副本：tests/test_update_helper_legacy_rollbacks.py。"
+      ],
+      "zero_reason": "本版尚未对外发行，目前只做本机候选，无本版新发现的线上逃逸；0 仅表示未登记，不代表上线后无故障，装机版实机观感与真实授权框仍为未验证。"
     }
   ],
   "comparison_policy": {

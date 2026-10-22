@@ -26,6 +26,8 @@ AGENTS §6 第 10 条与 [[project-chain-coverage-import-trap]] 两边都要顾�
 等于给它发了一张免检牌。
 """
 
+import contextlib
+import io
 import os
 import pathlib
 import subprocess
@@ -290,6 +292,115 @@ class GateOnTheReleaseChain(SFCase):
         at = text.find("diag_coverage_check.py")
         tail = text[at:at + 320]
         self.assertIn("exit 1", tail, "核验失败必须中止发版")
+
+
+class GateRangeBaseline(SFCase):
+    """显式基线与产品模块名单（v1.4.101 发布后补）。
+
+    推断区间不可靠：发布后主线上的修复不改版本号，推断取到的「上一个版本位」可能偏大，
+    也可能落在旁支提交上而偏小。显式基线必须取自上一版发布记录，且必须是 HEAD 的祖先。
+    """
+
+    def setUp(self):
+        super().setUp()
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        self.track_patch(patch.dict(os.environ, clean_env, clear=True))
+        temporary = tempfile.TemporaryDirectory(prefix="sfdiag_baseline_")
+        self.addCleanup(temporary.cleanup)
+        self.repo = pathlib.Path(temporary.name)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.name", "fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        self.v100 = self.commit("sf_constants.py", "APP_VERSION = '1.0.0'\n")
+        self.published = self.commit("sf_a.py", "A = 1\n")          # 上一版真正发布的源码
+        self.fix = self.commit("sf_b.py", "B = 1\n")                # 发布后的修复，不改版本号
+        self.bump = self.commit("sf_constants.py", "APP_VERSION = '1.0.1'\n")
+        self.last = self.commit("sf_c.py", "C = 1\n")
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def commit(self, name, text):
+        (self.repo / name).write_text(text, encoding="utf-8")
+        self.git("add", "--", name)
+        self.git("commit", "-qm", "add %s" % name)
+        return self.git("rev-parse", "HEAD")
+
+    def test_explicit_baseline_wins_over_the_version_guess(self):
+        guessed, _ = gate.resolve_range(self.repo, "", "1.0.1")
+        self.assertEqual(guessed, "%s..HEAD" % self.v100, "推断落在更早的版本位：这正是它不可靠的地方")
+        explicit, note = gate.resolve_range(self.repo, "", "1.0.1", baseline=self.published)
+        self.assertEqual(explicit, "%s..HEAD" % self.published)
+        self.assertIn(self.published[:9], note)
+        self.assertEqual(self.git("rev-list", "--count", explicit), "3", "基线之后应当是 3 笔")
+
+    def test_guess_names_itself_an_estimate_with_the_commit_count(self):
+        _, note = gate.resolve_range(self.repo, "", "1.0.1")
+        self.assertIn("估计", note)
+        self.assertIn("共 4 笔", note, "推断必须把区间里有多少笔说出来，读的人才看得出偏大还是偏小")
+        self.assertIn("--baseline", note)
+
+    def test_range_override_beats_baseline(self):
+        got, note = gate.resolve_range(self.repo, "HEAD~1..HEAD", "1.0.1", baseline=self.published)
+        self.assertEqual(got, "HEAD~1..HEAD")
+        self.assertIn("--range", note)
+
+    def test_unknown_baseline_refuses_instead_of_guessing(self):
+        got, note = gate.resolve_range(self.repo, "", "1.0.1", baseline="0" * 40)
+        self.assertEqual(got, "", "取不到基线必须拒答，不能悄悄退回推断")
+        self.assertIn("不是仓库里的提交", note)
+
+    def test_baseline_that_is_not_an_ancestor_of_head_is_refused(self):
+        self.git("checkout", "-q", "-b", "side", self.published)
+        side = self.commit("sf_side.py", "S = 1\n")
+        self.git("checkout", "-q", "main")
+        got, note = gate.resolve_range(self.repo, "", "1.0.1", baseline=side)
+        self.assertEqual(got, "")
+        self.assertIn("不是 HEAD 的祖先", note)
+
+    def test_check_carries_the_baseline_refusal_instead_of_passing(self):
+        """基线读不出时，`check()` 必须带着拒答原因返回（调用方退 2），不能当成「本轮没改动」。"""
+        result = gate.check(ROOT, version="9.9.9", baseline="0" * 40)
+        self.assertFalse(result["ok"])
+        self.assertIn("不是仓库里的提交", result["refuse"])
+        self.assertEqual(result["changed"], [], "拒答时不许带出一份看着像结论的改动清单")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            exit_code = gate.main(["--version", "9.9.9", "--baseline", "0" * 40])
+        self.assertEqual(exit_code, 2)
+        self.assertIn("无法下结论", out.getvalue())
+
+    def test_changed_modules_follow_the_explicit_baseline(self):
+        got = gate.changed_modules(self.repo, "%s..HEAD" % self.published)
+        self.assertEqual(got, {"sf_b", "sf_constants", "sf_c"})
+
+    def test_cli_reads_baseline_from_flag_then_environment(self):
+        seen = []
+
+        def fake_check(root, rev_range="", version="", changed=None, baseline=""):
+            seen.append(baseline)
+            return {"refuse": "stop here", "empty_round": False}
+
+        with patch.object(gate, "check", side_effect=fake_check), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with patch.dict(os.environ, {"SF_RELEASE_BASELINE": "from-env"}):
+                gate.main(["--dir", str(self.repo), "--baseline", "from-flag"])
+                gate.main(["--dir", str(self.repo)])
+            with patch.dict(os.environ, {"SF_RELEASE_BASELINE": ""}):
+                gate.main(["--dir", str(self.repo)])
+        self.assertEqual(seen, ["from-flag", "from-env", ""], "旗标 > 环境变量 > 空（才按版本号推断）")
+
+    def test_product_modules_cover_every_root_module_not_just_the_named_ones(self):
+        """点名清单回答不了「还有第几个没进来」：v1.4.101 的 target_panel 就是这样一直不在视野里。"""
+        for name in ("target_panel.py", "targets.py", "stock_float_window.py", "renderer.py", "_private.py"):
+            (self.repo / name).write_text("X = 1\n", encoding="utf-8")
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests" / "test_x.py").write_text("X = 1\n", encoding="utf-8")
+        names = gate.product_modules(self.repo)
+        for expected in ("target_panel", "targets", "stock_float_window", "renderer", "sf_a"):
+            self.assertIn(expected, names)
+        self.assertNotIn("_private", names)
+        self.assertNotIn("test_x", names, "子目录里的测试不是产品模块")
 
 
 if __name__ == "__main__":

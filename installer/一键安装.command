@@ -243,12 +243,47 @@ fi
 #    新起的那一代会在 sf_logging._become_single_instance() 处 sys.exit(0) 静默退出；
 #    而被移进废纸篓的旧版**仍在运行**。用户看到的就是"装了新版问题怎么还在"。
 #    只等不杀：等用户从悬浮窗右键「退出」，最多 ${WAIT_SEC} 秒。
-if [ "${SF_INSTALL_ALLOW_RUNNING:-0}" != "1" ]; then
-  RUNNING=""
-  for name in $APP_NAMES; do
-    FOUND="$(/usr/bin/pgrep -f "${name}/Contents/MacOS/" 2>/dev/null || true)"
-    [ -n "$FOUND" ] && RUNNING="$RUNNING $FOUND"
+#    pgrep -f 按整条命令行做子串匹配，别的进程的命令行里恰好带着这串路径
+#    （另一个终端里的 tail / less / 外层 shell -c 都实测命中过）也会被当成"程序在运行"，
+#    于是装不下去还指向一个并不存在的悬浮窗。所以命中之后再逐个核对：这个进程是不是真的
+#    以包内可执行文件启动的 —— 命令行去掉开头的解释器（sh/bash/zsh/dash）之后，
+#    必须以绝对路径开头，且包路径之前不能再夹着别的参数。拿不准时按"在运行"处理：
+#    多等一会儿只是慢，漏判则会在旧版还活着时就开始替换。
+is_app_process() {
+  # $1 = pid，$2 = 包名（Skyrocket.app 等）
+  _args="$(/bin/ps -p "$1" -o args= 2>/dev/null || true)"
+  [ -n "$_args" ] || return 1
+  case "$_args" in
+    "/bin/sh "*) _args="${_args#/bin/sh }" ;;
+    "/bin/bash "*) _args="${_args#/bin/bash }" ;;
+    "/bin/zsh "*) _args="${_args#/bin/zsh }" ;;
+    "/bin/dash "*) _args="${_args#/bin/dash }" ;;
+  esac
+  _head="${_args%%"${2}"/Contents/MacOS/*}"
+  case "$_head" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$_head" in
+    *" /"*|*" -"[A-Za-z]*) return 1 ;;
+  esac
+  return 0
+}
+
+running_app_pids() {
+  _found=""
+  for _name in $APP_NAMES; do
+    for _pid in $(/usr/bin/pgrep -f "${_name}/Contents/MacOS/" 2>/dev/null || true); do
+      if is_app_process "$_pid" "$_name"; then
+        _found="$_found $_pid"
+      fi
+    done
   done
+  printf '%s' "$_found"
+}
+
+if [ "${SF_INSTALL_ALLOW_RUNNING:-0}" != "1" ]; then
+  RUNNING="$(running_app_pids)"
   if [ -n "$RUNNING" ]; then
     say "  检测到本程序正在运行（pid ${RUNNING} ）——请先右键悬浮窗 →「退出」"
     say "  我会等你退出（最多 ${WAIT_SEC} 秒），退出之后自动继续装，不需要你再双击一次。"
@@ -257,11 +292,7 @@ if [ "${SF_INSTALL_ALLOW_RUNNING:-0}" != "1" ]; then
     while [ "$waited" -lt "$WAIT_SEC" ]; do
       /bin/sleep 1
       waited=$((waited + 1))
-      STILL=""
-      for name in $APP_NAMES; do
-        FOUND="$(/usr/bin/pgrep -f "${name}/Contents/MacOS/" 2>/dev/null || true)"
-        [ -n "$FOUND" ] && STILL="$STILL $FOUND"
-      done
+      STILL="$(running_app_pids)"
       [ -n "$STILL" ] || break
     done
     if [ -n "$STILL" ]; then

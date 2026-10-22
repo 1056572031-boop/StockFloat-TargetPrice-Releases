@@ -641,8 +641,8 @@ class CliReadOnly(SFCase):
         super().setUp()
         self.tmpdir = pathlib.Path(tempfile.mkdtemp())
         self.ledger = self.tmpdir / "read-only.json"
-        self.ledger.write_text(json.dumps(fixture_ledger(), ensure_ascii=False),
-                               encoding="utf-8")
+        # 这份夹具扮演"默认台账"，不经 --ledger，所以会被排版判据检查：写成工具的规范写法。
+        self.ledger.write_text(qt.canonical_text(fixture_ledger()), encoding="utf-8")
         self._saved = qt.LEDGER_PATH
         self.track_patch(mock.patch.object(qt, "LEDGER_PATH", self.ledger))
         self.track_patch(mock.patch.object(qt, "version_dates", return_value=dict(VMAP)))

@@ -352,6 +352,28 @@ class TestReleaseChainCallsTheGate(SFCase):
             self.assertGreater(pos, 0, "找不到 %s，脚本结构变了，这条断言需要重新设计" % what)
             self.assertLess(gate, pos, "关卡核验排在 %s 之后 —— 那已经撤不回了" % what)
 
+    def test_diag_coverage_gate_gets_the_real_release_baseline(self):
+        """3.9 诊断覆盖关必须拿到真实发布基线，不许按版本号推断区间（v1.4.101 之后补）。
+
+        守的还是 shell 调用形状：这条闸门没有「跑一次就知道」的可调用行为（跑一次等于
+        发一次版）。实测同一条命令不给基线退 1（点名一个本轮根本没碰的模块）、给上一版
+        发布头退 0 —— 推断区间把上一版已发布的改动也算进「本轮」。一道会因输入取错而
+        凭空喊红的关，下一轮就会被 `--skip` 掉，所以这里钉三件事：基线被要求、
+        要求排在调用之前、传给了 `--baseline`，并且整段仍排在三个不可逆动作之前。
+        """
+        s = self._text("build_release.sh")
+        guard = s.find('if [ -z "${SF_RELEASE_BASELINE:-}" ]')
+        call = s.find("diag_coverage_check.py --version")
+        self.assertGreater(guard, 0, "3.9 没要求真实发布基线，会拿推断区间下结论")
+        self.assertGreater(call, guard, "基线检查必须排在调用闸门之前（先拒绝，再决定跑不跑）")
+        self.assertIn("--baseline \"$SF_RELEASE_BASELINE\"", s[call:call + 200],
+                      "3.9 拿到基线却没传给闸门，等于白检查")
+        for marker, what in (("hdiutil create", "生成 DMG"),
+                             ('cp -R "$PROJ/dist/$APP_BUNDLE" "$APP_DST"', "替换 /Applications"),
+                             ("tools/publish_update_release.py --assets", "切换线上 OTA 清单")):
+            pos = s.find(marker)
+            self.assertGreater(pos, call, "找不到 %s，脚本结构变了，这条断言需要重新设计" % what)
+
     def test_quality_record_is_bound_before_expensive_preflight(self):
         """质量记录缺失必须在公开历史/签名扫描前失败，避免无效重试浪费发布时间。"""
         source = self._text("build_release.sh")

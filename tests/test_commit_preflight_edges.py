@@ -83,6 +83,28 @@ class CommitPreflightEdges(SFCase):
         with patch.object(preflight.subprocess, "run", side_effect=mutate):
             self.assert_issue(preflight.inspect_repo(self.root, ["base.py"]), "hook_changed_during_probe")
 
+    def test_root_quality_records_are_evidence_not_execution_inputs(self):
+        """发布流程把质量记录放在工程根，别的会话遗留的旧版记录不该让预检红。
+        只认根目录这一层的 quality-v*.json；子目录、其他后缀、其他名字仍按原规则拦。"""
+        for name in ("quality-v1.4.100.json", "quality-v1.4.100.manifest.json",
+                     "quality-v1.4.100-final-complete.json"):
+            (self.root / name).write_text("{}\n")
+        report = preflight.inspect_repo(self.root, ["base.py"])
+        self.assertTrue(report["checks_passed"], report)
+        self.assertIn("quality-v1.4.100.json", report["untracked_paths"], "豁免只是不当作执行输入，仍如实列出")
+
+    def test_lookalikes_of_quality_records_are_still_blocked(self):
+        cases = {"settings.json": "{}\n", "quality.json": "{}\n", "quality-v1.py": "X = 1\n",
+                 "sub/quality-v1.4.100.json": "{}\n"}
+        for name, text in cases.items():
+            with self.subTest(name=name):
+                path = self.root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_text(text)
+                report = preflight.inspect_repo(self.root, ["base.py"])
+                self.assert_issue(report, "untracked_possible_execution_inputs")
+                path.unlink()
+
     def test_direct_cli_reports_success_and_failure_without_touching_real_repository(self):
         previous_path = list(sys.path)
         self.addCleanup(lambda: setattr(sys, "path", previous_path))

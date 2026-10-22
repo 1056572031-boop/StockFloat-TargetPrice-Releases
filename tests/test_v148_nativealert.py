@@ -198,6 +198,16 @@ class TestNativeConstruction(_NativeBase):
         sf_system_alert.show_alert("t", "x", icon_path="/no/such.icns")
         self.assertIsNone(_Alert.instances[0].icon)
 
+    def test_buttonless_alert_hides_the_band_and_normal_alerts_do_not(self):
+        # NSAlert 在 layout 时会自己补一个「OK」，所以「不要按钮」必须由产品事后藏起来；
+        # 带按钮的提示则一个都不能被藏。
+        with patch.object(sf_system_alert.NativeAlert, "_hide_button_band") as hide:  # discipline-ok(R5): observe the real call site, geometry is covered in test_coverage_native_alert_layout
+            sf_system_alert.show_alert("t", "x", buttons=())
+            hide.assert_called_once_with(_Alert.instances[0])
+            hide.reset_mock()
+            sf_system_alert.show_alert("t", "x", buttons=("好",))
+            hide.assert_not_called()
+
 
 class TestNativeLifecycle(_NativeBase):
     def _make(self, on_result=None):

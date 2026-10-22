@@ -383,9 +383,38 @@ def run_presentation():
     return 0
 
 
+def run_nobutton():
+    """buttons=() 的纯进度提示：读回真实 NSAlert，不信任调用参数。
+
+    NSAlert 在 layout 时会自己补一个「OK」（2026-10-22 实测），所以判据是：按钮被藏起来、
+    禁用、没有回车键位；窗口比带按钮的那张矮（没有留下空白带）；文案没有压到窗口底边外。
+    """
+    with_button = s.show_alert(title="t", text="正在上传反馈，请稍候。", buttons=("好",))
+    _offscreen(with_button._window)  # discipline-ok(R5): 真窗口必须先挪出屏幕再量
+    tall = float(with_button._window.frame().size.height)  # discipline-ok(R5): native boundary under test
+    with_button.close()
+    handle = s.show_alert(title="t", text="正在上传反馈，请稍候。", buttons=())
+    window = handle._window  # discipline-ok(R5): native boundary under test
+    _offscreen(window)
+    alert = handle._alert  # discipline-ok(R5): native boundary under test
+    buttons = list(alert.buttons())
+    _marker("all_hidden", all(bool(b.isHidden()) for b in buttons))
+    _marker("all_disabled", all(not bool(b.isEnabled()) for b in buttons))
+    _marker("no_key_equivalent", all(str(b.keyEquivalent()) == "" for b in buttons))
+    height = float(window.frame().size.height)
+    _marker("shorter_than_with_button", height < tall)
+    lowest = min(float(v.frame().origin.y) for v in window.contentView().subviews()
+                 if not v.isHidden() and (not hasattr(v, "stringValue") or str(v.stringValue() or "").strip()))
+    _marker("bottom_gap_ok", 0.0 <= lowest <= s.NativeAlert._BOTTOM_GAP + 1.0)  # discipline-ok(R5): layout constant under test
+    handle.close()
+    return 0
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
+        if mode == "nobutton":
+            sys.exit(run_nobutton())
         if mode == "probe":
             sys.exit(run_probe())
         if mode == "progress":

@@ -229,6 +229,22 @@ class RealNativePresentation(SFCase):
         self.assertEqual(markers.get("hides"), "False")
         self.assertEqual(markers.get("reopens_closed"), "False")
 
+    def test_alert_without_buttons_really_hides_the_band_and_shrinks_the_window(self):
+        # 用户 2026-10-22：「反馈上传中」提示下方的按钮去掉。NSAlert 自己会补一个 OK，
+        # 所以要读回真实控件状态，只看传进去的 buttons=() 是自指断言。
+        if alerts.AppKit is None:
+            self.skipTest("AppKit unavailable")
+        probe, markers = _spawn("probe")
+        if markers.get("probe") != "ok":
+            self.skipTest("native window service unavailable: %s" % probe.stderr[-200:])
+        proc, markers = _spawn("nobutton")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(markers.get("all_hidden"), "True", "系统补的 OK 按钮必须被藏起来")
+        self.assertEqual(markers.get("all_disabled"), "True", "被藏起来的按钮不能响应点击")
+        self.assertEqual(markers.get("no_key_equivalent"), "True", "被藏起来的按钮不能响应回车")
+        self.assertEqual(markers.get("shorter_than_with_button"), "True", "按钮区的空白带必须收掉")
+        self.assertEqual(markers.get("bottom_gap_ok"), "True", "文案底部留白应是正常的 20pt 而不是一大片空白")
+
 
 if __name__ == "__main__":
     unittest.main()

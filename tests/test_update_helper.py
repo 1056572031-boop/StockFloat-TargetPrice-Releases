@@ -540,6 +540,24 @@ class TestHelperVerificationHome(SFCase):
                 self.assertEqual((self.target / "Contents/Info.plist").read_bytes(), original)
                 self.assertEqual(list(self.apps.glob(".*.rollback-*")), [])
 
+    def test_rejects_target_in_a_sibling_dir_even_when_both_share_a_nested_temp_root(self):
+        """私有根是 home 的直接父目录；同在更深一层临时目录里的兄弟目录不算同一个根（T-26）。
+
+        旧规则取「临时基目录之后的第一段」当根：TMPDIR 指到更深一层（/tmp/x 或
+        $(getconf DARWIN_USER_TEMP_DIR)/x）时，两个不同临时目录共享那一段，跨目录的
+        target 就不再被拒。这条用例把两个目录都建在夹具自己的私有根之内，所以与 TMPDIR
+        的形状无关；旧规则下 target 落在「第一段」之内会被放行，本用例当场红。
+        """
+        nest = self.root / "nested-root"
+        home = nest / "a" / "验证 home"
+        home.mkdir(parents=True)
+        other_target = _make_app(nest / "b")
+        original = (other_target / "Contents/Info.plist").read_bytes()
+        proc, payload = self.invoke(home, other_target)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(payload.get("message"), "verification_home_invalid")
+        self.assertEqual((other_target / "Contents/Info.plist").read_bytes(), original)
+
     def test_rejects_derived_path_symlinks_including_dangling_links(self):
         for name in ("config.json", "universe.json", "last_quote.json",
                      "debug.log", "single.sock"):

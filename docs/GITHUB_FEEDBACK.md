@@ -95,7 +95,7 @@ node deploy-pages.mjs --configuration /private/wrangler.pages.production.jsonc \
   --gh /absolute/path/to/gh --destination /private/feedback-agent --activate
 ```
 
-安装工具复制哈希绑定的独立源码快照，固定仓库外的 Python 3.14.7 基础解释器及 `gh` 绝对路径，生成 `com.skyrocket.feedback-agent` LaunchAgent，每 1800 秒（30 分钟）执行一次；用户登录或重新加载启动项时先执行一次。它不依赖开发工作树、shell 激活或 PATH；不会静默覆盖不同的既有 LaunchAgent。基础解释器/gh 被删除或 GitHub 登录失效仍会失败，日志和退出码必须保留。30 分钟不是到达时限承诺，离线、休眠和限流可能延迟处理。
+安装工具复制哈希绑定的独立源码快照，固定仓库外的 Python 3.14.7 基础解释器及 `gh` 绝对路径，生成 `com.skyrocket.feedback-agent` LaunchAgent，每 900 秒（15 分钟）执行一次；用户登录或重新加载启动项时先执行一次。它不依赖开发工作树、shell 激活或 PATH；不会静默覆盖不同的既有 LaunchAgent。升级已装代理时加 `--activate --replace`：只有既有文件的 Label 确是本任务才继续，先把旧文件备份到安装目录（`*.replaced-<时间>.plist`，已存在则拒绝）、卸载、写入、再加载；新任务加载失败会自动放回旧文件并报错，别的任务或无法解析的文件一律拒绝且不动任何东西。基础解释器/gh 被删除或 GitHub 登录失效仍会失败，日志和退出码必须保留。15 分钟不是到达时限承诺，离线、休眠和限流可能延迟处理。
 
 当前安装入口使用版本化代理的 `--desktop-dir`，把已验证的JSON、Markdown及原始反馈ZIP一起保存到桌面“Skyrocket 用户反馈报告”的案件目录。原包不重复下载、不自动解压执行，不覆盖用户编辑；单案异常继续处理其他案件，导出失败参与同一次状态提醒。独立解释器禁用用户站点包，不依赖工作树之外的未固定Python扩展。
 

@@ -19,10 +19,11 @@ import tempfile
 from sf_bootstrap import guard_temporary_launch
 guard_temporary_launch()
 
-from PyQt6.QtCore import (Qt, QTimer, QPoint, pyqtSignal,
+from PyQt6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QRectF, pyqtSignal,
                           QCoreApplication, QEvent)
 from PyQt6.QtGui import (QAction, QPainter, QColor, QPen, QIcon, QPixmap,
-                         QFont, QFontMetrics)
+                         QFont, QFontMetrics, QGuiApplication, QPainterPath,
+                         QPolygonF)
 from typing import Optional
 from PyQt6.QtWidgets import QApplication, QWidget, QToolTip, QProgressBar, QMessageBox
 # 退出期同步销毁 Qt 对象用（见 _flush_deferred_deletions / _close_update_flow_box）
@@ -33,7 +34,7 @@ from renderer import smooth_round_rect_path
 
 # ---- 模块化拆分 sf_ui_render：显式导入（v1.2.22 消除通配符 import*） ----
 from sf_ui_render import (BOTTOM_BASE_HIDDEN, BOTTOM_SECTION_HIDDEN, BTN_CY, BTN_X, CHART_MIN_DRAW_H,
-                          BTN_ICON_Y, BTN_ICON_SZ, CHART_MIN_H, CHART_TOP, RED, GREEN,
+                          BTN_ICON_Y, BTN_ICON_SZ, CHART_MIN_H, CHART_TOP, RED, GREEN, NUM_FONT,
                           Y_PRICE, RenderMixin, bottom_rows, collapsed_height,
                           load_bundled_fonts, warm_font_metrics)
 # v1.2.95 走查：bottom_rows 此前**从未导入** —— 而 _bottom_texts()（1891 行）直接调用它，
@@ -138,7 +139,8 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
                           FACE_GUARD_FIRST_FRAME_SEC, FACE_GUARD_MENU_TEXT,
                           FACE_GUARD_RETRY_STALLED_SEC, FACE_GUARD_SCREEN_PROBE_SEC,
                           FACE_GUARD_STALE_SEC,
-                          FG_BRIGHT_HEX, FG_DIM, FG_DIM_HEX, ACCENT_BLUE_HEX, MENU_SEPARATOR_HEX,
+                          FG_BRIGHT_HEX, FG_DIM, FG_DIM_HEX, FG_HINT_HEX, ACCENT_BLUE_HEX, MENU_SEPARATOR_HEX,
+                          UP_RED_HEX, DOWN_GREEN_HEX,
                           LAST_QUOTE_PATH, LOG_PATH, MAX_H, MIN_H, W, LOG_ROTATE_KEEP, POLL_DEGRADED,
                           LOG_MAX_BYTES,
                           POLL_FAIL_TO_DEGRADED, POLL_FAIL_TO_OPEN,
@@ -171,6 +173,7 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
 
 # ---- 模块化拆分「目标价」功能（v6 Step 4/6/7） ----
 from targets import (evaluate_tick, recover_alerts, expired, drop_expired,
+                     bell_bubble_rows,
                      _beijing_now, _clear_dt, STATE_HIT,
                      roll_alerts_to_trading_day)
 from sf_notify import (has_bundle_identity,
@@ -537,15 +540,43 @@ FLASH_DROP_LEVELS = (       # 档位表：key 用于独立冷却记录
 
 
 class TargetBubble(QWidget):
-    """铃铛专用自绘气泡：按待触发/已触发分区展示目标价。"""
-    PAD_X = 14
-    PAD_Y = 12
+    """铃铛专用自绘气泡（效果图 B 版）：待触发 / 已触发两组，每行「方向词｜价位｜距现价%」。
+
+    窗口比可见的气泡本体大一圈透明边（MARGIN_*），用来画柔影和指向铃铛的小三角。
+    所有尺寸与定位接口（show_below / body_rect_global）都以「本体」为准，调用方不必关心这圈边。
+    """
+    # ---- 本体（单位 px，取自效果图 B 的实测值）----
+    PAD_X = 12
+    PAD_TOP = 9
+    PAD_BOTTOM = 10
     RADIUS = 10
-    SECTION_GAP = 10
-    DIVIDER_GAP = 7
-    PENDING_COLOR = QColor("#f5c542")
-    HIT_COLOR = QColor("#9aa2b8")
-    DIVIDER_COLOR = QColor("#5a6072")
+    MIN_CONTENT_W = 112         # 内容区最小宽（不含左右内边距）
+    HEADER_H = 15
+    HEADER_GAP = 3
+    ROW_H = 22
+    SEP_GAP_TOP = 7             # 两组之间：细线上方 7、下方 6
+    SEP_GAP_BOTTOM = 6
+    COL_GAP = 6
+    PCT_GAP = 14                # 价位与百分比之间，在列距之外再留的空
+    # ---- 与铃铛的关系 ----
+    GAP_TO_ICON = 8             # 本体边到铃铛图标边；悬停底板比图标各大 4px，三角尖端正好顶到底板
+    CARET_H = 4.25
+    CARET_INSET = 15            # 三角中心离本体左右边至少这么远，避开 10px 圆角
+    SCREEN_EDGE = 4             # 本体离屏幕可用区域边缘至少留的空
+    # ---- 透明外圈：柔影与三角都画在这里 ----
+    MARGIN_X = 16
+    MARGIN_TOP = 12
+    MARGIN_BOTTOM = 24
+    # ---- 颜色（涨跌色取 sf_constants 的具名 token，与主界面 RED / GREEN 同一来源，同屏只此一种红）----
+    UP_COLOR = QColor(UP_RED_HEX)
+    DOWN_COLOR = QColor(DOWN_GREEN_HEX)
+    PENDING_DOT_COLOR = QColor("#f5c542")     # 与铃铛「待触发」同色
+    HIT_DOT_COLOR = QColor("#9aa2b8")         # 与铃铛「已触发」同色
+    HEADER_COLOR = QColor(FG_DIM_HEX)
+    HIT_TEXT_COLOR = QColor(FG_HINT_HEX)
+    BODY_COLOR = QColor(29, 30, 28, 245)
+    RING_COLOR = QColor(255, 255, 255, 26)
+    SEP_COLOR = QColor(255, 255, 255, 20)
 
     def __init__(self):
         super().__init__(None)
@@ -554,68 +585,214 @@ class TargetBubble(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # 提示气泡不得截获顶部按钮点击
-        self._groups = {"pending": [], "hit": []}
-        self._fm = QFontMetrics(QFont("PingFang SC", 11, QFont.Weight.Medium))
+        self._rows = {"pending": [], "hit": []}
+        self._body_w = self._body_h = 0
+        self._flipped = False
+        self._caret_x = 0.0          # 三角中心，本体坐标系（不含透明外圈）
+        self._relayout()
 
-    def setGroups(self, pending, hit):
-        """设置待触发（上）与已触发（下）两组内容。"""
-        self._groups = {"pending": list(pending or []), "hit": list(hit or [])}
-        lines = self._groups["pending"] + self._groups["hit"]
-        width = max((self._fm.horizontalAdvance(line) for line in lines), default=56)
-        section_count = int(bool(self._groups["pending"])) + int(bool(self._groups["hit"]))
-        line_count = len(lines)
-        height = line_count * self._fm.height() + 2 * self.PAD_Y
-        if section_count == 2:
-            # 两组并存时补分隔线占位：线上下各 DIVIDER_GAP + 组间距 SECTION_GAP + 1px 线宽
-            height += self.SECTION_GAP + 2 * self.DIVIDER_GAP + 1
-        self.setFixedSize(max(width + 2 * self.PAD_X, 96), max(height, 40))
+    @staticmethod
+    def _fonts():
+        """每次现建：字体可能在气泡之后才注册（load_bundled_fonts），缓存会固化兜底字体的度量。"""
+        price = QFont(NUM_FONT)
+        price.setPixelSize(15)
+        price.setBold(True)
+        pct = QFont(NUM_FONT)
+        pct.setPixelSize(11)
+        pct.setBold(True)
+        word = QFont("PingFang SC")
+        word.setPixelSize(11)
+        header = QFont("PingFang SC")
+        header.setPixelSize(10)
+        header.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.4)
+        return price, pct, word, header
+
+    def _columns(self):
+        """三列各自的宽度；没有任何百分比时第三列为 0，整块自动收成两列。"""
+        price_f, pct_f, word_f, _header_f = self._fonts()
+        rows = self._rows["pending"] + self._rows["hit"]
+        word_w = max((QFontMetrics(word_f).horizontalAdvance("涨到"),
+                      QFontMetrics(word_f).horizontalAdvance("跌到")))
+        price_w = max((QFontMetrics(price_f).horizontalAdvance(r[1]) for r in rows), default=0)
+        pct_w = max((QFontMetrics(pct_f).horizontalAdvance(r[2]) for r in rows), default=0)
+        return word_w, price_w, pct_w
+
+    def _relayout(self):
+        _price_f, _pct_f, _word_f, header_f = self._fonts()
+        word_w, price_w, pct_w = self._columns()
+        content_w = word_w + self.COL_GAP + price_w
+        if pct_w:
+            content_w += self.COL_GAP + self.PCT_GAP + pct_w
+        hfm = QFontMetrics(header_f)
+        header_w = max((hfm.horizontalAdvance(t) + 12
+                        for t, k in (("待触发", "pending"), ("已触发", "hit")) if self._rows[k]),
+                       default=0)
+        self._body_w = int(math.ceil(max(content_w, header_w, self.MIN_CONTENT_W))) + 2 * self.PAD_X
+        h = self.PAD_TOP + self.PAD_BOTTOM
+        groups = [k for k in ("pending", "hit") if self._rows[k]]
+        for k in groups:
+            h += self.HEADER_H + self.HEADER_GAP + self.ROW_H * len(self._rows[k])
+        if len(groups) == 2:
+            h += self.SEP_GAP_TOP + 1 + self.SEP_GAP_BOTTOM
+        self._body_h = max(h, 40)
+        self.setFixedSize(self._body_w + 2 * self.MARGIN_X,
+                          self._body_h + self.MARGIN_TOP + self.MARGIN_BOTTOM)
         self.update()
 
-    def setText(self, text):
-        """兼容旧调用：把纯文本按状态前缀解析为两个区域。"""
-        pending, hit = [], []
-        for line in (text or "").splitlines():
-            if line.startswith("已触发"):
-                hit.append(line)
-            elif line:
-                pending.append(line)
-        self.setGroups(pending, hit)
+    def setRows(self, pending, hit):
+        """设置两组行数据，每行 (is_up, 价位文本, 百分比文本)。内容没变就什么都不做，返回是否变化。"""
+        new = {"pending": [tuple(r) for r in (pending or [])],
+               "hit": [tuple(r) for r in (hit or [])]}
+        if new == self._rows:
+            return False
+        self._rows = new
+        self._relayout()
+        return True
 
-    def show_below(self, anchor_global):
-        """气泡水平中心严格对准铃铛中心，顶边位于铃铛下方 8px。"""
-        x = int(anchor_global.x() - self.width() / 2)
-        y = int(anchor_global.y() + 8)
-        self.move(x, y)
+    def rows(self):
+        return {k: list(v) for k, v in self._rows.items()}
+
+    @staticmethod
+    def _available_rect(anchor_global):
+        """锚点所在屏幕的可用区域（已去掉菜单栏与 Dock）。取不到屏幕就返回一个极大的矩形，等于不收拢。"""
+        try:
+            scr = QGuiApplication.screenAt(anchor_global) or QGuiApplication.primaryScreen()
+            if scr is not None:
+                return scr.availableGeometry()
+        except Exception as _swallow_exc:
+            log_swallow("stock_float_window.TargetBubble._available_rect", _swallow_exc)
+        return QRect(-100000, -100000, 200000, 200000)
+
+    def body_rect_global(self):
+        """可见气泡本体在屏幕坐标里的矩形（不含透明外圈）。"""
+        top_left = self.mapToGlobal(QPoint(self.MARGIN_X, self.MARGIN_TOP))
+        return QRect(top_left.x(), top_left.y(), self._body_w, self._body_h)
+
+    def is_flipped(self):
+        """True 表示整块翻到了铃铛上方（下方放不下），小三角朝下。"""
+        return self._flipped
+
+    def caret_center_global_x(self):
+        return self.mapToGlobal(QPoint(0, 0)).x() + self.MARGIN_X + self._caret_x
+
+    def show_below(self, anchor_global, icon_top_y=None):
+        """气泡本体水平中心对准铃铛中心，顶边在铃铛图标下方 GAP_TO_ICON。
+
+        anchor_global 是铃铛图标底边中心；icon_top_y 是图标上沿的屏幕 y，只用于下方放不下时
+        翻到上方（不传就永不翻转）。靠近屏幕左右边时本体向内收拢，小三角仍留在铃铛正下方/上方，
+        只在离本体圆角不足 CARET_INSET 时才被迫偏离。
+        """
+        area = self._available_rect(anchor_global)
+        edge = self.SCREEN_EDGE
+        bw, bh = self._body_w, self._body_h
+        ax = anchor_global.x()
+        left = int(round(ax - bw / 2.0))
+        left = max(area.left() + edge, min(left, area.right() + 1 - edge - bw))
+        top = anchor_global.y() + self.GAP_TO_ICON
+        flipped = False
+        if icon_top_y is not None and top + bh > area.bottom() + 1 - edge:
+            above = icon_top_y - self.GAP_TO_ICON - bh
+            if above >= area.top() + edge:
+                flipped, top = True, above
+        self._flipped = flipped
+        self._caret_x = float(max(self.CARET_INSET, min(ax - left, bw - self.CARET_INSET)))
+        self.move(left - self.MARGIN_X, int(top) - self.MARGIN_TOP)
+        self.update()
         self.show()
         self.raise_()
+
+    def _shape_path(self):
+        """本体圆角矩形 + 指向铃铛的小三角，合成一条轮廓（描边时三角与本体之间没有接缝）。"""
+        w, h, c = float(self._body_w), float(self._body_h), self._caret_x
+        body = smooth_round_rect_path(0, 0, w, h, self.RADIUS)
+        k = self.CARET_H
+        if self._flipped:
+            tri = QPolygonF([QPointF(c - k - 1, h - 1), QPointF(c, h + k), QPointF(c + k + 1, h - 1)])
+        else:
+            tri = QPolygonF([QPointF(c - k - 1, 1), QPointF(c, -k), QPointF(c + k + 1, 1)])
+        caret = QPainterPath()
+        caret.addPolygon(tri)
+        caret.closeSubpath()
+        return body.united(caret)
+
+    def _paint_shadow(self, p):
+        """两层柔影（贴边收口 + 向下散开）。Qt 没有现成模糊，用一组逐层外扩、alpha 递减的圆角矩形逼近高斯。"""
+        w, h = float(self._body_w), float(self._body_h)
+        # (纵向偏移, 高斯 σ, 最深处 alpha 0~1)，对应效果图 0 1px 2px / 0 8px 20px
+        for dy, sigma, peak in ((1.0, 1.0, 0.28), (8.0, 10.0, 0.30)):
+            prev = 0.0                                  # 已叠在外侧的累计覆盖
+            for i in range(8, -9, -1):                  # 从最外层往里：+2σ … -2σ，每 σ/4 一层
+                d = i * sigma / 4.0
+                # 「刚好在这一层边缘内侧」那一带应有的累计覆盖；越往里越深，所以逐层递增
+                cum = peak * 0.5 * math.erfc((d - sigma / 8.0) / (sigma * math.sqrt(2.0)))
+                # 累计覆盖逐层严格递增且恒小于 peak（< 1），这一层的 alpha 因此恒为正，不需要再防 0
+                layer = 1.0 - (1.0 - cum) / (1.0 - prev)
+                prev = cum
+                rect = QRectF(-d, dy - d, w + 2 * d, h + 2 * d)
+                if rect.width() <= 0 or rect.height() <= 0:
+                    continue
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(0, 0, 0, max(1, int(round(layer * 255)))))
+                radius = max(0.0, self.RADIUS + d)
+                p.drawRoundedRect(rect, radius, radius)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        path = smooth_round_rect_path(0, 0, self.width(), self.height(), self.RADIUS)
-        p.fillPath(path, QColor(29, 30, 28, 245))
-        p.setFont(QFont("PingFang SC", 11, QFont.Weight.Medium))
-        y = self.PAD_Y + self._fm.ascent()
-
-        def draw_lines(lines, color):
-            nonlocal y
-            p.setPen(color)
-            for line in lines:
-                p.drawText(self.PAD_X, y, line)
-                y += self._fm.height()
-
-        pending = self._groups["pending"]
-        hit = self._groups["hit"]
-        draw_lines(pending, self.PENDING_COLOR)
-        if pending and hit:
-            y += self.DIVIDER_GAP
-            p.setPen(QPen(self.DIVIDER_COLOR, 1))
-            # 分隔线取「下一行基线上方半个 ascent」，视觉上贴着上一行文字底部
-            divider_y = y - self._fm.ascent() / 2
-            p.drawLine(self.PAD_X, int(divider_y), self.width() - self.PAD_X, int(divider_y))
-            y += self.DIVIDER_GAP + self.SECTION_GAP
-        draw_lines(hit, self.HIT_COLOR)
+        p.translate(self.MARGIN_X, self.MARGIN_TOP)
+        self._paint_shadow(p)
+        shape = self._shape_path()
+        p.fillPath(shape, self.BODY_COLOR)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(self.RING_COLOR, 1))
+        p.drawPath(shape)
+        self._paint_rows(p)
         p.end()
+
+    def _paint_rows(self, p):
+        """组标题 + 每行三列。三列共用同一条文字底线（取价位字体的度量，方向词与百分比跟着它）。"""
+        price_f, pct_f, word_f, header_f = self._fonts()
+        word_w, price_w, pct_w = self._columns()
+        hfm, pfm = QFontMetrics(header_f), QFontMetrics(price_f)
+        x_word = float(self.PAD_X)
+        x_price = x_word + word_w + self.COL_GAP
+        x_pct_right = x_price + price_w + self.COL_GAP + self.PCT_GAP + pct_w
+        row_off = (self.ROW_H - (pfm.ascent() + pfm.descent())) / 2.0 + pfm.ascent()
+        head_off = (self.HEADER_H - (hfm.ascent() + hfm.descent())) / 2.0 + hfm.ascent()
+        y = float(self.PAD_TOP)
+        groups = [(k, t, dot) for k, t, dot in (
+            ("pending", "待触发", self.PENDING_DOT_COLOR), ("hit", "已触发", self.HIT_DOT_COLOR))
+            if self._rows[k]]
+        for gi, (key, title, dot) in enumerate(groups):
+            base = y + head_off
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(dot)
+            p.drawEllipse(QRectF(self.PAD_X, base - 4 - 3, 6, 6))     # 圆点底边离底线 1px
+            p.setFont(header_f)
+            p.setPen(self.HEADER_COLOR)
+            p.drawText(QPointF(self.PAD_X + 12, base), title)
+            y += self.HEADER_H + self.HEADER_GAP
+            for is_up, price_text, pct_text in self._rows[key]:
+                base = y + row_off
+                if key == "hit":
+                    color = self.HIT_TEXT_COLOR
+                else:
+                    color = self.UP_COLOR if is_up else self.DOWN_COLOR
+                p.setPen(color)
+                p.setFont(word_f)
+                p.drawText(QPointF(x_word, base), "涨到" if is_up else "跌到")
+                p.setFont(price_f)
+                p.drawText(QPointF(x_price, base), price_text)
+                if pct_text:
+                    p.setFont(pct_f)
+                    adv = QFontMetrics(pct_f).horizontalAdvance(pct_text)
+                    p.drawText(QPointF(x_pct_right - adv, base), pct_text)
+                y += self.ROW_H
+            if gi < len(groups) - 1:
+                y += self.SEP_GAP_TOP
+                p.setPen(QPen(self.SEP_COLOR, 1))
+                p.drawLine(QPointF(self.PAD_X, y + 0.5), QPointF(self._body_w - self.PAD_X, y + 0.5))
+                y += 1 + self.SEP_GAP_BOTTOM
 
 
 class ToolWindowManager:
@@ -1920,31 +2097,22 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
                 self._update_target_tooltip(btn, e.globalPosition().toPoint())
                 self.update()
 
-    def _target_tooltip_groups(self):
-        """铃铛气泡目标价按待触发（上）与已触发（下）归类。"""
-        pending, hit = [], []
-        for a in self._safe_alerts():
-            try:
-                op = "↑" if a.get("direction") == "above" else "↓"
-                target = float(a.get("target"))
-                line = ("%s %%.%df" % (op, price_decimals(self.code))) % target
-                if a.get("state") == STATE_HIT:
-                    hit.append("已触发 " + line)
-                else:
-                    pending.append("待触发 " + line)
-            except (AttributeError, TypeError, ValueError):
-                continue
-        return pending, hit
-
-    def _target_tooltip_text(self):
-        """兼容文本读取：待触发在前，已触发在后。"""
-        pending, hit = self._target_tooltip_groups()
-        return "\n".join(pending + hit)
+    def _target_bubble_rows(self):
+        """铃铛气泡的行数据：(待触发行, 已触发行)，价位按本品种小数位，百分比取当前判定价。"""
+        return bell_bubble_rows(self._safe_alerts(), self._current_price(),
+                                price_decimals(self.code))
 
     def _hide_target_bubble(self):
         bubble = getattr(self, "_target_bubble", None)
         if bubble is not None:
             bubble.hide()
+
+    def _place_target_bubble(self, bubble):
+        # 锚点 = 铃铛图标底边中心：BTN_X 是距窗口右边缘的偏移，需换算成窗口内 x。
+        # 同时给出图标上沿，下方放不下时气泡整块翻到铃铛上方。
+        anchor = QPoint(self.width() - BTN_X["bell"], BTN_ICON_Y + BTN_ICON_SZ)
+        top = QPoint(anchor.x(), BTN_ICON_Y)
+        bubble.show_below(self.mapToGlobal(anchor), self.mapToGlobal(top).y())
 
     def _update_target_tooltip(self, btn, global_pos):
         """铃铛悬浮时显示主界面同调自绘气泡，中心严格对准铃铛。"""
@@ -1954,14 +2122,27 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         if btn != "bell":
             bubble.hide()
             return
-        pending, hit = self._target_tooltip_groups()
+        pending, hit = self._target_bubble_rows()
         if pending or hit:
-            bubble.setGroups(pending, hit)
-            # 锚点 = 铃铛图标底边中心：BTN_X 是距窗口右边缘的偏移，需换算成窗口内 x
-            anchor = QPoint(self.width() - BTN_X["bell"], BTN_ICON_Y + BTN_ICON_SZ)
-            bubble.show_below(self.mapToGlobal(anchor))
+            bubble.setRows(pending, hit)
+            self._place_target_bubble(bubble)
         else:
             bubble.hide()
+
+    def _refresh_target_bubble(self):
+        """气泡正开着时跟着行情更新：百分比随现价走，触发后行从待触发挪到已触发。
+
+        只在气泡可见且鼠标仍在铃铛上时才做事；内容没变不重排、不重新前置，
+        所以盘中每个 tick 过来的开销只是一次行数据比较。
+        """
+        bubble = getattr(self, "_target_bubble", None)
+        if bubble is None or not bubble.isVisible() or self._hover_btn != "bell":
+            return
+        pending, hit = self._target_bubble_rows()
+        if not (pending or hit):
+            bubble.hide()
+        elif bubble.setRows(pending, hit):
+            self._place_target_bubble(bubble)
 
     def enterEvent(self, e):
         super().enterEvent(e)
@@ -2121,6 +2302,7 @@ QMenu::separator {
 
     def _open_feedback(self):
         self._feedback_open_pending = False
+        opened_at = time.monotonic()
         from sf_feedback_capture import capture_snapshot
         from sf_feedback_ui import FeedbackDialog
         from sf_constants import APP_SUPPORT_DIR, FEEDBACK_ENDPOINT
@@ -2146,9 +2328,16 @@ QMenu::separator {
                 QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 10)),
                                   "诊断采集失败，未上传。请使用“导出诊断包”。", self)
                 return
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        # 居中在屏幕上而不是父窗口上（Qt 默认居中父窗口，而父窗口是屏幕一角的小卡片）。
+        dialog.present()
+        # 与目标价面板、编辑器同一条抬层：主窗层级是 25，反馈窗默认只有 8，会被主窗压在下面。
+        # 测试替身宿主没有这个方法，取不到就跳过。
+        raise_tool = getattr(self, "_raise_tool_window", None)
+        if raise_tool is not None:
+            raise_tool(dialog)
+        # 留一行耗时：首次打开要现建窗口，用户若反映「点了没反应」，这里是唯一的现场证据。
+        log_line("feedback dialog opened in %dms visible=%s"
+                 % ((time.monotonic() - opened_at) * 1000, dialog.isVisible()))
 
     def _show_previous_update_result(self):
         """把安装助手留下的最终结果翻译为一次性系统提示。"""
@@ -4138,6 +4327,14 @@ QMenu::separator {
         # v6：「目标价」实时判定（置于切股丢弃判定之后，仿 _maybe_trigger_drop_flash 位置）。
         # 命中即通知（语义键去重）+ 彩虹高亮 + 持久化已 hit 状态；不重复触发。
         self._evaluate_received_quote(data)
+        # 铃铛气泡正开着时让它跟上最新现价与触发状态（气泡没开时这里几乎零开销）。
+        # 紧跟判定之后：刚触发的那一条要立刻从「待触发」挪到「已触发」。
+        refresh_bubble = getattr(self, "_refresh_target_bubble", None)
+        if refresh_bubble is not None:
+            try:
+                refresh_bubble()
+            except Exception as _swallow_exc:
+                log_swallow("stock_float_window._apply_quote.bubble_refresh", _swallow_exc)
         s = data["price"]
         # v1.2.48(S8)：小数位解析增加长度校验 —— 形如 "123."（split 得空串）时
         # decimals=0 会导致展示精度异常；非纯数字/超长异常值一律回落 2 位。

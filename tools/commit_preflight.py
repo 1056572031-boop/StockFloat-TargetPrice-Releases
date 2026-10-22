@@ -36,14 +36,54 @@ class ProbeError(RuntimeError):
     pass
 
 
+def screen_state() -> dict[str, bool | None]:
+    """Read-only screen lock and display sleep state; None means it could not be read.
+
+    The product's own sf_presence.screen_unavailable() deliberately fails open to False, which is
+    right for power saving but wrong here: a preflight must tell "not locked" from "unknown".
+    Locked is not the same as display asleep, and pmset logs cannot see a locked session.
+    """
+    state: dict[str, bool | None] = {"locked": None, "display_asleep": None}
+    try:
+        import Quartz
+    except Exception:
+        return state
+    try:
+        session = Quartz.CGSessionCopyCurrentDictionary()
+        if session is not None:
+            state["locked"] = int(session.get("CGSSessionScreenIsLocked", 0) or 0) == 1
+    except Exception:
+        pass
+    try:
+        state["display_asleep"] = bool(Quartz.CGDisplayIsAsleep(Quartz.CGMainDisplayID()))
+    except Exception:
+        pass
+    return state
+
+
+def screen_warnings(state: dict[str, bool | None]) -> list[str]:
+    """Non-blocking: some tests need a live screen, so a locked one gives false reds."""
+    warnings = []
+    if state.get("locked"):
+        warnings.append("screen_locked_full_gate_may_fail_for_unrelated_reasons")
+    if state.get("display_asleep"):
+        warnings.append("display_asleep_full_gate_may_fail_for_unrelated_reasons")
+    if state.get("locked") is None or state.get("display_asleep") is None:
+        warnings.append("screen_state_unreadable")
+    return warnings
+
+
 def inspect_repo(root: Path, paths: list[str], *, expected_head: str | None = None,
-                 timeout: float = 15) -> dict:
+                 timeout: float = 15, screen_probe=screen_state) -> dict:
     started = time.perf_counter()
     root = root.resolve()
     issues: list[dict[str, Any]] = []
     report: dict[str, Any] = {"schema": 1, "checks_passed": False, "issues": issues,
                               "not_checked": list(NOT_CHECKED), "root": str(root),
                               "scope": paths, "git_calls": 0}
+    # Reported even when a later check stops early; never changes checks_passed.
+    report["screen"] = screen_probe()
+    report["warnings"] = screen_warnings(report["screen"])
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
 
     def issue(code: str, **details):
@@ -182,7 +222,8 @@ def inspect_repo(root: Path, paths: list[str], *, expected_head: str | None = No
             Path(name).name in gate_stamp.BUILD_INPUT_NAMES or
             Path(name).suffix.lower() in EXTRA_INPUT_SUFFIXES or
             Path(name).name.startswith(".env") or os.access(root / name, os.X_OK)
-        ) and not ("hook_sha256" in report and root / name == actual.resolve())]
+        ) and not ("hook_sha256" in report and root / name == actual.resolve())
+            and not is_quality_evidence_record(name)]
         if inputs:
             issue("untracked_possible_execution_inputs", paths=inputs)
         if query("rev-parse", "HEAD").decode().strip() != head or (
@@ -198,6 +239,17 @@ def inspect_repo(root: Path, paths: list[str], *, expected_head: str | None = No
     finally:
         report["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
     return report
+
+
+def is_quality_evidence_record(name: str) -> bool:
+    """工程根目录下的质量记录与其 manifest（`quality-v<版本>[-后缀][.manifest].json`）。
+
+    发布流程把它们放在工程根（记录里的产物路径不接受 `..`，而产物分在 dist/ 与 build/ 两处），
+    不入库、不进公开导出。它们是证据数据，只由 `SF_QUALITY_RECORD` 或命令行显式指到的路径读取，
+    没有任何关卡按名字去扫根目录，所以不是执行输入。别人遗留的旧版记录因此不再让预检红；
+    只认根目录这一层的 `.json`，子目录里的同名文件、`.py` 之类仍按原规则拦。
+    """
+    return "/" not in name and name.startswith("quality-v") and name.endswith(".json")
 
 
 def main(argv: list[str] | None = None) -> int:

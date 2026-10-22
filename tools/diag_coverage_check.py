@@ -35,7 +35,10 @@
 用法
 ----
     ./.venv/bin/python tools/diag_coverage_check.py [--report|--self-test]
-                                    [--range <A..B>] [--version <X.Y.Z>] [--dir <仓库>]
+                                    [--range <A..B>] [--baseline <SHA>] [--version <X.Y.Z>]
+                                    [--dir <仓库>]
+区间优先级：`--range` > `--baseline`（或环境变量 `SF_RELEASE_BASELINE`）> 按版本号推断。
+推断只是估计（见 `resolve_range`），发版前应显式给出上一版发布记录里的 `source.head`。
 未知参数一律退 2（§3.1「链上工具的参数形状规矩」：这工具在发版链上，会被逐个自证）。
 """
 
@@ -43,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import pathlib
 import re
 import subprocess
@@ -71,12 +75,13 @@ def run_git(args: list[str], root: pathlib.Path) -> str:
 
 
 def product_modules(root: pathlib.Path) -> list[str]:
-    """仓库里的产品模块名（不含 tests/tools）。"""
-    names = sorted(p.stem for p in root.glob("sf_*.py"))
-    for extra in ("stock_float_window", "renderer"):
-        if (root / ("%s.py" % extra)).exists() and extra not in names:
-            names.append(extra)
-    return names
+    """仓库里的产品模块名：工程根目录下的全部 `.py`（tests/tools 在子目录，天然不在内）。
+
+    此前是 `sf_*.py` 加两个点名的文件。点名清单回答不了「还有第几个没进来」，v1.4.101 实测
+    漏了 `target_panel` 和 `targets`：本轮 `target_panel` 有真实改动，却从来不在闸门的视野里，
+    手动跑完整区间也只是「通过」而没有核对到它。按目录取，新增的根目录模块自动进视野。
+    """
+    return sorted(p.stem for p in root.glob("*.py") if not p.stem.startswith("_"))
 
 
 def module_tree(root: pathlib.Path, name: str) -> ast.Module | None:
@@ -348,15 +353,36 @@ def changed_modules(root: pathlib.Path, rev_range: str) -> set[str]:
     return out
 
 
-def resolve_range(root: pathlib.Path, override: str, version: str) -> tuple[str, str]:
-    """返回 (rev_range, 说明)。取不到锚点时 rev_range 为空串 —— 调用方必须拒答。"""
+def resolve_range(root: pathlib.Path, override: str, version: str,
+                  baseline: str = "") -> tuple[str, str]:
+    """返回 (rev_range, 说明)。取不到锚点时 rev_range 为空串 —— 调用方必须拒答。
+
+    优先级：`--range` > 显式基线（`--baseline` / `SF_RELEASE_BASELINE`）> 按版本号推断。
+    显式基线应取自上一版发布记录里的 `source.head`，必须是 HEAD 的祖先，否则拒答。
+    推断不可靠：它找「上一个把 APP_VERSION 改成别的值的提交」，而发布后主线上的修复提交
+    不改版本号。v1.4.101 实测两次都不准：并线前取到更早的版本位（区间偏大，14 笔 17 个模块），
+    并线后取到旁支上的 `bf48875`（区间偏小，漏掉它自己带来的 `sf_glass` 改动）。
+    所以推断结果必须把提交数说出来，并明确它只是估计。
+    """
     if override:
         return override, "命令行指定 --range"
+    if baseline:
+        sha = run_git(["rev-parse", "--verify", "--quiet", "%s^{commit}" % baseline], root).strip()
+        if not sha:
+            return "", "基线 %s 不是仓库里的提交，拒绝下结论" % baseline
+        if subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"], cwd=str(root),
+                          capture_output=True).returncode != 0:
+            return "", "基线 %s 不是 HEAD 的祖先，拒绝下结论" % sha[:9]
+        return "%s..HEAD" % sha, "显式基线 %s 到 HEAD" % sha[:9]
     prev = previous_bump(root)
     if not prev:
         return "", "找不到上一个版本变动的提交（历史被压平/浅克隆？）"
     short = run_git(["log", "--format=%h", "-1", prev], root).strip() or prev[:7]
-    return "%s..HEAD" % prev, "上一个版本位 %s（当前 %s）到 HEAD" % (short, version)
+    count = run_git(["rev-list", "--count", "%s..HEAD" % prev], root).strip() or "?"
+    return "%s..HEAD" % prev, (
+        "按版本号推断的上一个版本位 %s（当前 %s）到 HEAD，共 %s 笔；这只是估计，可能偏大也可能偏小，"
+        "发版前用 --baseline <上一版发布记录的 source.head> 或环境变量 SF_RELEASE_BASELINE 指定"
+        % (short, version, count))
 
 
 def parse_declarations(root: pathlib.Path, version: str) -> tuple[dict[str, str], list[str]]:
@@ -401,7 +427,7 @@ def parse_declarations(root: pathlib.Path, version: str) -> tuple[dict[str, str]
 
 
 def check(root: pathlib.Path, rev_range: str = "", version: str = "",
-          changed: set[str] | None = None) -> dict[str, Any]:
+          changed: set[str] | None = None, baseline: str = "") -> dict[str, Any]:
     """跑一次对账，返回结构化结果（`main` 与判据共用同一份实现）。
 
     `changed` 由判据显式传入（模拟「本轮改了哪些模块」），生产路径不传，由 git 取。
@@ -446,7 +472,7 @@ def check(root: pathlib.Path, rev_range: str = "", version: str = "",
         return result
 
     if changed is None:
-        resolved, note = resolve_range(root, rev_range, version)
+        resolved, note = resolve_range(root, rev_range, version, baseline)
         if not resolved:
             result["refuse"] = note or "取不到本轮提交区间"
             return result
@@ -683,6 +709,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--report", action="store_true", help="只看分布，不判定")
     parser.add_argument("--self-test", action="store_true", help="十一处种错必须全被抓到")
     parser.add_argument("--range", dest="rev_range", default="", help="覆盖本轮区间 A..B")
+    parser.add_argument("--baseline", dest="baseline", default="",
+                        help="上一版已发布的源码提交（取自发布记录的 source.head），区间=它..HEAD；"
+                             "未给时读环境变量 SF_RELEASE_BASELINE，仍无才按版本号推断")
     parser.add_argument("--version", dest="version", default="", help="覆盖版本（判据用）")
     parser.add_argument("--dir", dest="root", default="", help="仓库根（默认按脚本位置解析）")
     known, unknown = parser.parse_known_args(argv)
@@ -704,7 +733,8 @@ def main(argv: list[str]) -> int:
         print(report(root))
         return 0
 
-    result = check(root, known.rev_range, known.version)
+    baseline = known.baseline or os.environ.get("SF_RELEASE_BASELINE", "").strip()
+    result = check(root, known.rev_range, known.version, baseline=baseline)
     if result["refuse"]:
         print("!! 诊断覆盖闸门无法下结论：%s" % result["refuse"])
         return 2

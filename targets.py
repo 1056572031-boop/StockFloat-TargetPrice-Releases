@@ -460,6 +460,35 @@ def nearest_pending(alerts, price):
     return best
 
 
+def bell_bubble_rows(alerts, price, decimals=2):
+    """铃铛悬浮气泡的行数据（纯函数，可单测）：返回 (待触发行, 已触发行)。
+
+    每行是 (is_up, 价位文本, 距现价百分比文本)：
+    - 两组各自按目标价从高到低排，像一把价格梯子，不依赖设置的先后顺序；
+    - 百分比只给待触发行，口径与目标价面板一致（带正负号、一位小数）；
+      已触发行价格已越过目标，百分比没有意义，留空；
+    - 现价不可信时 distance_pct 返回 None，百分比同样留空，不写 "--"；
+    - 结构不合法的条目（缺方向、目标价非正/非有限）直接跳过，不让一条坏数据拖垮整块气泡。
+    """
+    fmt = "%%.%df" % int(decimals)
+    pending, hit = [], []
+    for a in alerts or []:
+        if not _valid_alert(a):
+            continue
+        target = float(a.get("target"))
+        is_up = a.get("direction") == TARGET_DIR_ABOVE
+        if a.get("state") == STATE_HIT:
+            hit.append((target, is_up, fmt % target, ""))
+            continue
+        d = distance_pct(price, target)
+        pending.append((target, is_up, fmt % target,
+                        "" if d is None else "%+.1f%%" % d))
+    # sort 稳定：同价位时保持保存顺序，梯子不会在刷新间抖动
+    pending.sort(key=lambda r: -r[0])
+    hit.sort(key=lambda r: -r[0])
+    return ([r[1:] for r in pending], [r[1:] for r in hit])
+
+
 def build_target_label_text(alerts, price):
     """构造主窗右上角「目标价」单行标签文本（纯函数，可单测）。
 

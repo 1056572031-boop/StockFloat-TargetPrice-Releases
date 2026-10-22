@@ -17,6 +17,11 @@ from PyQt6.QtCore import QObject, QTimer, Qt
 SCHEMA = "performance.v1"
 DEFAULT_SAMPLE_CAPACITY = 60
 DEFAULT_PAINT_CAPACITY = 120
+# Report thresholds for the whole-run counters.  They are labels for "how often
+# did it look like a stall", not acceptance limits.  33 ms is two 60 Hz frames.
+LAG_WARN_MS = 50.0
+LAG_STALL_MS = 200.0
+SLOW_PAINT_MS = 33.0
 
 
 class PerformanceMonitor(QObject):
@@ -44,6 +49,20 @@ class PerformanceMonitor(QObject):
         self._paint_total_ms = 0.0
         self._paint_max_ms = 0.0
         self._last_paint_at: float | None = None
+        # Whole-run aggregates.  The retained windows above only cover the last
+        # minute or two, which cannot answer "did it stall sometime today?".
+        # Everything here is O(1) state updated from the samples that already exist.
+        self._wall_total = 0.0
+        self._cpu_total = 0.0
+        self._cpu_max = 0.0
+        self._cpu_max_at: float | None = None
+        self._lag_max_ms = 0.0
+        self._lag_max_at: float | None = None
+        self._lag_over_warn = 0
+        self._lag_over_stall = 0
+        self._peak_rss = 0
+        self._paint_slow = 0
+        self._paint_max_at: float | None = None
         self._failures: deque[str] = deque(maxlen=8)
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.CoarseTimer)
@@ -97,14 +116,27 @@ class PerformanceMonitor(QObject):
             usage = self._resource_usage(resource.RUSAGE_SELF)
             # macOS reports ru_maxrss in bytes; retain the source explicitly.
             peak_rss = int(usage.ru_maxrss)
+            lag_ms = max(0.0, (wall - self._interval_ms / 1000.0) * 1000.0)
+            cpu_pct = (cpu / wall * 100.0) if wall > 0 else None
             self._sample_count += 1
             self._samples.append({
                 "at": now,
                 "interval_sec": wall,
-                "event_loop_lag_ms": max(0.0, (wall - self._interval_ms / 1000.0) * 1000.0),
-                "cpu_single_core_pct": (cpu / wall * 100.0) if wall > 0 else None,
+                "event_loop_lag_ms": lag_ms,
+                "cpu_single_core_pct": cpu_pct,
                 "peak_rss_bytes": peak_rss,
             })
+            self._wall_total += wall
+            self._cpu_total += cpu
+            self._peak_rss = max(self._peak_rss, peak_rss)
+            if cpu_pct is not None and cpu_pct > self._cpu_max:
+                self._cpu_max, self._cpu_max_at = cpu_pct, now
+            if lag_ms > self._lag_max_ms:
+                self._lag_max_ms, self._lag_max_at = lag_ms, now
+            if lag_ms >= LAG_WARN_MS:
+                self._lag_over_warn += 1
+            if lag_ms >= LAG_STALL_MS:
+                self._lag_over_stall += 1
         except Exception as exc:
             self._remember_failure("sample:%s" % type(exc).__name__)
 
@@ -120,7 +152,10 @@ class PerformanceMonitor(QObject):
             self._last_paint_at = now
             self._paint_count += 1
             self._paint_total_ms += duration
-            self._paint_max_ms = max(self._paint_max_ms, duration)
+            if duration > self._paint_max_ms:
+                self._paint_max_ms, self._paint_max_at = duration, now
+            if duration >= SLOW_PAINT_MS:
+                self._paint_slow += 1
             self._paint_samples.append({"at": now, "duration_ms": duration,
                                         "interval_sec": spacing})
         except Exception as exc:
@@ -153,9 +188,24 @@ class PerformanceMonitor(QObject):
                        "retained_to_monotonic": samples[-1]["at"] if samples else None,
                        "samples_discarded": max(0, self._sample_count - len(samples))},
             "recent_samples": samples,
+            "run": {"samples": self._sample_count,
+                    "wall_sec": self._wall_total,
+                    "cpu_mean_pct": ((self._cpu_total / self._wall_total * 100.0)
+                                     if self._wall_total > 0 else None),
+                    "cpu_max_pct": self._cpu_max,
+                    "cpu_max_at_monotonic": self._cpu_max_at,
+                    "event_loop_lag_max_ms": self._lag_max_ms,
+                    "event_loop_lag_max_at_monotonic": self._lag_max_at,
+                    "event_loop_lag_over_warn": self._lag_over_warn,
+                    "event_loop_lag_over_stall": self._lag_over_stall,
+                    "lag_warn_ms": LAG_WARN_MS, "lag_stall_ms": LAG_STALL_MS,
+                    "peak_rss_bytes": self._peak_rss},
             "paint": {"count": self._paint_count,
                       "total_ms": self._paint_total_ms,
                       "max_ms": self._paint_max_ms,
+                      "max_at_monotonic": self._paint_max_at,
+                      "slow_count": self._paint_slow,
+                      "slow_ms": SLOW_PAINT_MS,
                       "samples_discarded": max(0, self._paint_count - len(paints)),
                       "recent_samples": paints},
             "failures": list(self._failures),
@@ -169,4 +219,6 @@ _LIMITATIONS = [
     "no current RSS, thread stacks, or screen capture is collected",
     "event-loop lag also includes suspend and scheduling delay; it is not a blocking-stack attribution",
     "CPU is process-wide percent of one core and may exceed 100 on multicore workloads",
+    "run.* aggregates cover the whole process lifetime; *_at_monotonic values share the clock of window.*_monotonic",
+    "lag counters include system sleep and scheduling delay, so a count is a hint, not proof of a blocked UI",
 ]

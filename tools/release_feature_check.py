@@ -30,10 +30,16 @@ tools/verify_dmg_pyz.py 做（单一实现，不在这里复制一遍）。
     · `forbid 模块::符号` —— 本轮删掉的东西，用来证明"旧实现确实不在了"。
     · 至少一条要落在**本轮改动所在的那个文件**上：只填一个到处都有的通用符号，
       等于把闸门又变回永远通过。
+    · `testref tests/文件.py::用例名`（或 `::类名::用例名`）—— 登记"覆盖这处改动的测试"。
+      用在包内拿不出新名字的模块（只改了函数体或字面量）：以前只能写成清单里的注释，
+      闸门读不到，测试改名或删掉后注释照样好看。它只证明用例**仍在源码里**、以 test 开头、
+      没被无条件 skip；不证明通过（通过由同轮完整回归证明），也**不算**本轮特征，
+      不能替 check/forbid 过关或充当新名字。
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import pathlib
 import re
 import sys
@@ -54,7 +60,7 @@ def parse_checks(path: pathlib.Path) -> dict:
     # 于是 out["check"].append(...) 全被判成"在 str 上调 append"（tools/ 进类型层
     # 后实测 10 条）。这不是误报要豁免，是这里本来就该写清楚。
     out: dict = {"version": None, "check": [], "forbid": [],
-                 "checkfile": [], "forbidfile": [], "stale": [],
+                 "checkfile": [], "forbidfile": [], "stale": [], "testref": [],
                  "errors": [], "path": str(path)}
     # 取成局部具名列表再 append：直接写 out["check"].append(...) 时，
     # mypy 会把字典值类型并成 `str | list | None`，于是每条 append 都成报错。
@@ -63,6 +69,7 @@ def parse_checks(path: pathlib.Path) -> dict:
     checkfile: list[str] = out["checkfile"]
     forbidfile: list[str] = out["forbidfile"]
     stale: list[str] = out["stale"]
+    testref: list[str] = out["testref"]
     errors: list[str] = out["errors"]
     if not path.exists():
         errors.append("特征清单不存在：%s（发版必须提供本轮特征）" % path)
@@ -86,13 +93,90 @@ def parse_checks(path: pathlib.Path) -> dict:
             bucket = {"check": check, "forbid": forbid,
                       "checkfile": checkfile, "forbidfile": forbidfile}[key]
             bucket.append(val)
+        elif key == "testref":
+            if "::" not in val:
+                errors.append("%s:%d `testref` 需要 `tests/文件.py::用例名` 或 "
+                              "`tests/文件.py::类名::用例名` 形式，收到 %r" % (path.name, lineno, val))
+                continue
+            testref.append(val)
         elif key == "stale-feature":
             stale.append(val)
         else:
             errors.append("%s:%d 不认识指令 %r（只支持 version/check/forbid/checkfile/"
-                          "forbidfile/stale-feature）" % (path.name, lineno, key))
+                          "forbidfile/testref/stale-feature）" % (path.name, lineno, key))
     out["stale"] = stale
     return out
+
+
+def _is_unconditional_skip(node: ast.AST) -> bool:
+    """装饰器是不是无条件跳过（skip）。skipIf/skipUnless 是有条件的，不在此列。"""
+    target = node.func if isinstance(node, ast.Call) else node
+    name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+    return name == "skip"
+
+
+def testref_problems(parsed: dict, root: "pathlib.Path | None" = None) -> list[str]:
+    """核对 `testref` 登记的测试**仍然存在**，且不是占位或无条件跳过。
+
+    为什么需要它：本轮有些模块只改了函数体或字面量，包内拿不出新名字，证据只能写成
+    `release_checks.txt` 里的注释（"判据是 tests/xxx.py::test_yyy"）。注释闸门读不到，
+    测试改名或删掉之后注释照样好看——一句不会过期报错的话，不是证据。
+    `testref` 把它变成可读的一行，闸门去源码里确认那个用例还在。
+
+    刻意收窄的边界（写在这里，免得被当成更强的证明）：
+      · 只证明"登记的用例在源码里存在、是 test 开头的函数、没被无条件 skip"，
+        **不证明它通过** —— 通过与否由同一轮的完整回归证明；
+      · 它**不算**本轮特征：gate() 的"至少一条 check/forbid"和 judge_newness 的"新增名字"
+        都不看它，所以不能拿来绕过那两道判据；
+      · 只认 `tests/` 目录内的 .py，路径不许绝对、不许含 `..`。
+    """
+    base = (root or ROOT).resolve()
+    tests_dir = base / "tests"
+    problems: list[str] = []
+    for spec in parsed.get("testref", []):
+        parts = spec.split("::")
+        if len(parts) not in (2, 3) or not all(p.strip() for p in parts):
+            problems.append("testref %s：形状应为 `tests/文件.py::用例名` 或 `…::类名::用例名`" % spec)
+            continue
+        rel, names = parts[0].strip(), [p.strip() for p in parts[1:]]
+        rel_path = pathlib.PurePosixPath(rel)
+        if rel_path.is_absolute() or ".." in rel_path.parts or rel_path.suffix != ".py" \
+                or not rel_path.parts or rel_path.parts[0] != "tests":
+            problems.append("testref %s：路径必须是 tests/ 下的相对 .py 文件，不含 `..`" % spec)
+            continue
+        target = (base / rel).resolve()
+        if not target.is_relative_to(tests_dir) or not target.is_file():
+            problems.append("testref %s：没有这个测试文件（%s）" % (spec, rel))
+            continue
+        try:
+            tree = ast.parse(target.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, ValueError) as exc:
+            problems.append("testref %s：测试文件无法解析（%s）" % (spec, type(exc).__name__))
+            continue
+        found: "ast.FunctionDef | ast.AsyncFunctionDef | None" = None
+        owner_skipped = False
+        if len(names) == 1:
+            scopes: list = [(tree, False)]
+            scopes += [(c, any(_is_unconditional_skip(d) for d in c.decorator_list))
+                       for c in tree.body if isinstance(c, ast.ClassDef)]
+        else:
+            scopes = [(c, any(_is_unconditional_skip(d) for d in c.decorator_list))
+                      for c in tree.body if isinstance(c, ast.ClassDef) and c.name == names[0]]
+        for scope, skipped in scopes:
+            for node in scope.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == names[-1]:
+                    found, owner_skipped = node, skipped
+                    break
+            if found is not None:
+                break
+        if found is None:
+            problems.append("testref %s：文件在，但里面找不到这个用例（改名或删了？）" % spec)
+        elif not names[-1].startswith("test"):
+            problems.append("testref %s：%s 不是测试用例（名字须以 test 开头），辅助函数不算证据"
+                            % (spec, names[-1]))
+        elif owner_skipped or any(_is_unconditional_skip(d) for d in found.decorator_list):
+            problems.append("testref %s：该用例被无条件 skip，跑不到的用例不是证据" % spec)
+    return problems
 
 
 _STALE_VER_RE = re.compile(r"^(\d+\.\d+\.\d+)\s+(.+)$", re.S)
@@ -531,13 +615,67 @@ def self_test() -> int:
                              wrong_base, {"sf_c": "def old(): pass\n"}):
             bad.append("基线取成含本轮特征的那一笔时，判据竟然不红 —— "
                        "说明它无法识破『本轮没有新增』这种情况")
+
+        # ---- testref：登记的测试必须真在源码里（只证明存在，不证明通过）----
+        fake_root = tmp_root / "fake_root"
+        (fake_root / "tests").mkdir(parents=True)
+        (fake_root / "tests" / "test_demo.py").write_text(
+            "import unittest\n\n\ndef test_module_level():\n    pass\n\n\n"
+            "def helper_not_a_test():\n    pass\n\n\n"
+            "class DemoCase(unittest.TestCase):\n"
+            "    def test_inside_class(self):\n        pass\n\n"
+            "    @unittest.skip('placeholder')\n"
+            "    def test_always_skipped(self):\n        pass\n\n"
+            "    @unittest.skipIf(False, 'conditional')\n"
+            "    def test_conditionally_skipped(self):\n        pass\n\n\n"
+            "@unittest.skip('whole class')\nclass SkippedCase(unittest.TestCase):\n"
+            "    def test_in_skipped_class(self):\n        pass\n", encoding="utf-8")
+        (fake_root / "tests" / "test_broken.py").write_text("def (:\n", encoding="utf-8")
+        tr_cases: list = [
+            ("模块级用例在", "tests/test_demo.py::test_module_level", False, ""),
+            ("类内用例在（只写用例名）", "tests/test_demo.py::test_inside_class", False, ""),
+            ("类内用例在（类名::用例名）", "tests/test_demo.py::DemoCase::test_inside_class", False, ""),
+            ("有条件 skip 不算无条件", "tests/test_demo.py::DemoCase::test_conditionally_skipped", False, ""),
+            ("文件不存在", "tests/test_nope.py::test_x", True, "没有这个测试文件"),
+            ("用例被改名或删了", "tests/test_demo.py::test_renamed_away", True, "找不到这个用例"),
+            ("类名写错", "tests/test_demo.py::WrongCase::test_inside_class", True, "找不到这个用例"),
+            ("辅助函数冒充用例", "tests/test_demo.py::helper_not_a_test", True, "不是测试用例"),
+            ("无条件 skip 的用例", "tests/test_demo.py::DemoCase::test_always_skipped", True, "无条件 skip"),
+            ("整个类被 skip", "tests/test_demo.py::SkippedCase::test_in_skipped_class", True, "无条件 skip"),
+            ("文件解析不了", "tests/test_broken.py::test_x", True, "无法解析"),
+            ("路径逃出 tests/", "tests/../tools/x.py::test_x", True, "路径必须是 tests/"),
+            ("绝对路径", "/etc/passwd.py::test_x", True, "路径必须是 tests/"),
+            ("不在 tests/ 下", "tools/x.py::test_x", True, "路径必须是 tests/"),
+            ("段数过多", "tests/test_demo.py::A::B::C", True, "形状应为"),
+            ("某一段为空", "tests/test_demo.py::::test_x", True, "形状应为"),
+        ]
+        for title, spec, expect_red, expect_msg in tr_cases:
+            found_tr = " \n".join(testref_problems({"testref": [spec]}, fake_root))
+            if expect_red and expect_msg not in found_tr:
+                bad.append("testref 用例「%s」没被拒或理由不对：%s（实际：%s）"
+                           % (title, expect_msg, found_tr or "放行"))
+            if not expect_red and found_tr:
+                bad.append("testref 用例「%s」被误拒：%s" % (title, found_tr))
+        tr_file = tmp_root / "tr_checks.txt"
+        tr_file.write_text("version 9.9.9\ntestref tests/test_demo.py::test_module_level\n"
+                           "testref noseparator\n", encoding="utf-8")
+        parsed_tr = parse_checks(tr_file)
+        if parsed_tr["testref"] != ["tests/test_demo.py::test_module_level"] \
+                or not any("testref" in e and "形式" in e for e in parsed_tr["errors"]):
+            bad.append("testref 行的解析有误（合规的该读到、缺 `::` 的该报形状错）：%s / %s"
+                       % (parsed_tr["testref"], parsed_tr["errors"]))
+        # 越权检查：只有 testref、没有任何 check/forbid 的清单，必须仍被判成"没有本轮特征"。
+        if not any("一条 check/forbid 都没有" in x for x in gate(parsed_tr, "9.9.9")):
+            bad.append("testref 被当成了本轮特征 —— 它只是补充证据，不能替 check/forbid 过关")
+        if judge_newness(parse_checks(tr_file), {"check sf_a::old_sym"}, {}) == []:
+            bad.append("testref 被算进『新增特征』—— 那会让它成为绕过新名字判据的通道")
     if bad:
         print("!! 本轮特征闸门自检失败（它对『没填特征』不再报警，结论不可信）：")
         for b in bad:
             print("   -", b)
         return 1
-    print("   本轮特征闸门自检通过：%d 种『没填对/填错』+ %d 种『新增特征』+ %d 种『基线取哪一笔』的形状全部判对"
-          % (len(cases), len(cases2), len(cases3)))
+    print("   本轮特征闸门自检通过：%d 种『没填对/填错』+ %d 种『新增特征』+ %d 种『基线取哪一笔』"
+          "+ %d 种『testref』的形状全部判对" % (len(cases), len(cases2), len(cases3), len(tr_cases)))
     return 0
 
 
@@ -569,10 +707,15 @@ def main(argv=None) -> int:
     newness_skipped = bool(declared) or args.allow_stale_feature
     if not problems and not newness_skipped:
         problems = newness_problems(parsed, pathlib.Path(args.checks))
+    # testref 只是补充证据，排在上面所有判据之后，不替它们过关，也不被它们的结果遮住。
+    problems += testref_problems(parsed)
     print("== 本轮特征闸门（清单 %s，期望版本 %s）==" % (args.checks, want))
     print("   check %d 条 / forbid %d 条 / checkfile %d 条 / forbidfile %d 条"
           % (len(parsed["check"]), len(parsed["forbid"]),
              len(parsed["checkfile"]), len(parsed["forbidfile"])))
+    if parsed["testref"]:
+        print("   testref %d 条（只证明登记的测试仍在源码里，不证明它通过，也不算本轮特征）"
+              % len(parsed["testref"]))
     if declared:
         # 跳过判据这件事必须出现在发版日志里，而不是只存在于清单的一行注释里
         print("   WARNING 本轮按清单申报跳过「新增特征」判据（包内拿不出新名字）：")

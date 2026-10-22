@@ -33,7 +33,7 @@
 import ctypes
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sf_constants import (FACE_GUARD_CAMERA_FPS, FACE_GUARD_CAMERA_PRESET,
                           FACE_GUARD_CONF_MIN, FACE_GUARD_DWELL_SEC,
@@ -560,6 +560,24 @@ def _camera_devices(cls: Dict[str, Any]):
     return devs[0] if devs else None
 
 
+def _supported_fps_ranges(device) -> Optional[List[Tuple[float, float]]]:
+    """读设备**当前档位**支持的帧率区间；读不到返回 None（调用方按原路径继续）。
+
+    读 activeFormat 不需要配置锁，也不需要摄像头授权。区间随档位变：开发机在默认档
+    报 15~30fps，而用户的机器在同一型号相机上报过 30~30fps（15fps 上限被系统当场拒绝），
+    所以不能拿一台机器的答案当常量。
+    """
+    try:
+        ranges = device.activeFormat().videoSupportedFrameRateRanges()
+        out = [(float(r.minFrameRate()), float(r.maxFrameRate())) for r in ranges]
+    except Exception:
+        return None
+    return out or None
+
+
+def _fps_in_ranges(ranges: List[Tuple[float, float]], fps: float) -> bool:
+    return any(lo - 1e-6 <= fps <= hi + 1e-6 for lo, hi in ranges)
+
 
 class FacePresenceMonitor:
     """摄像头取帧 + Vision 数脸，只对外暴露"最近一次计数"。
@@ -988,6 +1006,17 @@ class FacePresenceMonitor:
             from CoreMedia import CMTimeMake
         except Exception as exc:
             log_line("face_guard CoreMedia 桥接缺失，帧率维持默认：%r" % (exc,), "WARNING")
+            return
+        # 先问设备当前档位支不支持，不支持就不去撞：此前每次启动都先设、再被系统拒绝、
+        # 再记一条 WARNING（日志里 43 次同一句），而结果与不设完全相同。
+        # 读不到区间（假设备、桥接形状变了）就保持原路径：设一次，被拒再留痕。
+        ranges = _supported_fps_ranges(device)
+        supported = None if ranges is None else _fps_in_ranges(ranges, FACE_GUARD_CAMERA_FPS)
+        applied["fps_supported"] = supported
+        applied["fps_ranges"] = [] if ranges is None else [[lo, hi] for lo, hi in ranges]
+        if ranges is not None and supported is False:
+            log_line("face_guard 当前档位只支持 %s fps，不设 %dfps 上限（维持默认）"
+                     % (", ".join("%g~%g" % (lo, hi) for lo, hi in ranges), FACE_GUARD_CAMERA_FPS))
             return
         res = None
         try:

@@ -25,8 +25,15 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.102
+# 本版区间是 70d3b69..HEAD（30 笔）；闸门点名的两个模块在这里逐个交代，理由都核对过源码。
+skip sf_system_alert 本版只新增 NativeAlert._hide_button_band（无按钮提示的版面收矮），不新增模块级可变状态（唯一的 _screen_anchor 在基线里就有）；该步骤失败时走 _swallow 写 SWALLOWED 日志并退回带按钮的弹窗，现场在 debug.log。
+skip target_panel 本版只改了一行注释，行为与状态都没有变化；条数与触发/过期状态、存储总数与剪枝记录、各股票归属仍由 targets.json 输出。
+
 version 1.4.101
 skip sf_feedback_analyzer 离线分析函数；按运行编号分开本次与历史、采集缺失说明写入案件报告，不属于客户端常驻运行态。
+# 2026-10-22 发版后补记：当时闸门的模块名单只含 sf_*.py 与两个点名文件，target_panel 从未进过视野（52c7a5a 已改成按目录取）。
+skip target_panel 目标价面板只是 window._safe_alerts() 的编辑视图，不持有模块级可变状态；条数与触发/过期状态、存储总数与剪枝记录、各股票归属都由 targets.json 输出，满额隐藏输入行是各方向条数的纯函数，没有独立的持久状态。
 
 version 1.4.100
 skip sf_feedback 无独立可变业务状态的协议与归档函数；校验失败由 feedback.json 的阶段与错误类别输出。

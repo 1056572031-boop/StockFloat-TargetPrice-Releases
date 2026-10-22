@@ -51,6 +51,7 @@ IN_SUITE = (
     "sweep_temp_apps",           # 临时副本清扫的五条边界
     "gate_stamp",                # 关卡时间戳 11 项变异
     "coverage_gate",             # 覆盖率分档门禁（与上面同族：基线只降不升、空输入不放行）
+    "desktop_folder_sync",       # 桌面分发目录对账（发版链 7.1）：全部种错在临时目录里造，不碰真实桌面
     "diag_coverage_check",       # 诊断覆盖闸门（2026-10-13 起，发版链 3.9）：纯静态分析，
     #                              十处种错全在临时目录里造微型仓库，不碰真仓库历史
     "render_install_guide",      # 对外安装说明渲染器（v1.4.61 补的那 12 项）

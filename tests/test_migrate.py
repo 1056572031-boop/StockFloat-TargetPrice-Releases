@@ -21,6 +21,12 @@ import stock_float_window as m
 import sf_config
 import sf_constants
 import sf_quote
+from tests._base import fixed_clock
+
+# 分时点只在"不晚于当前分钟"时才保留（sf_quote.fetch_minute），所以用例必须固定"现在几点"：
+# 用真实时钟的话，交易日 09:15-09:29 之间两个点（09:30 与 10:30）全被截掉，用例必红。
+# 取一个普通交易日的午后，两个点都在当前分钟之前。
+_AFTERNOON = (2026, 10, 14, 14, 0)
 
 _ORIG_CONFIG = m.CONFIG_PATH
 _ORIG_LEGACY = sf_constants.LEGACY_CONFIG_PATH
@@ -143,7 +149,8 @@ class TestQuoteFallback(unittest.TestCase):
                     '"10:30,1520.0,1520.0,1521.0,1519.0,200,200000.0,1520.0"]}}')
 
         sf_quote.http_get = fake_get
-        pts = m.fetch_minute("sh600519")
+        with fixed_clock(_AFTERNOON):
+            pts = m.fetch_minute("sh600519")
         self.assertTrue(pts)
         self.assertEqual(pts[0][1], 1510.0)
 

@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import time
+from collections import deque
 from typing import cast
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QFontInfo, QFontMetrics, QPainter,
@@ -690,9 +691,52 @@ _PAINT_DIAG: dict = {
 }
 
 
+# 「加载中...」出现过几次、每次多久（用户反馈“有时候显示加载中”之前，包里只能看到现在
+# 有没有数据，回答不了“多久一次、一次多久”）。chart = 分时图区，header = 顶部名称栏。
+# 只在状态翻转时取一次时钟：不显示且没有进行中的段时，每帧只多两次字典读取。
+_LOADING: dict = {k: {"open_since": None, "frames": 0, "episodes": 0, "longest_sec": 0.0}
+                  for k in ("chart", "header")}
+_LOADING_RECENT: deque = deque(maxlen=8)
+
+
+def _loading_note(kind, showing):
+    """记一帧：这一帧画的是不是「加载中...」。翻回非加载时把这一段收成一次记录。"""
+    st = _LOADING[kind]
+    if showing:
+        st["frames"] += 1
+        if st["open_since"] is None:
+            st["open_since"] = time.monotonic()
+        return
+    since = st["open_since"]
+    if since is None:
+        return
+    st["open_since"] = None
+    dur = max(0.0, time.monotonic() - since)
+    st["episodes"] += 1
+    if dur > st["longest_sec"]:
+        st["longest_sec"] = dur
+    _LOADING_RECENT.append({"kind": kind, "start_monotonic": since, "duration_sec": dur})
+
+
 def paint_diagnostics():
-    """诊断导出用：渲染降级的末态与计数（见 _PAINT_DIAG 各键注释）。"""
-    return dict(_PAINT_DIAG)
+    """诊断导出用：渲染降级的末态与计数（见 _PAINT_DIAG 各键注释）。
+
+    `loading` 里的 open_sec 是「最近一次画出加载中之后，到现在还没画出过别的」的时长；
+    窗口被藏起或最小化时不再重绘，它会高估，读的时候要结合 start_monotonic 与窗口状态。
+    start_monotonic 与 performance.window 里的 *_monotonic 同一个时钟。
+    """
+    out = dict(_PAINT_DIAG)
+    now = time.monotonic()
+    loading: dict = {}
+    for kind, st in _LOADING.items():
+        since = st["open_since"]
+        loading[kind] = {"frames": st["frames"], "episodes": st["episodes"],
+                         "longest_closed_sec": st["longest_sec"],
+                         "open_since_monotonic": since,
+                         "open_sec": (max(0.0, now - since) if since is not None else None)}
+    loading["recent"] = list(_LOADING_RECENT)
+    out["loading"] = loading
+    return out
 
 
 def font_diagnostics():
@@ -1035,13 +1079,16 @@ class RenderMixin:
         def _paint_header(self, p, w):
             """20.1 v1.2.27：顶部名称 + 代码行（含断网"网络异常"提示）。
             返回 elided 名称，供休市提示复用（行为与拆分前一致）。"""
+            no_quote = False
             if self.quote:
                 name = self.quote["name"]
                 code = self.quote["code"]
             else:
                 name, code = "加载中...", ""
+                no_quote = True
             # 网络连续失败时名称栏提示"网络异常"（价格显示最后成功值）
             net_bad = not self._net_ok
+            _loading_note("header", no_quote and not net_bad)
             if net_bad:
                 name = "网络异常"
                 # 2.0 v1.2.0：断网时附加最近一次成功行情更新时间（放不下则省略时间）
@@ -2043,6 +2090,7 @@ class RenderMixin:
             # 基准线、均价线、渐变填充、折线、末端呼吸点、"加载中"提示全不画，
             # 也不读写折线/均价线的 path 缓存（跳过即不碰，不会留脏值）。
             if rect.height() < CHART_MIN_DRAW_H:
+                _loading_note("chart", False)   # 图区没画出来，用户看不到“加载中”
                 return
             pts = self.minute_points
             if not pts:
@@ -2051,11 +2099,13 @@ class RenderMixin:
                 # 非交易时段（休市/未开盘/午间休市/已收盘）数据为空属正常，显示市场状态；
                 # 仅交易时段内无数据才提示"加载中"
                 st = self._market_status()
+                _loading_note("chart", not st)
                 if st:
                     p.drawText(rect, Qt.AlignmentFlag.AlignCenter, st[0])
                 else:
                     p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "加载中...")
                 return
+            _loading_note("chart", False)
             m = self._chart_metrics(pts, rect)
             # v1.4.14：这里**试过**把静态四项（基准线/均价线/渐变填充/折线）缓存成
             # QPixmap，好让呼吸灯的 60 帧/秒不必然带来 6 倍绘制开销 —— 实测**不通过**：

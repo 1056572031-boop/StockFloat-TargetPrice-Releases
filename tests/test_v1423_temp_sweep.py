@@ -174,14 +174,32 @@ class TestOverlappingRoots(unittest.TestCase):
         self.assertIn(os.path.realpath(tempfile.gettempdir()), sweep.temp_roots())
 
     def test_deeply_nested_copy_under_tmpdir_is_found(self):
-        # 按 realpath 比对：temp_roots() 会 realpath，而 TemporaryDirectory 给的是
-        # /var/folders/... 形式，直接比字符串会因 /private 前缀不等而误判"没扫到"。
-        deep = _make_app(self.inner, sweep.APP_DIR_NAME, sweep.BUNDLE_ID)
-        hits = {os.path.realpath(path)
-                for path, _reason in sweep.find_stale_apps(
-                    sweep.temp_roots() + [self._tmp.name])}
+        """$TMPDIR 作为独立根时，它下面的深层副本必须被扫到；挂在外层根下则会被深度预算漏掉。
+
+        这条用例过去直接扫真实的 temp_roots()：本机 $TMPDIR 顶层有十几万项，遍历一次要
+        几十秒，整档带覆盖率时超过单用例 60 秒上限，runner 被超时打断（2026-10-22 提交
+        被拦）。判据本身不需要真实目录，所以把 $TMPDIR 指到用例自己的临时目录里，
+        只扫"那一条根"，既不碰真实目录，也仍能证明 temp_roots() 给出的就是这一条独立根。
+        """
+        # 深度全部从 DEFAULT_MAX_DEPTH 推出来，不写死 6：改了预算这条用例仍然成立。
+        chain = [str(i) for i in range(sweep.DEFAULT_MAX_DEPTH - 2)]
+        deep_parent = os.path.join(self.inner, *chain)
+        os.makedirs(deep_parent)
+        deep = _make_app(deep_parent, sweep.APP_DIR_NAME, sweep.BUNDLE_ID)
+        with patch.object(tempfile, "gettempdir", return_value=self.inner):
+            inner_real = os.path.realpath(self.inner)
+            roots = sweep.temp_roots()
+            self.assertIn(inner_real, roots, "$TMPDIR 必须仍是一条独立的扫描根")
+            hits = {os.path.realpath(path)
+                    for path, _reason in sweep.find_stale_apps([inner_real])}
         self.assertIn(os.path.realpath(deep), hits,
-                      "$TMPDIR 下第 3 层的副本必须仍被扫到")
+                      "$TMPDIR 下深层副本必须仍被扫到")
+        # 对照：同一份副本若只经外层根（把 $TMPDIR 之前的前缀也算进深度）就超预算被漏掉，
+        # 这正是必须单独保留 $TMPDIR 这条根的原因；对照不成立说明本用例的深度构造失效。
+        via_outer = {os.path.realpath(path)
+                     for path, _reason in sweep.find_stale_apps([os.path.realpath(self.outer)])}
+        self.assertNotIn(os.path.realpath(deep), via_outer,
+                         "深度构造失效：副本在外层根下本来就能被扫到，就证明不了独立根的必要性")
 
     def test_overlapping_roots_yield_single_hit(self):
         hits = sweep.find_stale_apps([self.outer, self.inner])

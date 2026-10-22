@@ -34,6 +34,9 @@ except ImportError:           # pragma: no cover - 包模式导入
     from tests._base import SFCase, wait_for
 
 
+APP_ICON_PX = 512      # Dock 用的应用图标边长；新用例引用它，不写裸 512（AGENTS §6 第 6 条）
+
+
 class IconCase(SFCase):
     """离屏 QApplication + 图标模块全局的保存/还原。"""
 
@@ -46,6 +49,9 @@ class IconCase(SFCase):
         super().setUp()
         self.d = tempfile.mkdtemp()
         self._saved = (sf_icons.ICON_PATH, sf_icons._button_images_cache)
+        # make_app_icon 顺带把图写到 ICON_PATH（用户数据目录）。测试里统一改道到临时目录，
+        # 免得每条用例都去刷一次真用户目录里的那份副产物。
+        sf_icons.ICON_PATH = os.path.join(self.d, "icon.png")
 
     def tearDown(self):
         (sf_icons.ICON_PATH, sf_icons._button_images_cache) = self._saved
@@ -73,7 +79,9 @@ class TestAppIcon(IconCase):
         self.assertGreater(self.greater, 0, "中心必须是不透明的")
 
     def test_body_is_the_blue_gradient_with_white_candles(self):
-        img = sf_icons.make_app_icon()
+        """兜底造型仍是上一版的蓝渐变 + 白蜡烛：品牌标志渲染不出来时用它。"""
+        with mock.patch.object(sf_icons, "svg_pixmap", return_value=None):
+            img = sf_icons.make_app_icon()
         # 底部中段：在圆角矩形内、且低于所有蜡烛与上影线，只剩渐变底色
         corner_inside = img.pixelColor(256, 455)
         self.assertGreater(corner_inside.blue(), 120,
@@ -88,6 +96,58 @@ class TestAppIcon(IconCase):
                     whites += 1
         self.assertGreater(whites, 50, "蜡烛缺失 = 图标变成纯蓝方块")
 
+    def test_logo_is_the_brand_mark_with_orange_red_and_ink(self):
+        """默认造型是品牌标志（v1.4.102）：取色必须是偏橙红 #f40000 与墨 #14181f，
+        旧的蓝色渐变底板不许再出现 —— 它没有底板。中心点必须是红箭（定稿形状）。"""
+        img = sf_icons.make_app_icon()
+        c = img.pixelColor(256, 256)
+        self.assertEqual((c.red(), c.green(), c.blue()), (0xF4, 0x00, 0x00), "中心应是偏橙红：%s" % c.name())
+        reds = inks = blues = 0
+        for y in range(0, 512, 2):
+            for x in range(0, 512, 2):
+                p = img.pixelColor(x, y)
+                if p.alpha() <= 128:
+                    continue
+                reds += (p.red() > 200 and p.green() < 60 and p.blue() < 60)
+                inks += (max(p.red(), p.green(), p.blue()) < 60)
+                blues += (p.blue() > 120 and p.red() < 120)
+        self.assertGreater(reds, 400, "红色上斜笔与箭头缺失")
+        self.assertGreater(inks, 1000, "竖笔或下斜笔缺失")
+        self.assertEqual(blues, 0, "蓝色底板又回来了：图标不是品牌标志")
+
+    def test_logo_ink_is_inset_not_edge_to_edge(self):
+        """墨迹不得贴画布边：贴住任何一边都说明底板没了之后又被裁掉一部分。
+        上下留白取 content_scale=0.82（约 9%），左右再加标志自身的宽高比余量。"""
+        img = sf_icons.make_app_icon()
+        xs, ys = [], []
+        for y in range(512):
+            for x in range(512):
+                if img.pixelColor(x, y).alpha() > 128:
+                    xs.append(x)
+                    ys.append(y)
+        pad = img.width() * 0.05
+        self.assertGreaterEqual(min(xs), pad)
+        self.assertGreaterEqual(min(ys), pad)
+        self.assertLessEqual(max(xs) + 1, img.width() - pad)
+        self.assertLessEqual(max(ys) + 1, img.height() - pad)
+
+    def test_missing_qtsvg_falls_back_without_losing_the_icon(self):
+        """这台机器没有 QtSvg 子模块时（svg_pixmap 直接抛异常），图标必须还有，
+        且退回上一版造型 —— 缺依赖不能变成"没有图标"。"""
+        import builtins
+        real_import = builtins.__import__
+
+        def no_qtsvg(name, *a, **kw):
+            if name.startswith("PyQt6.QtSvg"):
+                raise ImportError("no QtSvg on this machine")
+            return real_import(name, *a, **kw)
+
+        with mock.patch("builtins.__import__", side_effect=no_qtsvg):
+            img = sf_icons.make_app_icon()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.width(), APP_ICON_PX, "兜底图标也必须是 Dock 用的边长")
+        self.assertGreater(img.pixelColor(APP_ICON_PX // 2, 455).blue(), 120, "兜底造型应是旧的蓝渐变底板")
+
     def test_disk_copy_is_a_side_effect_not_a_precondition(self):
         sf_icons.ICON_PATH = os.path.join(self.d, "icon.png")
         img = sf_icons.make_app_icon()
@@ -95,10 +155,18 @@ class TestAppIcon(IconCase):
         self.assertTrue(os.path.exists(sf_icons.ICON_PATH))
 
     def test_unwritable_icon_path_does_not_cost_the_caller_its_image(self):
-        """调用方要的是内存里的 QImage；ICON_PATH 只是顺带写出的副产物。"""
-        sf_icons.ICON_PATH = os.path.join(self.d, "no", "such", "dir", "icon.png")
+        """调用方要的是内存里的 QImage；ICON_PATH 只是顺带写出的副产物。
+
+        路径必须**真的**写不进去：makedirs(exist_ok=True) 会把 no/such/dir 直接建出来，
+        那样写盘成功，except 分支从没执行过。这里在路径中间放一个普通文件，
+        建目录必然失败（NotADirectoryError / FileExistsError），才真走到"静默跳过"那一行。"""
+        blocker = os.path.join(self.d, "blocker")
+        with open(blocker, "w") as fh:
+            fh.write("a regular file where a directory is expected")
+        sf_icons.ICON_PATH = os.path.join(blocker, "dir", "icon.png")
         img = sf_icons.make_app_icon()
-        self.assertEqual(img.width(), 512)
+        self.assertEqual(img.width(), APP_ICON_PX)
+        self.assertFalse(os.path.exists(sf_icons.ICON_PATH), "路径不该被建出来：否则这条用例没走到失败分支")
 
 
 # --------------------------------------------------------------------------

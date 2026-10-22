@@ -391,6 +391,11 @@ class NativeAlert:
             # 焦点描边：按钮成为第一响应者会被一圈蓝色描边套住（用户要求去掉）。
             button.setFocusRingType_(AppKit.NSFocusRingTypeNone)
         alert.layout()
+        if not titles:
+            # 一个按钮都没要：纯进度提示（如「反馈上传中」），由程序在有结果时收口。
+            # NSAlert 不允许真的没有按钮——layout 时会自己补一个「OK」（2026-10-22 实测），
+            # 所以只能事后把按钮区藏掉并把窗口收矮。
+            self._hide_button_band(alert)
         self._alert = alert
         self._window = alert.window()
         self._window.setReleasedWhenClosed_(False)
@@ -521,7 +526,8 @@ class NativeAlert:
                     # 也不能算进底部控件带 —— 算进去会让 floor 顶到文案区里。
                     if str(view.stringValue() or "").strip():
                         texts.append(view)
-                else:
+                elif not view.isHidden():
+                    # 被藏起来的按钮区（无按钮提示）不算底部控件带，否则 floor 会把内容顶上去。
                     others.append(view)
             if icon is None or not texts:
                 return
@@ -590,6 +596,42 @@ class NativeAlert:
                                icon_w, icon_h)
         except Exception as exc:                             # noqa: BLE001
             _swallow("sf_system_alert._center_content(弹窗版式退回系统默认)", exc)
+
+    @staticmethod
+    def _hide_button_band(alert):
+        """藏掉按钮区并把窗口收矮到「末段文案底 + 底部留白」。
+
+        三件事缺一不可：① 隐藏按钮容器（NSStackView，实测 y=16..44）；② 逐个按钮禁用并清掉
+        回车/Esc 键位，被藏起来的「OK」不能仍然响应回车；③ 窗口收矮——只藏不收，底部会
+        留下约 40pt 的空白带。AppKit 子视图跟着顶边走，收矮后文案与图标相对顶边的距离
+        不变，不需要再逐个摆位。失败只留痕不抛：最坏退成「多一个按钮」，弹窗仍能弹出。
+        """
+        try:
+            window = alert.window()
+            content = window.contentView()
+            for button in alert.buttons():
+                button.setEnabled_(False)
+                button.setKeyEquivalent_("")
+                button.setHidden_(True)
+            lowest = None
+            for view in content.subviews():
+                if isinstance(view, (AppKit.NSImageView, AppKit.NSTextField)):
+                    if (isinstance(view, AppKit.NSTextField)
+                            and not str(view.stringValue() or "").strip()):
+                        continue                      # 空的副文案占位，不占版面
+                    y = view.frame().origin.y
+                    lowest = y if lowest is None else min(lowest, y)
+                else:
+                    view.setHidden_(True)
+            if lowest is None:
+                return
+            shrink = lowest - NativeAlert._BOTTOM_GAP
+            if shrink > 0:
+                size = content.frame().size
+                NativeAlert._grow_window(window, size.width, size.height - shrink)
+                content.layoutSubtreeIfNeeded()
+        except Exception as exc:                             # noqa: BLE001
+            _swallow("sf_system_alert._hide_button_band(无按钮提示退回带按钮)", exc)
 
     @staticmethod
     def _place(view, x, y, w, h):

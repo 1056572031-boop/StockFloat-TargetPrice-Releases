@@ -276,3 +276,24 @@ class CandidateDeliveryCase(SFCase):
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             runpy.run_path(delivery.__file__, run_name="__main__")
         self.assertEqual(raised.exception.code, 2, "script entry rejects missing inputs")
+
+    def test_out_that_is_a_directory_is_rejected_before_any_verification(self):
+        """`--out` 是报告文件。传成目录时，冒烟、首装、升级、回退都先跑完，最后写报告才报
+        IsADirectoryError，白跑一整段还留下红的执行凭据；所以必须在做任何事之前拒绝。"""
+        directory = self.root / "evidence-dir"
+        directory.mkdir()
+        for bad in (str(directory), str(self.root / "not-yet-created") + os.sep):
+            with self.subTest(out=bad), mock.patch.object(delivery, "verify") as verifier, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr, \
+                    self.assertRaises(SystemExit) as raised:
+                delivery.main(["--app", str(self.app), "--zip", str(self.archive),
+                               "--out", bad, "--old-app", str(self.old)])
+            self.assertEqual(raised.exception.code, 2)
+            verifier.assert_not_called()
+            self.assertIn("--out", stderr.getvalue(), "报错要点名是哪个参数")
+        with mock.patch.object(delivery, "verify", return_value=0) as verifier:
+            self.assertEqual(delivery.main(["--app", str(self.app), "--zip", str(self.archive),
+                                            "--out", str(self.root / "sub" / "report.json"),
+                                            "--old-app", str(self.old)]), 0,
+                             "文件路径（含尚不存在的子目录）照常放行")
+            verifier.assert_called_once()

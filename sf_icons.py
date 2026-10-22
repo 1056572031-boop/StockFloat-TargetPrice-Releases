@@ -42,6 +42,24 @@ _MENU_ICON_SVG = {
 # 键名即语义：eye_open / eye_closed 是「自动隐藏窗口」的两态（见下面 menu_icon 的说明）。
 MENU_ICON_KEYS = ("refresh", "eye_open", "eye_closed", "update", "diag")
 
+# ---- 品牌标志（2026-10-22）----
+# 应用图标（Dock / 窗口 / 包体 icon.icns）用同一份图形，出处是这一枚内嵌 SVG：
+# 与顶部按钮、菜单行图标同一族做法，不加 .svg 文件，也就不碰 spec 的 datas、
+# bundle_closure_check 的闭包，以及"文件没进包时长什么样"第三件事。
+# 路径是**纯填充**、圆角用真圆弧 —— 不走"内缩多边形 + 同色描边"那类写法。
+# 描边会不会把形状放大，QtSvg 与 Chrome 的口径不同（本轮实测：同一份描边markup，
+# 两个渲染器的外框差到 2 个图形单位），而 icon.icns 由 QtSvg 出图、
+# 设计稿由 Chrome 出图，靠描边撑形的话两边会画成两个东西。
+# 取色用定稿的浅色配色（浅灰底 #e8ebf0 / 偏橙红 #f40000 / 墨 #14181f），底色不画、留透明。
+BRAND_LOGO_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="110" height="110" viewBox="-5 -5 110 110">'
+    '<path fill="#f40000" d="M29.08 44.52A1 1 0 0 1 28.61 45.7L32.81 58.95A1 1 0 0 1 34.23 59.53L72.08 39.14A1 1 0 0 1 72.56 37.96L68.36 24.71A1 1 0 0 1 66.93 24.13L29.08 44.52Z"/>'
+    '<path fill="#f40000" d="M91 18.94A1 1 0 0 1 91.84 20.59L73.55 41.31A1 1 0 0 1 71.85 40.95L65.97 22.39A1 1 0 0 1 66.83 21.09L91 18.94Z"/>'
+    '<path fill="#14181f" d="M38.88 12.03A1 1 0 0 1 39.83 11.36L54.27 11.36A1 1 0 0 1 55.22 12.69L29.3 87.97A1 1 0 0 1 28.35 88.64L13.91 88.64A1 1 0 0 1 12.96 87.31L38.88 12.03Z"/>'
+    '<path fill="#14181f" d="M39.24 48.39A1 1 0 0 1 41 48.12L69.48 87.05A1 1 0 0 1 68.68 88.64L47.39 88.64A1 1 0 0 1 46.59 88.23L32.57 69.08A1 1 0 0 1 32.43 68.17L39.24 48.39Z"/>'
+    '</svg>'
+)
+
 _menu_images_cache = None
 
 def menu_images():
@@ -79,8 +97,30 @@ def menu_icon(key):
         return None
 
 def make_app_icon():
-    """生成应用图标。返回 QImage（线程安全，可后台线程绘制），GUI 线程再转 QPixmap/QIcon"""
+    """生成应用图标。返回 QImage（线程安全，可后台线程绘制），GUI 线程再转 QPixmap/QIcon
+
+    v1.4.102 起用品牌标志（见 BRAND_LOGO_SVG）。取不到图的两种情况（这台机器没有
+    QtSvg 子模块、markup 被判非法）都退回上一版的自绘蓝底蜡烛，并留一条 SWALLOWED：
+    图标是用户天天看的东西，缺依赖时宁可旧造型，也不能静默没有图标。
+    """
     s = 512
+    img = svg_pixmap(BRAND_LOGO_SVG, s, content_scale=0.82)
+    if img is None:
+        log_swallow("sf_icons.make_app_icon.logo", RuntimeError("品牌标志渲染不可用，退回旧自绘图标"))
+        img = _legacy_app_icon(s)
+    # 落盘失败不牵连返回值：调用方要的是内存里的 QImage，
+    # ICON_PATH 只是顺带写出的副产物，目录不可写时静默跳过。
+    try:
+        os.makedirs(os.path.dirname(ICON_PATH), exist_ok=True)
+        img.save(ICON_PATH, "PNG")
+    except Exception:
+        pass
+    return img
+
+
+def _legacy_app_icon(s):
+    """上一版（≤v1.4.101）的应用图标：蓝色渐变圆角底板 + 三根白色蜡烛。
+    只作为品牌标志渲染不出来时的兜底，不再是默认造型。"""
     img = QImage(s, s, QImage.Format.Format_ARGB32)
     img.fill(Qt.GlobalColor.transparent)
     p = QPainter(img)
@@ -114,13 +154,6 @@ def make_app_icon():
         p.drawRoundedRect(QRectF(cx - body_w / 2, top, body_w, hgt),
                           body_w * 0.3, body_w * 0.3)
     p.end()
-    # 落盘失败不牵连返回值：调用方要的是内存里的 QImage，
-    # ICON_PATH 只是顺带写出的副产物，目录不可写时静默跳过。
-    try:
-        os.makedirs(os.path.dirname(ICON_PATH), exist_ok=True)
-        img.save(ICON_PATH, "PNG")
-    except Exception:
-        pass
     return img
 
 def svg_pixmap(svg_xml, px, *, content_scale=1.0):

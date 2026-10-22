@@ -55,6 +55,7 @@
   "R5:test_coverage_paint_panel.py": 88,
   "R5:test_coverage_quote.py": 58,
   "R5:test_coverage_release_tools.py": 5,
+  "R5:test_coverage_runner_and_gate_failures.py": 0,
   "R5:test_coverage_targets_config.py": 24,
   "R5:test_coverage_universe.py": 64,
   "R5:test_coverage_window_diagnostics.py": 0,
@@ -100,6 +101,7 @@
   "R5:test_stretch.py": 16,
   "R5:test_target_commit_retry.py": 0,
   "R5:test_target_panel.py": 176,
+  "R5:test_target_panel_design.py": 0,
   "R5:test_targets.py": 21,
   "R5:test_ui.py": 138,
   "R5:test_ui_dialog_guard.py": 3,
@@ -197,7 +199,7 @@
   "R7:test_keyboard_shortcut.py": 1,
   "R7:test_migrate.py": 3,
   "R7:test_network_mock.py": 6,
-  "R7:test_notify.py": 7,
+  "R7:test_notify.py": 6,
   "R7:test_opt_v127.py": 2,
   "R7:test_power_v1410.py": 2,
   "R7:test_publish_end_to_end.py": 1,
@@ -277,5 +279,5 @@
   "R7:test_v172_audit.py": 3,
   "R7:test_verify_bundle_tools.py": 2
  },
- "total": 2876
+ "total": 2875
 }

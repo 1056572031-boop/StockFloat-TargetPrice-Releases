@@ -246,3 +246,45 @@ class TestPerformanceDiagnostics(SFCase):
             RenderMixin.paintEvent(host, None)
         self.assertEqual(monitor.export()["paint"]["count"], 1)
         self.assertGreaterEqual(monitor.export()["paint"]["max_ms"], 0)
+
+    def test_run_aggregates_cover_more_than_the_retained_window(self):
+        clock, cpu = Clock(), Clock()
+        rss = iter((100, 300, 200, 250))
+        monitor = self.monitor(clock=clock, process_clock=cpu, capacity=1,
+                               resource_usage=lambda _kind: SimpleNamespace(ru_maxrss=next(rss)))
+        monitor.start()
+        # (墙钟间隔, CPU 增量)：第二拍卡了 300ms，第三拍慢了 80ms，只有第一拍是 50% 的 CPU 峰。
+        for wall, used in ((1.0, 0.5), (1.3, 0.13), (1.08, 0.108), (1.0, 0.1)):
+            clock.advance(wall)
+            cpu.advance(used)
+            monitor.sample()
+        payload = monitor.export()
+        run = payload["run"]
+        self.assertEqual(len(payload["recent_samples"]), 1, "窗口只留 1 拍，汇总必须不靠它")
+        self.assertEqual(run["samples"], 4)
+        self.assertAlmostEqual(run["wall_sec"], 4.38, places=6)
+        self.assertAlmostEqual(run["cpu_mean_pct"], 0.838 / 4.38 * 100.0, places=6)
+        self.assertAlmostEqual(run["cpu_max_pct"], 50.0, places=6)
+        self.assertAlmostEqual(run["cpu_max_at_monotonic"], 101.0, places=6)
+        self.assertAlmostEqual(run["event_loop_lag_max_ms"], 300.0, places=3)
+        self.assertAlmostEqual(run["event_loop_lag_max_at_monotonic"], 102.3, places=6)
+        self.assertEqual(run["event_loop_lag_over_warn"], 2, "300ms 与 80ms 都过 50ms 线")
+        self.assertEqual(run["event_loop_lag_over_stall"], 1, "只有 300ms 过 200ms 线")
+        self.assertEqual(run["peak_rss_bytes"], 300, "峰值要取整段最大，不是最后一拍")
+
+    def test_paint_aggregates_count_slow_frames_and_keep_the_first_worst_moment(self):
+        clock = Clock()
+        monitor = self.monitor(clock=clock, paint_capacity=2)
+        monitor.start()
+        for duration in (5.0, 40.0, 33.0, 500.0, 12.0):
+            monitor.record_paint(duration)
+            clock.advance(1.0)
+        monitor.record_paint(500.0)                 # 与最大值持平：不许把时刻挪走
+        monitor.record_paint(float("inf"))          # 被拒绝的样本不进汇总
+        paint = monitor.export()["paint"]
+        self.assertEqual(paint["count"], 6)
+        self.assertEqual(len(paint["recent_samples"]), 2, "窗口只留 2 条，汇总必须不靠它")
+        self.assertEqual(paint["slow_count"], 4, "40、33（含边界）、500、500")
+        self.assertEqual(paint["max_ms"], 500.0)
+        self.assertEqual(paint["max_at_monotonic"], 103.0)
+        self.assertEqual(paint["slow_ms"], 33.0)

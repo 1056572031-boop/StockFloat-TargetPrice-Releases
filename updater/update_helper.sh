@@ -91,16 +91,18 @@ validate_verification_home() {
     chomp $user_tmp;
     my @bases = ("/private/tmp", "/private/var/tmp");
     push @bases, Cwd::realpath($user_tmp) if -d $user_tmp;
-    my $root;
+    # 私有根 = home 的直接父目录，且它必须严格落在某个临时基目录之下（不能就是基目录本身）。
+    # 调用方的布局是 <根>/home 与 <根>/Skyrocket.app 并列（tools/verify_candidate_delivery.py）。
+    # 不再取「基目录之后的第一段」：TMPDIR 被指到更深一层时，那一段会把同层的两个不同临时
+    # 目录判成同一个根，跨目录的 target 就不再被拒（2026-10-22 实测，T-26）。
+    my $root = $home;
+    $root =~ s{/[^/]+$}{};
+    my $under_base = 0;
     for my $base (@bases) {
       next unless defined $base;
-      if (index($home, "$base/") == 0) {
-        my ($first) = split m{/}, substr($home, length($base) + 1);
-        $root = "$base/$first";
-        last;
-      }
+      if (index($root, "$base/") == 0) { $under_base = 1; last; }
     }
-    defined $root && index($target, "$root/") == 0 or exit 1;
+    $under_base && index($target, "$root/") == 0 or exit 1;
     for my $name (qw(config.json universe.json last_quote.json debug.log single.sock)) {
       my $p = "$home/$name";
       -l $p and exit 1;
@@ -392,17 +394,41 @@ prune_rollbacks() {
   # 留痕（判据是目录树，扫错目录=什么都不做=零输出）—— 能自己算的变量绝不依赖别人算过。
   rb_root="$(dirname "$TARGET")"
   rb_base="$(basename "$TARGET")"
-  rollbacks="$(/bin/ls -1d "$rb_root"/."$rb_base".rollback-* 2>/dev/null || true)"
-  if [ -n "$rollbacks" ]; then
-    # ls 的字典序即时间序（名字里嵌的是 epoch），所以「除最后一个之外」就是要挪走的。
-    total="$(printf '%s\n' "$rollbacks" | /usr/bin/grep -c . || true)"
-    if [ "${total:-0}" -gt 1 ]; then
-      /bin/mkdir -p "$prune_dir" 2>/dev/null || true
-      printf '%s\n' "$rollbacks" | /usr/bin/head -n "$((total - 1))" | while IFS= read -r stale; do
-        [ -n "$stale" ] || continue
-        /bin/mv "$stale" "$prune_dir"/ 2>/dev/null || true
-      done
+  tab="$(printf '\t')"
+  # 候选 = 「<epoch><TAB><路径>」每行一条。改名（v1.4.55）之前装的回退包叫
+  # .实时股价-目标价版.app.rollback-<epoch>，只按当前包名扫永远扫不到它们：实测一台机器上
+  # 躺着 30 份、约 5.2GB。所以名字不同的隐藏回退包也进候选，但**必须读得到 Info.plist 里
+  # 的包标识且是本程序两代之一**才算（与上面安装前的标识校验同一份口径，不另造名字清单）；
+  # 读不到、标识是别家的，一律不碰。epoch 必须是纯数字（date +%s 写出来的就是），否则不认。
+  cands=""
+  for cand in "$rb_root"/.*.rollback-*; do
+    [ -d "$cand" ] || continue
+    cand_name="${cand##*/}"
+    cand_epoch="${cand_name##*.rollback-}"
+    case "$cand_epoch" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if [ "$cand_name" != ".$rb_base.rollback-$cand_epoch" ]; then
+      cand_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$cand/Contents/Info.plist" 2>/dev/null || true)"
+      case "$cand_id" in
+        com.skyrocket.app|com.stockfloat.targetprice) ;;
+        *) continue ;;
+      esac
     fi
+    cands="$cands$cand_epoch$tab$cand
+"
+  done
+  [ -n "$cands" ] || return 0
+  # 不同包名的字典序不再是时间序，所以按名字里的 epoch 数值排；除最新一份之外全部挪走。
+  ordered="$(printf '%s' "$cands" | LC_ALL=C /usr/bin/sort -n -t "$tab" -k1,1)"
+  total="$(printf '%s\n' "$ordered" | /usr/bin/grep -c . || true)"
+  if [ "${total:-0}" -gt 1 ]; then
+    /bin/mkdir -p "$prune_dir" 2>/dev/null || true
+    printf '%s\n' "$ordered" | /usr/bin/head -n "$((total - 1))" | while IFS= read -r line; do
+      stale="${line#*"$tab"}"
+      [ -n "$stale" ] || continue
+      /bin/mv "$stale" "$prune_dir"/ 2>/dev/null || true
+    done
   fi
 }
 # END prune_rollbacks

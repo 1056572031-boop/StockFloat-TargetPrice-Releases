@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import json
 import os
 import re
@@ -148,6 +149,48 @@ def load(path: Path | None = None) -> dict[str, Any]:
     with src.open(encoding="utf-8") as fh:
         data: dict[str, Any] = json.load(fh)
     return data
+
+
+def canonical_text(data: dict[str, Any]) -> str:
+    """台账的唯一规范写法：本工具 `_save` 写出的就是这个形状。"""
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def format_problems(path: Path | None = None) -> list[str]:
+    """台账原文是否就是规范写法。内容对不对由 validate() 管，这里只管排版。
+
+    为什么单独一道：台账有人手改（紧凑数组、手写缩进），下次用工具写入时整段被展开，
+    一笔提交里就混进几十行纯排版变动，真正的内容改动被淹没，审查的人没法分辨。
+    规范写法只有一个来源——`_save`——所以判据就是"原文与它逐字一致"。
+    """
+    src = path or LEDGER_PATH
+    raw = src.read_text(encoding="utf-8")
+    canon = canonical_text(json.loads(raw))
+    if raw == canon:
+        return []
+    changed = [ln for ln in difflib.unified_diff(raw.splitlines(), canon.splitlines(), lineterm="", n=0)
+               if ln[:1] in "+-" and ln[:3] not in ("+++", "---")]
+    first = next((i for i, (a, b) in enumerate(zip(raw.splitlines(), canon.splitlines()), 1) if a != b),
+                 min(len(raw.splitlines()), len(canon.splitlines())) + 1)
+    return ["台账排版不是规范写法（约 %d 行不同，首处在第 %d 行）：内容不受影响，"
+            "运行 `tools/quality_trend.py --fix-format` 统一，并把排版变动单独提交，别混进内容改动。"
+            % (len(changed), first)]
+
+
+def fix_format(path: Path | None = None) -> bool:
+    """把台账改写成规范写法；只动排版，写前写后各核对一次内容完全相同。返回是否有改动。"""
+    src = path or LEDGER_PATH
+    raw = src.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    canon = canonical_text(data)
+    if raw == canon:
+        return False
+    src.write_text(canon, encoding="utf-8")
+    back = src.read_text(encoding="utf-8")       # 本仓实测坑：写文件可能返回空，读回再判
+    if back != canon or json.loads(back) != data:
+        src.write_text(raw, encoding="utf-8")
+        raise SystemExit("规范化后读回与预期不一致，已恢复原文，拒绝继续")
+    return True
 
 
 def now_iso() -> str:
@@ -1000,6 +1043,32 @@ def self_test() -> int:
         except RuntimeError:
             pass
     ok += 6
+    # ---- 排版判据：规范写法放行，手写紧凑数组必须被抓到，且规范化只动排版 ----
+    with tempfile.TemporaryDirectory() as td3:
+        fmt_path = Path(td3) / "ledger.json"
+        fmt_path.write_text(canonical_text(base), encoding="utf-8")
+        if format_problems(fmt_path):
+            print("FAIL 规范写法的台账被误判为排版不合规")
+            return 1
+        compact = canonical_text(base).replace('"failed_lines": [\n        "verify"\n      ]',
+                                               '"failed_lines": ["verify"]')
+        if compact == canonical_text(base):
+            print("FAIL 自检夹具没造出紧凑数组，这条判据没有真的被检验")
+            return 1
+        fmt_path.write_text(compact, encoding="utf-8")
+        if not format_problems(fmt_path):
+            print("FAIL 手写紧凑数组没被排版判据抓到")
+            return 1
+        if not fix_format(fmt_path) or format_problems(fmt_path):
+            print("FAIL 规范化没把紧凑数组改回规范写法")
+            return 1
+        if json.loads(fmt_path.read_text(encoding="utf-8")) != base:
+            print("FAIL 规范化改动了台账内容（只许动排版）")
+            return 1
+        if fix_format(fmt_path):
+            print("FAIL 对已规范的台账再规范化仍报有改动（应当幂等）")
+            return 1
+    ok += 5
     print(f"self-test 通过：干净样本 0 错 + {len(mutations)} 种失守形态全部被拦 + "
           f"历史遗留不硬拦 + 演练隔离不碰真台账 + 锚点扫描形状/时刻/未解析行数全对"
           f"（{ok} 项断言）")
@@ -1013,6 +1082,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--check", action="store_true",
                    help="只校验台账条目自洽（不查某一轮的复盘声明；用例用它，免得断言版本号）")
     p.add_argument("--self-test", action="store_true", help="变异自检")
+    p.add_argument("--fix-format", dest="fix_format", action="store_true",
+                   help="只把台账排版统一为规范写法（不改内容），排版变动请单独提交")
     p.add_argument("--open", dest="symptom", metavar="现象", help="开一条逃逸，盖 observed_at")
     p.add_argument("--rootcause", dest="entry_id", metavar="ID", help="根因写清，盖 rootcause_at")
     p.add_argument("--close", dest="close_id", metavar="ID", help="收口：修复版本 + 失守防线 + 补的落点")
@@ -1050,6 +1121,11 @@ def main(argv: list[str] | None = None) -> int:
             LEDGER_PATH = Path(args.ledger)
         if args.self_test:
             return self_test()
+        if args.fix_format:
+            changed = fix_format()
+            print("   台账排版已统一为规范写法（内容未改）" if changed
+                  else "   台账排版本来就是规范写法，未改动")
+            return 0
         if args.from_log:
             path = Path(args.log_path) if args.log_path else default_log_path()
             print(from_log_report(path, args.days))
@@ -1069,9 +1145,18 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_round(args)
         data = load()
         if args.check:
-            return print_gate(data, None)
+            rc = print_gate(data, None)
+            fmt = [] if args.ledger else format_problems()
+            for m in fmt:
+                print("!! " + m)
+            return 1 if (rc or fmt) else 0
         if args.gate is not None:
-            return print_gate(data, args.gate or None)
+            rc = print_gate(data, args.gate or None)
+            # 发版链上只提示不拦截：排版该在提交时被挡住（--check 与测试），
+            # 不该让一次已经准备好的发版因为空白字符停下。
+            for m in ([] if args.ledger else format_problems()):
+                print("   提示：" + m)
+            return rc
         print(report(data))
         return 0
     except RuntimeError as exc:

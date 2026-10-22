@@ -128,6 +128,17 @@ fi
 "$VENV_PY" tools/quality_evidence.py validate "$QUALITY_RECORD" \
   || { echo "!! SF_QUALITY_RECORD 结构无效，未进入发布前置核验" >&2; exit 1; }
 
+# 3.9 诊断覆盖闸门要的发布基线也在这里先查，不等到圆角、二进制兼容和首装路线三道昂贵核验之后。
+# 区间必须由真实发布基线给定，不许按版本号推断。实测（v1.4.101 之后一轮）：同一条命令
+# 不给基线退 1、点名一个本轮根本没碰的模块；给上一版发布头退 0 —— 红的是尺子量错了
+# 目标，不是代码。只靠人在文档里记得 export，等于这道关迟早自己说谎（同 S7-② 那一族）。
+if [ -z "${SF_RELEASE_BASELINE:-}" ]; then
+  echo "!! 3.9 拒绝下结论：没有 SF_RELEASE_BASELINE，只能按版本号推断区间，那个区间会把" >&2
+  echo "   上一版已经发出去的改动也算进「本轮」。请先 export SF_RELEASE_BASELINE=<上一版发布头>," >&2
+  echo "   取法：outputs/release-candidates/v<上一版>/post_release.json 里的 release_source.head" >&2
+  exit 1
+fi
+
 # These checks are read-only and independent. Run them together so a normal
 # release does not pay independent startup/scan costs back-to-back. Each
 # result is still collected and every failure blocks the release.
@@ -385,7 +396,8 @@ echo "== 3.8 首装路线：curl 零放行 / DMG 双击 / 助手认两代包名 
 # 在 diag_coverage.txt 当前版本段留一行 skip 理由。三档都不沾又没申报 → 拒绝出包。
 # 排在 DMG / 安装 / OTA 之前：那三步都不可逆（同 3.6 的理由）。
 echo "== 3.9 诊断覆盖：本轮改过的模块，包里要么有现场、要么有写得出来的理由 =="
-"$VENV_PY" tools/diag_coverage_check.py --version "$VERSION" \
+# 发布基线 SF_RELEASE_BASELINE 的必填检查在脚本前部（质量记录校验之后）。
+"$VENV_PY" tools/diag_coverage_check.py --version "$VERSION" --baseline "$SF_RELEASE_BASELINE" \
   || { echo "!! 诊断覆盖核对未过：本轮改的模块在诊断包里既没有现场、也没有申报理由" >&2; exit 1; }
 
 # ---- 4) DMG ----
@@ -655,6 +667,21 @@ else
   SYNC_NOTE="源码未同步"
 fi
 
+# ---- 7.1) 桌面分发目录对账（2026-10-22 用户要求的永久规则，见 AGENTS.md「桌面分发目录」）----
+# 为什么需要：上面第 6 步只会往桌面分发目录写 DMG、ZIP、Skyrocket-update.json 三样，目录里其余文件
+# 没有任何一步碰过，旧了也不报错（实测：一份说明文档停在 10-10，旧一代清单停在 1.4.54）。
+# 本步核对版本绑定件与冻结件，通过后改写已登记文档的对账段；排在 OTA 与源码同步之后，所以
+# 失败只写进结尾结论、不回滚已完成的发布（同 SYNC_NOTE 的口径），但绝不静默。
+echo "== 7.1 桌面分发目录与本轮对账 =="
+DESKTOP_NOTE=""
+DESKTOP_RC=0
+"$VENV_PY" tools/desktop_folder_sync.py --refresh --version "$VERSION" || DESKTOP_RC=$?
+case "$DESKTOP_RC" in
+  0) ;;
+  3) DESKTOP_NOTE="桌面文档正文有失效引用待人工订正" ;;
+  *) DESKTOP_NOTE="桌面分发目录与本轮不一致" ;;
+esac
+
 else
   echo "== 本机模式：不生成/发布 OTA，不发布公开源码，不推送开发分支 =="
 fi
@@ -679,4 +706,7 @@ elif [ -n "$SYNC_NOTE" ]; then
   echo "   修好后手工执行：git push origin $SRC_BRANCH"
 else
   echo "== 发版完成 v${VERSION}（发布动作完成，真实场景与渠道验收仍以发布总报告为准）=="
+fi
+if [ -n "${DESKTOP_NOTE:-}" ]; then
+  echo "!! 遗留一项：${DESKTOP_NOTE}。修好后手工执行：./.venv/bin/python tools/desktop_folder_sync.py --refresh" >&2
 fi

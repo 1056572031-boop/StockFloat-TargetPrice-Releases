@@ -35,9 +35,15 @@ import sf_quote
 import sf_ui_render
 
 try:
-    from _base import SFCase                  # noqa: E402
+    from _base import SFCase, fixed_clock     # noqa: E402
 except ImportError:                           # 以包形式被 discover 导入时
-    from tests._base import SFCase            # noqa: E402
+    from tests._base import SFCase, fixed_clock  # noqa: E402
+
+# 停牌判定要求"交易时段且不在集合竞价"（sf_quote.quote_status）。只把 _is_trading_time 打成真、
+# 不管 auction_status，用例就在交易日 09:15-09:29 与 14:57-15:00 这两段读真实时钟而必红
+# （固定时钟实测：09:20 与 09:29:30 红，09:30 与 10:30 绿）。所以固定成普通交易日午后，
+# 两个条件由同一个时钟自然给出，不再单独打桩。
+_TRADING_AFTERNOON = (2026, 10, 14, 14, 0)
 
 
 # ---- 行情数据构造：三态 quote（价格/涨跌幅为字符串，_apply_quote 依赖该形态） ----
@@ -325,7 +331,7 @@ class TestRenderBadges(TestRenderBase):
            昨收价继续交易展示。
         ② 判据改走 assert_solid_block_found（位置无关的相对量）。
         """
-        with patch.object(sf_quote, "_is_trading_time", return_value=True):
+        with fixed_clock(_TRADING_AFTERNOON):
             img = self._inject_and_render(QUOTE_SUSPENDED_TRADING)
         assert_solid_block_found(img, self._muted(m.FG_DIM),
                                  *self._badge_dims("停牌"), "停牌徽标")
@@ -340,7 +346,7 @@ class TestRenderBadges(TestRenderBase):
         """
         # 停牌判定只在交易时段生效（sf_quote.quote_status 里那条），
         # 非交易时段的 price=0 是正常收盘态，不误报停牌 —— 所以夹具要注入时段。
-        with patch.object(sf_quote, "_is_trading_time", return_value=True):
+        with fixed_clock(_TRADING_AFTERNOON):
             img = self._inject_and_render(QUOTE_SUSPENDED)
         assert_solid_block_found(img, self._muted(m.FG_DIM),
                                  *self._badge_dims("停牌"), "降级态停牌徽标")

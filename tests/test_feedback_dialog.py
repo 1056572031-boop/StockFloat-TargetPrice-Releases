@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 
 from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6 import sip
-from PyQt6.QtGui import QContextMenuEvent
+from PyQt6.QtGui import QContextMenuEvent, QGuiApplication
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QWidget
 
@@ -112,12 +112,87 @@ class DialogTests(_FeedbackCase):
             ["反馈问题"],
         )
         self.assertEqual(self.dialog.title.alignment(), Qt.AlignmentFlag.AlignCenter)
+        # 用户输入的正文左对齐（2026-10-22）；标题仍居中。
         self.assertEqual(self.dialog.description.document().defaultTextOption().alignment(),
-                         Qt.AlignmentFlag.AlignHCenter)
+                         Qt.AlignmentFlag.AlignLeft)
         self.assertEqual(
             self.dialog.description.placeholderText(),
             "告诉我们你遇到的问题或建议，这些信息将用于改进我们的产品。",
         )
+
+    def test_description_box_is_half_of_the_previous_size(self):
+        # 2026-10-22 用户要求：输入框宽、高各为原来的一半。原值取自改动前实测：
+        # 输入框 500x383（窗口 540x500，四周留白与标题、按钮行共 117pt 不变）。
+        previous_width, previous_height = 500, 383
+        box = self.dialog.description
+        self.assertAlmostEqual(box.width(), previous_width / 2, delta=6,
+                               msg="输入框宽度应约为原来的一半，实测 %d" % box.width())
+        self.assertAlmostEqual(box.height(), previous_height / 2, delta=6,
+                               msg="输入框高度应约为原来的一半，实测 %d" % box.height())
+
+    def test_typed_text_is_left_aligned_on_screen(self):
+        # 行为判据：真把字画出来，看第一行字的起点贴左还是居中，不只看对齐枚举值。
+        box = self.dialog.description
+        box.setPlainText("左")
+        box.moveCursor(box.textCursor().MoveOperation.Start)
+        QApplication.processEvents()
+        start_x = box.cursorRect().x()
+        self.assertLess(start_x, box.viewport().width() / 4,
+                        "第一个字应贴近输入框左缘，实测起点 x=%d / 宽 %d" % (
+                            start_x, box.viewport().width()))
+
+    def test_present_centers_on_the_screen_not_on_the_parent_card(self):
+        # 父窗口是屏幕一角的小卡片；Qt 默认把对话框居中在父窗口上（2026-10-22 实测偏离
+        # 屏幕中心约 400pt 并被夹到最上沿）。
+        parent = self.track_widget(QWidget())
+        parent.setGeometry(40, 60, 220, 110)
+        parent.show()
+        dialog = self.track_widget(FeedbackDialog(
+            parent, snapshot=snapshot(), storage_dir=self.temporary.name,
+            endpoint="https://receiver.example/v1/feedback", sender=self.sender))
+        dialog.present()
+        QApplication.processEvents()
+        screen = QGuiApplication.screenAt(parent.frameGeometry().center()) or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry()
+        center = dialog.frameGeometry().center()
+        self.assertAlmostEqual(center.x(), area.center().x(), delta=2)
+        self.assertAlmostEqual(center.y(), area.center().y(), delta=2)
+
+    def test_centering_without_any_screen_leaves_the_position_alone(self):
+        dialog = self.dialog
+        dialog.move(30, 50)
+        with patch.object(QGuiApplication, "primaryScreen", return_value=None):
+            dialog.center_on_screen()
+        self.assertEqual((dialog.x(), dialog.y()), (30, 50))
+
+    def test_present_keeps_a_position_the_user_dragged_to(self):
+        dialog = self.dialog
+        dialog.move(30, 50)
+        dialog.present()          # 已经显示着：只前置，不把用户拖过的窗口拽回正中
+        QApplication.processEvents()
+        self.assertEqual((dialog.x(), dialog.y()), (30, 50))
+
+    def test_reopening_a_closed_dialog_centers_it_again(self):
+        dialog = self.dialog
+        dialog.move(30, 50)
+        dialog.close()
+        dialog.present()
+        QApplication.processEvents()
+        area = (QGuiApplication.screenAt(dialog.frameGeometry().center())
+                or QGuiApplication.primaryScreen()).availableGeometry()
+        self.assertAlmostEqual(dialog.frameGeometry().center().x(), area.center().x(), delta=2)
+
+    def test_uploading_popup_has_no_button_but_result_popups_keep_theirs(self):
+        progress, received = Mock(), Mock()
+        with patch("sf_system_alert.show_alert", side_effect=(progress, received)) as alerts:
+            self.dialog.upload_button.click()
+            self.finish()
+            self.assertEqual(alerts.call_args_list[0].kwargs["title"], "反馈上传中")
+            self.assertEqual(tuple(alerts.call_args_list[0].kwargs["buttons"]), (),
+                             "上传进行中的提示不应显示底部按钮")
+            self.assertEqual(alerts.call_args_list[1].kwargs["title"], "反馈已上传")
+            self.assertEqual(tuple(alerts.call_args_list[1].kwargs["buttons"]), ("好",),
+                             "结果提示仍要有确认按钮")
 
     def test_upload_status_popups_replace_each_other_and_close_with_feedback(self):
         progress, received = Mock(), Mock()

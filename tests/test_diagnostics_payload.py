@@ -50,7 +50,7 @@ import sf_ui_render
 import sf_universe
 import sf_update
 import stock_float_window as m
-from tests._base import SFCase, wait_for
+from tests._base import SFCase, fixed_clock, wait_for
 from tests.test_coverage_window_diagnostics import DiagnosticsBranchCase
 
 _APP = None
@@ -452,7 +452,10 @@ class PayloadCase(DiagnosticsBranchCase):
     def _paint(self, quote):
         """真渲染一帧：停牌判定只在交易时段生效（sf_quote.quote_status 里那条）。"""
         app = _ensure_app()
-        with mock.patch.object(sf_quote, "_is_trading_time", return_value=True):
+        # 只补 _is_trading_time 不够：quote_status 还要求"不在集合竞价"，而集合竞价按真实
+        # 时钟算，交易日 09:15-09:29 它非空，徽标就不画、计数不动。所以把时刻一并固定在盘中。
+        with fixed_clock((2026, 10, 14, 14, 0)), \
+                mock.patch.object(sf_quote, "_is_trading_time", return_value=True):
             self.win._apply_quote(quote)  # discipline-ok(R5): 注入行情的唯一真实入口
             self.win._need_redraw = True  # discipline-ok(R5): 重绘标记是内部脏位，没有公开 setter
             self.win.update()

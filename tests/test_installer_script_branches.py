@@ -248,6 +248,73 @@ class InstallerBranchCase(SFCase):
             time.sleep(0.25)
         return False
 
+    def _start_decoys(self):
+        """起两个**并不是本程序**、命令行里却带着包内可执行文件路径的进程：
+        一个是读那个路径的 tail（别的终端里 less / tail / cat 查看它的样子），一个是外层 shell -c。
+        返回 (decoy 进程列表, 它们的 pid 字符串集合)。pgrep -f 会把这两个都当成"程序在运行"。"""
+        exe = str(self.target / VIP.CURRENT_APP_NAME / "Contents" / "MacOS" / "Skyrocket")
+        decoys = [
+            subprocess.Popen(["/usr/bin/tail", "-f", "/dev/null", exe],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True),
+            # 两条命令：只有一条时 sh 会直接 exec 成 sleep，路径就从命令行里消失了
+            subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 25; echo " + exe],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True),
+        ]
+
+        def _stop():
+            for d in decoys:
+                try:
+                    os.killpg(d.pid, 15)
+                except OSError:
+                    pass
+                d.wait(timeout=5)
+        self.addCleanup(_stop)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            seen = subprocess.run(["/usr/bin/pgrep", "-f", "Skyrocket.app/Contents/MacOS/"],
+                                  capture_output=True, text=True).stdout.split()
+            if all(str(d.pid) in seen for d in decoys):
+                return decoys, {str(d.pid) for d in decoys}
+            time.sleep(0.2)
+        self.skipTest("两个干扰进程没能出现在 pgrep 里，这条判据的前提没了")
+
+    def test_别的进程命令行里只是带着包路径不算程序在运行(self):
+        """pgrep -f 是子串匹配：另一个终端里 tail / 外层 shell 的命令行里带着这串路径，
+        旧写法就报"程序正在运行"并拦住安装，指向一个根本不存在的悬浮窗。"""
+        self.make_volume_app(version=NEW_GEN)
+        self.place_old(version=OLD_GEN)
+        _decoys, _pids = self._start_decoys()
+        proc = self.run_script(SF_INSTALL_WAIT_SEC="2")
+        body = self.out(proc)
+        self.assertEqual(proc.returncode, 0, "干扰进程不是本程序，不该拦住安装：\n" + body)
+        self.assertNotIn("正在运行", body)
+        self.assertEqual(VIP.installed_version(self.target / VIP.CURRENT_APP_NAME), NEW_GEN)
+
+    def test_真有一份在跑时只报真的那个_不把干扰进程算进去(self):
+        self.make_volume_app(version=NEW_GEN)
+        marker = self._marker()
+        old = VIP.make_launchable_app(self.target, VIP.CURRENT_APP_NAME, OLD_GEN,
+                                      marker, bundle_id=VIP.BUNDLE_ID)
+        if old is None:
+            self.skipTest("codesign 不可用，起不了替身进程")
+        rc_open, msg_open = VIP.launch(old)
+        if rc_open != 0:
+            self.skipTest("LaunchServices 不可用（open 失败）：%s" % msg_open[-160:])
+        if not self._wait_for_marker(marker, timeout=10.0):
+            self.skipTest("替身进程没能起来，这条判据的前提没了")
+        _decoys, decoy_pids = self._start_decoys()
+        proc = self.run_script(SF_INSTALL_WAIT_SEC="0")
+        body = self.out(proc)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("正在运行", body, "真有一份在跑，必须仍然拦住")
+        reported = body.split("pid", 1)[1].split("）", 1)[0].split()
+        self.assertTrue(reported, "拦住了但没报出是哪个进程：\n" + body)
+        self.assertFalse(decoy_pids & set(reported),
+                         "把干扰进程也报成了程序：%s / 报出 %s" % (sorted(decoy_pids), reported))
+        self.assertEqual(VIP.installed_version(self.target / VIP.CURRENT_APP_NAME), OLD_GEN)
+
     # ---------- 4 四条失败路径都不许留空档 ----------
 
     def test_坏包只报什么都没动_校验必须排在破坏之前(self):

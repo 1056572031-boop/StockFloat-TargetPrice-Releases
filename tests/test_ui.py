@@ -76,36 +76,39 @@ class TestUIInteraction(unittest.TestCase):
         self.win.code = "sh510300"
         self.win._alerts = [{"direction": "above", "target": 4.621,
                              "session_date": "2099-12-31", "state": "pending"}]
-        self.assertIn("4.621", self.win._target_tooltip_text())
+        self.assertEqual(self.win._target_bubble_rows()[0][0][1], "4.621")
         self.win.code = "sh600519"
-        self.assertIn("4.62", self.win._target_tooltip_text())
-        self.assertNotIn("4.621", self.win._target_tooltip_text())
+        self.assertEqual(self.win._target_bubble_rows()[0][0][1], "4.62",
+                         "换品种后小数位必须跟着变，不能带着上一只的精度")
 
     def test_bell_tooltip_anchor_is_below_bell(self):
-        """自绘气泡中心固定在铃铛正下方，不把铃铛中心误当气泡左上角。"""
+        """气泡本体中心与小三角都对准铃铛正下方，不把铃铛中心误当气泡左上角。"""
         self.win._alerts = [{"direction": "above", "target": 65.10, "state": "hit"}]
         bubble = self.win._target_bubble
         self.win._update_target_tooltip("bell", QPoint(1, 1))
         expected = self.win.mapToGlobal(
             QPoint(self.win.width() - m.BTN_X["bell"], m.BTN_ICON_Y + m.BTN_ICON_SZ))
-        self.assertLessEqual(abs((bubble.x() + bubble.width() / 2.0) - expected.x()), 0.5)
-        self.assertEqual(bubble.y(), expected.y() + 8)
+        body = bubble.body_rect_global()
+        self.assertLessEqual(abs((body.left() + body.width() / 2.0) - expected.x()), 0.5)
+        self.assertLessEqual(abs(bubble.caret_center_global_x() - expected.x()), 0.5)
+        self.assertEqual(body.top(), expected.y() + m.TargetBubble.GAP_TO_ICON)
+        self.assertFalse(bubble.is_flipped(), "屏幕上方空间充足时不该翻转")
         self.assertTrue(bubble.isVisible())
         self.assertNotIn("QToolTip", inspect.getsource(self.win._update_target_tooltip))
 
     def test_bell_tooltip_contains_fired_and_pending_targets(self):
-        """铃铛气泡在卡片外承载目标提示，包含已触发和待触发。"""
+        """铃铛气泡在卡片外承载目标提示，包含已触发和待触发，待触发组在上。"""
         self.win._alerts = [
             {"direction": "above", "target": 65.10, "state": "hit"},
             {"direction": "below", "target": 62.50, "state": "pending"},
         ]
-        text = self.win._target_tooltip_text()
-        self.assertIn("已触发 ↑ 65.10", text)
-        self.assertIn("待触发 ↓ 62.50", text)
-        self.assertLess(text.index("待触发 ↓ 62.50"), text.index("已触发 ↑ 65.10"))
-        pending, hit = self.win._target_tooltip_groups()
-        self.assertEqual(pending, ["待触发 ↓ 62.50"])
-        self.assertEqual(hit, ["已触发 ↑ 65.10"])
+        pending, hit = self.win._target_bubble_rows()
+        self.assertEqual([(r[0], r[1]) for r in pending], [(False, "62.50")])
+        self.assertEqual([(r[0], r[1]) for r in hit], [(True, "65.10")])
+        self.assertEqual(hit[0][2], "", "已触发行不带百分比")
+        self.win._update_target_tooltip("bell", QPoint(1, 1))
+        self.assertEqual(self.win._target_bubble.rows()["pending"], pending)
+        self.assertEqual(self.win._target_bubble.rows()["hit"], hit)
 
     def test_bell_prefers_pending_yellow_when_states_mixed(self):
         self.win._alerts = [
@@ -116,12 +119,20 @@ class TestUIInteraction(unittest.TestCase):
 
     def test_target_bubble_uses_divided_sections(self):
         bubble = m.TargetBubble()
-        bubble.setGroups(["待触发 ↑ 61.30"], ["已触发 ↑ 61.25"])
-        self.assertGreater(bubble.height(), 2 * bubble._fm.height() + 2 * bubble.PAD_Y)
-        self.assertEqual(bubble._groups["pending"], ["待触发 ↑ 61.30"])
-        self.assertEqual(bubble._groups["hit"], ["已触发 ↑ 61.25"])
-        self.assertEqual(bubble.PENDING_COLOR.name(), "#f5c542")
-        self.assertEqual(bubble.HIT_COLOR.name(), "#9aa2b8")
+        self.addCleanup(bubble.close)
+        bubble.setRows([(True, "61.30", "+2.2%")], [])
+        one_group = bubble.body_rect_global().height()
+        bubble.setRows([(True, "61.30", "+2.2%")], [(True, "61.25", "")])
+        two_groups = bubble.body_rect_global().height()
+        # 再加一个已触发组 = 多一个标题 + 一行 + 一道细线占位
+        self.assertEqual(two_groups - one_group,
+                         m.TargetBubble.HEADER_H + m.TargetBubble.HEADER_GAP + m.TargetBubble.ROW_H
+                         + m.TargetBubble.SEP_GAP_TOP + 1 + m.TargetBubble.SEP_GAP_BOTTOM)
+        self.assertEqual(bubble.rows()["pending"], [(True, "61.30", "+2.2%")])
+        self.assertEqual(bubble.rows()["hit"], [(True, "61.25", "")])
+        # 组标题圆点与铃铛的两种颜色同源：待触发金黄、已触发灰
+        self.assertEqual(bubble.PENDING_DOT_COLOR.name(), "#f5c542")
+        self.assertEqual(bubble.HIT_DOT_COLOR.name(), "#9aa2b8")
 
     def test_fired_target_still_allows_opening_panel(self):
         """目标到达后铃铛仍必须可点，允许继续新设或修改目标价。"""

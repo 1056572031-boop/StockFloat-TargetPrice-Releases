@@ -176,9 +176,12 @@ _FALLBACK_KEYS_MAX = 256
 # 点击较早通知会错误执行最后一条通知的回调。
 _CLICK_HANDLERS = collections.OrderedDict()
 _CLICK_HANDLERS_MAX = 256
-# 未知授权只排队，不借另一身份绕过系统授权。最老条目在满 256 条时淘汰；
-# 60 秒后提醒已失去即时性，直接丢弃并计数（绝不转 osascript）。无后台表：
-# 下一次 deliver / diagnostics / settings 回调负责过期与查询重试。
+# 授权还没答复（unknown）时先排队等系统的答复，最老条目在满 256 条时淘汰。
+# 目标价命中时那一条已经先落盘记为「已触发」，不会再提醒第二次，所以排队的提醒
+# 不能静默丢弃：系统明确答「尚未询问」(notDetermined)，或排队满 60 秒仍无答复，
+# 都改用 osascript 补发一次（见 _deliver_unanswered）。只有系统明确答「拒绝」才丢弃并计数
+# ——未表态不等于拒绝，拒绝才是用户的选择，且拒绝永远优先于补发。
+# 无后台表：下一次 deliver / settings 回调 / flush 负责过期与补发，诊断导出只读。
 _PENDING: collections.OrderedDict[str, tuple[float, str, str, str, Any]] = collections.OrderedDict()
 _PENDING_MAX = 256
 _PENDING_TTL_SEC = 60.0
@@ -186,6 +189,9 @@ _PENDING_COUNTS: collections.Counter[str] = collections.Counter()
 _PENDING_FLUSH_SCHEDULED = False
 _PENDING_EPOCH = 0
 _PENDING_SENDING: set[str] = set()
+# 等不到授权答复、需要补发的提醒（key, 标题, 副标题, 正文）。条目只来自上面有界的 _PENDING，
+# 并在产生它们的同一个调用里随即被 _deliver_unanswered 取走；锁内只入队，不在锁内发。
+_UNANSWERED: list[tuple[str, str, str, str]] = []
 
 
 def _expire_pending_locked():
@@ -194,6 +200,41 @@ def _expire_pending_locked():
         if now - item[0] >= _PENDING_TTL_SEC:
             del _PENDING[key]
             _PENDING_COUNTS["expired"] += 1
+            _UNANSWERED.append((key, item[1], item[2], item[3]))
+    if len(_UNANSWERED) > _PENDING_MAX:
+        _PENDING_COUNTS["overflow"] += len(_UNANSWERED) - _PENDING_MAX
+        del _UNANSWERED[:len(_UNANSWERED) - _PENDING_MAX]
+
+
+def _move_pending_to_unanswered_locked():
+    """系统明确答「尚未询问」：排队中的提醒不必再等，全部转入补发名单。"""
+    for key, item in list(_PENDING.items()):
+        _UNANSWERED.append((key, item[1], item[2], item[3]))
+    _PENDING_COUNTS["unanswered"] += len(_PENDING)
+    _PENDING.clear()
+
+
+def _deliver_unanswered():
+    """把等不到授权答复的提醒用 osascript 补发出去。绝不在持锁时发；拒绝永远优先。"""
+    with _DELIVERY_LOCK:
+        if not _UNANSWERED:
+            return
+        batch = list(_UNANSWERED)
+        _UNANSWERED.clear()
+        if _AUTH_STATUS_CACHE == "denied":
+            _PENDING_COUNTS["denied"] += len(batch)
+            return
+    log_line("notify: 授权未答复，%d 条排队提醒改走 osascript 补发" % len(batch), "WARNING")
+    for _key, title, subtitle, body in batch:
+        try:
+            result = _deliver_osascript(title, subtitle, body)
+        except Exception as exc:
+            result = "error"
+            log_line("notify unanswered fallback error: %r" % (exc,), "WARNING")
+        _record_channel(result if result in _DELIVER_COUNTS else "error")
+        if result == "osascript":
+            with _DELIVERY_LOCK:
+                _PENDING_COUNTS["fallback"] += 1
 
 
 def _record_channel(channel):
@@ -217,11 +258,16 @@ def _schedule_pending_flush():
         if _AUTH_STATUS_CACHE == "denied":
             _PENDING_COUNTS["denied"] += len(_PENDING)
             _PENDING.clear()
-        if (not _PENDING or _PENDING_FLUSH_SCHEDULED or
-                _AUTH_STATUS_CACHE not in ("authorized", "provisional", "ephemeral")):
-            return
-        generation = _PENDING_EPOCH
-        _PENDING_FLUSH_SCHEDULED = True
+        elif _AUTH_STATUS_CACHE == "notDetermined":
+            _move_pending_to_unanswered_locked()
+        schedule = bool(_PENDING) and not _PENDING_FLUSH_SCHEDULED and \
+            _AUTH_STATUS_CACHE in ("authorized", "provisional", "ephemeral")
+        if schedule:
+            generation = _PENDING_EPOCH
+            _PENDING_FLUSH_SCHEDULED = True
+    _deliver_unanswered()
+    if not schedule:
+        return
 
     def flush():
         global _PENDING_FLUSH_SCHEDULED
@@ -257,6 +303,7 @@ def _schedule_pending_flush():
             with _DELIVERY_LOCK:
                 if generation == _PENDING_EPOCH:
                     _PENDING_FLUSH_SCHEDULED = False
+            _deliver_unanswered()
 
     try:
         post, queue = dispatch_async, dispatch_get_main_queue
@@ -278,6 +325,7 @@ def reset_delivery_probe():
     global _AUTH_QUERY_STARTED_AT, _AUTH_QUERY_IN_FLIGHT, _AUTH_QUERY_GENERATION
     with _DELIVERY_LOCK:
         _PENDING.clear()
+        _UNANSWERED.clear()
         _PENDING_SENDING.clear()
         _PENDING_COUNTS.clear()
         _PENDING_EPOCH += 1
@@ -419,7 +467,11 @@ def delivery_stats():
     # 源码态/测试报 "no_bundle"，与"问了系统、系统说没授权"是两件事，不许混成 unknown。
     with _DELIVERY_LOCK:
         cached_auth = _AUTH_STATUS_CACHE
-        cache_age = max(0.0, time.monotonic() - _AUTH_STATUS_CACHE_AT)
+        # 0.0 是「从未写过」的初值（模块初值与 reset_delivery_probe 都是它），而真机的
+        # time.monotonic() 恒大于 0：直接相减得到的是开机时长（实测诊断包里写成 10.2 天）。
+        # 没有时间戳就没有年龄，按无穷处理 —— 下面 age_sec 会因此落成 None，且不算新鲜。
+        cache_age = (max(0.0, time.monotonic() - _AUTH_STATUS_CACHE_AT)
+                     if _AUTH_STATUS_CACHE_AT > 0.0 else float("inf"))
         cache_fresh = cached_auth != "unknown" and cache_age < _AUTH_CACHE_TTL_SEC
         pending = {
             "size": len(_PENDING), "limit": _PENDING_MAX,
@@ -539,8 +591,10 @@ def deliver(title, subtitle, body, semantic_key=None, on_click=None):
     """投递一条通知。返回 'un' / 'osascript' / 'denied' / 'error' / 'pending'。
 
     pending 仅代表已排队，并非 UN 成功；授权后补送不依赖业务再次触发 hit。
+    排队期间系统答复「尚未询问」或排队满 60 秒仍无答复，会改用 osascript 补发，不丢提醒。
 
     - UN 不可用或已探测到 UN 投递失败 → osascript 降级；
+    - 授权 notDetermined（用户还没表态）→ 立即 osascript 补发；
     - 授权 denied → 直接 'denied'（只走彩虹，不弹窗）；
     - on_click：点击回调（仅 UN 路线有效，需主线程调用恢复窗口）。
 
@@ -575,6 +629,8 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
         return _deliver_osascript(title, subtitle, body)
     with _DELIVERY_LOCK:
         _expire_pending_locked()
+    # 排队满 60 秒仍无授权答复的旧提醒，先于本条补发出去（持锁之外发）。
+    _deliver_unanswered()
     semantic_key = semantic_key or "target-" + uuid.uuid4().hex
     with _DELIVERY_LOCK:
         if not _pending_claim and semantic_key in _PENDING_SENDING:
@@ -592,6 +648,16 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
             _PENDING_COUNTS["denied"] += len(_PENDING)
             _PENDING.clear()
         return "denied"
+    if status == "notDetermined":
+        # 系统明确答复「用户还没表过态」：这不是拒绝。目标价命中时该条已先落盘记为已触发，
+        # 不会再提醒第二次，所以不能排队等、更不能丢 —— 立即用 osascript 补发这一条
+        # （与 v1.4.100 及以前的行为一致）。拒绝永远优先：答复刚好在这一刻变成 denied 就不发。
+        with _DELIVERY_LOCK:
+            if _AUTH_STATUS_CACHE == "denied":
+                return "denied"
+        log_line("notify: UN 尚未授权(status=%s)，本次改走 osascript 补发" % status,
+                 "WARNING")
+        return _deliver_osascript(title, subtitle, body)
     if status not in ("authorized", "provisional", "ephemeral"):
         with _DELIVERY_LOCK:
             # Query completion may have raced the snapshot above. Recheck under

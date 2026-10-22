@@ -15,7 +15,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPainter
+from PyQt6.QtGui import QGuiApplication, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QVBoxLayout,
@@ -34,6 +34,11 @@ from sf_constants import FG_DISABLED_HEX, FG_TEXT_HEX
 
 _BLOCKING_ERRORS = {"configuration_or_storage_unavailable", "configuration_unavailable",
                     "capture_failed", "local_package_invalid"}
+# 弹窗尺寸（2026-10-22 用户要求：输入框的宽、高各缩为原来的一半）。
+# 原来窗口 540x500、输入框实测 500x383；四周留白与标题、按钮行（共 117pt）不变，
+# 所以输入框 250x192 对应窗口 290x309。最小尺寸同理：原 440x410 → 保住按钮行放得下。
+_DEFAULT_SIZE = (290, 309)
+_MIN_SIZE = (270, 290)
 _FULL_UPLOAD_HINT = "发送完整脱敏诊断资料，包含运行日志、设置和功能状态；会去除已识别的凭据与身份字段，不采集摄像头画面。"
 _LEGACY_UPLOAD_HINT = "按原资料提交旧版反馈；不会重新采集或添加完整诊断内容。"
 
@@ -95,8 +100,8 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.validation_error = ""
         self._feedback_status_dialog = None
         self.setWindowTitle("反馈问题")
-        self.setMinimumSize(440, 410)
-        self.resize(540, 500)
+        self.setMinimumSize(*_MIN_SIZE)
+        self.resize(*_DEFAULT_SIZE)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
@@ -108,8 +113,9 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.description = QPlainTextEdit(self)
         document = self.description.document()
         if document is not None:
+            # 用户输入的正文左对齐（2026-10-22 用户要求）；标题仍居中。
             text_option = document.defaultTextOption()
-            text_option.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            text_option.setAlignment(Qt.AlignmentFlag.AlignLeft)
             document.setDefaultTextOption(text_option)
         self.description.setTabChangesFocus(True)
         self.description.setAccessibleName("问题描述（可选）")
@@ -179,6 +185,35 @@ class FeedbackDialog(GlassMixin, QDialog):
         self._update_enabled()
         self.description.setFocus()
         prepare_popup_surface(self)
+
+    def center_on_screen(self):
+        """摆到所属屏幕可用区的正中。
+
+        不能交给 Qt：QDialog 首次显示时会把自己居中在**父窗口**上，而父窗口是屏幕一角
+        的小悬浮卡片，实测中心落在 (320,282)，屏幕可用区中心是 (734,464)，
+        还因为超出屏幕被夹到最上沿。先 move() 之后 Qt 就不再自己摆位。
+        """
+        parent = self.parentWidget()
+        screen = None
+        if parent is not None:
+            screen = QGuiApplication.screenAt(parent.frameGeometry().center())
+        screen = screen or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        self.move(area.x() + (area.width() - self.width()) // 2,
+                  area.y() + (area.height() - self.height()) // 2)
+
+    def present(self):
+        """打开或唤回反馈窗。
+
+        刚创建或已被关掉时先居中再显示；已经显示着的只前置，不改用户拖过的位置。
+        """
+        if not self.isVisible():
+            self.center_on_screen()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -277,8 +312,11 @@ class FeedbackDialog(GlassMixin, QDialog):
                                            and valid and not busy
                                            and self.stage != "received"))
 
-    def _show_feedback_status(self, title, text, detail=""):
-        """Show feedback results in the same native status popup family as updates."""
+    def _show_feedback_status(self, title, text, detail="", buttons=("好",)):
+        """Show feedback results in the same native status popup family as updates.
+
+        buttons=() 表示纯进度提示（上传进行中）：不显示任何按钮，由结果提示替换它。
+        """
         import sf_system_alert
 
         previous = self._feedback_status_dialog
@@ -293,7 +331,7 @@ class FeedbackDialog(GlassMixin, QDialog):
                 title=title,
                 text=text,
                 info=detail,
-                buttons=("好",),
+                buttons=buttons,
                 icon_path=sf_system_alert.bundled_icon_path(),
             )
         except Exception:
@@ -423,7 +461,7 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.consent.setEnabled(False)
         self.upload_button.setEnabled(False)
         self.status.setText("正在生成并校验反馈包…")
-        self._show_feedback_status("反馈上传中", "正在上传反馈，请稍候。")
+        self._show_feedback_status("反馈上传中", "正在上传反馈，请稍候。", buttons=())
         self.stage = "submitting"
         pending_id = self.current_id
         self.draft_key = self.draft_key or uuid.uuid4().hex

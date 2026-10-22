@@ -275,7 +275,7 @@ class TargetPanel(GlassMixin, QWidget):
         input_layout.setSpacing(INPUT_ROW_GAP)
         root.addWidget(self.target_input_area)
 
-        # 涨到（红色 #ff5252，与主界面涨色一致）
+        # 涨到（红色取 UP_RED，与主界面涨色同一个来源）
         self.row_up = QWidget()
         row_up = QHBoxLayout(self.row_up)
         lab_up = QLabel("涨到")

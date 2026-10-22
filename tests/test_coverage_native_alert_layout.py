@@ -26,11 +26,14 @@ import sf_system_alert as alerts
 center_content = alerts.NativeAlert._center_content  # discipline-ok(R5): geometry algorithm under test
 text_height = alerts.NativeAlert._text_height  # discipline-ok(R5): measurement fallback under test
 grow_window = alerts.NativeAlert._grow_window  # discipline-ok(R5): window geometry helper under test
+hide_button_band = alerts.NativeAlert._hide_button_band  # discipline-ok(R5): button-less popup geometry under test
 
 CONTENT_WIDTH = 520.0
 CONTENT_HEIGHT = 310.0
 ICON_SIZE = 64.0
 SIDE_MARGIN = 20.0
+BOTTOM_GAP = 20.0
+BODY_Y = 126.0
 BUTTON_Y = 16.0
 BUTTON_HEIGHT = 32.0
 BODY_HEIGHT = 90.0
@@ -54,6 +57,7 @@ class View:
     def __init__(self, frame):
         self.geometry = frame
         self.writes = []
+        self.hidden = False
 
     def frame(self):
         return self.geometry
@@ -62,9 +66,31 @@ class View:
         self.geometry = frame
         self.writes.append(frame)
 
+    # 真实 NSView 都有这一对；产品代码按它判断「按钮区是否被藏起来」。
+    def isHidden(self):
+        return self.hidden
+
+    def setHidden_(self, hidden):
+        self.hidden = bool(hidden)
+
 
 class ImageView(View):
     pass
+
+
+class Button(View):
+    """NSAlert 按钮：隐藏按钮区时产品会逐个禁用并清掉回车/Esc 键位。"""
+
+    def __init__(self, frame):
+        super().__init__(frame)
+        self.enabled = True
+        self.key = "\r"
+
+    def setEnabled_(self, enabled):
+        self.enabled = bool(enabled)
+
+    def setKeyEquivalent_(self, key):
+        self.key = key
 
 
 class TextField(View):
@@ -240,6 +266,61 @@ class NativeLayoutGeometry(SFCase):
         self.assert_stack(icon, title, body, button)
         self.assertEqual(blank.writes, [])
         self.faults.assert_not_called()
+
+    def test_hidden_bottom_control_does_not_raise_the_floor(self):
+        # 无按钮提示（如「反馈上传中」）把按钮区藏起来：被藏起来的控件不能再算「底部控件带」，
+        # 否则文案会被往上顶、窗口白白长高。同样的内容，藏起来后的窗口必须更矮。
+        shown_alert, shown_window, *_ = self.layout(body_height=160.0)
+        center_content(shown_alert)
+        alert, window, _icon, _title, _body, button, _blank = self.layout(body_height=160.0)
+        button.setHidden_(True)
+        center_content(alert)
+        self.assertLess(window.frame().size.height, shown_window.frame().size.height)
+        self.faults.assert_not_called()
+
+    def hide_layout(self, **kwargs):
+        alert, window, icon, title, body, stack, _blank = self.layout(**kwargs)
+        ok = Button(rect(0.0, 0.0, 60.0, 28.0))
+        alert.buttons = lambda: [ok]
+        return alert, window, icon, title, body, stack, ok
+
+    def test_hiding_the_button_band_disables_buttons_and_closes_the_gap(self):
+        # 「反馈上传中」不要按钮：NSAlert 自己会补一个 OK，只能事后藏起来并把窗口收矮。
+        alert, window, _icon, _title, body, stack, ok = self.hide_layout(wide=False)
+        hide_button_band(alert)
+        self.assertTrue(stack.isHidden())
+        self.assertTrue(ok.isHidden())
+        self.assertFalse(ok.enabled, "被藏起来的按钮不能再响应点击")
+        self.assertEqual(ok.key, "", "被藏起来的按钮不能再响应回车/Esc")
+        self.assertEqual(body.frame().origin.y, BOTTOM_GAP,
+                         "最低的可见文案应落在正常的底部留白上，而不是留一条空白带")
+        self.assertEqual(window.frame().size.height, CONTENT_HEIGHT - (BODY_Y - BOTTOM_GAP))
+        self.faults.assert_not_called()
+
+    def test_hiding_the_band_with_nothing_to_anchor_leaves_the_window_alone(self):
+        stack = View(rect(20.0, BUTTON_Y, 480.0, BUTTON_HEIGHT))
+        window = Window(Content([stack]))
+        ok = Button(rect(0.0, 0.0, 60.0, 28.0))
+        hide_button_band(types.SimpleNamespace(window=lambda: window, buttons=lambda: [ok]))
+        self.assertTrue(stack.isHidden())
+        self.assertEqual(window.constraints, [])
+        self.assertEqual(window.frame().size.height, CONTENT_HEIGHT)
+        self.faults.assert_not_called()
+
+    def test_hiding_the_band_keeps_a_window_that_has_no_room_to_shrink(self):
+        alert, window, _icon, _title, body, _stack, _ok = self.hide_layout(wide=False)
+        body.geometry = rect(92.0, BOTTOM_GAP - 5.0, 408.0, BODY_HEIGHT)
+        hide_button_band(alert)
+        self.assertEqual(window.constraints, [])
+        self.assertEqual(window.frame().size.height, CONTENT_HEIGHT)
+        self.faults.assert_not_called()
+
+    def test_hiding_the_band_failure_is_logged_not_raised(self):
+        def window_gone():
+            raise RuntimeError("window gone")
+
+        hide_button_band(types.SimpleNamespace(window=window_gone, buttons=lambda: []))
+        self.assertEqual(self.faults.call_count, 1)
 
     def test_missing_icon_or_missing_text_leaves_system_layout_untouched(self):
         for views in ([TextField(rect(10, 20, 80, 20))],
