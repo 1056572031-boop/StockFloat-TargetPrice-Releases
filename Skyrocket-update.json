@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.101",
-  "published_at": "2026-10-21T12:07:11Z",
+  "version": "1.4.102",
+  "published_at": "2026-10-22T13:09:36Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 涨、跌目标价各满三条后隐藏输入行，全满则收起。\n2. 微调按钮与文字颜色，更清晰。\n3. 摄像头未授权时，自动隐藏不再反复检测。\n4. 反馈可附带运行数据。",
+  "notes": "1. 程序图标换成新的品牌标志。\n2. 悬停铃铛的提醒气泡按价格排序，并显示离现价的百分比。\n3. 反馈窗口改在屏幕中央打开，输入框更小。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.101-macos.zip",
-    "size": 26364835,
-    "sha256": "629e3d6b1a36f319a30ef2b643bcc383eabf3942f55aeced08469203767ca4c8"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.102-macos.zip",
+    "size": 26221135,
+    "sha256": "5b52fdfa05f11ed9532ac9d3cfea341688e21239a7eaa221f2e94253a3368604"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "ZZksaLMfHdkzBmRTNlkp/SmcliGegKwkMRW6HvVKNZlBUjt23K2g/9aRsputXavsyRUQzG5wrKFU/03dq17oAA=="
+    "value": "2vNzr4EGiEfNQ7rAwX4zeEwUwkB5vAVEtdXbdOXcSTQFh9niRNGg1J5aMFxofor+gqr1d0IiaDgyVpBYEfHzCg=="
   }
 }
