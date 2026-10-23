@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.102",
-  "published_at": "2026-10-22T13:09:36Z",
+  "version": "1.4.103",
+  "published_at": "2026-10-23T07:31:44Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 程序图标换成新的品牌标志。\n2. 悬停铃铛的提醒气泡按价格排序，并显示离现价的百分比。\n3. 反馈窗口改在屏幕中央打开，输入框更小。",
+  "notes": "1. 窗口收起到 Dock、从 Dock 恢复时，有了过渡动画。\n2. 鼠标经过或停在铃铛上时，提醒气泡不再一闪一闪。\n3. 程序图标加了圆角底色。\n4. 底部的涨幅、跌幅与最高价、最低价成对显示；当天没涨过或没跌过昨收时，显示 0。\n5. 提交反馈后弹出的提示文字改为居中。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.102-macos.zip",
-    "size": 26221135,
-    "sha256": "5b52fdfa05f11ed9532ac9d3cfea341688e21239a7eaa221f2e94253a3368604"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.103-macos.zip",
+    "size": 26277831,
+    "sha256": "d21436a78345565910baaef6b4802b774982c204ca959166fcf5df4c8d5f59b7"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "2vNzr4EGiEfNQ7rAwX4zeEwUwkB5vAVEtdXbdOXcSTQFh9niRNGg1J5aMFxofor+gqr1d0IiaDgyVpBYEfHzCg=="
+    "value": "0HBHOU0xdAGQZ8fOrJhz1t+eVQrnZE7NmAY1l7vc/58EqvfqdeGYWIXw9DNOrPHUbJrx/ys9zEXHyeOQqZN5Cw=="
   }
 }
