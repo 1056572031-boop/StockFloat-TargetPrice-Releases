@@ -736,6 +736,20 @@ class CommitCase(WrapupCase):
         self.track_patch(mock.patch.dict(os.environ))  # restored on stop, so the pops below stay local
         for name in ("SF_SKIP_COVERAGE", "SF_RANDOM_ORDER", "SF_PUBLIC_REGRESSION", "SF_GUARD_PROBE"):
             os.environ.pop(name, None)
+        # The product's commit environment deliberately drops every GIT_* variable, so the isolation that
+        # WrapupCase gives its own git calls never reached the preflight and `git commit` it launches. Those
+        # then read the host's global and system git config: a CI runner with git-lfs installed carries
+        # filter.lfs.*, which the preflight rightly refuses (special_checkout_configuration), and five cases
+        # failed there while passing on a machine without it. Re-apply the isolation on top of the real
+        # function; the product behaviour under test is unchanged.
+        self.real_commit_env = w.commit_env
+
+        def isolated_commit_env(identity=None):
+            env = self.real_commit_env(identity)
+            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+            return env
+
+        self.track_patch(mock.patch.object(w, "commit_env", isolated_commit_env))
         self.repo = self.root / "repo"
         self.init_repo(self.repo)
         self.git(self.repo, "config", "user.name", "config-user")
@@ -812,6 +826,16 @@ class TestCommit(CommitCase):
         self.assertTrue(self.hook_ran(), "the real pre-commit hook must run")
         self.assertIn("gate-says-hello", self.log.read_text(encoding="utf-8"))
         self.assertEqual(self.git(self.repo, "status", "--porcelain").stdout.strip(), "?? scratch.txt")
+
+    def test_host_git_filter_config_does_not_decide_the_outcome(self):
+        # The CI-only failure: the host's own git config (here a global one under HOME, which the product's
+        # environment cleaning does not touch) carries a filter, and the preflight refused the commit.
+        home = self.root / "host-home"
+        home.mkdir()
+        (home / ".gitconfig").write_text('[filter "lfs"]\n\tclean = cat\n\tsmudge = cat\n', encoding="utf-8")
+        os.environ["HOME"] = str(home)  # restored with the rest of os.environ in tearDown
+        self.change()
+        self.assertEqual(self.commit()["commit"], self.head())
 
     def test_explicit_author_applies_to_this_commit_only(self):
         self.change()
@@ -947,11 +971,11 @@ class TestCommitPieces(CommitCase):
     def test_commit_environment_drops_routing_and_pins_the_identity(self):
         os.environ["GIT_DIR"] = "/elsewhere"
         os.environ["SF_RERUN_FAILED"] = "1"
-        plain = w.commit_env()
+        plain = self.real_commit_env()  # the product function itself, not the isolated test wrapper
         self.assertNotIn("GIT_DIR", plain)
         self.assertNotIn("GIT_AUTHOR_NAME", plain)
         self.assertEqual(plain["SF_RERUN_FAILED"], "0")
-        env = w.commit_env(("N", "n@example.invalid"))
+        env = self.real_commit_env(("N", "n@example.invalid"))
         for key in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
             self.assertEqual(env[key], "N")
         for key in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):

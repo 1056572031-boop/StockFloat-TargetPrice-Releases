@@ -382,6 +382,25 @@ class PayloadCase(DiagnosticsBranchCase):
         tail = files["diagnostics.txt"].split("export_issues:")[-1]
         self.assertIn("runtime.tools", tail)
 
+    def test_runtime_carries_the_menu_trace_with_its_schema(self):
+        """右键菜单与反馈入口的会话记录：包里要答得出点击到了哪一步（schema menu_trace.v1）。"""
+        import sf_menu_trace
+        sf_menu_trace.clear()
+        sf_menu_trace.note_right_press()
+        files = self._export()
+        trace = json.loads(files["runtime.json"])["menu_trace"]
+        self.assertEqual((trace["schema"], trace["available"]), ("menu_trace.v1", True))
+        self.assertEqual(trace["right_presses"], 1)
+        self.assertEqual(set(trace) >= {"sessions", "feedback_attempts", "frozen_at_open", "feedback_dropped"}, True)
+
+    def test_a_broken_menu_trace_is_named_and_marked_unavailable(self):
+        """取不到时留「不可用」占位并点名 —— 不许与「一切正常」同形。"""
+        with mock.patch("sf_menu_trace.diagnostics", side_effect=RuntimeError("读不动")):
+            files = self._export()
+        trace = json.loads(files["runtime.json"])["menu_trace"]
+        self.assertEqual((trace["schema"], trace["available"]), ("menu_trace.v1", False))
+        self.assertIn("runtime.menu_trace", files["diagnostics.txt"].split("export_issues:")[-1])
+
     def test_broken_inventory_is_named_in_storage_issues(self):
         with mock.patch.object(m, "_update_inventory", side_effect=PermissionError(13, "不给了")):
             files = self._export()
@@ -652,6 +671,15 @@ class StagingResidueCase(SFCase):
 
     OLD = 7200.0          # 距今两小时：过了年龄门槛
     FRESH = 30.0          # 距今 30 秒：可能正在写，一个都不许碰
+
+    def setUp(self):
+        super().setUp()
+        # 「最近一次清理的末态」是进程级全局，别的模块（test_quality_update_cleanup）跑过
+        # prune_staging_residue 就会留下它；随机顺序下本类的「进程还没扫过则报告为空」断言
+        # 因此红过（seed=1464 实测，污染者在前、受害者在后必红）。每条用例从空表起步，
+        # 结束由基类还原，不碰别人留下的现场。
+        self.track_patch(mock.patch.object(
+            sf_update, "_LAST_PRUNE", {}))   # discipline-ok(R5): 该全局没有公开复位口，只能换掉模块属性
 
     def test_every_residue_shape_is_named(self):
         for name, why in (

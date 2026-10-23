@@ -187,6 +187,11 @@ class _WindowCase(SFCase):
             super().tearDown()
 
     def open_menu(self):
+        # 前面的用例（实测：test_popup_materials 里两条真弹层用例连着跑）会留下待派发的
+        # 窗口激活/失活事件，它们在菜单 popup() 之后的 processEvents 里才到，Qt 把刚弹出的
+        # 菜单当成失焦收掉，_ctx_menu 变回 None（seed=1464 整档稳定红，单跑和整模块都绿）。
+        # 先排空一次，让本用例从干净的事件队列起步。
+        QApplication.processEvents()
         self.win.contextMenuEvent(QContextMenuEvent(
             QContextMenuEvent.Reason.Mouse, QPoint(40, 40), QPoint(140, 140)))
         QApplication.processEvents()

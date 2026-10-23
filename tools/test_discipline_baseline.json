@@ -65,6 +65,7 @@
   "R5:test_diagnostics_payload.py": 0,
   "R5:test_digit_tabular.py": 0,
   "R5:test_face_guard.py": 0,
+  "R5:test_face_guard_fps_probe.py": 0,
   "R5:test_feedback_dialog.py": 0,
   "R5:test_feedback_failure_paths.py": 0,
   "R5:test_feedback_full_bundle.py": 0,
@@ -76,6 +77,7 @@
   "R5:test_highrisk_paths.py": 5,
   "R5:test_keyboard_shortcut.py": 3,
   "R5:test_liquid_glass.py": 0,
+  "R5:test_loading_episode_diagnostics.py": 0,
   "R5:test_macos_native_failures.py": 0,
   "R5:test_manual_refresh.py": 0,
   "R5:test_menu_row_icons.py": 0,
@@ -103,7 +105,7 @@
   "R5:test_target_panel.py": 176,
   "R5:test_target_panel_design.py": 0,
   "R5:test_targets.py": 21,
-  "R5:test_ui.py": 138,
+  "R5:test_ui.py": 136,
   "R5:test_ui_dialog_guard.py": 3,
   "R5:test_update.py": 41,
   "R5:test_update_dialog_visibility.py": 0,
@@ -164,7 +166,7 @@
   "R5:test_window_poll_message_routing.py": 0,
   "R6:test_anim_driver.py": 4,
   "R6:test_calendar.py": 1,
-  "R6:test_coverage_icons_editor.py": 6,
+  "R6:test_coverage_icons_editor.py": 5,
   "R6:test_coverage_notify_update.py": 1,
   "R6:test_coverage_release_tools.py": 2,
   "R6:test_feedback_desktop_reports.py": 0,
@@ -279,5 +281,5 @@
   "R7:test_v172_audit.py": 3,
   "R7:test_verify_bundle_tools.py": 2
  },
- "total": 2875
+ "total": 2872
 }

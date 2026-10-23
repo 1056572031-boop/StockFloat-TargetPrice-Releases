@@ -57,7 +57,7 @@ def _rows(high, low, pre_close):
 
 def _fit(width, high, low, pre_close):
     _fonts()
-    fm_label = _fm_of(R.FONT, R.FONT_CODE)
+    fm_label = _fm_of(R.FONT, R.BOTTOM_LABEL_PT)
 
     def fm_num_at(delta):
         return _fm_of(R.NUM_FONT, R.FONT_CODE + delta, bold=True)
@@ -81,6 +81,53 @@ class TestFittingIsPureFunction(SFCase):
         # 引用必须挂在类上持有：局部变量一出栈，QApplication 被析构，后面的用例就崩。
         cls._app = QApplication.instance() or QApplication([])
 
+    def test_previous_close_clamps_only_percentages_and_keeps_real_prices(self):
+        # 高开全天在昨收之上、低开全天在昨收之下、跨昨收、完全持平。
+        cases = ((105, "110.50", "102.25", "+10.50%", "0.00%"),
+                 (95, "98.50", "90.25", "0.00%", "-9.75%"),
+                 (102, "110.50", "90.25", "+10.50%", "-9.75%"),
+                 (100, "100", "100", "0.00%", "0.00%"))
+        for opening, high, low, up, down in cases:
+            with self.subTest(opening=opening):
+                quote = dict(open=opening, high=high, low=low, pre_close="100")
+                rows = R.bottom_rows(quote)
+                self.assertEqual([[s[0] for s in row] for row in rows],
+                                 [["最大涨幅", "最高点"], ["最大跌幅", "最低点"]])
+                self.assertEqual([[s[1] for s in row] for row in rows],
+                                 [[up, R._fmt_hl(high)], [down, R._fmt_hl(low)]])  # discipline-ok(R5): preserve the existing price-format contract independently of percentage clamping
+                for row, pct in zip(rows, (up, down)):
+                    expected_color = R.FG_DIM if pct == "0.00%" else (R.RED if pct.startswith("+") else R.GREEN)
+                    self.assertEqual(row[0][2], expected_color)
+                self.assertEqual(quote["high"], high)
+                self.assertEqual(quote["low"], low)
+
+    def test_unknown_previous_close_never_uses_open_or_hides_prices(self):
+        for pre_close in (None, "", "bad", "NaN", "inf", "-inf", "0", "-10"):
+            with self.subTest(pre_close=pre_close):
+                quote = dict(high="110.50", low="90.25", open="100")
+                if pre_close is not None:
+                    quote["pre_close"] = pre_close
+                rows = R.bottom_rows(quote)
+                self.assertEqual([[s[1] for s in row] for row in rows],
+                                 [["--", "110.5"], ["--", "90.25"]])
+                self.assertEqual([row[0][2] for row in rows], [R.FG_DIM, R.FG_DIM])
+
+    def test_open_changes_do_not_affect_rows(self):
+        quote = dict(high="110.50", low="90.25", pre_close="100")
+        expected = R.bottom_rows(quote)
+        for opening in (None, "", "bad", "NaN", "inf", "0", "-10", "80", "120"):
+            with self.subTest(opening=opening):
+                self.assertEqual(R.bottom_rows(quote | {"open": opening}), expected)
+
+    def test_invalid_extreme_does_not_hide_the_other_price(self):
+        for key in ("high", "low"):
+            for value in (None, "bad", "NaN", "inf", "0", "-1"):
+                with self.subTest(key=key, value=value):
+                    rows = R.bottom_rows(dict(pre_close="100", high="110", low="90") | {key: value})
+                    invalid, valid = (rows[0], rows[1]) if key == "high" else (rows[1], rows[0])
+                    self.assertEqual([s[1] for s in invalid], ["--", "--"])
+                    self.assertNotIn("--", [s[1] for s in valid])
+
     def test_common_quote_keeps_the_default_size(self):
         """绝大多数行情（尾 0 被 _fmt_hl 归一掉）根本不该触发缩号 —— 界面不许无故变样。"""
         _segs1, _segs2, shrink, _mw, dropped = _fit(C.W, 1830.00, 1810.00, 1800.0)
@@ -88,7 +135,7 @@ class TestFittingIsPureFunction(SFCase):
         self.assertEqual(dropped, [])
 
     def test_long_pair_recovers_the_segment(self):
-        """缺陷现场：高/低都是 7 字符时，最低点必须回来，代价是数字小 1pt。"""
+        """S3 高/低长价仍须完整保留；数字可按既有两档缩号。"""
         _segs1, _segs2, shrink, mw, dropped = _fit(C.W, 1688.88, 1666.66, 1660.0)
         self.assertEqual(dropped, [], "「最低点 1666.66」仍然整段不画（需宽 %d > %d）"
                          % (mw, C.W))
@@ -122,6 +169,11 @@ class _FontSpy(QPainter):
     def __init__(self, image):
         super().__init__(image)
         self.fonts = []
+        self.texts = []
+
+    def drawText(self, *args):
+        self.texts.append(args[-1])
+        return super().drawText(*args)
 
     def setFont(self, font):
         self.fonts.append((font.family(), font.pointSize()))
@@ -217,7 +269,7 @@ class TestRecoveredSegmentIsRealInk(SFCase):
             def only_default(*a, **k):
                 """退回修复前的行为：只按现字号排一次，放不下就丢段。"""
                 from renderer import _bottom_layout
-                fm_label = _fm_of(R.FONT, R.FONT_CODE)
+                fm_label = _fm_of(R.FONT, R.BOTTOM_LABEL_PT)
                 fm_num = _fm_of(R.NUM_FONT, R.FONT_CODE, bold=True)
                 s1, s2, mw = _bottom_layout(a[0], a[1], a[2], fm_label, fm_num,
                                             pad_x=a[5], inner_gap=a[6], gap=a[7],
@@ -266,8 +318,16 @@ class TestRecoveredSegmentIsRealInk(SFCase):
         把 setFont 的真实入参记下来 —— 记的是被测对象实际做了什么。
         """
         sizes = self._number_font_sizes(self._render_bottom_spy())
-        self.assertIn(R.FONT_CODE - 1, sizes,
-                      "茅台形态下布局缩到 8pt，绘制却没见过 8pt 的号码字体：%s" % sorted(sizes))
+        self.assertIn(R.FONT_CODE - 2, sizes,
+                      "S3 长价缩到 7pt，绘制必须使用同一档号码字体：%s" % sorted(sizes))
+
+    def test_s3_draws_all_labels_and_long_prices_in_real_fonts(self):
+        spy = self._render_bottom_spy()
+        self.assertEqual(spy.texts, ["最大涨幅", "+0.53%", "最高点", "1688.88",
+                                     "最大跌幅", "-0.79%", "最低点", "1666.66"])
+        label_sizes = {size for family, size in spy.fonts if family == R.FONT}
+        self.assertEqual(label_sizes, {8}, "S3 仅底部中文标签使用 8pt")
+        self.assertEqual(R.FONT_CODE, 9, "代码行和底部默认数字字号不能一起缩小")
 
     def test_common_quote_draws_at_the_default_size_only(self):
         """反向对照：普通行情不许无谓缩号（界面不许因为这次改动变样）。"""

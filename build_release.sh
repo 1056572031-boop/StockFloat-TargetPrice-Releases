@@ -702,10 +702,10 @@ echo
 if [ "$LOCAL_ONLY" -eq 1 ]; then
   echo "== 本机覆盖完成 v${VERSION}（未发布 GitHub/OTA）=="
 elif [ -n "$SYNC_NOTE" ]; then
-  echo "== 发版完成 v${VERSION}，但遗留一项：${SYNC_NOTE} =="
+  echo "== 发布动作完成 v${VERSION}，但遗留一项：${SYNC_NOTE}（发布后验收待完成） =="
   echo "   修好后手工执行：git push origin $SRC_BRANCH"
 else
-  echo "== 发版完成 v${VERSION}（发布动作完成，真实场景与渠道验收仍以发布总报告为准）=="
+  echo "== 发布动作完成 v${VERSION}，发布后验收待完成 =="
 fi
 if [ -n "${DESKTOP_NOTE:-}" ]; then
   echo "!! 遗留一项：${DESKTOP_NOTE}。修好后手工执行：./.venv/bin/python tools/desktop_folder_sync.py --refresh" >&2

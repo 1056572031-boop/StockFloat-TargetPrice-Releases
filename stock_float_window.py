@@ -24,7 +24,7 @@ from PyQt6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QRectF, pyqtSignal
 from PyQt6.QtGui import (QAction, QPainter, QColor, QPen, QIcon, QPixmap,
                          QFont, QFontMetrics, QGuiApplication, QPainterPath,
                          QPolygonF)
-from typing import Optional
+from typing import Any, Optional
 from PyQt6.QtWidgets import QApplication, QWidget, QToolTip, QProgressBar, QMessageBox
 # 退出期同步销毁 Qt 对象用（见 _flush_deferred_deletions / _close_update_flow_box）
 from PyQt6.sip import delete as _sip_delete
@@ -46,8 +46,8 @@ from sf_ui_render import price_update_rect, should_draw_chart
 from sf_ui_render import font_diagnostics, paint_diagnostics   # 诊断：渲染降级末态与字体真值
 
 # ---- 模块化拆分 sf_glass：显式导入 ----
-from sf_glass import (GlassMixin, TOOL_WINDOW_LEVEL, install_space_join_filter,
-                      native_cocoa_active)
+from sf_glass import (GlassMixin, TOOL_WINDOW_LEVEL, active_space_id, install_space_join_filter,
+                      native_cocoa_active, content_ns_window)
 # v1.4.29：`_objc_deps` 原来只在 sf_glass 里有名分（sf_glass 从 sf_icons 导入它），
 # 而本模块的 `_raise_tool_window` 直接裸调它 → 每次调用抛 NameError、被自己下面的
 # `except Exception: pass` 吞掉，工具窗抬层从写下那天起一次也没执行过（真机实测：
@@ -60,6 +60,7 @@ from sf_editor import EditorWindow
 
 # ---- 模块化拆分 sf_icons：显式导入（含私有名） ----
 from sf_icons import show_dock, start_icon_worker, button_pixmaps
+from sf_icons import system_icon_mode, connect_appearance_changed   # 图标随系统浅/深色外观切换
 from sf_icons import menu_icon   # v1.4.69：右键菜单行首图标（用户看图要求）
 from sf_icons import _ICON_QUEUE, _app_ready, _appkit_ready
 
@@ -119,6 +120,7 @@ from sf_config import _migrate_legacy_config
 from sf_logging import feature_enabled, feature_snapshot, log_line
 from sf_logging import log_line_throttled, log_swallow, log_startup_banner
 from sf_logging import flush_last_failures_now, last_failures_path
+import sf_menu_trace
 from sf_logging import _become_single_instance, _check_recent_crashes, _ensure_reopen_class
 
 # v1.4.40 人脸在场守卫：顶层导入是安全的 —— sf_presence 本身只依赖标准库与
@@ -126,6 +128,7 @@ from sf_logging import _become_single_instance, _check_recent_crashes, _ensure_r
 # （只有用户在菜单里真的打开这个功能时才执行），所以没开功能的用户不会在
 # 启动路径上多付一次框架装载。
 import sf_presence
+import sf_dock_motion
 
 # ---- 模块化拆分 sf_utils：显式导入（含私有名） ----
 from sf_utils import fmt_pct
@@ -147,13 +150,14 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
                           POLL_INTERVAL_DEGRADED, POLL_INTERVAL_MINIMIZED,
                           POLL_INTERVAL_NORMAL,
                           POLL_INTERVAL_OFF_MARKET, POLL_NORMAL,
-                          RELEASE_STAGE, BUNDLE_ID,
+                          RELEASE_STAGE, BUNDLE_ID, LEGACY_BUNDLE_IDS,
                           UI_WATCHDOG_INTERVAL_MS,
                           BETA_SUFFIX,
                           LAST_QUOTE_MIN_WRITE_INTERVAL, UPDATE_INITIAL_DELAY_MS,
                           TEMP_SWEEP_DELAY_MS, STAGING_PRUNE_DELAY_MS,
                           UPDATE_PERIODIC_MS, UPDATE_RESUME_MIN_GAP_SEC,
-                          UPDATE_RETRY_FIRST_MS, UPDATE_RETRY_LATER_MS)
+                          UPDATE_RETRY_FIRST_MS, UPDATE_RETRY_LATER_MS,
+                          BELL_BUBBLE_DWELL_MS, BELL_BUBBLE_HIDE_GRACE_MS)
 
 # ---- 再导出契约（v1.3.51 显式登记，禁止当死代码删掉）----
 # 下面这批符号在本文件正文里**零使用**，看起来像导入冗余，实际是刻意保留的再导出：
@@ -314,7 +318,7 @@ def _publish_diagnostics_file(temporary, requested):
     raise OSError("too many diagnostic archives with the same name")
 
 
-def _set_menu_icon(act, key):
+def _set_menu_icon(act, key, tag=None):
     """给右键菜单的一行贴上行首图标（v1.4.69，用户看图要求）。
 
     放在模块级而不是 contextMenuEvent 里，是因为菜单开着时**两态图标要跟着状态换**
@@ -327,6 +331,27 @@ def _set_menu_icon(act, key):
     _ic = menu_icon(key)
     if _ic is not None and act is not None:
         act.setIcon(_ic)
+    if tag is not None and act is not None:
+        act.setData(tag)    # 固定名字：菜单会话记录按它认是哪一项，不依赖文案与行号
+
+
+def _menu_context(window):
+    """右键菜单会话里只有主窗才知道的几项现场；每项独立取，取不到就是 None，不外抛。
+
+    in_fullscreen_space 与 glass.json 同一个口径：当前活动 Space 不是记过的普通 Space；
+    还没记过普通 Space 的基线时是 None（不可信，不猜）。"""
+    out: dict[str, Any] = {"main_visible": None, "main_active": None, "in_fullscreen_space": None}
+    try:
+        out["main_visible"] = bool(window.isVisible())
+        out["main_active"] = bool(window.isActiveWindow())
+        if native_cocoa_active():
+            space = active_space_id()
+            normal = getattr(window, "_normal_space_id", None)
+            if space is not None and normal is not None:
+                out["in_fullscreen_space"] = space != normal
+    except Exception as exc:
+        log_swallow("stock_float_window._menu_context", exc)
+    return out
 
 
 def _install_global_excepthook():
@@ -580,8 +605,14 @@ class TargetBubble(QWidget):
 
     def __init__(self):
         super().__init__(None)
+        # WindowTransparentForInput 才是让「原生窗口」点击穿透的开关（macOS 上对应 NSWindow 的
+        # ignoresMouseEvents）。下面那条 WA_TransparentForMouseEvents 只管 Qt 内部的事件传递，
+        # 2026-10-23 实测不加这个标志时 ignoresMouseEvents=False：气泡窗口带透明外圈，顶边落在铃铛
+        # 感应区下半部分，鼠标停在那里会「进入」气泡窗口 -> 主窗收到离开 -> 气泡收起 -> 鼠标回到
+        # 主窗 -> 再弹出，来回闪。两个都留着：前者管原生层，后者管 Qt 层。
         self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
-                            | Qt.WindowType.WindowStaysOnTopHint)
+                            | Qt.WindowType.WindowStaysOnTopHint
+                            | Qt.WindowType.WindowTransparentForInput)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # 提示气泡不得截获顶部按钮点击
@@ -614,8 +645,20 @@ class TargetBubble(QWidget):
         word_w = max((QFontMetrics(word_f).horizontalAdvance("涨到"),
                       QFontMetrics(word_f).horizontalAdvance("跌到")))
         price_w = max((QFontMetrics(price_f).horizontalAdvance(r[1]) for r in rows), default=0)
-        pct_w = max((QFontMetrics(pct_f).horizontalAdvance(r[2]) for r in rows), default=0)
+        pct_w = max((self._stable_advance(pct_f, r[2]) for r in rows), default=0)
         return word_w, price_w, pct_w
+
+    @staticmethod
+    def _stable_advance(font, text):
+        """文字宽度：每个数字都按「最宽的那个数字」量。
+
+        内置数字字体的数字不等宽（实测 11 号粗体：「1」宽 4px，「0/3/4/6/8/9」宽 6px），
+        百分比随行情每跳一次，直接量字符串会让整块气泡在 1~2px 之间来回变宽变窄，
+        居中对齐使左边缘跟着横向抖。按最宽数字量之后，只要位数、符号、小数点相同，
+        宽度就恒定；画的时候仍用真实字形右对齐，所以看到的字形不变。"""
+        fm = QFontMetrics(font)
+        widest = max("0123456789", key=fm.horizontalAdvance)
+        return sum(fm.horizontalAdvance(widest if c.isdigit() else c) for c in text)
 
     def _relayout(self):
         _price_f, _pct_f, _word_f, header_f = self._fonts()
@@ -696,7 +739,13 @@ class TargetBubble(QWidget):
                 flipped, top = True, above
         self._flipped = flipped
         self._caret_x = float(max(self.CARET_INSET, min(ax - left, bw - self.CARET_INSET)))
-        self.move(left - self.MARGIN_X, int(top) - self.MARGIN_TOP)
+        target = QPoint(left - self.MARGIN_X, int(top) - self.MARGIN_TOP)
+        if self.isVisible() and self.pos() == target:
+            # 已经开着、位置也没变（行情只是把数字换了）：只重绘，不再移动、不再重新显示与置顶。
+            # 探针实测：活跃行情下每秒 6~7 次文字变化，旧写法每次都走一遍 move+show+raise_。
+            self.update()
+            return
+        self.move(target)
         self.update()
         self.show()
         self.raise_()
@@ -1157,6 +1206,13 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         self._editor = None
         self._ctx_menu = None
         self._target_bubble = TargetBubble()
+        # 铃铛气泡的悬停节拍：两张单次定时器，随主窗销毁（父对象是 self）。
+        self._bubble_show_timer = QTimer(self)
+        self._bubble_show_timer.setSingleShot(True)
+        self._bubble_show_timer.timeout.connect(self._on_bubble_show_due)
+        self._bubble_hide_timer = QTimer(self)
+        self._bubble_hide_timer.setSingleShot(True)
+        self._bubble_hide_timer.timeout.connect(self._on_bubble_hide_due)
         self._drag = False
         self._sys_drag = False          # v1.4.29：本手势已交给系统拖拽（开关 system_drag）
         self._offset = QPoint()
@@ -1310,6 +1366,10 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 就是"启动时右上角按钮突然放大再缩小"。应用图标仍走后台（512px + AppKit 预热，
         # 才是真正需要异步的那一个）。
         self.app_icon = None
+        self.app_icon_dark = None     # 深色外观那一张；后台出图，和浅色一起到位
+        self._icon_shown = None       # 当前已经贴上的那张，避免外观没变时重复设置
+        # 系统在浅色/深色外观间切换时换图标。绑定方法做槽：窗口销毁时 Qt 自动断开。
+        connect_appearance_changed(self._on_appearance_changed)
         _btn_pm = button_pixmaps()
         self._edit_pm = _btn_pm["edit"]
         self._close_pm = _btn_pm["close"]
@@ -1636,6 +1696,8 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
                 # 建立独立玻璃层后立即按主窗在前的顺序复位；避免 macOS 层级切换时
                 # 背景层盖住 Qt 内容，留下可点击但没有文字/行情的空壳。
                 self._force_top()
+                # 玻璃层就绪才有东西可截；延后一会儿，别和启动首帧抢时间
+                QTimer.singleShot(sf_dock_motion.PREWARM_DELAY_MS, self._dock_motion_prewarm)
             else:
                 self._bg_effect = False
                 log_line("glass effect unavailable, fallback translucent")
@@ -1836,6 +1898,10 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
 
     def _trigger_top_button(self, btn):
         """执行顶部按钮动作。缩小/关闭排队执行，避免在鼠标事件栈中改变主窗状态。"""
+        # 点击就是用户的明确动作：还没弹出的气泡不要在面板打开后再冒出来。
+        pending_show = getattr(self, "_bubble_show_timer", None)
+        if pending_show is not None:
+            pending_show.stop()
         try:
             if btn == "close":
                 QTimer.singleShot(0, self.quit)
@@ -1864,6 +1930,8 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         return MIN_H if self._chart_expanded else self._height_collapsed()
 
     def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            sf_menu_trace.note_right_press()    # 与随后的菜单打开次数对账
         if e.button() == Qt.MouseButton.LeftButton:
             # v1.4.18 走查（S5）：一次新按下 = 一段新手势。上方各分支只置自己那一个
             # 标志，从不清另外两个。而代码自陈 macOS 原生置顶/跨 Space 偶发丢
@@ -2102,7 +2170,16 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         return bell_bubble_rows(self._safe_alerts(), self._current_price(),
                                 price_decimals(self.code))
 
+    def _stop_bubble_timers(self):
+        """取消「待弹出」与「待收起」两张单次定时器（没建过就跳过）。"""
+        for name in ("_bubble_show_timer", "_bubble_hide_timer"):
+            timer = getattr(self, name, None)
+            if timer is not None:
+                timer.stop()
+
     def _hide_target_bubble(self):
+        """立刻收起气泡并取消所有待办的弹出/收起（离开整窗、缩进 Dock 走这里，不留缓冲）。"""
+        self._stop_bubble_timers()
         bubble = getattr(self, "_target_bubble", None)
         if bubble is not None:
             bubble.hide()
@@ -2115,12 +2192,36 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         bubble.show_below(self.mapToGlobal(anchor), self.mapToGlobal(top).y())
 
     def _update_target_tooltip(self, btn, global_pos):
-        """铃铛悬浮时显示主界面同调自绘气泡，中心严格对准铃铛。"""
+        """悬停按钮变了：安排铃铛气泡的弹出或收起（不在这里直接弹）。
+
+        节拍（常量与来源见 sf_constants.BELL_BUBBLE_*）：
+        · 进入铃铛：气泡没开就等停满 DWELL 再弹，划过不弹；已经开着就取消待收起并刷新内容；
+        · 离开铃铛：气泡开着就留 HIDE_GRACE 再收，期间滑回来则取消；没开就取消待弹出。
+        定时器没建（测试替身宿主）时退回立即执行，行为与改前一致。"""
         bubble = getattr(self, "_target_bubble", None)
         if bubble is None:
             return
-        if btn != "bell":
+        show_timer = getattr(self, "_bubble_show_timer", None)
+        hide_timer = getattr(self, "_bubble_hide_timer", None)
+        if btn == "bell":
+            if hide_timer is not None:
+                hide_timer.stop()
+            if bubble.isVisible() or show_timer is None:
+                self._show_target_bubble_now()
+            else:
+                show_timer.start(BELL_BUBBLE_DWELL_MS)
+            return
+        if show_timer is not None:
+            show_timer.stop()
+        if bubble.isVisible() and hide_timer is not None:
+            hide_timer.start(BELL_BUBBLE_HIDE_GRACE_MS)
+        else:
             bubble.hide()
+
+    def _show_target_bubble_now(self):
+        """按当前目标价立即摆放并显示气泡；没有任何目标就收起。"""
+        bubble = getattr(self, "_target_bubble", None)
+        if bubble is None:
             return
         pending, hit = self._target_bubble_rows()
         if pending or hit:
@@ -2128,6 +2229,17 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
             self._place_target_bubble(bubble)
         else:
             bubble.hide()
+
+    def _on_bubble_show_due(self):
+        # 定时器到点时再核对一次：期间鼠标若已离开铃铛，就不弹。
+        if self._hover_btn == "bell":
+            self._show_target_bubble_now()
+
+    def _on_bubble_hide_due(self):
+        if self._hover_btn != "bell":
+            bubble = getattr(self, "_target_bubble", None)
+            if bubble is not None:
+                bubble.hide()
 
     def _refresh_target_bubble(self):
         """气泡正开着时跟着行情更新：百分比随现价走，触发后行从待触发挪到已触发。
@@ -2229,7 +2341,7 @@ QMenu::separator {
         #   口径 `_face_guard_switch_on()`，且与勾号挂在同一个 300ms 刷新回调上 ——
         #   "显示"与"点下去会切成什么"不许各说各话。
         #   取不到图（无 QtSvg）时不放图标，那一行自动退回"无图标 + 勾号"的老形状。
-        _set_menu_icon(m.addAction("刷新行情", self._force_fetch), "refresh")
+        _set_menu_icon(m.addAction("刷新行情", self._force_fetch), "refresh", tag="refresh")
         # ---- v1.4.40 人脸在场守卫 ----
         # 用 triggered 而非 toggled：toggled 在 setChecked（初始化菜单）时也会发，
         # 于是"每次打开菜单"都会被当成一次用户操作，反过来又写一遍配置。
@@ -2239,6 +2351,7 @@ QMenu::separator {
             _g = m.addAction(FACE_GUARD_MENU_TEXT)
             if _g is not None:
                 _g.setCheckable(True)
+                _g.setData("face_guard")
                 # 勾的口径与点击目标共用 `_face_guard_switch_on()`（v1.4.67）：
                 # running 算开，starting（刚点下、会话正在起的那 0.2~0.6 秒）也算开
                 # —— 否则勾号每 300ms 被自己的刷新按回去一次，用户看到"第一次点击
@@ -2263,7 +2376,7 @@ QMenu::separator {
                     self._refresh_face_guard_menu_check)
                 self._face_guard_menu_timer.start()
         _set_menu_icon(m.addAction("检查更新",
-                             lambda: self._check_updates_background(manual=True)), "update")
+                             lambda: self._check_updates_background(manual=True)), "update", tag="update")
         # v1.4.51：这里**不再放**那行灰字（"自动检查：启动后 15 秒，之后每 6 小时…"）。
         # 用户 2026-10-09 看图明确要求"右键菜单中的提示语去掉，不展示"。
         # 节奏数字仍然只有 `sf_constants` 一个来源；要查"实际多久查一次"看
@@ -2273,11 +2386,11 @@ QMenu::separator {
         # 与它落到桌面上的文件名 `Skyrocket-诊断-<时间戳>.zip`、以及各处对外材料
         # 说的"诊断包"对齐，不再一个叫法两个名字。
         _set_menu_icon(m.addAction("导出诊断包",
-                                  lambda: self._export_diagnostics(background=True)), "diag")
+                                  lambda: self._export_diagnostics(background=True)), "diag", tag="diagnostics")
         # The menu must finish closing before feedback capture creates another
         # top-level window. Creating it inside QMenu's mouse handler can lose
         # the first click while the native menu backend is being torn down.
-        _set_menu_icon(m.addAction("反馈问题", self._queue_feedback_open), "diag")
+        _set_menu_icon(m.addAction("反馈问题", self._queue_feedback_open), "diag", tag="feedback")
         m.addSeparator()
         # 版本号：灰色禁用项（不可点击），从打包后 .app 的 Info.plist 读取，
         # 开发态（无 Info.plist）回退 sf_constants.APP_VERSION。
@@ -2287,21 +2400,26 @@ QMenu::separator {
         _v = m.addAction("v" + _bundle_version()      # v1.4.53：去掉「版本」两个字（用户看图要求）
                          + (BETA_SUFFIX if RELEASE_STAGE == "beta" else ""))
         _v.setEnabled(False)
+        _v.setData("version")
         # 注意：macOS 上 QMenu.exec() 会走原生 NSMenu 渲染，QSS 样式(圆角/背景/描边)全部失效，
         # 因此改用非阻塞 popup() 让 Qt 自绘样式生效；同时持有引用防止菜单被 GC 关闭。
         self._ctx_menu = m
+        sf_menu_trace.begin_menu(m, context=lambda: _menu_context(self))
         m.aboutToHide.connect(lambda menu=m: self._on_ctx_menu_closed(menu))
         m.popup(e.globalPos())  # PyQt6 适配：QContextMenuEvent 无 globalPosition()，用 globalPos()
 
     def _queue_feedback_open(self):
         """Open feedback after the context menu has completed its close event."""
         if getattr(self, "_feedback_open_pending", False):
+            sf_menu_trace.feedback_request(dropped=True)     # 上一次还没处理完：这次被丢掉，记一笔
             return
         self._feedback_open_pending = True
+        sf_menu_trace.feedback_request(sf_menu_trace.open_session_id())
         QTimer.singleShot(0, self._open_feedback)
 
     def _open_feedback(self):
         self._feedback_open_pending = False
+        attempt = sf_menu_trace.feedback_begin()
         opened_at = time.monotonic()
         from sf_feedback_capture import capture_snapshot
         from sf_feedback_ui import FeedbackDialog
@@ -2312,32 +2430,39 @@ QMenu::separator {
             dialog.deleteLater()
             self._feedback_dialog = None
             dialog = None
+        reused = dialog is not None
         if dialog is None:
             try:
                 snapshot = capture_snapshot(self, app_version=_bundle_version(),
                                             bundle_id=BUNDLE_ID, run_id=RUN_ID, index_only=True)
+                sf_menu_trace.feedback_mark(attempt, "captured_ms")
                 dialog = FeedbackDialog(
                     self, snapshot=snapshot,
                     storage_dir=os.path.join(APP_SUPPORT_DIR, "feedback"), endpoint=FEEDBACK_ENDPOINT,
                     diagnostic_capture=lambda _: self._export_diagnostics(prepare_only=True),
                     capture_again=lambda: capture_snapshot(
                         self, app_version=_bundle_version(), bundle_id=BUNDLE_ID, run_id=RUN_ID, index_only=True))
+                sf_menu_trace.feedback_mark(attempt, "built_ms")
                 self._feedback_dialog = dialog
             except Exception as exc:
                 log_line("feedback capture failed: %s" % type(exc).__name__, "ERROR")
                 QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 10)),
                                   "诊断采集失败，未上传。请使用“导出诊断包”。", self)
+                sf_menu_trace.feedback_finish(attempt, "capture_failed", error=type(exc).__name__)
                 return
         # 居中在屏幕上而不是父窗口上（Qt 默认居中父窗口，而父窗口是屏幕一角的小卡片）。
         dialog.present()
+        sf_menu_trace.feedback_mark(attempt, "presented_ms")
         # 与目标价面板、编辑器同一条抬层：主窗层级是 25，反馈窗默认只有 8，会被主窗压在下面。
         # 测试替身宿主没有这个方法，取不到就跳过。
         raise_tool = getattr(self, "_raise_tool_window", None)
         if raise_tool is not None:
             raise_tool(dialog)
+        sf_menu_trace.feedback_mark(attempt, "raised_ms")
         # 留一行耗时：首次打开要现建窗口，用户若反映「点了没反应」，这里是唯一的现场证据。
         log_line("feedback dialog opened in %dms visible=%s"
                  % ((time.monotonic() - opened_at) * 1000, dialog.isVisible()))
+        sf_menu_trace.feedback_finish(attempt, "opened", dialog, reused=reused)
 
     def _show_previous_update_result(self):
         """把安装助手留下的最终结果翻译为一次性系统提示。"""
@@ -3712,6 +3837,7 @@ QMenu::separator {
             if _appkit_ready.is_set() or time.monotonic() - self._start_ts > 5.0:
                 self._dock_applied = True
                 show_dock()
+        icon_arrived = False
         try:
             while True:
                 kind, payload = _ICON_QUEUE.get_nowait()
@@ -3719,12 +3845,38 @@ QMenu::separator {
                     continue   # 该图标后台生成失败（以 None 占位），跳过并沿用上一版
                 if kind == "app_icon":
                     self.app_icon = QIcon(QPixmap.fromImage(payload))
-                    self.setWindowIcon(self.app_icon)
+                    icon_arrived = True
+                elif kind == "app_icon_dark":
+                    self.app_icon_dark = QIcon(QPixmap.fromImage(payload))
+                    icon_arrived = True
                 else:
                     setattr(self, "_" + kind + "_pm", QPixmap.fromImage(payload))
                 self._need_redraw = True
         except queue.Empty:
             pass
+        if icon_arrived:
+            self._sync_app_icon()
+
+    def _sync_app_icon(self):
+        """按当前系统外观挑浅色或深色那张图标，贴到窗口与 Dock。
+
+        深色那张没出好（后台失败）时沿用浅色，不会没有图标。外观没变、图也没变
+        就什么都不做。QApplication.setWindowIcon 是 Qt 在 macOS 上换 Dock 图标的入口，
+        只设窗口图标不会动 Dock。"""
+        icon = self.app_icon_dark if (system_icon_mode() == "dark" and self.app_icon_dark is not None) \
+            else self.app_icon
+        if icon is None or icon is self._icon_shown:
+            return
+        self._icon_shown = icon
+        self.setWindowIcon(icon)
+        QApplication.setWindowIcon(icon)
+
+    def _on_appearance_changed(self, *_scheme):
+        """系统浅/深色外观切换的回调（colorSchemeChanged 信号，GUI 线程）。"""
+        try:
+            self._sync_app_icon()
+        except Exception as exc:
+            log_swallow("stock_float_window._on_appearance_changed", exc)
 
     # ---------- 极端场景：窗口初始位置不可见时移回主屏 ----------
     def _clamp_to_screen(self, force=False):
@@ -4100,9 +4252,10 @@ QMenu::separator {
         """v1.2.62：计算底部双行实际文本（与 paintEvent 保持一致）。
 
         返回 (row1, row2)，每项为 (标签, 数字, 颜色)：
-          row1：上行 —— 最高 + 最低（相对昨收的百分比；缺 pre_close/hi/lo 时为空）
-          row2：下行 —— 最高点 + 最低点（引用 _fmt_hl 归一后的 hi_txt/lo_txt，
-                与 paintEvent 同步走 v1.2.32 0 值拦截 → "--"）。
+          row1：上行 —— 最大涨幅（相对昨收，下限零）+ 最高点
+          row2：下行 —— 最大跌幅（相对昨收，上限零）+ 最低点
+          幅度为零时显示灰色 0.00%；昨收未知显示 "--"，不回退今开。
+          高低价格独立按 _fmt_hl 归一，非法显示 "--"，不受幅度截零影响。
 
         v1.2.71 第4轮走查：文本构造下沉为 sf_ui_render.bottom_rows **唯一实现**。
         此前本方法与 _paint_bottom 各写一份（逐字复制），属典型双份漂移 ——
@@ -6036,7 +6189,12 @@ QMenu::separator {
             # 更新流程的弹窗**刻意不在这里收掉**：它由 _close_update_flow_box 在退出
             # 与失败路径里统一收口，装更新装到一半被强制关掉会让收尾踩空。
             # 也就是说：自动收起时若恰好有更新弹窗在屏上，那块文字不会跟着消失 —— 已知限制。
-            self.minimize_to_dock()
+            # 第二张脸出现是隐私场景，窗口必须立刻消失，不能让缩小动画多留 0.3 秒
+            self._instant_minimize = True
+            try:
+                self.minimize_to_dock()
+            finally:
+                self._instant_minimize = False
             # 收窗之后的"继续看守"由 minimize_to_dock 末尾的 _sync_face_guard 统一决定，
             # 这里不再重复调一次（重复调只是多写一条状态日志，没有别的收益）。
         elif event == sf_presence.EVENT_RESTORE:
@@ -6051,9 +6209,87 @@ QMenu::separator {
             self._face_guard_paused = True
             self._sync_face_guard("idle timeout", stop_wait=False)
 
+    # ---------- 收起 / 恢复的过渡动画（sf_dock_motion，用户 2026-10-23 要求） ----------
+    # 类上给默认值：绕过构造的测试替身也读得到。动画只是装饰，真实窗口的收起/恢复
+    # 状态不依赖它；任何一步拿不到（离屏、功能关、截图失败、系统开了"减少动态效果"）
+    # 都退回原来的瞬间收起与恢复。
+    _dock_motion_ctl = None
+    _instant_minimize = False     # 人脸守卫的自动收起为了隐私必须立刻消失，置位期间不放动画
+
+    def _dock_motion(self):
+        """动画控制器；功能关闭或不在 cocoa 下返回 None。"""
+        if not native_cocoa_active() or not feature_enabled("dock_motion"):
+            return None
+        ctl = self._dock_motion_ctl
+        if ctl is None:
+            ctl = self._dock_motion_ctl = sf_dock_motion.DockMotion()
+        return ctl
+
+    def _dock_motion_geometry(self):
+        return (self.x(), self.y(), self.width(), self.height())
+
+    def _dock_motion_numbers(self, nsw):
+        """截图要合成的窗口号：玻璃层在下、内容窗在上。"""
+        glass = getattr(self, "_glass_window", None)
+        numbers = [int(glass.windowNumber())] if glass is not None else []
+        numbers.append(int(nsw.windowNumber()))
+        return numbers
+
+    def _dock_motion_prewarm(self):
+        """启动后在后台做一次截图，把首次调用的初始化成本提前花掉，第一次点缩小才不会迟钝。"""
+        ctl = self._dock_motion()
+        if ctl is None:
+            return
+        try:
+            nsw = content_ns_window(self)
+            if nsw is not None:
+                ctl.prewarm(self._dock_motion_numbers(nsw))
+        except Exception as exc:
+            log_swallow("stock_float_window._dock_motion_prewarm", exc)
+
+    def _dock_motion_collapse(self, ctl):
+        """收起前截图；非自动收起时再让代理窗盖住真实窗口。必须在真实窗口隐藏之前调用。"""
+        try:
+            nsw = content_ns_window(self)
+            if nsw is None or not self.isVisible():
+                return False
+            numbers = self._dock_motion_numbers(nsw)
+            rect = self._dock_motion_geometry()
+            if not ctl.capture(numbers, rect, int(nsw.level()), int(nsw.collectionBehavior())):
+                return False
+            if self._instant_minimize:
+                return False
+            return ctl.collapse(ctl.icon_rect(rect, {BUNDLE_ID, *LEGACY_BUNDLE_IDS}))
+        except Exception as exc:
+            log_swallow("stock_float_window._dock_motion_collapse", exc)
+            return False
+
+    def _dock_motion_expand(self):
+        """朝窗口原位放大；返回 True 表示动画已接手（真实窗口等动画结束才显示）。"""
+        ctl = self._dock_motion()
+        if ctl is None:
+            return False
+        try:
+            if not self._minimized or getattr(self, "_quitting", False) or not getattr(self, "running", True):
+                return False         # 交给 _restore_window_now 里原有的守卫去记日志
+            if ctl.busy:
+                if not ctl.collapsing:
+                    return True      # 已经在放大，重复触发吞掉
+                ctl.cancel()         # 缩小到一半又被点开：收掉缩小，改为从图标处放大
+            if not ctl.has_snapshot:
+                return False
+            rect = ctl.icon_rect(self._dock_motion_geometry(), {BUNDLE_ID, *LEGACY_BUNDLE_IDS})
+            return ctl.expand(rect, self._restore_window_now)
+        except Exception as exc:
+            log_swallow("stock_float_window._dock_motion_expand", exc)
+            return False
+
     def minimize_to_dock(self):
         """缩小悬浮窗到 Dock 程序坞：隐藏窗口，Dock 显示应用图标"""
         log_line("minimize_to_dock called")
+        ctl = self._dock_motion()
+        if ctl is not None:
+            ctl.cancel()             # 放大到一半又要收起：先收掉在飞的代理窗
         # 编辑器可能已被 Qt 销毁而 Python 引用尚存；任何残留都不能阻断缩小主窗。
         self._close_editor_safely()
         # v1.2.87 补丁（M3）：目标价面板同样必须收口。原实现只关编辑器，
@@ -6082,6 +6318,9 @@ QMenu::separator {
         if self._hide_dock_timer is not None:
             self._hide_dock_timer.stop()
             self._hide_dock_timer = None
+        # 截图与代理窗上屏要排在真实窗口隐藏之前，否则中间会闪一帧空桌面
+        if ctl is not None:
+            self._dock_motion_collapse(ctl)
         # v1.2.41：缩 Dock 门控下沉 sf_runtime（enter_dock 置 _minimized=True，随后的
         # _update_nap_policy(False) 走 RuntimeState.update_nap 停用 App Nap 允许省电）
         self._runtime.enter_dock()
@@ -6115,6 +6354,15 @@ QMenu::separator {
         self._sync_face_guard("minimize", stop_wait=False)
 
     def _restore_window(self):
+        """恢复悬浮窗：先尝试从 Dock 图标放大的过渡动画，接不了手就立刻恢复。
+
+        动画接手时真实窗口要等放大结束才显示（`_restore_window_now` 作为结束回调）。
+        """
+        if self._dock_motion_expand():
+            return
+        self._restore_window_now()
+
+    def _restore_window_now(self):
         """在 Qt 事件循环中恢复悬浮窗显示（Dock 图标常驻）。
 
         只允许从“已缩到 Dock”的状态恢复，避免普通应用激活、旧的 Dock 回调或
@@ -6223,6 +6471,12 @@ QMenu::separator {
             self._close_update_flow_box()
         except Exception as exc:
             log_swallow("stock_float_window._persist_on_exit.update_dialog", exc)
+        try:
+            motion = getattr(self, "_dock_motion_ctl", None)
+            if motion is not None:
+                motion.cancel()      # 它的定时器不是主窗的子对象，下面的兜底遍历收不到
+        except Exception as exc:
+            log_swallow("stock_float_window._persist_on_exit.dock_motion", exc)
         for t in (getattr(self, "timer", None), getattr(self, "top_timer", None),
                   getattr(self, "_anim_timer", None),
                   getattr(self, "_flash_timer", None),

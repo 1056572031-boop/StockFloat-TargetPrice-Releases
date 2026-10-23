@@ -5,10 +5,12 @@ import os
 import queue
 import threading
 from PyQt6.QtCore import (QPointF, QRectF, Qt)
-from PyQt6.QtGui import (QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPixmap, QPen)
+from PyQt6.QtGui import (QColor, QGuiApplication, QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
+                         QPixmap, QPen)
 from sf_constants import (ICON_PATH, BTN_ICON_PT, BTN_ICON_DEVICE_RATIO,
                           MENU_ICON_PT, MENU_ICON_CONTENT_SCALE, MENU_ICON_DEVICE_RATIO)
 from sf_logging import log_line, log_swallow
+from renderer import smooth_round_rect_path
 
 # 主界面与各弹窗共用的顶部按钮 SVG；弹窗禁止再用近似自绘造型。
 _SEARCH_ICON_SVG = (
@@ -60,6 +62,65 @@ BRAND_LOGO_SVG = (
     '</svg>'
 )
 
+# ---- 应用图标的色块底（2026-10-23，用户要求"跟程序图标一样有个色块底"）----
+# 上面的 BRAND_LOGO_SVG 本身仍然不带底（图形文件只有图形）；色块底由 render_app_icon 在出图时
+# 先画一块圆角方形、再把标志叠上去。浅色外观用浅灰底、深色外观用深色底，两档配色都是
+# 2026-10-22 定稿的那两套（浅：灰 #e8ebf0 / 偏橙红 #f40000 / 墨 #14181f；
+# 深：#12151d / 偏橙红 #fe0118 / 浅墨 #f2f4f8）。
+APP_ICON_PLATE_HEX = {"light": "#e8ebf0", "dark": "#12151d"}
+# 深色档只换两种图形色，形状一个点都不动：按"浅色 hex → 深色 hex"逐字替换。
+_BRAND_DARK_SWAP = {"#f40000": "#fe0118", "#14181f": "#f2f4f8"}
+
+# 色块占画布边长的比例：留 ~10% 透明边，和 Dock 里相邻图标的外轮廓同量级。
+APP_ICON_PLATE_SCALE = 0.805
+# 色块圆角半径占色块边长的比例（走与主窗同一份超椭圆路径，见 renderer.smooth_round_rect_path）。
+APP_ICON_PLATE_RADIUS = 0.225
+# 标志的 SVG 外框占色块边长的比例。实测此时墨迹宽约占色块的 56%（外框 78% × 墨迹/外框 0.71）。
+APP_ICON_MARK_IN_PLATE = 0.78
+# svg_pixmap 的 content_scale（占整张画布）。包体 icon.icns / icon.png 必须按同一组数出图，
+# 否则装机后 Dock 图标（读 icns）与运行时图标（读这里）的大小、底色会不一致且没有任何报错。
+APP_ICON_CONTENT_SCALE = APP_ICON_PLATE_SCALE * APP_ICON_MARK_IN_PLATE
+
+
+def brand_logo_svg(mode="light"):
+    """品牌标志 markup：'light' 原样返回，'dark' 把两种图形色换成深色外观那一套。
+    未知 mode 一律按浅色处理（宁可浅色，也不要出错图）。"""
+    svg = BRAND_LOGO_SVG
+    if mode == "dark":
+        for light_hex, dark_hex in _BRAND_DARK_SWAP.items():
+            svg = svg.replace(light_hex, dark_hex)
+    return svg
+
+
+def icon_mode_from_scheme(scheme):
+    """纯函数：Qt 的 ColorScheme → 'dark' | 'light'。Unknown（含离屏平台）按浅色。"""
+    return "dark" if scheme == Qt.ColorScheme.Dark else "light"
+
+
+def system_icon_mode():
+    """当前系统外观对应的图标档：'dark' | 'light'。取不到一律 'light'，不向上抛。"""
+    try:
+        hints = QGuiApplication.styleHints() if QGuiApplication.instance() is not None else None
+        if hints is not None:
+            return icon_mode_from_scheme(hints.colorScheme())
+    except Exception as exc:
+        log_swallow("sf_icons.system_icon_mode", exc)
+    return "light"
+
+
+def connect_appearance_changed(slot):
+    """系统在浅色/深色外观间切换时调用 slot。返回是否连上了（没有 QGuiApplication 时 False）。
+    slot 应是 QObject 的绑定方法：接收方销毁时 Qt 自动断开，不会留下指向已关窗口的回调。"""
+    try:
+        hints = QGuiApplication.styleHints() if QGuiApplication.instance() is not None else None
+        if hints is None:
+            return False
+        hints.colorSchemeChanged.connect(slot)
+        return True
+    except Exception as exc:
+        log_swallow("sf_icons.connect_appearance_changed", exc)
+        return False
+
 _menu_images_cache = None
 
 def menu_images():
@@ -96,25 +157,49 @@ def menu_icon(key):
         log_swallow("sf_icons.menu_icon", exc)
         return None
 
-def make_app_icon():
+def render_app_icon(mode="light", s=512):
+    """按外观档出一张 s×s 的应用图标：圆角方形色块底 + 品牌标志。不落盘、无副作用。
+
+    包体 icon.icns 的各尺寸也用它出图（s 取 16~1024），所以尺寸是参数。
+    取不到图的两种情况（这台机器没有 QtSvg 子模块、markup 被判非法）都退回上一版的
+    自绘蓝底蜡烛，并留一条 SWALLOWED：图标是用户天天看的东西，缺依赖时宁可旧造型，
+    也不能静默没有图标。
+    """
+    if mode not in APP_ICON_PLATE_HEX:
+        mode = "light"
+    mark = svg_pixmap(brand_logo_svg(mode), s, content_scale=APP_ICON_CONTENT_SCALE)
+    if mark is None:
+        log_swallow("sf_icons.make_app_icon.logo", RuntimeError("品牌标志渲染不可用，退回旧自绘图标"))
+        return _legacy_app_icon(s)
+    img = QImage(s, s, QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    side = s * APP_ICON_PLATE_SCALE
+    off = (s - side) / 2
+    p.fillPath(smooth_round_rect_path(off, off, side, side, side * APP_ICON_PLATE_RADIUS),
+               QColor(APP_ICON_PLATE_HEX[mode]))
+    p.drawImage(0, 0, mark)
+    p.end()
+    return img
+
+
+def make_app_icon(mode="light"):
     """生成应用图标。返回 QImage（线程安全，可后台线程绘制），GUI 线程再转 QPixmap/QIcon
 
-    v1.4.102 起用品牌标志（见 BRAND_LOGO_SVG）。取不到图的两种情况（这台机器没有
-    QtSvg 子模块、markup 被判非法）都退回上一版的自绘蓝底蜡烛，并留一条 SWALLOWED：
-    图标是用户天天看的东西，缺依赖时宁可旧造型，也不能静默没有图标。
+    mode='light'|'dark'：浅色外观 / 深色外观各一张，见 render_app_icon。
+    只有浅色档会顺带写一份 ICON_PATH（它和包体 icon.png 同款）；深色档不落盘，
+    免得两档在同一个文件上来回覆盖。
     """
-    s = 512
-    img = svg_pixmap(BRAND_LOGO_SVG, s, content_scale=0.82)
-    if img is None:
-        log_swallow("sf_icons.make_app_icon.logo", RuntimeError("品牌标志渲染不可用，退回旧自绘图标"))
-        img = _legacy_app_icon(s)
+    img = render_app_icon(mode)
     # 落盘失败不牵连返回值：调用方要的是内存里的 QImage，
     # ICON_PATH 只是顺带写出的副产物，目录不可写时静默跳过。
-    try:
-        os.makedirs(os.path.dirname(ICON_PATH), exist_ok=True)
-        img.save(ICON_PATH, "PNG")
-    except Exception:
-        pass
+    if mode != "dark":
+        try:
+            os.makedirs(os.path.dirname(ICON_PATH), exist_ok=True)
+            img.save(ICON_PATH, "PNG")
+        except Exception:
+            pass
     return img
 
 
@@ -329,10 +414,13 @@ def _icon_worker():
     # GUI 未就绪（极慢启动/系统忙），此时 make_app_icon 必然异常；超时则跳过应用
     # 图标生成，不把 None 入队伪装成"生成失败"导致图标静默缺失；按钮图标不受影响。
     if _app_ready.wait(timeout=10):
-        try:
-            _ICON_QUEUE.put(("app_icon", make_app_icon()))
-        except Exception:
-            _ICON_QUEUE.put(("app_icon", None))
+        # 浅、深两档一次出完：切换外观时主线程只需换图，不在 GUI 线程上重新渲染。
+        # 两档各自成败，一档失败不拖另一档（失败以 None 占位，消费端沿用上一版）。
+        for kind, mode in (("app_icon", "light"), ("app_icon_dark", "dark")):
+            try:
+                _ICON_QUEUE.put((kind, make_app_icon(mode)))
+            except Exception:
+                _ICON_QUEUE.put((kind, None))
     # v1.4.11：原先此处还在后台渲染顶部三个按钮 SVG 并入队，已挪到 GUI 线程
     # 首帧之前（button_images）—— 后台投递会让首帧先画一版放大的自绘兜底，
     # 图标到位后再缩回 SVG 造型，即用户报告的"启动时右上按钮突然放大又缩小"。

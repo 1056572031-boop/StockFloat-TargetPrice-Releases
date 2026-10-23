@@ -364,6 +364,117 @@ class FullEvidenceAnalyzerTests(SFCase):
             self.assertNotIn("<script>", text)
             self.assertEqual(report["conclusion"], "insufficient_evidence")
 
+    def trace(self, **kw):
+        base = {"schema": "menu_trace.v1", "available": True, "ring_size": 12, "right_presses": 3,
+                "menus_opened": 2, "right_press_pending_now": False, "feedback_dropped": 1,
+                "sessions": [], "feedback_attempts": [], "frozen_at_open": None}
+        base.update(kw)
+        return {"runtime.json": json.dumps({"menu_trace": base}).encode()}
+
+    @staticmethod
+    def session(sid, picked="none", opened="2026-10-23T03:00:00Z", **kw):
+        row = {"id": sid, "opened_at": opened, "app_state": "ApplicationActive", "presses": 1, "keys": 0,
+               "first_press": "outside", "last_release": "outside", "picked": picked, "reason": "outside_click",
+               "closed_after_ms": 800, "first_turn_ms": 4}
+        row.update(kw)
+        return row
+
+    def analysis_of(self, extra):
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.analyze(Path(directory), extra)
+            return report, Path(report["markdown_path"]).read_text()
+
+    def test_menu_trace_missing_is_a_gap_not_a_health_claim(self):
+        report, text = self.analysis_of({"runtime.json": b"{}"})
+        analysis = report["full_diagnostics"]["analysis"]
+        self.assertEqual(analysis["menu_trace_summary"], {})
+        self.assertTrue([g for g in analysis["evidence_gaps"] if "没有 runtime.menu_trace" in g])
+        self.assertIn("没有可用的菜单会话记录", text)
+
+    def test_menu_trace_unavailable_reason_is_bounded_and_escaped(self):
+        reason = "<b>x</b>" + "y" * 300
+        report, text = self.analysis_of({"runtime.json": json.dumps({"menu_trace": {
+            "schema": "menu_trace.v1", "available": False, "reason": reason}}).encode()})
+        gap = next(g for g in report["full_diagnostics"]["analysis"]["evidence_gaps"] if "不可用" in g)
+        self.assertIn(reason[:200], gap)
+        self.assertNotIn(reason[:201], gap)
+        self.assertNotIn("<b>", text)
+
+    def test_menu_trace_wrong_schema_is_unavailable(self):
+        report, _ = self.analysis_of({"runtime.json": json.dumps({"menu_trace": {
+            "schema": "menu_trace.v9", "available": True}}).encode()})
+        self.assertEqual(report["full_diagnostics"]["analysis"]["menu_trace_summary"], {})
+
+    def test_menu_trace_counts_pairs_and_view_problems_without_blaming_a_cause(self):
+        sessions = [self.session(1), self.session(2, "feedback", "2026-10-23T03:00:07Z",
+                                                  first_press="feedback", last_release="diagnostics"),
+                    self.session(3, app_state="ApplicationInactive", presses=0, first_press=None,
+                                 last_release=None)]
+        attempts = [{"id": 1, "outcome": "opened", "marks": {"total_ms": 640},
+                     "readbacks": {"t300": {"visible": True, "on_active_space": False},
+                                   "t1500": {"gone": True}}},
+                    {"id": 2, "outcome": "capture_failed", "marks": {"total_ms": 90}, "readbacks": {}}]
+        report, text = self.analysis_of(self.trace(sessions=sessions, feedback_attempts=attempts))
+        summary = report["full_diagnostics"]["analysis"]["menu_trace_summary"]
+        self.assertEqual(summary["session_count"], 3)
+        self.assertEqual(summary["picked"], {"none": 2, "feedback": 1})
+        self.assertEqual(summary["missed_then_feedback"][0]["gap_between_opens_s"], 7.0)
+        self.assertEqual(summary["press_release_mismatch_count"], 1)
+        self.assertEqual(summary["closed_without_input_count"], 1)
+        self.assertEqual(summary["inactive_at_open_count"], 1)
+        self.assertEqual(summary["feedback_outcomes"], {"opened": 1, "capture_failed": 1})
+        self.assertEqual(summary["feedback_max_total_ms"], 640.0)
+        self.assertEqual([item["flags"] for item in summary["feedback_view_problems"]],
+                         [["not_on_active_space"], ["window_gone"]])
+        codes = {row["code"] for row in report["findings"]}
+        self.assertTrue({"menu_right_press_unmatched", "menu_missed_then_feedback", "menu_press_release_mismatch",
+                         "feedback_dialog_not_in_view", "feedback_capture_failed",
+                         "feedback_requests_dropped"} <= codes)
+        self.assertIn("## 菜单会话", text)
+        self.assertIn("只是相邻关系", text)
+        self.assertNotIn("点击丢失了", text)
+
+    def test_menu_trace_pair_needs_the_previous_menu_to_have_picked_nothing(self):
+        # 前一次选了别的项再选反馈问题，是正常使用，不能被当成「点丢了再点」的线索。
+        sessions = [self.session(1, "update"), self.session(2, "feedback", "2026-10-23T03:00:05Z")]
+        report, _ = self.analysis_of(self.trace(sessions=sessions))
+        summary = report["full_diagnostics"]["analysis"]["menu_trace_summary"]
+        self.assertEqual(summary["missed_then_feedback"], [])
+        self.assertNotIn("menu_missed_then_feedback", {row["code"] for row in report["findings"]})
+
+    def test_menu_trace_negative_timings_are_ignored_not_reported_as_maximum(self):
+        sessions = [self.session(1, first_turn_ms=-5)]
+        attempts = [{"id": 1, "outcome": "opened", "marks": {"total_ms": -1}, "readbacks": {}}]
+        report, _ = self.analysis_of(self.trace(sessions=sessions, feedback_attempts=attempts))
+        summary = report["full_diagnostics"]["analysis"]["menu_trace_summary"]
+        self.assertIsNone(summary["max_first_turn_ms"])
+        self.assertIsNone(summary["feedback_max_total_ms"])
+
+    def test_menu_trace_clean_record_adds_no_clue_and_keeps_the_conclusion(self):
+        report, _ = self.analysis_of(self.trace(right_presses=1, menus_opened=1, feedback_dropped=0,
+                                                sessions=[self.session(1, "feedback", first_press="feedback",
+                                                                       last_release="feedback")]))
+        codes = {row["code"] for row in report["findings"]}
+        self.assertFalse([c for c in codes if c.startswith(("menu_", "feedback_"))])
+        self.assertEqual(report["conclusion"], "insufficient_evidence")
+
+    def test_menu_trace_malformed_rows_are_coerced_not_trusted(self):
+        # 非有限数在诊断包读取层就会被拒收（PrivacyRejected），到不了这里；这里验的是其余脏形状。
+        malformed = {"id": {"nested": 1}, "picked": ["a"], "opened_at": "bad", "first_turn_ms": "bad",
+                     "closed_after_ms": 5, "presses": 0, "keys": 0}
+        sessions = ["x", None, malformed, self.session(9, first_turn_ms=4),
+                    {"id": 2, "picked": "feedback", "opened_at": "bad", "first_turn_ms": -5}]
+        report, _ = self.analysis_of(self.trace(sessions=sessions, right_presses="many",
+                                                feedback_attempts=[1, {"readbacks": 7, "marks": 3}]))
+        summary = report["full_diagnostics"]["analysis"]["menu_trace_summary"]
+        self.assertEqual(summary["session_count"], 3, "只数字典；字符串与空值直接丢掉")
+        self.assertEqual(summary["right_presses"], 0, "计数不是整数就当 0")
+        self.assertEqual(summary["max_first_turn_ms"], 4.0, "字符串与负数都不进最大值")
+        pair = summary["missed_then_feedback"][0]
+        self.assertEqual((pair["first_id"], pair["gap_between_opens_s"]), (9, None))
+        self.assertEqual(summary["feedback_outcomes"], {"None": 1})
+        self.assertIsNone(summary["feedback_max_total_ms"])
+
     def test_collection_section_limits_display_but_preserves_all_issues_in_json(self):
         with tempfile.TemporaryDirectory() as directory:
             for count in (40, 41):

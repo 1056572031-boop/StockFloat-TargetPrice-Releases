@@ -27,6 +27,20 @@ def _offscreen(window):
     window.setFrameOrigin_(NSMakePoint(-12000.0, -12000.0))
 
 
+# 要量像素的文案，第四项是 center_text：
+#   · 反馈提交成功框（用户 2026-10-23 要求"这段文字改成居中"）——编号是 40 个字符的无空格
+#     长串，会在窄框里折成多行，最后一行很短，贴左时最显眼；
+#   · 更新说明（同一天用户要求"保持贴左"）——编号列表各行长短不一，贴左读才顺。
+INK_CASES = (
+    ("feedback", "反馈已成功提交。",
+     "反馈编号：feedback-af2d7312275c4b849a86f5cb36313384", True),
+    ("notes", "发现新版本 v9.9.9。",
+     "1. 修复重新打开后，之前的设置没有保留的问题。\n"
+     "2. 加快刷新。\n"
+     "3. 优化窗口在全屏浏览器里的显示，使弹出的菜单不再消失。", False),
+)
+
+
 def _titles(alert):
     return [str(b.title()) for b in alert.buttons()]
 
@@ -258,6 +272,40 @@ def run_centered():
     return 0 if passed else 1
 
 
+def run_ink(out_dir):
+    """把真 NSAlert 的文案画进位图，交给父进程量每一行墨迹的左右留白。
+
+    为什么必须量像素：控件、cell 的对齐属性读回都是居中，可真正画字时文案自带的段落样式
+    （系统默认写着自然对齐）压过它们，多行文案每一行都贴左（2026-10-23 反馈提交成功框，
+    本机读回两侧留白差 17~366 像素）。属性读回证明不了字画在哪儿，只有像素能。
+
+    窗口一次都不上屏（present 换成空操作）：cacheDisplayInRect 对没显示的窗口照样出图，
+    也就不会抢焦点。图标和按钮区藏起来，位图里只剩文字，父进程按透明度认墨迹，
+    浅色和深色外观下都成立。
+    """
+    import AppKit
+
+    s.NativeAlert.present = lambda self: True
+    s.center_window = lambda window: None
+    for tag, message, info, center in INK_CASES:
+        handle = s.show_alert(title=message, text=message + "\n\n" + info,
+                              message=message, info=info, buttons=("好",),
+                              icon_path=s.bundled_icon_path(), center_text=center)
+        content = handle._window.contentView()  # discipline-ok(R5): 要量的就是真窗口的内容视图，无公开出口
+        for view in content.subviews():
+            if not isinstance(view, AppKit.NSTextField):
+                view.setHidden_(True)
+        rect = content.bounds()
+        rep = content.bitmapImageRepForCachingDisplayInRect_(rect)
+        content.cacheDisplayInRect_toBitmapImageRep_(rect, rep)
+        path = str(pathlib.Path(out_dir) / (tag + ".png"))
+        data = rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, None)
+        data.writeToFile_atomically_(path, True)
+        _marker("png_" + tag, path)
+        handle.close()
+    return 0
+
+
 def run_probe():
     """预检：这台机器/这个会话能不能真创建系统弹窗窗口。
 
@@ -431,6 +479,8 @@ if __name__ == "__main__":
             sys.exit(run_position())
         if mode == "presentation":
             sys.exit(run_presentation())
+        if mode == "ink":
+            sys.exit(run_ink(sys.argv[2]))
     except Exception as exc:                       # noqa: BLE001
         _marker("error", repr(exc))
         sys.exit(2)

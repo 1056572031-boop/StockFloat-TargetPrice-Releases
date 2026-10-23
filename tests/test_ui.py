@@ -85,7 +85,8 @@ class TestUIInteraction(unittest.TestCase):
         """气泡本体中心与小三角都对准铃铛正下方，不把铃铛中心误当气泡左上角。"""
         self.win._alerts = [{"direction": "above", "target": 65.10, "state": "hit"}]
         bubble = self.win._target_bubble
-        self.win._update_target_tooltip("bell", QPoint(1, 1))
+        # 本条验的是摆放位置，不是悬停节拍（节拍见 test_target_bubble_dwell.py），所以直接走立即显示这一步。
+        self.win._show_target_bubble_now()
         expected = self.win.mapToGlobal(
             QPoint(self.win.width() - m.BTN_X["bell"], m.BTN_ICON_Y + m.BTN_ICON_SZ))
         body = bubble.body_rect_global()
@@ -106,7 +107,7 @@ class TestUIInteraction(unittest.TestCase):
         self.assertEqual([(r[0], r[1]) for r in pending], [(False, "62.50")])
         self.assertEqual([(r[0], r[1]) for r in hit], [(True, "65.10")])
         self.assertEqual(hit[0][2], "", "已触发行不带百分比")
-        self.win._update_target_tooltip("bell", QPoint(1, 1))
+        self.win._show_target_bubble_now()
         self.assertEqual(self.win._target_bubble.rows()["pending"], pending)
         self.assertEqual(self.win._target_bubble.rows()["hit"], hit)
 

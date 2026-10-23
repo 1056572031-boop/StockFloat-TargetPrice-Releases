@@ -193,6 +193,9 @@ class DialogTests(_FeedbackCase):
             self.assertEqual(alerts.call_args_list[1].kwargs["title"], "反馈已上传")
             self.assertEqual(tuple(alerts.call_args_list[1].kwargs["buttons"]), ("好",),
                              "结果提示仍要有确认按钮")
+            for call in alerts.call_args_list[:2]:
+                self.assertIs(call.kwargs.get("center_text"), True,
+                              "反馈弹窗的文字要逐行居中（更新说明不传这个参数，仍贴左）")
 
     def test_upload_status_popups_replace_each_other_and_close_with_feedback(self):
         progress, received = Mock(), Mock()
@@ -216,6 +219,7 @@ class DialogTests(_FeedbackCase):
             self.dialog.upload_button.click()
             self.finish()
         self.assertEqual(alerts.call_args.kwargs["title"], "反馈上传未完成")
+        self.assertIs(alerts.call_args.kwargs.get("center_text"), True, "失败提示同样逐行居中")
         self.assertFalse(self.dialog.status.isVisible())
         self.assertTrue(self.dialog.upload_button.isEnabled())
         self.assertEqual(self.dialog.upload_button.text(), "重试上传")

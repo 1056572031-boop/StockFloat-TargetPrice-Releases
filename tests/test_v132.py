@@ -197,8 +197,9 @@ class TestBug2ZeroGuard(_WinBase):
                                        pre_close="403.50", high="0", low="0")))
         self.assertIsNotNone(rows, "有 quote 时必须返回两行文本")
         row1, row2 = rows
-        self.assertEqual([s[0] for s in row2], ["最高点", "最低点"],
-                         "行2 顺序须为 最高点→最低点（与行1 先高后低一致）")
+        self.assertEqual([s[0] for s in row1], ["最大涨幅", "最高点"])
+        self.assertEqual([s[0] for s in row2], ["最大跌幅", "最低点"],
+                         "S3 行2 顺序须为 最大跌幅→最低点")
         for label, num, _color in row2:
             self.assertEqual(num, "--",
                              "%s 在 high/low 为 0 时必须显示 --，实际 %r" % (label, num))

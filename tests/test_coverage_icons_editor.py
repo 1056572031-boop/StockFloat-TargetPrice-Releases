@@ -20,7 +20,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtWidgets import QApplication, QPushButton
 
 import sf_editor             # noqa: E402
@@ -35,6 +35,75 @@ except ImportError:           # pragma: no cover - 包模式导入
 
 
 APP_ICON_PX = 512      # Dock 用的应用图标边长；新用例引用它，不写裸 512（AGENTS §6 第 6 条）
+
+# 2026-10-23 用户要求图标带色块底（浅色外观浅灰、深色外观深色）。实测：色块占画布 80.5%，
+# 四周各留约 10% 透明边；标志图形占色块宽约 56%、高约 55%。下面三个范围都留了余量，
+# 只拦"明显缩回去 / 撑满 / 贴边"，不拦抗锯齿与渲染器的细小差异。
+PLATE_MIN_FRACTION = 0.75           # 色块占画布边长的下限（实测 0.805）
+PLATE_MIN_MARGIN_FRACTION = 0.05    # 色块四周透明边的下限（实测约 0.097）
+MARK_MIN_FRACTION_OF_PLATE = 0.50   # 标志图形占色块边长的下限（实测 0.56 / 0.55）
+MARK_MAX_FRACTION_OF_PLATE = 0.65   # 上限：再大就几乎贴住色块边缘
+# 随包 icon.png 与运行时出图的外框允许相差的像素（抗锯齿边缘），超过说明两者不同源。
+SHIPPED_ICON_BBOX_TOLERANCE_PX = 2
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PLATE_HEX = {"light": "#e8ebf0", "dark": "#12151d"}   # 定稿底色；测试自己写一份，不引用被测常量
+
+
+def _plate_sample(img):
+    """色块左侧中段一点（距左缘 18% 处）：在色块内、在标志左侧、避开圆角。
+    用相对坐标，icon.icns 被 Qt 解出多大都能取。"""
+    return img.pixelColor(int(img.width() * 0.18), img.height() // 2)
+
+
+def _mark_bbox(img, mode):
+    """标志图形的外框：色块里与底色明显不同的像素（含抗锯齿边缘）。(x0, y0, x1, y1)。"""
+    plate = QColor(PLATE_HEX[mode])
+    x0 = y0 = img.width()
+    x1 = y1 = -1
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.alpha() < 250:
+                continue          # 色块边缘与圆角外的抗锯齿像素不算图形
+            if abs(c.red() - plate.red()) + abs(c.green() - plate.green()) + abs(c.blue() - plate.blue()) > 90:
+                x0, x1 = min(x0, x), max(x1, x)
+                y0, y1 = min(y0, y), max(y1, y)
+    return x0, y0, x1, y1
+
+
+def _ink_bbox(img, alpha_floor=128):
+    """不透明像素的外框 (x0, y0, x1, y1)，x1/y1 为含端点的最后一个像素。"""
+    x0 = y0 = img.width()
+    x1 = y1 = -1
+    for y in range(img.height()):
+        for x in range(img.width()):
+            if (img.pixel(x, y) >> 24) & 0xFF > alpha_floor:
+                x0, x1 = min(x0, x), max(x1, x)
+                y0, y1 = min(y0, y), max(y1, y)
+    return x0, y0, x1, y1
+
+
+def _drain_icon_queue():
+    """取空图标队列，按先后顺序返回里面的 (kind, payload)。
+    队列是后台出图线程与主窗之间唯一的通道，没有对外读取口，必须直接取。"""
+    items = []
+    while True:
+        try:
+            items.append(sf_icons._ICON_QUEUE.get_nowait())   # discipline-ok(R5): 图标队列没有对外读取口，这是它唯一的出口
+        except queue.Empty:
+            return items
+
+
+def _run_icon_worker_and_collect():
+    """清空队列 → 宣布 GUI 就绪 → 跑一遍后台出图线程的函数体 → 返回它发布的全部条目。
+    就绪标志在 finally 里复位，免得影响后面的用例。"""
+    _drain_icon_queue()
+    sf_icons._app_ready.set()                 # discipline-ok(R5): 与主窗的握手标志没有对外接口
+    try:
+        sf_icons._icon_worker()               # discipline-ok(R5): 线程函数体本身；起真线程会让用例依赖调度时序
+    finally:
+        sf_icons._app_ready.clear()           # discipline-ok(R5): 同上，复位握手标志
+    return _drain_icon_queue()
 
 
 class IconCase(SFCase):
@@ -97,8 +166,8 @@ class TestAppIcon(IconCase):
         self.assertGreater(whites, 50, "蜡烛缺失 = 图标变成纯蓝方块")
 
     def test_logo_is_the_brand_mark_with_orange_red_and_ink(self):
-        """默认造型是品牌标志（v1.4.102）：取色必须是偏橙红 #f40000 与墨 #14181f，
-        旧的蓝色渐变底板不许再出现 —— 它没有底板。中心点必须是红箭（定稿形状）。"""
+        """默认造型是品牌标志：取色必须是偏橙红 #f40000 与墨 #14181f，
+        旧的蓝色渐变底板不许再出现（现在的底是浅灰色块，不是蓝）。中心点必须是红箭（定稿形状）。"""
         img = sf_icons.make_app_icon()
         c = img.pixelColor(256, 256)
         self.assertEqual((c.red(), c.green(), c.blue()), (0xF4, 0x00, 0x00), "中心应是偏橙红：%s" % c.name())
@@ -110,26 +179,121 @@ class TestAppIcon(IconCase):
                     continue
                 reds += (p.red() > 200 and p.green() < 60 and p.blue() < 60)
                 inks += (max(p.red(), p.green(), p.blue()) < 60)
-                blues += (p.blue() > 120 and p.red() < 120)
-        self.assertGreater(reds, 400, "红色上斜笔与箭头缺失")
-        self.assertGreater(inks, 1000, "竖笔或下斜笔缺失")
+                # 饱和蓝：蓝通道明显高于红通道。浅灰底与墨的抗锯齿混色是中性灰，
+                # 不会满足；旧的蓝渐变底板（#3977e8 / #1749a8）一定满足。
+                blues += (p.blue() - p.red() > 60)
+        self.assertGreater(reds, 300, "红色上斜笔与箭头缺失")
+        self.assertGreater(inks, 600, "竖笔或下斜笔缺失")
         self.assertEqual(blues, 0, "蓝色底板又回来了：图标不是品牌标志")
 
-    def test_logo_ink_is_inset_not_edge_to_edge(self):
-        """墨迹不得贴画布边：贴住任何一边都说明底板没了之后又被裁掉一部分。
-        上下留白取 content_scale=0.82（约 9%），左右再加标志自身的宽高比余量。"""
+    def test_plate_is_inset_not_edge_to_edge(self):
+        """色块底不得贴画布边：贴边说明 Dock 里它会比相邻图标大一圈，
+        且圆角会被系统遮罩二次裁掉。不透明像素的外框就是色块底本身。"""
         img = sf_icons.make_app_icon()
-        xs, ys = [], []
-        for y in range(512):
-            for x in range(512):
-                if img.pixelColor(x, y).alpha() > 128:
-                    xs.append(x)
-                    ys.append(y)
-        pad = img.width() * 0.05
-        self.assertGreaterEqual(min(xs), pad)
-        self.assertGreaterEqual(min(ys), pad)
-        self.assertLessEqual(max(xs) + 1, img.width() - pad)
-        self.assertLessEqual(max(ys) + 1, img.height() - pad)
+        x0, y0, x1, y1 = _ink_bbox(img)
+        pad = img.width() * PLATE_MIN_MARGIN_FRACTION
+        self.assertGreaterEqual(x0, pad)
+        self.assertGreaterEqual(y0, pad)
+        self.assertLessEqual(x1 + 1, img.width() - pad)
+        self.assertLessEqual(y1 + 1, img.height() - pad)
+
+    def test_plate_fraction_does_not_shrink_back(self):
+        """色块底占画布的比例有下限：缩小了，Dock 里就比相邻图标小一圈。"""
+        img = sf_icons.make_app_icon()
+        x0, y0, x1, y1 = _ink_bbox(img)
+        for got, label in (((x1 - x0 + 1) / img.width(), "宽"), ((y1 - y0 + 1) / img.height(), "高")):
+            self.assertGreaterEqual(got, PLATE_MIN_FRACTION,
+                                    "色块底%s只占画布 %.1f%%，低于下限 %.0f%%" % (label, got * 100, PLATE_MIN_FRACTION * 100))
+
+    def test_logo_mark_fraction_of_plate_does_not_shrink_back(self):
+        """标志图形占色块底的比例有下限（效果图上约 56%，下限取 50%）。
+        色块底加上之后，标志缩小一点在整幅图上看不出来，但 Dock 里会显得空；
+        量的是图形外框占色块边长的比例，不依赖字体或屏幕缩放。"""
+        img = sf_icons.make_app_icon()
+        px0, py0, px1, py1 = _ink_bbox(img)
+        mx0, my0, mx1, my1 = _mark_bbox(img, "light")
+        for got, label in (((mx1 - mx0 + 1) / (px1 - px0 + 1), "宽"), ((my1 - my0 + 1) / (py1 - py0 + 1), "高")):
+            self.assertGreaterEqual(got, MARK_MIN_FRACTION_OF_PLATE,
+                                    "标志%s只占色块的 %.1f%%，低于下限 %.0f%%：图形被缩回去了"
+                                    % (label, got * 100, MARK_MIN_FRACTION_OF_PLATE * 100))
+            self.assertLessEqual(got, MARK_MAX_FRACTION_OF_PLATE, "标志撑得太满，几乎贴住色块边缘")
+
+    def test_light_plate_colour_is_the_approved_light_grey(self):
+        """浅色外观的底色是定稿的浅灰 #e8ebf0：取色块左侧中段一点（避开图形与圆角）。"""
+        img = sf_icons.make_app_icon()
+        self.assertEqual(_plate_sample(img).name(), "#e8ebf0")
+
+    def test_shipped_icon_png_is_drawn_at_the_same_scale_as_the_runtime_icon(self):
+        """包体 icon.png（及由它同批出图的 icon.icns）必须与运行时 make_app_icon 同一个缩放。
+        只改常量不重出图，装机后 Dock 图标读 icns、窗口图标读运行时，两处大小、底色会不一致，
+        而且没有任何地方报错。比的是色块外框与图形外框，留 2 像素给抗锯齿边缘。"""
+        shipped = QImage(os.path.join(REPO_ROOT, "icon.png"))
+        self.assertFalse(shipped.isNull(), "仓库根目录的 icon.png 读不出来")
+        self.assertEqual(shipped.width(), APP_ICON_PX, "随包 icon.png 应是 Dock 用的边长")
+        runtime = sf_icons.make_app_icon()
+        for what, want_box, got_box in (("色块", _ink_bbox(runtime), _ink_bbox(shipped)),
+                                        ("图形", _mark_bbox(runtime, "light"), _mark_bbox(shipped, "light"))):
+            for want, got in zip(want_box, got_box):
+                self.assertLessEqual(abs(want - got), SHIPPED_ICON_BBOX_TOLERANCE_PX,
+                                     "随包 icon.png 的%s外框与运行时出图对不上：重新导出 icon.icns / icon.png" % what)
+        self.assertEqual(_plate_sample(shipped).name(), _plate_sample(runtime).name(),
+                         "随包 icon.png 的底色与运行时不同：重新导出")
+
+    def test_shipped_icns_carries_the_same_light_plate(self):
+        """icon.icns 才是 Dock/访达读的那份。Qt 的 icns 插件只解出其中一档，
+        这里不比像素外框，只确认它读得出来、且底色是浅灰：换了底色没重出 icns 会在这里红。"""
+        shipped = QImage(os.path.join(REPO_ROOT, "icon.icns"))
+        self.assertFalse(shipped.isNull(), "icon.icns 读不出来")
+        self.assertEqual(_plate_sample(shipped).name(), "#e8ebf0")
+
+    def test_dark_icon_has_the_dark_plate_and_the_light_ink(self):
+        """深色外观那一张：底 #12151d，红箭 #fe0118，浅墨 #f2f4f8；中心点仍是红箭。"""
+        img = sf_icons.make_app_icon("dark")
+        self.assertEqual(_plate_sample(img).name(), "#12151d")
+        c = img.pixelColor(256, 256)
+        self.assertEqual((c.red(), c.green(), c.blue()), (0xFE, 0x01, 0x18), "中心应是深色档的红：%s" % c.name())
+        def count_light_ink(image):
+            # 浅墨 #f2f4f8 的最小通道是 242；浅灰底 #e8ebf0 是 232，所以阈值取两者之间的 238
+            return sum(1 for y in range(0, 512, 2) for x in range(0, 512, 2)
+                       if (lambda p: p.alpha() > 250 and min(p.red(), p.green(), p.blue()) > 238)(image.pixelColor(x, y)))
+
+        self.assertGreater(count_light_ink(img), 300, "深色档的浅墨竖笔缺失")
+        # 浅色那一张里不该有浅墨像素：证明两档确实是两套配色而不是同一张
+        self.assertEqual(count_light_ink(sf_icons.make_app_icon("light")), 0)
+
+    def test_dark_and_light_icons_share_the_same_geometry(self):
+        """两档只换颜色，形状一个点不动：色块外框与图形外框逐点相同。"""
+        light = sf_icons.make_app_icon("light")
+        dark = sf_icons.make_app_icon("dark")
+        self.assertEqual(_ink_bbox(light), _ink_bbox(dark), "两档的色块外框不同")
+        self.assertEqual(_mark_bbox(light, "light"), _mark_bbox(dark, "dark"), "两档的图形外框不同")
+
+    def test_unknown_mode_falls_back_to_the_light_icon(self):
+        """传了不认识的档位，出浅色而不是抛错或出一张错图。"""
+        self.assertEqual(_plate_sample(sf_icons.make_app_icon("sepia")).name(), "#e8ebf0")
+
+    def test_dark_icon_does_not_overwrite_the_light_copy_on_disk(self):
+        """ICON_PATH 那份副产物只属于浅色档：深色档出图不能碰它，
+        否则两档在同一个文件上来回覆盖，哪一档后出图哪一档留在盘上。"""
+        sf_icons.make_app_icon("light")
+        before = QImage(sf_icons.ICON_PATH)
+        self.assertFalse(before.isNull())
+        sf_icons.make_app_icon("dark")
+        after = QImage(sf_icons.ICON_PATH)
+        self.assertEqual(_plate_sample(after).name(), "#e8ebf0", "深色档把盘上的图覆盖了")
+        self.assertEqual(before, after)
+
+    def test_dark_icon_is_not_written_when_nothing_was_written_before(self):
+        """只出深色档时盘上不该冒出文件。"""
+        sf_icons.make_app_icon("dark")
+        self.assertFalse(os.path.exists(sf_icons.ICON_PATH))
+
+    def test_dark_icon_falls_back_to_the_legacy_one_when_the_mark_cannot_render(self):
+        """深色档同样有兜底：品牌标志渲染不出来时退回旧自绘图标，而不是没有图标。"""
+        with mock.patch.object(sf_icons, "svg_pixmap", return_value=None):
+            img = sf_icons.make_app_icon("dark")
+        self.assertEqual(img.width(), APP_ICON_PX)
+        self.assertGreater(img.pixelColor(APP_ICON_PX // 2, 455).blue(), 120)
 
     def test_missing_qtsvg_falls_back_without_losing_the_icon(self):
         """这台机器没有 QtSvg 子模块时（svg_pixmap 直接抛异常），图标必须还有，
@@ -321,17 +485,27 @@ class TestObjcDepsAndWorker(IconCase):
                           "第二次不得重新 import（首次 import 才是慢的那一次）")
 
     def test_worker_publishes_the_app_icon_once_gui_is_ready(self):
-        while True:
-            try:
-                sf_icons._ICON_QUEUE.get_nowait()
-            except queue.Empty:
-                break
-        sf_icons._app_ready.set()
-        self.addCleanup(sf_icons._app_ready.clear)
-        sf_icons._icon_worker()
-        kind, payload = sf_icons._ICON_QUEUE.get_nowait()
-        self.assertEqual(kind, "app_icon")
-        self.assertIsInstance(payload, QImage)
+        items = _run_icon_worker_and_collect()
+        self.assertEqual([k for k, _ in items], ["app_icon", "app_icon_dark"], "只发布浅、深两张，且浅色在前")
+        light, dark = items[0][1], items[1][1]
+        self.assertIsInstance(light, QImage)
+        self.assertEqual(_plate_sample(light).name(), "#e8ebf0", "第一张必须是浅色档")
+        self.assertEqual(_plate_sample(dark).name(), "#12151d", "第二张必须是深色档")
+
+    def test_a_failing_dark_render_does_not_cost_the_light_icon(self):
+        """两档各自成败：深色档渲染炸了，浅色那张照样已经发布。"""
+        real = sf_icons.make_app_icon
+
+        def flaky(mode="light"):
+            if mode == "dark":
+                raise RuntimeError("oom")
+            return real(mode)
+
+        with mock.patch.object(sf_icons, "make_app_icon", side_effect=flaky):
+            items = _run_icon_worker_and_collect()
+        self.assertEqual([k for k, _ in items], ["app_icon", "app_icon_dark"])
+        self.assertIsInstance(items[0][1], QImage)
+        self.assertIsNone(items[1][1], "失败的那一档以 None 占位")
 
     def test_worker_skips_the_icon_when_the_gui_never_came_up(self):
         """超时不能把 None 入队伪装成"生成失败"，那会让图标静默缺失。"""
@@ -348,16 +522,9 @@ class TestObjcDepsAndWorker(IconCase):
         self.assertEqual(sf_icons._ICON_QUEUE.qsize(), 0)
 
     def test_worker_queues_none_when_rendering_blows_up(self):
-        while True:
-            try:
-                sf_icons._ICON_QUEUE.get_nowait()
-            except queue.Empty:
-                break
-        sf_icons._app_ready.set()
-        self.addCleanup(sf_icons._app_ready.clear)
         with mock.patch.object(sf_icons, "make_app_icon", side_effect=RuntimeError("oom")):
-            sf_icons._icon_worker()
-        self.assertEqual(sf_icons._ICON_QUEUE.get_nowait(), ("app_icon", None))
+            items = _run_icon_worker_and_collect()
+        self.assertEqual(items, [("app_icon", None), ("app_icon_dark", None)])
 
     def test_queue_capacity_bounds_back_to_back_producers(self):
         self.assertEqual(sf_icons._ICON_QUEUE.maxsize, 8,

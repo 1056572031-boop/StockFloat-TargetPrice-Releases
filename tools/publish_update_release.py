@@ -100,6 +100,10 @@ def release_url():
     return API_ROOT + "/releases/tags/" + urllib.parse.quote(TAG, safe="")
 
 
+def release_update_url(release_id):
+    return API_ROOT + "/releases/" + str(release_id)
+
+
 def upload_url(release_id, asset_name):
     query = urllib.parse.urlencode({"name": asset_name})
     return "%s/releases/%s/assets?%s" % (UPLOAD_ROOT, release_id, query)
@@ -227,6 +231,22 @@ def upload_archive(token, release, archive, archive_bytes):
     if downloaded != archive_bytes:
         raise SystemExit("上传后 ZIP 原始字节与本地固定快照不一致，未更新线上清单")
     return asset
+
+
+def update_release_body(token, release, notes):
+    """Bind the public Release body to the same signed, current-version notes as OTA.
+
+    The Release page is a user-facing distribution surface. Writing its body before the
+    manifest pointer means a failed write cannot expose clients to a new update whose
+    public description differs from the signed manifest.
+    """
+    payload = json.dumps({"body": notes}, ensure_ascii=False,
+                         separators=(",", ":")).encode("utf-8")
+    request(release_update_url(release["id"]), token, method="PATCH", data=payload)
+    read_back = load_release(token)
+    if read_back.get("body") != notes:
+        raise SystemExit("GitHub Release 发布说明读回不一致，未更新线上清单")
+    return read_back
 
 
 def manifest_commit_payload(manifest_bytes, existing_sha):
@@ -512,10 +532,14 @@ def main():
         raise SystemExit("更新资产不完整或版本 ZIP 不唯一")
     archive = archives[0]
     archive_bytes, manifest_bytes, expected_version = publication_snapshot(archive, manifest, args.notes)
+    metadata = json.loads(manifest_bytes)
+    notes = metadata["notes"]
     token = github_token()
     release = load_release(token)
     asset = upload_archive(token, release, archive, archive_bytes)
-    # 新客户端的 raw 清单先切换：一旦它可见，ZIP 已存在且已验证。
+    # Bind the public release page before exposing the new manifest to clients.
+    release = update_release_body(token, release, notes)
+    # 新客户端的 raw 清单先切换：一旦它可见，ZIP 与公开说明已存在且已验证。
     publish_manifest_pointer(token, manifest_bytes)
     # 旧客户端仍从固定 Release 取清单；最后才替换这一枚小清单，不触碰历史 ZIP。
     publish_legacy_manifest(token, load_release(token), manifest_bytes)

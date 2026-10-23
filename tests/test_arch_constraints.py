@@ -631,6 +631,11 @@ class TestLocalReleaseBoundaries(SFCase):
             self.assertEqual(passed.returncode, 0, passed.stderr)
             self.assertIn("本机覆盖完成", passed.stdout)
 
+    def test_final_output_keeps_publication_and_acceptance_separate(self):
+        source = self.source()
+        self.assertIn("发布动作完成 v${VERSION}，发布后验收待完成", source)
+        self.assertNotIn("发版完成 v${VERSION}（发布动作完成", source)
+
     def test_local_argument_does_not_enable_gate_or_build_skips(self):
         import subprocess
         source = self.source()

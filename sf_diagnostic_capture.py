@@ -60,6 +60,7 @@ class DiagnosticSources:
 def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
     from sf_diagnostics import DiagnosticArchive, write_attachments as write_diagnostic_attachments
     import sf_diag
+    import sf_menu_trace
     from sf_feedback_ui import feedback_diagnostics
     started = time.monotonic()
     diag_issues: list[str] = []
@@ -283,6 +284,11 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
                            "reason": "no window performance monitor was started"}),
             None,
         )
+        # 右键菜单与「反馈问题」入口的会话记录：点了没反应时，包里要答得出是点击没到菜单、
+        # 还是到了但窗口没留在这块桌面上（schema menu_trace.v1，取不到时留占位并记 export_issues）。
+        runtime["menu_trace"] = _field(
+            "menu_trace", sf_menu_trace.diagnostics,
+            {"schema": sf_menu_trace.SCHEMA, "available": False, "reason": "collection failed"})
         # ---- 诊断补全：分时恢复现场（台账 S52 那一族的远程取证）----
         # 此前只有 minute_failures / minute_thread_alive 两个数，答不出
         # "现在是不是停在重试中、曲线是不是昨天的、数据多旧、请求还在不在飞、

@@ -112,6 +112,28 @@ class TargetBubbleCase(SFCase):
         wide = self.body().width()
         self.assertGreater(wide - narrow, B.COL_GAP + B.PCT_GAP, "有百分比时要多出第三列的宽度")
 
+    def test_气泡窗口对输入透明_原生层不截获鼠标(self):
+        """气泡窗口带透明外圈，顶边落在铃铛感应区下半部分。只设 WA_TransparentForMouseEvents 不够：
+        它管 Qt 内部传递，原生窗口仍收鼠标（实测 NSWindow.ignoresMouseEvents=False），
+        鼠标停在感应区下半部分时主窗会收到「离开」、气泡被收起再弹出，表现为一闪一闪。
+        这里用公开的 windowFlags() 断言原生层的开关还在；原生值本身由 cocoa 探针核对。"""
+        flags = self.bubble.windowFlags()
+        self.assertTrue(flags & Qt.WindowType.WindowTransparentForInput,
+                        "缺 WindowTransparentForInput：气泡会在原生层截获鼠标")
+        self.assertTrue(self.bubble.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
+
+    def test_百分比位数相同时宽度恒定_不随具体数字变化(self):
+        """内置数字字体的数字不等宽（11 号粗体「1」比「0/3/4/6/8/9」窄 2px）。直接量字符串，
+        百分比每跳一次气泡就在 1~2px 之间变宽变窄；按最宽数字量之后位数相同宽度必须相同。"""
+        long_price = "1063.00"      # 够长，让内容宽度超过最小宽度，宽度差才不被钳制盖住
+        widths = []
+        for pct in ("+3.3%", "+1.1%", "+4.8%", "+9.0%"):
+            self.bubble.setRows([(True, long_price, pct)], [])
+            widths.append(self.body().width())
+        self.assertEqual(len(set(widths)), 1, "位数相同的百分比不该改变气泡宽度：%r" % widths)
+        self.bubble.setRows([(True, long_price, "+10.0%")], [])
+        self.assertGreater(self.body().width(), widths[0], "多一位是真实的形状变化，宽度该随之变宽")
+
     def test_短内容撑不到最小宽度时取最小宽度(self):
         self.fill([CMP[0]], price=None)
         self.assertEqual(self.body().width(), B.MIN_CONTENT_W + 2 * B.PAD_X)

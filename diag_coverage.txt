@@ -25,6 +25,12 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+version 1.4.103
+# 本版区间是 efc4c50..HEAD（v1.4.102 发布源码以来，12 笔非合并提交）；闸门点名三个模块，逐个交代，理由都核对过源码。
+skip sf_dock_motion 动画控制器是挂在主窗上的逐次临时对象（截图、在飞动画、定时器、预热标记），没有模块级可变状态；开关 dock_motion 的生效值已在 runtime.json 的 features 里；截图取不到写 WARNING 行，各步抛错走 log_swallow 写 SWALLOWED 行，debug.log 与轮转文件随诊断包带走。已知只有两条退回路径不留痕：系统开了减少动态效果，以及估不出 Dock 图标位置，包里看不出为什么没有动画，本轮不单独接。
+skip sf_feedback_analyzer 离线分析函数，只被维护者本机的反馈管理工具调用，客户端不自动启动；本版新增的是对诊断包 menu_trace 的解读，结论写入案件报告，不进入用户诊断附件。
+skip sf_system_alert 本版新增 NativeAlert._center_paragraph（给传入文本设居中段落样式）和每个弹窗实例自己的 _paragraph_centered 布尔值，随弹窗销毁；模块级可变状态仍只有基线就有的 _screen_anchor 那一个；段落样式没设上时走 _swallow 写 SWALLOWED 行，现场在 debug.log。
+
 version 1.4.102
 # 本版区间是 70d3b69..HEAD（30 笔）；闸门点名的两个模块在这里逐个交代，理由都核对过源码。
 skip sf_system_alert 本版只新增 NativeAlert._hide_button_band（无按钮提示的版面收矮），不新增模块级可变状态（唯一的 _screen_anchor 在基线里就有）；该步骤失败时走 _swallow 写 SWALLOWED 日志并退回带按钮的弹窗，现场在 debug.log。

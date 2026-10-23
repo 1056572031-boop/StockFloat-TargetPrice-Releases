@@ -127,9 +127,9 @@ class TestNameVerticalOffset(unittest.TestCase):
         self.assertEqual(R.NAME_TOP_PAD, 4)
 
     def test_bottom_inner_gap_increased(self):
-        # v1.2.66：标签-数字间距由 1 增到 3（BOTTOM_GAP 仍为 3，不被改动）
+        # S3：保留标签-数字间距，百分比与价格段间距为 12px。
         self.assertEqual(R.BOTTOM_INNER_GAP, 3)
-        self.assertEqual(R.BOTTOM_GAP, 3)
+        self.assertEqual(R.BOTTOM_GAP, 12)
 
     def test_dead_constant_removed(self):
         # 2026-09-03：清理 v1.2.62 起即无人引用的死常量 BOTTOM_GROUP_GAP，

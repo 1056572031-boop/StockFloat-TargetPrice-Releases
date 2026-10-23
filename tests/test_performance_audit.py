@@ -144,6 +144,27 @@ class TestRenderPerformance(SFCase):
         fresh.quote = dict(host.quote)
         self.assertEqual(changed, image_for(fresh, draw_bottom))
 
+    def test_bottom_previous_close_changes_and_clamps_invalidate_real_frame(self):
+        host = RenderHost()
+        before = image_for(host, draw_bottom)
+        for previous in ("19", "21", "20.2", "", "NaN", "0", "-1", "20"):
+            with self.subTest(previous=previous):
+                host.quote["pre_close"] = previous
+                changed = image_for(host, draw_bottom)
+                fresh = RenderHost()
+                fresh.quote = dict(host.quote)
+                self.assertEqual(changed, image_for(fresh, draw_bottom))
+                if previous != "20":
+                    self.assertNotEqual(before, changed)
+
+    def test_bottom_open_changes_do_not_change_real_frame(self):
+        host = RenderHost()
+        before = image_for(host, draw_bottom)
+        for opening in ("19", "21", "", "NaN", "0"):
+            with self.subTest(opening=opening):
+                host.quote["open"] = opening
+                self.assertEqual(before, image_for(host, draw_bottom))
+
     def test_caches_are_not_shared_between_windows(self):
         first, second = RenderHost(), RenderHost()
         image_for(first, draw_fill, QRectF(12, 108, 276, 140))

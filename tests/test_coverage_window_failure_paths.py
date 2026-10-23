@@ -315,7 +315,7 @@ class WindowOrchestrationFallbacks(SFCase):
                     top_timer=host(stop=mock.Mock()), _sync_dot_timer=mock.Mock(),
                     _update_nap_policy=mock.Mock(), _flash_drop_timer=host(stop=actions["flash"]),
                     timer=host(interval=lambda: 50, setInterval=mock.Mock()),
-                    _sync_face_guard=mock.Mock())
+                    _sync_face_guard=mock.Mock(), _dock_motion=mock.Mock(return_value=None))
                 minimize(target)
                 target.hide.assert_called_once_with()
                 vars(target)["_runtime"].enter_dock.assert_called_once_with()

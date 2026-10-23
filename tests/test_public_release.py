@@ -122,7 +122,8 @@ class PublicReleaseCase(SFCase):
     def test_numbering_length_and_install_artifact_names_fail_before_packaging(self):
         notes = self.root / "release_notes.txt"
         original = notes.read_text()
-        for body in ("2. missing first item", "1. " + "x" * 151):
+        # 越界样本按唯一来源 NOTES_MAX_CHARS 推算（上限现为 200），不写死字数：上限再调时本用例跟着走。
+        for body in ("2. missing first item", "1. " + "x" * (docs.NOTES_MAX_CHARS + 1)):
             notes.write_text("V%s release\n%s\n" % (docs.APP_VERSION, body))
             self.assertTrue(any("release_notes.txt:" in item for item in self.document_problems()))
         notes.write_text(original)

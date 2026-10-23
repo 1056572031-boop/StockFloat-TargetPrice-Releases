@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.102'
+APP_VERSION = '1.4.103'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -142,6 +142,9 @@ _FEATURE_DEFAULTS = {'private_spaces': True, 'conn_pool': True, 'net_monitor': T
                    # 留着这个开关的意义：真机上如果发现取帧/授权有未预期问题，
                    # features.ini 写 face_guard=0 就能把菜单项和采集一并撤掉。
                    'face_guard': True,
+                   # 收起到 Dock / 从 Dock 恢复的过渡动画（sf_dock_motion）。同样是 kill switch：
+                   # 动画出问题时 features.ini 写 dock_motion=0，两个入口立刻退回瞬间收起与恢复。
+                   'dock_motion': True,
                    # v1.4.37：默认**关回**自绘拖拽。原因不是"系统拖拽不跟手"，而是它
                    # 与独立毛玻璃背景层原理上不可兼得：位移交给 WindowServer 后，内容窗
                    # 当帧就被挪走，背景层要等本进程问一次真实位置、再写一次自己的位置，
@@ -503,6 +506,15 @@ BTN_ICON_DEVICE_RATIO = 2.0      # 出图倍率：与 Retina 的 1pt=2px 对齐
 MENU_ICON_PT = 16
 MENU_ICON_CONTENT_SCALE = 0.65
 MENU_ICON_DEVICE_RATIO = 2.0
+# 铃铛气泡的悬停节拍（2026-10-23，用户反馈"鼠标经过或停留时窗口一闪一闪，太敏感了"）。
+# 来源如实写明：这两个数是设计取值，不是实测出来的手速。依据只有一条算术与一条探针计数：
+# ① 铃铛感应区宽 22px，与右邻「编辑」按钮的感应区紧挨着、中间没缝；停满 DWELL 才弹，
+#    意味着鼠标要慢到 22px/0.2s = 110px/s 以下才算"停在铃铛上"，正常划过（几百 px/s）不会弹；
+# ② 探针（离屏，数 show/hide 调用）里改前划过两趟出现/消失各 2 次，交界线上 ±1px 抖 40 次
+#    出现/消失各 20 次。改后的验收标准是这两个场景都降到 0 次，而不是某个具体毫秒数。
+# 想调手感只改这两个数；判据按常量算时间，不写死毫秒。
+BELL_BUBBLE_DWELL_MS = 200       # 鼠标停在铃铛上多久才弹出气泡
+BELL_BUBBLE_HIDE_GRACE_MS = 120  # 鼠标滑出铃铛后气泡再留多久才收起（滑回来则取消收起，不重新计时）
 # 2026-10-21 对比度微调：涨色 #ff5252 -> #ff5858。按 v1.4.100 真机截图里最亮的玻璃底
 # (44,44,44) 实测，旧值对它只有 4.38:1（低于小字 4.5:1），新值 4.51:1，肉眼几乎看不出差别。
 # 判据的底色仍用纯黑做不了数：纯黑上旧值有 6.58:1，那是宽松侧的假平安。

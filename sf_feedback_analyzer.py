@@ -20,7 +20,7 @@ from sf_feedback import sha256_file, validate_archive
 from sf_feedback_bundle import read_diagnostics
 
 ANALYZER_SCHEMA_VERSION = 3
-ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v7"
+ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v8"
 DEFAULT_RULESET = {
     "required_members": ["state.json"],
     "health_false_conclusion": "suspected_problem",
@@ -77,6 +77,137 @@ _LOG_RECORD = re.compile(
 
 def _object(value):
     return value if isinstance(value, dict) else {}
+
+
+MENU_TRACE_SCHEMA = "menu_trace.v1"
+MENU_TRACE_LABELS = {
+    "session_count": "菜单会话条数", "right_presses": "右键按下次数", "menus_opened": "菜单打开次数",
+    "right_press_pending_now": "导出时仍有未配对的右键按下", "picked": "选中项统计", "reasons": "收起方式统计",
+    "missed_then_feedback": "前一次没选中、下一次选中反馈问题（只是相邻关系）",
+    "press_release_mismatch_count": "按下与松开落在不同项的会话数",
+    "closed_without_input_count": "没有任何按下或按键就收起的会话数",
+    "inactive_at_open_count": "打开时程序不在前台的会话数",
+    "max_first_turn_ms": "菜单打开后第一轮事件循环耗时最大值（毫秒）",
+    "feedback_outcomes": "反馈开窗结局统计", "feedback_dropped": "被丢弃的反馈请求数",
+    "feedback_max_total_ms": "反馈开窗总耗时最大值（毫秒）",
+    "feedback_view_problems": "开窗后回看发现窗口不在视野内的记录",
+}
+
+
+def _list(value):
+    return value if isinstance(value, list) else []
+
+
+def _scalar(value):
+    """来自诊断包的值只留短标量，嵌套结构与非有限数一律丢成 None。"""
+    if isinstance(value, str):
+        return value[:40]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value
+    return None
+
+
+def _max_number(values):
+    numbers = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)
+               and math.isfinite(v) and v >= 0]
+    return max(numbers) if numbers else None
+
+
+def _utc_seconds(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _menu_trace_analysis(runtime):
+    """runtime.menu_trace 的线索：只数原始事实，不下「点丢了」的结论；缺失的几种原因分开写。
+
+    返回 (摘要, 线索[(code, 严重度, 文字)], 证据不足说明[文字])。"""
+    trace = runtime.get("menu_trace")
+    if not isinstance(trace, dict):
+        return {}, [], ["诊断包没有 runtime.menu_trace：来自不带菜单会话记录的旧版本，或这一段采集整体缺失；"
+                        "不能据此判断右键菜单有没有问题。"]
+    if trace.get("schema") != MENU_TRACE_SCHEMA or trace.get("available") is not True:
+        reason = trace.get("reason")
+        return {}, [], ["菜单会话记录不可用（schema=%s，available=%s%s）；不能据此判断右键菜单有没有问题。" % (
+            str(trace.get("schema"))[:40], str(trace.get("available"))[:10],
+            "，说明：" + reason[:200] if isinstance(reason, str) and reason else "")]
+    sessions = [s for s in _list(trace.get("sessions")) if isinstance(s, dict)]
+    attempts = [a for a in _list(trace.get("feedback_attempts")) if isinstance(a, dict)]
+    def count(name):
+        return trace[name] if type(trace.get(name)) is int else 0
+
+    pairs = []
+    for first, second in zip(sessions, sessions[1:]):
+        if first.get("picked") == "none" and second.get("picked") == "feedback":
+            a, b = _utc_seconds(first.get("opened_at")), _utc_seconds(second.get("opened_at"))
+            pairs.append({"first_id": _scalar(first.get("id")), "second_id": _scalar(second.get("id")),
+                          "gap_between_opens_s": None if a is None or b is None else round(b - a, 1),
+                          "first_reason": _scalar(first.get("reason")),
+                          "first_press": _scalar(first.get("first_press")),
+                          "first_release": _scalar(first.get("last_release")),
+                          "first_presses": _scalar(first.get("presses")),
+                          "first_open_ms": _scalar(first.get("closed_after_ms"))})
+    view_problems = []
+    for attempt in attempts:
+        for tag in ("t300", "t1500"):
+            back = _object(_object(attempt.get("readbacks")).get(tag))
+            flags = [name for name, bad in (
+                ("window_gone", back.get("gone") is True), ("not_visible", back.get("visible") is False),
+                ("not_on_active_space", back.get("on_active_space") is False),
+                ("occluded", back.get("occlusion_visible") is False),
+                ("off_screen", back.get("on_a_screen") is False)) if bad]
+            if flags:
+                view_problems.append({"attempt": _scalar(attempt.get("id")), "at": tag, "flags": flags})
+    mismatch = sum(1 for s in sessions if s.get("first_press") is not None and s.get("last_release") is not None
+                   and s["first_press"] != s["last_release"])
+    summary = {
+        "session_count": len(sessions), "right_presses": count("right_presses"),
+        "menus_opened": count("menus_opened"), "right_press_pending_now": trace.get("right_press_pending_now") is True,
+        "picked": {}, "reasons": {}, "missed_then_feedback": pairs, "press_release_mismatch_count": mismatch,
+        "closed_without_input_count": sum(1 for s in sessions if s.get("closed_after_ms") is not None
+                                          and s.get("presses") == 0 and s.get("keys") == 0
+                                          and s.get("picked") == "none"),
+        "inactive_at_open_count": sum(1 for s in sessions if s.get("app_state") != "ApplicationActive"),
+        "max_first_turn_ms": _max_number(s.get("first_turn_ms") for s in sessions),
+        "feedback_outcomes": {}, "feedback_dropped": count("feedback_dropped"),
+        "feedback_max_total_ms": _max_number(_object(a.get("marks")).get("total_ms") for a in attempts),
+        "feedback_view_problems": view_problems}
+    for s in sessions:
+        picked = str(_scalar(s.get("picked")))
+        summary["picked"][picked] = summary["picked"].get(picked, 0) + 1
+        reason = str(_scalar(s.get("reason")))
+        summary["reasons"][reason] = summary["reasons"].get(reason, 0) + 1
+    for a in attempts:
+        outcome = str(_scalar(a.get("outcome")))
+        summary["feedback_outcomes"][outcome] = summary["feedback_outcomes"].get(outcome, 0) + 1
+    findings = []
+    if summary["right_presses"] > summary["menus_opened"]:
+        findings.append(("menu_right_press_unmatched", "info",
+                         "右键按下 %d 次，菜单打开 %d 次：有按下没等到菜单（也可能是菜单开着时又右键了一次）。"
+                         % (summary["right_presses"], summary["menus_opened"])))
+    if pairs:
+        findings.append(("menu_missed_then_feedback", "info",
+                         "有 %d 组「前一次菜单没选中任何项、下一次才选中反馈问题」，最近一组两次打开相隔 %s 秒；"
+                         "只是相邻关系，前一次也可能只是看一眼版本号。" % (len(pairs), pairs[-1]["gap_between_opens_s"])))
+    if mismatch:
+        findings.append(("menu_press_release_mismatch", "info",
+                         "有 %d 次菜单里按下和松开落在不同项上。" % mismatch))
+    if view_problems:
+        findings.append(("feedback_dialog_not_in_view", "warning",
+                         "反馈窗打开后回看有 %d 处不在视野内（不可见/不在当前桌面/被遮挡/不在屏幕上）；"
+                         "回看时窗口也可能已被用户关掉，需对照时间。" % len(view_problems)))
+    if summary["feedback_outcomes"].get("capture_failed"):
+        findings.append(("feedback_capture_failed", "warning",
+                         "有 %d 次打开反馈窗时采集现场失败。" % summary["feedback_outcomes"]["capture_failed"]))
+    if summary["feedback_dropped"]:
+        findings.append(("feedback_requests_dropped", "info",
+                         "有 %d 次反馈请求因上一次还没处理完被丢掉。" % summary["feedback_dropped"]))
+    return summary, findings, ["菜单会话记录可读；它只在程序运行期间的内存里，重启即清空；"
+                               "字段只表示发生了什么，不能单独认定点击丢失的原因。"]
 
 
 def _full_analysis(files: dict[str, Any], run_id: Any) -> dict[str, Any]:
@@ -190,6 +321,10 @@ def _full_analysis(files: dict[str, Any], run_id: Any) -> dict[str, Any]:
     else:
         gaps.append("runtime.performance v1 样本可读；字段仅表示事件循环延迟、单核 CPU、进程峰值 RSS 和绘制耗时，"
                     "峰值 RSS 不是当前 RSS，paint 也不是屏幕 FPS，不能单独认定卡顿根因。")
+    menu_summary, menu_findings, menu_gaps = _menu_trace_analysis(runtime)
+    for code, severity, message in menu_findings:
+        add(code, severity, message, "snapshot")
+    gaps.extend(menu_gaps)
     if not run_id or not groups["current"]["line_count"]:
         gaps.append("没有可归属本次 run_id 的日志，不能把历史或无标识日志当成本次故障。")
     issues = []
@@ -211,7 +346,7 @@ def _full_analysis(files: dict[str, Any], run_id: Any) -> dict[str, Any]:
             "incident_count": None, "last_failures_scope": failure_scope,
             "last_failures_run_id": last_run, "findings": findings,
             "evidence_gaps": gaps, "performance_available": performance_available,
-            "performance_summary": performance_summary,
+            "performance_summary": performance_summary, "menu_trace_summary": menu_summary,
             "collection_issue_classification": issues}
 
 
@@ -271,6 +406,13 @@ def _readable_evidence(description, analysis):
         text += "- 绘制调用统计（不是屏幕 FPS）：<code>" + safe(performance.get("paint")) + "</code>\n"
     else:
         text += "没有可解释的性能采样；不能根据网络正常判断界面流畅。\n"
+    text += "\n## 菜单会话\n\n"
+    menu = analysis.get("menu_trace_summary", {})
+    if menu:
+        for key, label in MENU_TRACE_LABELS.items():
+            text += "- " + label + "：<code>" + safe(menu.get(key)) + "</code>\n"
+    else:
+        text += "没有可用的菜单会话记录（原因见下方“证据不足”）。\n"
     text += "\n## 证据不足\n\n"
     text += "\n".join("- " + safe(gap) for gap in analysis["evidence_gaps"])
     text += "\n\n## 采集说明\n\nmissing 不自动代表产品故障；可选轮转日志缺失，可能未产生，读取失败/截断意味着证据不完整。原 issues 在 JSON 保留。\n"

@@ -250,6 +250,20 @@ class ProgressAlertBridgeTest(unittest.TestCase):
         handle.set_progress(-5, "-5%")
         self.assertEqual(bar.values[-2:], [100.0, 0.0], "超范围必须夹进 0~100")
 
+    def test_refresh_keeps_the_text_centering_choice(self):
+        """刷进度会让 AppKit 把版式摆回默认，居中要跟着补一次，而且补的方式要和弹出时一致。
+        目前没有生产调用方同时要进度条和逐行居中，所以这条是给将来留的：丢了开关，
+        文案会在第一次刷新后悄悄变回贴左，而界面上没有任何报错。"""
+        for flag in (False, True):
+            with self.subTest(center_text=flag):
+                with patch.object(sf_system_alert.NativeAlert, "_center_content") as layout:  # discipline-ok(R5): 排版步骤没有对外入口，要看的就是它被怎样调用
+                    handle = sf_system_alert.NativeAlert(
+                        "正在下载更新…", "准备中 0%", ("取消",), None, "取消", None, None,
+                        progress=True, center_text=flag)
+                    handle.set_progress(37, "37%")
+                self.assertEqual([call.args[-1] for call in layout.call_args_list], [flag, flag],
+                                 "弹出和刷新两次排版都要带同一个居中选择")
+
     def test_closed_handle_refuses_further_progress(self):
         handle = self._open()
         bar = _Alert.instances[-1].accessory

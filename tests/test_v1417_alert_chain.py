@@ -17,16 +17,40 @@
 import pathlib
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CHILD = ROOT / "tests" / "_alert_child.py"
 TIMEOUT_SECONDS = 90
+INK_ALPHA_MIN = 60              # 位图里透明度高于它才算墨迹（浅色、深色外观下字色不同，透明度一致）
+CENTER_TOLERANCE_PX = 8         # 一行墨迹左右留白之差的上限；实测居中后 0~4 像素，贴左时 17~366
+MIN_WRAPPED_LINES = 3           # 标题 1 行 + 长编号至少折 2 行；折不出来说明文案没走到窄框
+MIN_NOTE_LINES = 3              # 更新说明至少有 3 行墨迹，否则量不出"贴左"
+LEFT_EDGE_TOLERANCE_PX = 4      # 贴左的各行左缘允许相差的像素（字形左侧留白的差异）
+MIN_RIGHT_GAP_SPREAD_PX = 40    # 各行右侧留白至少差这么多，证明行长不一、"左缘一致"不是巧合
 
 
-def _spawn(mode):
-    proc = subprocess.run([sys.executable, str(CHILD), mode],
+def _line_gaps(image):
+    """位图里每一行文字的 (左留白, 右留白)，单位像素。相邻有墨的像素行并成一行文字。"""
+    width = image.width()
+    gaps, run = [], None
+    for y in range(image.height()):
+        xs = [x for x in range(width) if (image.pixel(x, y) >> 24) & 0xFF > INK_ALPHA_MIN]
+        if xs:
+            lo, hi = min(xs), max(xs)
+            run = (min(run[0], lo), max(run[1], hi)) if run else (lo, hi)
+        elif run:
+            gaps.append((run[0], width - 1 - run[1]))
+            run = None
+    if run:
+        gaps.append((run[0], width - 1 - run[1]))
+    return gaps
+
+
+def _spawn(mode, *extra):
+    proc = subprocess.run([sys.executable, str(CHILD), mode, *extra],
                           capture_output=True, text=True, timeout=TIMEOUT_SECONDS,
                           cwd=str(ROOT))
     markers = {}
@@ -57,8 +81,8 @@ class AlertChainTest(unittest.TestCase):
                 "弹窗预检未通过（无窗口服务？）probe=%s rc=%s err=%s"
                 % (markers.get("probe"), proc.returncode, (proc.stderr or "")[-200:]))
 
-    def _run(self, mode):
-        proc, markers = _spawn(mode)
+    def _run(self, mode, *extra):
+        proc, markers = _spawn(mode, *extra)
         self.assertNotIn("error", markers,
                          "子进程抛异常: %s" % markers.get("error"))
         return proc, markers
@@ -123,6 +147,44 @@ class AlertChainTest(unittest.TestCase):
         self.assertNotIn("error", m, "子进程抛异常: %s" % m.get("error"))
         self.assertEqual(m.get("centered"), "ok",
                          "居中/描边契约被破坏：%s" % m)
+
+    def _ink_gaps(self, tag):
+        """让子进程把某个文案画进位图，返回每行文字的 (左留白, 右留白)。窗口不上屏。"""
+        from PyQt6.QtGui import QImage
+        with tempfile.TemporaryDirectory() as out_dir:
+            proc, m = self._run("ink", out_dir)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            image = QImage(m["png_" + tag])
+            self.assertFalse(image.isNull(), "子进程没有出图：" + tag)
+            return _line_gaps(image)
+
+    def test_feedback_success_text_is_centered_line_by_line(self):
+        """反馈提交成功框的文字每一行都要居中（用户 2026-10-23 要求）。
+
+        量的是真 NSAlert 画出来的像素，不是对齐属性：属性读回一直是居中，可文案自带的
+        段落样式压过它，画出来每一行都贴左。窗口不上屏，也不抢焦点。"""
+        gaps = self._ink_gaps("feedback")
+        self.assertGreaterEqual(len(gaps), MIN_WRAPPED_LINES,
+                                "文字没折成多行，量不出短行是否居中：%s" % gaps)
+        for left, right in gaps:
+            self.assertLessEqual(abs(left - right), CENTER_TOLERANCE_PX,
+                                 "这一行文字左右留白 %d / %d 像素，没有居中；各行留白：%s"
+                                 % (left, right, gaps))
+
+    def test_update_notes_stay_left_aligned(self):
+        """更新说明保持贴左（用户 2026-10-23 明确要求，只有反馈弹窗居中）。
+
+        判据是两句话同时成立：各行左缘对齐；各行右侧留白参差不齐。后一句防的是
+        "左缘一致"只是因为每行一样长的巧合。共用的居中路径默认不碰段落样式，
+        谁把居中改成默认开，这条当场变红。"""
+        gaps = self._ink_gaps("notes")
+        self.assertGreaterEqual(len(gaps), MIN_NOTE_LINES, "更新说明没画出多行：%s" % gaps)
+        lefts = [left for left, _right in gaps]
+        rights = [right for _left, right in gaps]
+        self.assertLessEqual(max(lefts) - min(lefts), LEFT_EDGE_TOLERANCE_PX,
+                             "更新说明各行左缘不齐，被居中了？各行留白：%s" % gaps)
+        self.assertGreaterEqual(max(rights) - min(rights), MIN_RIGHT_GAP_SPREAD_PX,
+                                "更新说明各行一样长，这条用例量不出对齐方式：%s" % gaps)
 
 
 class NativeAvailabilityTest(unittest.TestCase):

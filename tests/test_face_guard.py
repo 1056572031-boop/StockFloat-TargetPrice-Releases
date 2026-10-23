@@ -1495,6 +1495,23 @@ class TestWindowWiring(SFCase):
                          "被守卫收起时必须继续看守，否则自动恢复没有数据来源")
         self.assertTrue(d["camera_held"])
 
+    def test_guard_hide_asks_for_an_instant_collapse_and_resets_the_flag(self):
+        """第二张脸出现是隐私场景：窗口必须立刻消失，不能让缩小动画多留 0.3 秒。"""
+        self._enable()
+        seen = []
+        real = m.FloatWindow.minimize_to_dock
+
+        def spy(win):
+            seen.append(win._instant_minimize)           # discipline-ok(R5): 这个标记就是被测的接线，没有公开读取口
+            return real(win)
+
+        self.stub.faces = 2
+        with patch.object(m.FloatWindow, "minimize_to_dock", spy):
+            self._poll(self._state()["hide_hits"])
+        self.assertEqual(seen, [True], "守卫收起必须带上「立刻消失」的标记")
+        self.assertFalse(self.win._instant_minimize,       # discipline-ok(R5): 同上
+                         "标记没复位：之后用户手动缩小也会被当成隐私场景而没有动画")
+
     def test_manual_minimize_stops_camera(self):
         self._enable()
         self.win.minimize_to_dock()

@@ -359,8 +359,11 @@ class NativeAlert:
     _live = {}          # 防 GC：AppKit target/action 链需要 Python 侧存活引用
 
     def __init__(self, message, info, buttons, default, cancel,
-                 icon_path, on_result, progress=False):
+                 icon_path, on_result, progress=False, center_text=False):
         self._on_result = on_result
+        # 文案是否连"段落样式"一起居中。默认关：更新说明那类编号列表要贴左读，
+        # 只有明确要逐行居中的弹窗（反馈结果）才打开，见 _center_text。
+        self._paragraph_centered = bool(center_text)
         self._closed = False
         self._bar = None
         self._last_shown = None
@@ -399,7 +402,7 @@ class NativeAlert:
         self._alert = alert
         self._window = alert.window()
         self._window.setReleasedWhenClosed_(False)
-        self._center_content(alert)
+        self._center_content(alert, self._paragraph_centered)
         self._target = _AlertTarget.alloc().init()
         self._target.setOwner_(self)
         for button in alert.buttons():
@@ -480,8 +483,11 @@ class NativeAlert:
     _MAX_GROW = 480.0      # 窗口最多长高多少，异常内容下不失控
 
     @staticmethod
-    def _center_content(alert):
+    def _center_content(alert, paragraph=False):
         """把 NSAlert 内容改成「图标在上、整体水平居中」，且互不重叠。
+
+        paragraph=True 时文案的每一行也在文案框里居中（见 _center_text）；默认 False，
+        文案框居中、框内的字仍按系统默认贴左——更新说明的编号列表靠这个读。
 
         为什么必须自己排（v1.4.22 的初衷）：系统默认把图标放在**文案左侧**，
         用户要求"图标在上、居中上下展示"。
@@ -553,7 +559,7 @@ class NativeAlert:
                     frame = view.frame()
                     NativeAlert._place(view, NativeAlert._SIDE_MARGIN,
                                        frame.origin.y, box, frame.size.height)
-                    NativeAlert._center_text(view)
+                    NativeAlert._center_text(view, paragraph)
                 NativeAlert._place(icon, (width - icon_frame.size.width) / 2.0,
                                    icon_frame.origin.y, icon_frame.size.width,
                                    icon_frame.size.height)
@@ -589,7 +595,7 @@ class NativeAlert:
                 h = min(h, max(0.0, cursor - limit))
                 cursor -= h
                 NativeAlert._place(view, NativeAlert._SIDE_MARGIN, cursor, box, h)
-                NativeAlert._center_text(view)
+                NativeAlert._center_text(view, paragraph)
                 cursor -= NativeAlert._TEXT_GAP
             icon_w = icon.frame().size.width
             NativeAlert._place(icon, (width - icon_w) / 2.0, icon_y,
@@ -638,12 +644,43 @@ class NativeAlert:
         view.setFrame_(AppKit.NSMakeRect(x, y, w, h))
 
     @staticmethod
-    def _center_text(view):
-        """文案居中对齐：控件与 cell 两处都设，只设一处时某些系统版本不生效。"""
+    def _center_text(view, paragraph=False):
+        """文案居中对齐：控件与 cell 两处都设，只设一处时某些系统版本不生效。
+
+        paragraph=True 再补文字自带的段落样式（反馈结果弹窗用）。只设前两处不够：
+        NSAlert 的文案是带属性的字符串，里面的段落样式写着"自然对齐"（左对齐），画字时
+        它压过控件与 cell 的设置。本机真弹框读回：多行文案每一行都贴左，两侧留白差
+        17~366 像素；补上段落样式后差缩到 0~4 像素。
+        默认不补：更新说明的编号列表一直是贴左画的，用户要求保持（2026-10-23），
+        所以这一步必须是明确要求才做的事，不是共用路径上的默认行为。
+        """
         view.setAlignment_(AppKit.NSTextAlignmentCenter)
         cell = view.cell()
         if cell is not None:
             cell.setAlignment_(AppKit.NSTextAlignmentCenter)
+        if paragraph:
+            NativeAlert._center_paragraph(view)
+
+    @staticmethod
+    def _center_paragraph(view):
+        """把文案自带的段落样式改成居中，其余属性（字体、颜色、换行方式）原样保留。
+        取不到带属性的字符串（空文案）时什么都不做；改失败只留痕，控件上的居中仍然有效。"""
+        try:
+            text = view.attributedStringValue()
+            if text is None or text.length() == 0:
+                return
+            current = text.attribute_atIndex_effectiveRange_(
+                AppKit.NSParagraphStyleAttributeName, 0, None)
+            current = current[0] if isinstance(current, tuple) else current
+            style = (current.mutableCopy() if current is not None
+                     else AppKit.NSMutableParagraphStyle.alloc().init())
+            style.setAlignment_(AppKit.NSTextAlignmentCenter)
+            centered = AppKit.NSMutableAttributedString.alloc().initWithAttributedString_(text)
+            centered.addAttribute_value_range_(
+                AppKit.NSParagraphStyleAttributeName, style, (0, centered.length()))
+            view.setAttributedStringValue_(centered)
+        except Exception as exc:                             # noqa: BLE001
+            _swallow("sf_system_alert._center_paragraph(段落样式未居中)", exc)
 
     @staticmethod
     def _text_height(view, box_width):
@@ -715,7 +752,7 @@ class NativeAlert:
             self._alert.setInformativeText_(label)
             self._alert.layout()
             # 重排会按 NSAlert 自己的版式摆回来，居中必须跟着补一次。
-            self._center_content(self._alert)
+            self._center_content(self._alert, self._paragraph_centered)
             # 重排也可能让窗口长高一截（副文案换行）：只补内容居中，窗口会
             # 越刷越往上跑，所以落点也要跟着补一次。
             center_window(self._window)
@@ -763,18 +800,23 @@ def native_available():
 
 
 def show_alert(title, text, buttons=("好",), default=None, cancel=None,
-               icon_path=None, on_result=None, message=None, info=None):
+               icon_path=None, on_result=None, message=None, info=None,
+               center_text=False):
     """弹一条 macOS 原生样式对话框，立即返回句柄，不阻塞调用线程。
 
     message/info 用于 NSAlert 的粗体主文案与副文案；未提供时以 text 兜底
     （osascript 降级路径始终使用合并后的 text）。
+
+    center_text=True 让文案的每一行都居中（默认贴左，更新说明靠这个读）。
+    只对原生弹窗生效；osascript 降级路径画不了段落样式，忽略它。
     """
     if default is None and buttons:
         default = buttons[-1]
     if native_available():
         try:
             return NativeAlert(message or text, info or "", buttons,
-                               default, cancel, icon_path, on_result)
+                               default, cancel, icon_path, on_result,
+                               center_text=center_text)
         except Exception as exc:
             # 这里是"降不降级"的决策点，必须留痕（AGENTS §6 第 9 条；复核 B1）：
             # 静默吞掉的后果是弹窗既不居中、也可能不可见，而用户只会说"点了没反应"。

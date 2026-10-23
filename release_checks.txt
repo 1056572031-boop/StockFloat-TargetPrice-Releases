@@ -20,8 +20,38 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.102
-# ---- v1.4.102：品牌标志落地（本版新增特征）----
+version 1.4.103
+# ---- v1.4.103：基线 efc4c50（v1.4.102 发布源码）以来并入主线的改动，各至少一个包内新名字 ----
+# 收起到 Dock / 从 Dock 恢复的过渡动画（整个模块是新增的）：
+check sf_dock_motion::DockMotion
+check sf_dock_motion::CocoaBackend
+check stock_float_window::_dock_motion_collapse
+check stock_float_window::_dock_motion_expand
+# 铃铛气泡悬停节拍（停留才弹、离开后宽限再收）：
+check sf_constants::BELL_BUBBLE_DWELL_MS
+check stock_float_window::_on_bubble_hide_due
+# 右键菜单与「反馈问题」入口的会话记录，及反馈分析器对它的解读：
+check sf_menu_trace::_MenuFilter
+check sf_feedback_analyzer::_menu_trace_analysis
+# 程序图标：圆角色块底，运行中的程序按系统浅/深外观换图：
+check sf_icons::render_app_icon
+check sf_icons::system_icon_mode
+# 包体 icon.icns / icon.png 是二进制资源，co_names 查不到；证据在产物层：随包 icon.png / icon.icns
+#   与运行时 render_app_icon("light") 同源，由 tests/test_coverage_icons_editor.py::TestAppIcon 钉住。
+# 反馈结果弹窗逐行居中（更新说明仍贴左）：
+check sf_system_alert::_center_paragraph
+# 底部标签字号常量（涨幅/跌幅与高低价成对显示的版式）：
+check sf_ui_render::BOTTOM_LABEL_PT
+# 以下模块本版没有新的顶层名字，只改了函数体或字面量；testref 只证明用例仍在、以 test 开头、
+# 没被无条件跳过，不证明通过（通过由同轮完整回归证明），也不算本轮特征：
+#   sf_diagnostic_capture：诊断包 runtime 里多带一份 menu_trace；
+#   sf_feedback_ui：反馈结果弹窗传 center_text=True；
+#   stock_float_window 底部四个标签的涨幅/跌幅截零口径。
+testref tests/test_diagnostics_payload.py::PayloadCase::test_runtime_carries_the_menu_trace_with_its_schema
+testref tests/test_feedback_dialog.py::DialogTests::test_failed_upload_uses_popup_and_keeps_retry_available
+testref tests/test_v1459_bottom_fit.py::TestFittingIsPureFunction::test_previous_close_clamps_only_percentages_and_keeps_real_prices
+# ---- 以下为 v1.4.102 已发行清单：保留为历史，其中任何一条在本版包里读不到，都说明并线出了岔子 ----
+# ---- v1.4.102：品牌标志落地 ----
 # BRAND_LOGO_SVG 是包内真新增的名字（sf_icons.make_app_icon 运行时引用它，进 sf_icons 的字节码），
 # _legacy_app_icon 是"渲染不出品牌标志时退回旧自绘"这条兜底路径的新增函数。
 # 两者的反证都实测过：把 make_app_icon 里的品牌渲染改成恒失败，
@@ -180,9 +210,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.102 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.103 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.102
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.103
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

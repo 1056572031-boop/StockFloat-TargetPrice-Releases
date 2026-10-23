@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-22",
+  "updated": "2026-10-23",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4444,13 +4444,15 @@
       "introduced_version": "1.4.101",
       "introduced_note": null,
       "found_version": "1.4.101",
-      "fixed_version": null,
+      "fixed_version": "1.4.102",
       "failed_lines": [
         "verify",
         "locate"
       ],
       "why_missed": "异步授权改造把『未答复』从立即补发改成排队，用例把新口径当成契约；没有任何用例断言『授权未答复时命中的目标价仍要有一条横幅』，也没有验收看目标价已先落盘记为已触发这一事实。",
-      "defense_added": [],
+      "defense_added": [
+        "防线二：tests/test_notify.py 的 8 条新用例（授权未答复回复后补发一次、送达前已知未答复立即补发、拒绝压过补发、两次复核之间拒绝仍拦、无回复超时后补发、积压有上限且丢失计数、补发失败只记录不外抛、用户已拒绝时超时丢弃不发）。修复提交 d7b440d 实测是 1.4.102 发布头 efc4c50 的祖先、不是 1.4.101 发布头 70d3b69 的祖先；用修复前的 sf_notify.py 跑 tests.test_notify，59 条里 7 条红（4 失败 3 报错），换回当前版 59 条全绿。未验证：真实系统授权框与回调从未到达的情形"
+      ],
       "observed_at": "2026-10-22 09:16:38+08:00",
       "observed_origin": "now",
       "rootcause_at": null,
@@ -5117,6 +5119,20 @@
         "升级助手清理改名前回退副本：tests/test_update_helper_legacy_rollbacks.py。"
       ],
       "zero_reason": "本版尚未对外发行，目前只做本机候选，无本版新发现的线上逃逸；0 仅表示未登记，不代表上线后无故障，装机版实机观感与真实授权框仍为未验证。"
+    },
+    {
+      "version": "1.4.103",
+      "date": "2026-10-23",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "Dock 过渡动画：tests/test_dock_motion.py、tests/test_dock_motion_backend.py、tests/test_dock_motion_wiring.py 覆盖飞行路径、主线程卡住时动画仍前进、减少动态效果与任何失败退回瞬间收起、开关 dock_motion=0。",
+        "铃铛气泡悬停节拍：tests/test_target_bubble_dwell.py 按常量算时间，覆盖划过不弹、交界抖动不闪、离开宽限内滑回取消收起；右键菜单会话记录：tests/test_menu_trace.py、tests/test_menu_trace_wiring.py，诊断包 menu_trace 键：tests/test_diagnostics_payload.py，反馈分析器解读：tests/test_feedback_analyzer.py。",
+        "程序图标色块底与浅深外观：tests/test_coverage_icons_editor.py::TestAppIcon、tests/test_app_icon_appearance.py；改坏渲染、深色同浅色、信号未连均判红。",
+        "反馈弹窗逐行居中：tests/test_coverage_native_alert_layout.py 用真 AppKit 量墨迹，更新说明仍贴左；底部涨幅/跌幅与高低价成对显示：tests/test_v1459_bottom_fit.py。",
+        "更新说明字数上限由 100 放宽为 200：数值唯一来源 tools/release_identity.py，自检边界样本按它推算，tests/test_coverage_release_and_edges.py 与 make_update_assets --self-test 覆盖刚好在限与超一字。"
+      ],
+      "zero_reason": "本版尚未对外发行，只做到候选前的登记，无本版新发现的线上逃逸；0 仅表示未登记，不代表上线后无故障。Dock 动画在装机版真实 Dock 上的观感、系统外观切换后 Dock 图标是否真的更换、反馈弹窗在装机版的居中效果仍为未验证。"
     }
   ],
   "comparison_policy": {

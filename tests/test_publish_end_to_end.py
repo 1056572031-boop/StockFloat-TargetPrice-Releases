@@ -70,6 +70,7 @@ class _State:
         self.drop_asset_after_upload = False    # 模拟"传上去但服务端查不到"
         self.corrupt_archive_after_upload = False
         self.corrupt_contents_readback = False
+        self.corrupt_release_body_readback = False
         self.fail_asset_download = False
         self.manifest_name = "Skyrocket-update.json"
         self.base = ""
@@ -123,7 +124,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.st.last_headers = headers
         if "releases/tags/" in self.tail:
             self.st.add("GET", "release")
-            return self._reply(200, json.dumps(self.st.release).encode())
+            release = dict(self.st.release)
+            if self.st.corrupt_release_body_readback:
+                release["body"] = "server-drift"
+            return self._reply(200, json.dumps(release).encode())
         if "/contents/" in self.tail:
             self.st.add("GET", "contents")
             parsed = urllib.parse.urlsplit(self.path)
@@ -170,6 +174,14 @@ class _Handler(BaseHTTPRequestHandler):
         if not self.st.drop_asset_after_upload:
             self.st.release["assets"].append(asset)
         return self._reply(201, json.dumps(asset).encode())
+
+    def do_PATCH(self):
+        self.st.last_headers = {k.lower(): v for k, v in self.headers.items()}
+        if not re.search(r"/releases/\d+$", self.tail):
+            return self._reply(405, b'{"message":"nope"}')
+        self.st.add("PATCH", "release_body")
+        self.st.release["body"] = json.loads(self._body()).get("body")
+        return self._reply(200, json.dumps(self.st.release).encode())
 
     def do_PUT(self):
         self.st.last_headers = {k.lower(): v for k, v in self.headers.items()}
@@ -345,10 +357,11 @@ class PublishEndToEndTest(unittest.TestCase):
         text = self._publish(assets, notes)
         self.assertEqual(self.state.routes(),
                          ["release", "upload", "release",          # 传 ZIP 并复验
+                          "release_body", "release",                 # 写入并读回 GitHub Release 正文
                           "contents", "contents", "contents",       # GET/PUT/读回清单指针
                           "release", "upload", "release",          # 换旧客户端清单
-                          "contents"],                             # 发布后读回仓库侧清单
-                         "顺序错了就等于清单指向还不存在的包")
+                          "contents"],                                # 发布后读回仓库侧清单
+                         "顺序错了就等于清单指向还不存在的包，或公开说明与清单不同步")
         self.assertTrue(self.state.content_refs)
         self.assertTrue(all(ref == ["main"] for ref in self.state.content_refs),
                         "清单读回必须固定 main，不能读默认分支后碰运气降级")
@@ -363,6 +376,15 @@ class PublishEndToEndTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as got:
             self._publish(assets, notes)
         self.assertIn("原始字节与本地固定快照不一致", str(got.exception))
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_release_body_readback_mismatch_stops_before_manifest_pointer(self):
+        """Release 正文读回不等于签名 notes 时，客户端仍必须停留在上一版清单。"""
+        assets, notes = self._workspace()
+        self.state.corrupt_release_body_readback = True
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes)
+        self.assertIn("Release 发布说明读回不一致", str(got.exception))
         self.assertNotIn(("PUT", "contents"), self.state.log)
 
     def test_contents_readback_bytes_stop_before_legacy_manifest(self):

@@ -93,6 +93,69 @@ class Button(View):
         self.key = key
 
 
+# NSAlert 的文案是带属性的字符串，里面的段落样式压过控件与 cell 的对齐设置（左对齐的真弹框读回：
+# 两侧留白差 17~366 像素）。下面几个替身只模拟产品代码用到的那几个入口，并记录写入。
+NATURAL_ALIGNMENT = 4          # 系统默认写在文案里的"自然对齐"
+CENTER_ALIGNMENT = 1           # 与真实 NSTextAlignmentCenter 同值
+WRAP_BY_WORD = 0
+TRUNCATE_TAIL = 4
+
+
+class ParaStyle:
+    def __init__(self, align=NATURAL_ALIGNMENT, line_break=WRAP_BY_WORD):
+        self.align = align
+        self.line_break = line_break
+
+    def mutableCopy(self):
+        return ParaStyle(self.align, self.line_break)
+
+    def setAlignment_(self, alignment):
+        self.align = alignment
+
+    def setLineBreakMode_(self, mode):
+        self.line_break = mode
+
+    def alignment(self):
+        return self.align
+
+    def lineBreakMode(self):
+        return self.line_break
+
+
+class AttrString:
+    """带一个段落样式属性的字符串。style 为 None 表示文案里没有段落样式。"""
+
+    def __init__(self, text, style):
+        self.text = text
+        self.style = style
+
+    def length(self):
+        return len(self.text)
+
+    def attribute_atIndex_effectiveRange_(self, name, index, effective_range):
+        # PyObjC 对带输出参数的方法返回 (值, 范围) 元组
+        return (self.style, (0, len(self.text)))
+
+    def initWithAttributedString_(self, other):
+        self.text, self.style = other.text, other.style
+        return self
+
+    def addAttribute_value_range_(self, name, value, span):
+        self.style = value
+
+
+class AttrStringFactory:
+    @staticmethod
+    def alloc():
+        return AttrString("", None)
+
+
+class ParaStyleFactory:
+    @staticmethod
+    def alloc():
+        return types.SimpleNamespace(init=ParaStyle)
+
+
 class TextField(View):
     def __init__(self, frame, text="text", needed_height=20.0, has_cell=True):
         super().__init__(frame)
@@ -101,6 +164,9 @@ class TextField(View):
         self.has_cell = has_cell
         self.alignment = None
         self.cell_alignment = None
+        self.paragraph = ParaStyle()          # 文案里原本带的段落样式；设成 None 模拟"没有"
+        self.attributed_error = None          # 设成异常实例，模拟取带属性字符串失败
+        self.attributed_written = None        # 产品代码写回去的带属性字符串
         self.measurements = []
         self.cell_object = types.SimpleNamespace(
             cellSizeForBounds_=self.measure,
@@ -108,6 +174,14 @@ class TextField(View):
 
     def stringValue(self):
         return self.text
+
+    def attributedStringValue(self):
+        if self.attributed_error is not None:
+            raise self.attributed_error
+        return AttrString("" if self.text == "" else self.text, self.paragraph)
+
+    def setAttributedStringValue_(self, attributed):
+        self.attributed_written = attributed
 
     def setAlignment_(self, alignment):
         self.alignment = alignment
@@ -175,7 +249,10 @@ class Window(View):
 FAKE_APPKIT = types.SimpleNamespace(
     NSImageView=ImageView,
     NSTextField=TextField,
-    NSTextAlignmentCenter=2,
+    NSTextAlignmentCenter=CENTER_ALIGNMENT,
+    NSParagraphStyleAttributeName="NSParagraphStyle",
+    NSMutableAttributedString=AttrStringFactory,
+    NSMutableParagraphStyle=ParaStyleFactory,
     NSMakeRect=rect,
     NSMakeSize=lambda width, height: types.SimpleNamespace(width=width, height=height),
     NSMakePoint=lambda x, y: types.SimpleNamespace(x=x, y=y))
@@ -225,6 +302,67 @@ class NativeLayoutGeometry(SFCase):
         self.assertEqual(body.alignment, FAKE_APPKIT.NSTextAlignmentCenter)
         self.assertEqual(blank.writes, [])
         self.assertEqual(window.constraints, [])
+        self.faults.assert_not_called()
+
+    def test_paragraph_style_is_left_alone_by_default(self):
+        """默认不碰段落样式：更新说明的编号列表要贴左读（用户 2026-10-23 要求）。
+        文案框仍然居中、控件与 cell 仍设居中，只是不改框内每行的对齐。"""
+        for wide in (False, True):
+            with self.subTest(wide=wide):
+                alert, _window, icon, title, body, _button, _blank = self.layout(wide=wide)
+                center_content(alert)
+                for view in (title, body):
+                    self.assertIsNone(view.attributed_written, "默认不该改段落样式")
+                    self.assertEqual(view.alignment, CENTER_ALIGNMENT)
+                self.assert_centered(body, CONTENT_WIDTH)
+                self.assert_centered(icon, CONTENT_WIDTH)
+                self.faults.assert_not_called()
+
+    def test_paragraph_style_is_centered_in_both_layouts(self):
+        """控件与 cell 居中还不够：文案自带的段落样式写着自然对齐，画字时压过前两者。"""
+        for wide in (False, True):
+            with self.subTest(wide=wide):
+                alert, _window, _icon, title, body, _button, blank = self.layout(wide=wide)
+                center_content(alert, True)
+                for view in (title, body):
+                    self.assertIsNotNone(view.attributed_written, "段落样式没有写回去")
+                    self.assertEqual(view.attributed_written.style.alignment(), CENTER_ALIGNMENT)
+                self.assertIsNone(blank.attributed_written, "空的副文案占位不该被碰")
+                self.faults.assert_not_called()
+
+    def test_paragraph_style_keeps_the_other_attributes(self):
+        """只改对齐：原有的换行方式要保留（长编号靠它折行，改成别的会变成截断）。"""
+        alert, _window, _icon, title, body, _button, _blank = self.layout(wide=False)
+        body.paragraph = ParaStyle(NATURAL_ALIGNMENT, TRUNCATE_TAIL)
+        center_content(alert, True)
+        self.assertEqual(body.attributed_written.style.lineBreakMode(), TRUNCATE_TAIL)
+        self.assertEqual(body.attributed_written.style.alignment(), CENTER_ALIGNMENT)
+        self.assertEqual(body.attributed_written.text, body.text, "文字内容不能被改动")
+
+    def test_text_without_a_paragraph_style_still_gets_a_centered_one(self):
+        alert, _window, _icon, title, body, _button, _blank = self.layout(wide=False)
+        body.paragraph = None
+        center_content(alert, True)
+        self.assertEqual(body.attributed_written.style.alignment(), CENTER_ALIGNMENT)
+        self.faults.assert_not_called()
+
+    def test_failing_to_read_the_attributed_text_is_logged_and_keeps_control_centering(self):
+        """取不到带属性字符串：留一条痕迹，控件与 cell 上的居中仍然有效，版式其余部分照常。"""
+        alert, _window, icon, title, body, button, _blank = self.layout(wide=False)
+        body.attributed_error = RuntimeError("attributed text unavailable")
+        center_content(alert, True)
+        self.assertEqual(self.faults.call_count, 1, "只有出错的那一段留痕")
+        self.assertIn("_center_paragraph", self.faults.call_args.args[0])
+        self.assertEqual(body.alignment, CENTER_ALIGNMENT)
+        self.assertEqual(body.cell_alignment, CENTER_ALIGNMENT)
+        self.assertIsNone(body.attributed_written)
+        self.assertEqual(title.attributed_written.style.alignment(), CENTER_ALIGNMENT, "另一段不受牵连")
+        self.assert_centered(icon, CONTENT_WIDTH)
+
+    def test_empty_attributed_text_is_left_alone(self):
+        view = TextField(rect(20.0, 100.0, 220.0, 20.0), "")
+        alerts.NativeAlert._center_paragraph(view)  # discipline-ok(R5): 段落样式修正没有对外入口，直接测它
+        self.assertIsNone(view.attributed_written)
         self.faults.assert_not_called()
 
     def test_wide_layout_reflows_and_restores_button_to_bottom_after_growing(self):

@@ -23,7 +23,7 @@ from nacl.signing import SigningKey
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_identity import REPO, TAG  # noqa: E402
+from release_identity import NOTES_MAX_CHARS, REPO, TAG  # noqa: E402
 # v1.4.55 全局改名：产物与清单里的身份字段一起换（REPO 名不动 —— 那是外部仓库地址，
 # 改它要连 GitHub 仓库一起搬，客户端里也有它）。
 APP_NAME = "Skyrocket.app"
@@ -48,9 +48,6 @@ def canonical(data):
 
 
 
-NOTES_MAX_CHARS = 150
-
-
 def own_section_text(raw_notes, version):
     """取某一版自己的说明文本（到下一版标题为止）。"""
     pat = re.compile(r"^(V%s\s+发布说明.*?)(?=^V\d+\.\d+\.\d+\s|^\Z)"
@@ -72,7 +69,8 @@ def require_own_section(raw_notes, version):
         raise SystemExit(
             "release_notes.txt 里找不到 v%s 这一节（应有一行 \"V%s 发布说明:\"），"
             "拒绝把整份历史变更写进更新弹窗。" % (version, version))
-    # 第二道判据（2026-10-19 用户定为永久规则）：本版说明**不超过 150 字**。
+    # 第二道判据（用户定的永久规则）：本版说明**不超过 NOTES_MAX_CHARS 字**（数值见
+    # release_identity；2026-10-23 起从 100 字放宽为 200 字）。
     # 为什么也做成闸门而不是靠自觉：这条规则是"永久"的，而人会忘 —— 更新说明
     # 是弹在用户屏幕上的，长文等于没人看（v1.4.50~53 那几版都是 5~8 行）。
     # 计数口径：去掉所有空白后的字符数（中文按字、英文按字母，标题行一起算）。
@@ -80,7 +78,7 @@ def require_own_section(raw_notes, version):
     n = len("".join(body.split()))
     if n > NOTES_MAX_CHARS:
         raise SystemExit(
-            "v%s 这一节说明 %d 字，超过 %d 字上限 —— 用户 2026-10-09 定的永久规则："
+            "v%s 这一节说明 %d 字，超过 %d 字上限 —— 用户定的永久规则："
             "OTA 更新日志必须用最少的字说清更新内容。请删到 %d 字以内再打包。"
             % (version, n, NOTES_MAX_CHARS, NOTES_MAX_CHARS))
     root = Path(__file__).resolve().parents[1]
@@ -138,7 +136,9 @@ def self_test():
         bad.append("小节标题用了小写 v 却被放行 —— 约定是大写 V，弹窗侧按同一个正则裁")
     except SystemExit:
         pass
-    # 150 字上限（2026-10-19 用户永久规则）：这条判据自己也必须能红。
+    # 字数上限（用户永久规则，2026-10-23 起 200 字）：这条判据自己也必须能红。
+    # 下面的边界样本按 NOTES_MAX_CHARS 推算，不写死数字：标题行 "V1.4.46 发布说明:" 与
+    # 编号 "1." 共 14 个非空白字符，所以刚好在限的正文是 NOTES_MAX_CHARS - 14 个“甲”。
     short = "V1.4.46 发布说明（Beta）— 短\n1. 修了甲。\n\nV1.4.45 发布说明（Beta）— 长\n1. " + ("乙" * 300) + "\n"
     try:
         require_own_section(short, "1.4.46")
@@ -158,7 +158,18 @@ def self_test():
         NOTES_MAX_CHARS = original_limit
     try:
         require_own_section(short, "1.4.45")
-        bad.append("300 字的说明被放行 —— 150 字上限成了没有牙齿的文档")
+        bad.append("300 字的说明被放行 —— 字数上限成了没有牙齿的文档")
+    except SystemExit:
+        pass
+    at_limit = "V1.4.46 发布说明:\n1. " + ("甲" * (NOTES_MAX_CHARS - 14)) + "\n"
+    try:
+        require_own_section(at_limit, "1.4.46")
+    except SystemExit:
+        bad.append("刚好 %d 字的说明被误拒" % NOTES_MAX_CHARS)
+    just_over = "V1.4.46 发布说明:\n1. " + ("甲" * (NOTES_MAX_CHARS - 13)) + "\n"
+    try:
+        require_own_section(just_over, "1.4.46")
+        bad.append("%d 字的说明被放行 —— 字数上限没有收紧成功" % (NOTES_MAX_CHARS + 1))
     except SystemExit:
         pass
     for broken in ("甲；乙。", "1. 甲\n3. 乙", "1. 甲\n1. 乙", "1. 甲\n乙", "1. "):
@@ -173,7 +184,7 @@ def self_test():
         return 1
     print("self-test 通过：canonical 3 类（键序/signature 排除/改值变字节）、"
           "sha256 3 类（一致/改字节必须变/空文件）、本版说明闸门 6 类各判对"
-          "（含 150 字上限能拦下 300 字），编号闸门 5 类非法正文均拒绝")
+          "（含 %d 字上限能拦下 300 字），编号闸门 5 类非法正文均拒绝" % NOTES_MAX_CHARS)
     return 0
 
 

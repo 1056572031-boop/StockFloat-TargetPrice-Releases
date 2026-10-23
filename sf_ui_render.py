@@ -153,43 +153,39 @@ def bottom_rows(quote):
     一处就会让两者不一致，表现为窗口宽度算窄、底部最后一段被静默裁掉。
     现收敛为唯一实现，两处共用。
 
-    文案语义修正（v1.2.71）：
-      旧文案「最大涨幅 / 最大跌幅」两个标签各自暗示符号方向，但它们的数值分别
-      取自当日**最高价**与**最低价**相对昨收的幅度。上涨日最低价同样高于昨收，
-      于是会出现「最大跌幅 +0.56%」这种**标签与符号自相矛盾**的显示
-      （实测：high=1830 / low=1810 / pre=1800 时即触发，上涨日几乎天天可见）。
-      现改为中性的「最高 / 最低」+ 带符号百分比，语义与数值永远一致；
-      且标签固定 2 字，行宽稳定，不会忽宽忽窄。
-
-    行 2 顺序同步改为「最高点 / 最低点」，与行 1 的「最高 / 最低」统一为
-    先高后低（原为「最低点 / 最高点」，与行 1 顺序相反，属排版不一致）。
+    S3：行 1 为最大涨幅 + 最高点，行 2 为最大跌幅 + 最低点。
+    幅度只相对昨收：涨幅取 max(0, (high-pre_close)/pre_close*100)，
+    跌幅取 min(0, (low-pre_close)/pre_close*100)。昨收未知不回退今开。
+    无涨/无跌显示灰色 0.00%；四标签始终保留，真实高低价格独立容错、不截断。
 
     返回 (row1, row2)，每项为 [(标签, 数值, 颜色)]；无行情时返回 None。
     """
     if not quote:
         return None
-    row1 = []
-    try:
-        pre_close = float(quote["pre_close"])
-        hi = float(quote["high"])
-        lo = float(quote["low"])
-    except Exception:
-        pre_close = hi = lo = None
-    if (pre_close and pre_close > 0 and hi is not None and lo is not None
-            and math.isfinite(hi) and math.isfinite(lo)):
-        # 幅度统一取行情接口当日最高/最低（与行 2 同源），避免分时与行情两个
-        # 接口数据源短时不一致导致底部数值打架
-        max_pct = (hi - pre_close) / pre_close * 100
-        min_pct = (lo - pre_close) / pre_close * 100
-        row1.append(("最高", fmt_pct(max_pct), _pct_color(max_pct)))
-        row1.append(("最低", fmt_pct(min_pct), _pct_color(min_pct)))
-    # v1.2.32(BUG2)：0 值拦截 —— high/low 为 0 或非法一律输出 "--"。
-    # v1.2.48(S8)：hi/lo 走 _fmt_hl 归一 —— 尾 0、0 值/非法统一处理。
-    hi_txt = _fmt_hl(quote.get("high")) if (hi is not None and hi > 0 and math.isfinite(hi)) else "--"
-    lo_txt = _fmt_hl(quote.get("low")) if (lo is not None and lo > 0 and math.isfinite(lo)) else "--"
-    row2 = [("最高点", hi_txt, FG_DIM),
-            ("最低点", lo_txt, FG_DIM)]
-    return row1, row2
+
+    def positive_price(key):
+        try:
+            value = float(quote.get(key))
+            return value if math.isfinite(value) and value > 0 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    pre_close = positive_price("pre_close")
+
+    def extreme_row(label, price_label, key):
+        price = positive_price(key)
+        pct = ((price - pre_close) / pre_close * 100
+               if price is not None and pre_close is not None else None)
+        if pct is not None and math.isfinite(pct):
+            pct = max(0.0, pct) if key == "high" else min(0.0, pct)
+            percentage = (label, fmt_pct(pct), _pct_color(pct))
+        else:
+            percentage = (label, "--", FG_DIM)
+        price_text = _fmt_hl(quote.get(key)) if price is not None else "--"
+        return [percentage, (price_label, price_text, FG_DIM)]
+
+    return (extreme_row("最大涨幅", "最高点", "high"),
+            extreme_row("最大跌幅", "最低点", "low"))
 
 
 def price_update_rect(w):
@@ -485,6 +481,7 @@ H_PCT = 18
 FONT_NAME = 12
 
 FONT_CODE = 9
+BOTTOM_LABEL_PT = 8  # S3：只缩底部中文标签，代码行与默认数字仍为 9pt
 
 FONT_PRICE_MAX = 27
 
@@ -560,9 +557,9 @@ BTN_ICON_SZ = BTN_ICON_PT    # 值来自 sf_constants（与图标出图倍率同
 # 底部留白（固定值）：数据行下方收紧后的留白 —— baseline 距底 17，
 # glyph 底 = baseline - FONT_CODE_DESCENT(3)，即高/低行数字底距窗口底约 14px。
 BOTTOM_BASE_HIDDEN = 17  # 2026-10：底部两行距窗口底再收紧 3pt，保持行内布局不变。
-# v1.2.62：双行数据布局 —— 此前为单行 4 段（左：涨幅/跌幅；右：高/低），现拆为：
-#   行 1（上）：最高 + 最低（相对昨收百分比，左对齐，紧凑）
-#   行 2（下）：最高点 + 最低点（左对齐，紧凑）
+# S3：双行数据布局（两行左对齐）：
+#   行 1（上）：最大涨幅（相对昨收，下限零）+ 最高点
+#   行 2（下）：最大跌幅（相对昨收，上限零）+ 最低点
 # BOTTOM_ROW_H = 单行数据文字可视高（≈9pt 字号 glyph 顶到底 + 1px 视觉留白）；
 # BOTTOM_ROW_GAP = 两行之间的垂直间距（v1.2.64：用户指定 2px，视觉净间距即此值）。
 #   y_row1 = h - BOTTOM_BASE_HIDDEN - BOTTOM_ROW_H - BOTTOM_ROW_GAP
@@ -654,7 +651,7 @@ def collapsed_height():
 
 BOTTOM_INNER_GAP = 3  # 行内段间距：标签与右侧数字（涨幅↔百分比）贴紧（v1.2.66 由 1 增到 3）
 
-BOTTOM_GAP = 3     # 底部四段文本（涨/跌/高/低）之间的段间距
+BOTTOM_GAP = 12    # S3：每行百分比与价格两段之间的间距
 
 # 底部数字的缩号档位（v1.4.59 走查 S8 第三条，本机离屏真字体度量实测）
 BOTTOM_NUM_SHRINK_STEPS = (0, -1, -2)
@@ -1404,10 +1401,10 @@ class RenderMixin:
                 self._draw_chart(p, QRectF(PAD_X, CHART_TOP, w - 2 * PAD_X, chart_h))
 
         def _paint_bottom(self, p, w):
-            """v1.2.62：底部双行布局 —— 涨/跌独占一行（左对齐），高/低独占第二行（左对齐）。
+            """S3 底部双行布局，两行左对齐，中文标签 8pt，数字默认 9pt。
 
-            行 1（上）：最高 + 最低（相对昨收的百分比，红/绿/灰按正负）
-            行 2（下，贴窗口底 ≈5px 留白）：最高点 + 最低点（统一灰 FG_DIM）
+            行 1（上）：最大涨幅（相对昨收，下限零）+ 最高点
+            行 2（下）：最大跌幅（相对昨收，上限零）+ 最低点；零和价格均为灰 FG_DIM
             两行均按 renderer._bottom_layout(row1, row2) 唯一布局实现，与宽度计算共用。
             文本本身由 bottom_rows() 唯一提供（宽度计算 _bottom_texts 共用同一份，
             v1.2.71 消除双份定义）。
@@ -1415,10 +1412,10 @@ class RenderMixin:
             rows = bottom_rows(self.quote)
             if rows:
                 row1, row2 = rows
-                f_code_n = self._font(FONT, FONT_CODE)
+                f_code_n = self._font(FONT, BOTTOM_LABEL_PT)
                 # v1.2.95 第9轮走查：底部数字（最高/最低涨跌幅、最高点/最低点）此前用
                 # PingFang 绘制，与价格行（D-DIN）字形不一致。数字改走 NUM_FONT
-                # 与价格行统一；中文标签（最高/最低）仍用 PingFang（D-DIN 无中文字形）。
+                # 与价格行统一；底部中文标签仍用 PingFang（D-DIN 无中文字形）。
                 f_code_b = self._font(NUM_FONT, FONT_CODE, QFont.Weight.Bold)
                 p.setFont(f_code_n)
                 fm = self._fm(f_code_n)
@@ -1435,7 +1432,8 @@ class RenderMixin:
                     return self._fm(self._font(NUM_FONT, FONT_CODE + delta,
                                                QFont.Weight.Bold))
                 layout_key = (w, tuple(row1), tuple(row2), fm, fm_bold, bottom_rows_fitting,
-                              FONT, NUM_FONT, FONT_CODE, PAD_X, BOTTOM_INNER_GAP, BOTTOM_GAP)
+                              FONT, NUM_FONT, FONT_CODE, BOTTOM_LABEL_PT,
+                              PAD_X, BOTTOM_INNER_GAP, BOTTOM_GAP)
                 cache = self._bottom_layout_cache
                 if cache is None or cache[0] != layout_key:
                     layout = bottom_rows_fitting(

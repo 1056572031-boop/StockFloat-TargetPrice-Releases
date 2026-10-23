@@ -333,6 +333,7 @@ class FeedbackDialog(GlassMixin, QDialog):
                 info=detail,
                 buttons=buttons,
                 icon_path=sf_system_alert.bundled_icon_path(),
+                center_text=True,    # 反馈结果（含长编号折行）逐行居中；更新说明不传，仍贴左
             )
         except Exception:
             logging.getLogger(__name__).warning("feedback status popup unavailable", exc_info=True)

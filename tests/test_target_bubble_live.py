@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from PyQt6.QtCore import QPoint
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMenu
 
 import sf_quote
 import stock_float_window as m
@@ -47,12 +47,28 @@ def _alert(direction, target, state="pending"):
 _QAPP = None
 
 
+def _close_stray_popups():
+    """关掉前面用例遗留的菜单/弹层。有活动弹层时 Qt 会把鼠标事件交给它，QTest.mouseMove 到不了主窗，
+    悬停类用例就全红；完整关卡里两者中间恰好隔着别的用例把它清掉，单独或少量模块合跑才会撞上。"""
+    for _ in range(10):
+        popup = QApplication.activePopupWidget()
+        if popup is None:
+            break
+        popup.close()
+        QApplication.processEvents()
+    for widget in QApplication.topLevelWidgets():
+        if isinstance(widget, QMenu) and widget.isVisible():
+            widget.close()
+    QApplication.processEvents()
+
+
 class LiveBubbleCase(SFCase):
     def setUp(self):
         global _QAPP
         super().setUp()
         # 必须自己持有 QApplication 引用，否则返回值一丢就被回收（见 test_target_bubble_text 同款写法）
         _QAPP = SFCase.ensure_qapp()
+        _close_stray_popups()
         for p in (
             patch.object(m, "load_config", return_value=("sh600519", 100, 100, 200, "translucent")),
             patch.object(m, "save_config", lambda *a, **k: True),
@@ -95,10 +111,26 @@ class LiveBubbleCase(SFCase):
     def refresh(self):
         _peek(self.win, "_refresh_target_bubble")()
 
+    def bubble_visible_within(self, seconds):
+        """轮询等待气泡可见。等待条件里必须自己泵事件：wait_for 靠 sleep 轮询，不处理 Qt 事件，
+        不泵的话 QTimer 永远不会到点。"""
+        def cond():
+            QApplication.processEvents()
+            return self.bubble().isVisible()
+        return self.wait_for(cond, timeout=seconds, tick=0.01)
+
+    def dwell_seconds(self):
+        """停满多久气泡才弹：取自产品常量，不写死毫秒（想调手感只改常量）。"""
+        return m.BELL_BUBBLE_DWELL_MS / 1000.0
+
+    def hover_bell_and_wait(self):
+        self.hover_bell()
+        self.assertTrue(self.bubble_visible_within(self.dwell_seconds() + 1.5),
+                        "停在铃铛上满 DWELL 后应弹出气泡")
+
     def open_with(self, alerts):
         _wire(self.win, _alerts=alerts)
-        self.hover_bell()
-        self.assertTrue(self.bubble().isVisible(), "悬停到铃铛上应弹出气泡")
+        self.hover_bell_and_wait()
 
     # ---- 用例 ----
     def test_悬停打开气泡_百分比取当前判定价(self):
@@ -146,8 +178,7 @@ class LiveBubbleCase(SFCase):
         _wire(self.win, _alerts=[_alert("above", 63.0)])
         self.refresh()
         self.assertFalse(self.bubble().isVisible(), "没悬停过，刷新不该弹气泡")
-        self.hover_bell()
-        self.assertTrue(self.bubble().isVisible())
+        self.hover_bell_and_wait()
         self.bubble().hide()
         self.refresh()
         self.assertFalse(self.bubble().isVisible(), "气泡被收起后，行情更新不能把它重新顶出来")

@@ -321,6 +321,25 @@ class MakeUpdateAssetsPositiveRoute(SFCase):
         self.assertIn("扩大上限后的正向对照未通过", out)
         self.assertIn("300 字的说明被放行", out)
 
+    def test_self_test_exercises_exact_note_length_boundaries(self):
+        """200 字被误拒与 201 字被放行两条自检分支也要计入主进程覆盖率。"""
+        original = mua.require_own_section
+
+        def broken_boundaries(raw_notes, version):
+            count = raw_notes.count("甲")
+            if count == 186:
+                raise SystemExit("forced at-limit rejection")
+            if count == 187:
+                return None
+            return original(raw_notes, version)
+
+        with mock.patch.object(mua, "require_own_section", side_effect=broken_boundaries):
+            rc, out = call(mua.self_test)
+
+        self.assertEqual(rc, 1, out)
+        self.assertIn("刚好 200 字的说明被误拒", out)
+        self.assertIn("201 字的说明被放行", out)
+
 
 class ProductSmallEdgeBranches(SFCase):
     def test_utils_handles_market_and_format_edges(self):
