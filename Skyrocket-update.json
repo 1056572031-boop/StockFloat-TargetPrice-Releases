@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.104",
-  "published_at": "2026-10-26T03:07:49Z",
+  "version": "1.4.105",
+  "published_at": "2026-10-26T11:10:28Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 反馈窗口标题保持居中，不再被右侧记录按钮带偏。\n2. 下载页发布后会确认统计记录已可用，并核对下载跳转正常。\n3. 自动隐藏窗口的异常旧设置会安全保持关闭，不会误开启摄像头检测。",
+  "notes": "1. 反馈上传失败时，会说明原因和下一步该怎么做。\n2. 反馈记录窗口改为与反馈窗一致的样式，可滚动，清理前需再点一次确认。\n3. 程序意外退出后，没发完的反馈会重新出现在待处理里。\n4. 随反馈附带的日志会自动隐去邮箱、手机号和公网地址。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.104-macos.zip",
-    "size": 26334213,
-    "sha256": "341d5af013bbd05d11f2520cfa75d4e730bda0d5c6c35dad0bc6e1c586f9bc32"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.105-macos.zip",
+    "size": 26349401,
+    "sha256": "5c7979cbfb13cef0fcc2213de1e7100bf849f082a30caa46734de62c742d9bfd"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "y1o/5jRajBYCHs63N93gE+pDg2QWER71FJuQZuszieJ/gZgkWpwQsOiI5CVJjOHbOayZ82RZhUcZvPNwS3kNDg=="
+    "value": "Z0LcPR/2wvZv9U24lndSl6LEn2ennRo2UQTQOtICd5TMvHjcJzAYo+G8KVsn5JcWDjyLdAKMr/mEboA5zJ7HAQ=="
   }
 }
