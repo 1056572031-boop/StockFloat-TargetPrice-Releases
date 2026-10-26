@@ -42,6 +42,7 @@ from __future__ import annotations
 import getpass
 import math
 import os
+import platform
 import re
 import sys
 from itertools import islice
@@ -49,6 +50,12 @@ from typing import Any, Iterable, NamedTuple
 from sf_privacy import redact_urls_in_text
 
 PROD_PREFIX_EXEMPT = ("sf_constants",)   # 见 _module_names：那份是设计值的唯一来源，不进自动层
+
+
+# 这些主机名不指向任何人：出厂默认名、占位名。命中它们不替换。
+_GENERIC_HOSTS = frozenset({
+    "localhost", "unknown", "imac", "macbook", "macbook-air", "macbook-pro", "mac-mini", "macmini", "macstudio",
+    "mac-studio", "macpro", "test", "main", "host", "admin", "server", "desktop", "laptop", "default"})
 
 
 class Needle(NamedTuple):
@@ -95,7 +102,7 @@ _URL_CREDENTIAL_RE = re.compile(
     r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@:]+(?::[^\s/@]*)?@"
 )
 _SECRET_VALUE_RE = re.compile(
-    r"([\"']?(?:token|api[_-]?key|secret|sign(?:ature)?|password|passwd|credential|cookie|auth(?:code)?|session|jwt|ticket)"
+    r"([\"']?(?:token|api[_-]?key|private[_-]?key|secret|sign(?:ature)?|password|passwd|credential|cookie|auth(?:code)?|session|jwt|ticket)"
     r"[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\\r\n])*\"?|'(?:\\.|[^'\\\r\n])*'?|[^\s,;&\"']+)",
     re.IGNORECASE,
 )
@@ -187,6 +194,13 @@ def identity_needles(issues: list[str]) -> tuple[Needle, ...]:
             out.append(Needle(re.escape(home), "~", True, home))
     except Exception as exc:
         _note(issues, "expanduser: %s" % (exc,))
+    # 主机名里常带登录名（"moriarty-MacBook-Pro"、"moriartydeMacBook-Air"），裸登录名那条规则
+    # 因为词边界放不过去；直接把本机主机名当字面量换掉，大小写不敏感（macOS 在不同接口里大小写不一）。
+    # 前后要有词边界（与下面的裸登录名同理）：主机名叫 “iMac” 时，不带边界会把 “iMac21,1” 抹成 “<host>21,1”。
+    # 太通用的名字不算身份，抹掉只会毁掉日志里的普通词。
+    for host in {platform.node(), platform.node().split(".")[0]}:
+        if len(host) >= 4 and host.casefold() not in _GENERIC_HOSTS:
+            out.append(Needle("(?i)(?<![A-Za-z0-9])" + re.escape(host) + "(?![A-Za-z0-9])", "<host>", True, ""))
     for user in users:
         for base in ("/Users/", "/home/"):
             out.append(Needle(re.escape(base + user), "~", True, base + user))
@@ -212,8 +226,9 @@ def scrub_text(text: str, needles: tuple[Needle, ...]) -> str:
             result = result.replace(needle.pattern, needle.marker)
     # 状态值经常是异常文本，而异常文本可能把凭据写成 `token=...` 或 URL
     # basic-auth。键名过滤挡不住这种形状；这里保留排障正文，只抹掉值。
-    if "/Users/" in result or "/home/" in result:
-        result = re.sub(r"((?:/Users/|/home/))([^/\s\"'\\]+)", r"\1<USER>", result)
+    if "/users/" in result.lower() or "/home/" in result:
+        # 大小写不敏感：会话路径、第三方工具写的路径里常是小写 /users/
+        result = re.sub(r"((?:/users/|/home/))([^/\s\"'\\]+)", r"\1<USER>", result, flags=re.IGNORECASE)
     if "\\Users\\" in result:
         result = re.sub(r"([A-Za-z]:\\\\?Users\\\\?)([^\\\\\s\"']+)", r"\1<USER>", result)
     if "://" in result:

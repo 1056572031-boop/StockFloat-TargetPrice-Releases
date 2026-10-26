@@ -327,6 +327,18 @@ class PublicReleaseCase(SFCase):
         self.assertEqual(public.privacy_problems(public.REPO.encode(), "unused"), [])
         self.assertTrue(public.privacy_problems(number, "unused"))
 
+    def test_no_python_source_carries_a_personal_mailbox_the_public_export_would_refuse(self):
+        # The public export refuses the whole release on the first such address, and it only runs at
+        # the start of the publish step. An example address in a comment (v1.4.105) stopped a finished
+        # candidate there; this finds the same thing at commit time. Only the personal-mailbox rule is
+        # checked: other rules look at export-time rewrites that this test does not reproduce.
+        found = []
+        for pattern in ("*.py", "tools/*.py", "tests/*.py"):
+            for path in sorted(ROOT.glob(pattern)):
+                if "personal contact" in public.privacy_problems(path.read_bytes(), "unused"):
+                    found.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual(found, [], "use a reserved example domain or split the literal")
+
     def test_only_approved_support_mailbox_is_public(self):
         self.assertEqual(public.privacy_problems(C.SUPPORT_EMAIL.encode(), "unused"), [])
         other_mail = b"someone" + b"@" + b"qq.com"

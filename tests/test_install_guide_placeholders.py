@@ -91,6 +91,26 @@ class RenderedGuideCarriesNoPlaceholders(_GuideCase):
         with patch.object(self.g.subprocess, "run", side_effect=OSError("curl unavailable")):
             self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "unknown")
 
+    def test_signed_cdn_url_names_the_asset_only_in_the_query(self):
+        """GitHub 的发行资产最终落在签名 CDN 链接上：路径末段是 UUID，文件名只在 rscd 参数里。
+
+        这是 v1.4.104 发布时实测的形态；只认路径末段会把正确的资产判成"不是本轮资产"，
+        发布脚本在对外安装说明这一步提前退出。反例同样要判错，防止判据放成"任何 200 都行"。
+        """
+        def landing(name):
+            return __import__("types").SimpleNamespace(returncode=0, stdout=(
+                "200\nhttps://release-assets.githubusercontent.com/github-production-release-asset/"
+                "1371001441/0d4476f6-223f-4b6f-a708-a1740a6fc445?sp=r&sv=2018-11-09&sr=b"
+                "&rscd=attachment%3B+filename%3D" + name + "&rsct=application%2Foctet-stream"))
+        mine = self.g.archive_name()
+        other = mine.replace("macos", "other")
+        self.assertNotEqual(mine, other)
+        with patch.object(self.g.subprocess, "run",
+                          side_effect=(landing(mine), landing(other), landing(""))):
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "ok")
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "missing")
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "missing")
+
     def test_rendered_text_has_no_literal_percent_s(self):
         with patch.dict(os.environ, {self.g.CONTACT_ENV: "support@example.com"}):
             text = self.g.render()

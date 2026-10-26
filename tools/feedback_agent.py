@@ -17,8 +17,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sf_feedback_admin import FeedbackAgent
 from sf_feedback_github import GitHubAPI
-from sf_feedback_notifications import FeedbackNotifications, report_versions
+from sf_feedback_notifications import MAX_FAILURE_IDENTITY, FeedbackNotifications, report_versions
 from feedback_desktop_reports import export_reports
+
+
+def failure_identity(failed, export_failures, near_limit):
+    """本轮失败的指纹，通知器靠它判断“失败变了没有”。
+
+    三类失败各带一段 64 位哈希时，直接拼接会超过通知器的长度上限（实测 142 字符），
+    整次同步因此报 state_unavailable，所有通知都发不出去。没超上限时保持原样（升级后不会
+    对已经通知过的状态重复提醒）；超了就整体取哈希，仍然随任何一类失败的变化而变化。
+    """
+    failure = ("cases:" + hashlib.sha256(json.dumps(sorted(failed)).encode()).hexdigest()
+               if failed else "")
+    if export_failures:
+        failure += "desktop:" + hashlib.sha256(json.dumps(export_failures, sort_keys=True).encode()).hexdigest()
+    if near_limit:
+        failure += "storage_capacity"
+    if len(failure) > MAX_FAILURE_IDENTITY:
+        failure = "combined:" + hashlib.sha256(failure.encode()).hexdigest()
+    return failure
 
 
 def main():
@@ -46,13 +64,8 @@ def main():
         print(json.dumps({"error": "feedback_backend_unavailable", "phase": phase,
                           "notifications": notice}, ensure_ascii=False))
         return 1
-    failure = ("cases:" + hashlib.sha256(json.dumps(sorted(result["failed"])).encode()).hexdigest()
-               if result["failed"] else "")
     export_failures = result.get("desktop_export", {}).get("failed", [])
-    if export_failures:
-        failure += "desktop:" + hashlib.sha256(json.dumps(export_failures, sort_keys=True).encode()).hexdigest()
-    if result.get("capacity", {}).get("near_limit"):
-        failure += "storage_capacity"
+    failure = failure_identity(result["failed"], export_failures, result.get("capacity", {}).get("near_limit"))
     try:
         versions = report_versions(args.data_dir)
     except Exception:

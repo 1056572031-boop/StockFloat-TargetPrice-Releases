@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import queue
+import re
 import sqlite3
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QGuiApplication, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QToolButton, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QToolButton, QVBoxLayout, QWidget,
 )
 
 from sf_feedback import FeedbackProtocolError, build_archive
@@ -29,10 +32,10 @@ from sf_feedback_outbox import FeedbackOutbox
 from sf_feedback_bundle import FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION, read_diagnostics
 from sf_feedback import utc_now
 from sf_feedback_versions import PAYLOAD_V3, is_full_payload
-from sf_logging import feature_enabled
-from sf_feedback_transport import endpoint_url, submit_pending
+from sf_logging import feature_enabled, log_line, log_swallow
+from sf_feedback_transport import endpoint_url, server_reply, submit_pending
 from sf_glass import GlassMixin, paint_popup_surface, popup_stylesheet, prepare_popup_surface
-from sf_constants import FG_DISABLED_HEX, FG_TEXT_HEX
+from sf_constants import FG_BRIGHT_HEX, FG_DISABLED_HEX, FG_HINT_HEX, FG_TEXT_HEX
 
 _BLOCKING_ERRORS = {"configuration_or_storage_unavailable", "configuration_unavailable",
                     "capture_failed", "local_package_invalid"}
@@ -41,6 +44,12 @@ _BLOCKING_ERRORS = {"configuration_or_storage_unavailable", "configuration_unava
 # 所以输入框 250x192 对应窗口 290x309。最小尺寸同理：原 440x410 → 保住按钮行放得下。
 _DEFAULT_SIZE = (290, 309)
 _MIN_SIZE = (270, 290)
+_TITLE_BUTTON_H = 24    # 标题行右侧“记录”按钮的高度（样式表加内边距之前的实测值）
+# 本进程已经“第一次看过”的反馈存储目录；见 FeedbackDialog.__init__ 里的恢复说明。
+_RECOVERED_STORES: set[str] = set()
+_CLEANUP_CONFIRM_MS = 3000    # “清理”按钮第一下后，多久之内再点才算确认
+# 描述写到多少字开始显示字数（上限的 90%）。
+_COUNTER_SHOW_AT = int(MAX_DESCRIPTION * 0.9)
 _FULL_UPLOAD_HINT = "发送完整脱敏诊断资料，包含运行日志、设置和功能状态；会去除已识别的凭据与身份字段，不采集摄像头画面。"
 _V3_UPLOAD_HINT = ("发送完整脱敏诊断资料，包含运行日志、设置和功能状态，以及运行环境、权限状态、反馈偏好和本次反馈上下文；"
                    "会去除已识别的凭据与身份字段，不采集摄像头画面或截图。")
@@ -70,7 +79,168 @@ def _failure(phase, exc):
     return {"phase": phase, "category": "unexpected_error"}
 
 
-class FeedbackHistoryDialog(GlassMixin, QDialog):
+# 服务端回的错误码只收这种形状（小写字母、数字、下划线），其余一律丢弃：
+# 日志与诊断包里不许出现异常原文或服务端返回的自由文本。
+_SERVER_CODE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
+_ERROR_BODY_PEEK = 2048
+
+
+def _failure_detail(exc, started):
+    """上传失败的可查证据：HTTP 状态码、服务端错误码、耗时。
+
+    之前失败只记 "HTTPError" 一个类别，分不出是服务端限流（429）、同一反馈仍在处理（409）、
+    还是上游超时（503），也看不出用户等了多久。这里只取三样白名单信息，不碰异常原文。
+    """
+    detail = {"elapsed_sec": round(max(0.0, time.monotonic() - started), 1)}
+    if isinstance(exc, HTTPError):
+        detail["http_status"] = int(exc.code)
+        # 响应体只能读一次；与队列写失败原因共用 transport 的缓存读取，谁先读都不会让另一个拿到空。
+        detail.update(server_reply(exc))
+    elif isinstance(exc, URLError):
+        reason = exc.reason
+        # 只认异常对象的类名（超时单列）；reason 是纯文本时类型名是 "str"，没有诊断意义。
+        name = type(reason).__name__
+        detail["network_reason"] = ("timeout" if isinstance(reason, TimeoutError)
+                                    else name if isinstance(reason, BaseException) and name.isidentifier()
+                                    else "unknown")
+    elif isinstance(exc, TimeoutError):
+        # 连上之后读响应超时抛的是裸 TimeoutError，不是 URLError，之前认不出来。
+        detail["network_reason"] = "timeout"
+    return detail
+
+
+# 服务端明确拒收内容、重试不会改变结果的错误码（来自 services/feedback-worker 的 Rejection）。
+_REJECTED_CODES = frozenset({
+    "request_headers", "envelope_limit", "body_limit", "request_size", "description_limit",
+    "diagnostic_member", "diagnostic_members", "diagnostic_missing_category", "diagnostic_export",
+    "diagnostic_inventory", "diagnostic_secret", "diagnostic_inflated_limit", "diagnostic_size",
+    "diagnostic_v3_missing", "diagnostic_v3_mixed", "diagnostic_v3_snapshot", "diagnostic_local_header",
+    "zip_member", "zip_members", "inflated_limit", "identity_conflict", "remote_binding", "archive_invalid"})
+# 服务端明确说“内容有问题”的 HTTP 状态：请求体过大、内容校验不过。具体错误码有三十多个，
+# 逐个列会漏（审查时就漏了 zip_members），所以按状态兜底；列表只是更早、更明确的一层。
+_REJECTED_STATUSES = frozenset({413, 422})
+# 服务端容量已满：同样不是“稍后再试”能解决的（案件数、资产数是永久上限）。
+_CAPACITY_CODES = frozenset({"case_budget", "inbox_asset_capacity", "inbox_capacity"})
+# 409 里真正“等一会儿就好”的只有这两种；其余 409（身份冲突、远端校验和不符）等多久都一样。
+_WAIT_CODES = frozenset({"submission_in_progress", "lease_superseded"})
+
+
+def _failure_kind(detail):
+    """失败属于哪一类：rejected（内容被拒）/ full（服务端容量满）/ retry（可以再试）。"""
+    code = detail.get("server_code", "")
+    if code in _CAPACITY_CODES:
+        return "full"
+    if code in _REJECTED_CODES or detail.get("http_status") in _REJECTED_STATUSES:
+        return "rejected"
+    return "retry"
+
+
+def _failure_hint(detail):
+    """把状态码翻成用户能照着做的一句话；认不出的返回空串，不编原因。"""
+    code, status = detail.get("server_code", ""), detail.get("http_status")
+    kind = _failure_kind(detail)
+    if kind == "full":
+        return "接收服务的存储已满，再试也不会成功。请用右键菜单“导出诊断包”，把文件发给维护者。"
+    if kind == "rejected":
+        return "这份反馈被接收服务拒收，现在重试多半仍会失败。请用右键菜单“导出诊断包”，把文件发给维护者；问题修复后可再回来重试。"
+    if code in _WAIT_CODES or (status == 409 and not code):
+        return "上一次提交可能仍在处理，请等 1~2 分钟再点重试。"
+    if code == "daily_client_budget":
+        return "这台电脑今天的上传次数已用完，请明天再试；已保存的反馈不会丢。"
+    if code in ("receiver_busy", "daily_budget", "daily_byte_budget") or status == 429:
+        wait = detail.get("retry_after_sec")
+        if code == "receiver_busy" and wait:
+            return "接收服务当前较忙，请约 %d 秒后再试。" % wait
+        return "接收服务当前较忙或今日次数已满，请稍后再试。"
+    if code == "upstream_timeout":
+        return "接收服务连接上游超时，请稍后重试；已保存的反馈不会丢。"
+    if detail.get("network_reason") == "timeout":
+        return "连接接收服务超时，请检查网络后重试。"
+    if status is not None and status >= 500:
+        return "接收服务暂时不可用，请稍后重试。"
+    return ""
+
+
+# 失败后反馈窗保持隐藏；可重试时告诉用户怎么回来，不要让他自己猜。
+_REOPEN_TAIL = "可在右键菜单“反馈问题”里重新打开，继续重试。"
+
+
+# 记录页每个状态的说明文字，以及是否属于“还没落定”（待提交/上传中/待确认）。
+# 落定的（已收件）用淡色，没落定的用亮色加粗，一眼分得出哪几条还需要处理。
+_HISTORY_STATUS = {
+    "locally_verified": ("待提交", True),
+    "submitting": ("正在上传，稍后可重试", True),
+    "response_unknown": ("等待确认，可重试", True),
+    "receipt_persisted": ("已收件，本机资料待清理", False),
+    "cleanup_pending": ("已收件，等待本机清理", False),
+    "cleaned": ("已收件，本机资料已清理", False),
+}
+_HISTORY_STYLE = (
+    "QLabel{font-size:12px;} QLabel#feedbackTitle{font-size:14px;font-weight:bold;}"
+    "QLabel#feedbackEmpty{color:%s;padding:24px 0;}"
+    "QWidget#feedbackRow{background:rgba(255,255,255,0.06);"
+    "border:1px solid rgba(154,163,181,0.22);border-radius:8px;}"
+    "QToolButton{background:rgba(255,255,255,0.10);color:%s;border:none;border-radius:6px;"
+    "padding:4px 10px;font-size:12px;} QToolButton:hover{background:rgba(255,255,255,0.18);}"
+    "QScrollArea{background:transparent;border:none;}"
+    "QScrollBar:vertical{background:transparent;width:8px;margin:2px 0;}"
+    "QScrollBar::handle:vertical{background:rgba(154,163,181,0.40);border-radius:4px;min-height:24px;}"
+    "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+    "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"
+    % (FG_HINT_HEX, FG_TEXT_HEX))
+
+
+def _history_time(value):
+    """ISO 时间转成本机时区的“月-日 时:分”；解析不了就原样显示，不丢信息。"""
+    try:
+        return datetime.fromisoformat(str(value)).astimezone().strftime("%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
+def _history_row_text(case_id, stamp, version, status, waiting):
+    """记录行的富文本：编号加粗，时间与版本淡色小字，状态单独一行。"""
+    version = str(version or "")
+    if version[:1].isdigit():
+        version = "v" + version
+    state_style = ("color:%s;font-weight:bold" % FG_BRIGHT_HEX if waiting else "color:%s" % FG_HINT_HEX)
+    return ('<span style="color:%s;font-weight:bold">%s</span><br/>'
+            '<span style="color:%s;font-size:11px">%s · %s</span><br/>'
+            '<span style="%s">%s%s</span>') % (
+        FG_TEXT_HEX, html.escape(str(case_id)), FG_HINT_HEX,
+        html.escape(_history_time(stamp)), html.escape(version),
+        state_style, "● " if waiting else "", html.escape(status))
+
+
+class _TitleDragDialog(GlassMixin, QDialog):
+    """无边框弹窗基类：按住标题行及其下方 8px 拖动整窗（反馈窗与记录窗共用）。"""
+
+    title: QLabel
+    _drag_origin: QPoint | None = None
+
+    def mousePressEvent(self, event):
+        self._drag_origin = None
+        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= self.title.geometry().bottom() + 8:
+            handle = self.windowHandle()
+            if handle is None or not handle.startSystemMove():
+                self._drag_origin = event.globalPosition().toPoint() - self.pos()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_origin is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_origin)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_origin = None
+        super().mouseReleaseEvent(event)
+
+
+class FeedbackHistoryDialog(_TitleDragDialog):
     """Read-only feedback receipt history; never opens local archives."""
 
     _prefer_liquid_glass = True
@@ -78,22 +248,72 @@ class FeedbackHistoryDialog(GlassMixin, QDialog):
     def __init__(self, outbox, parent=None):
         super().__init__(parent)
         self._init_glass_state()
+        self._drag_origin = None
+        if isinstance(parent, GlassMixin):
+            self.set_surface_owner(parent)
+        # 与反馈窗同一套外观：无边框、置顶工具窗、半透明底（原先是带系统标题栏的普通窗，
+        # 层级也低于被抬高的反馈窗，点开后会沉到下面）。
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setSizeGripEnabled(True)
+        self.setStyleSheet(popup_stylesheet(_HISTORY_STYLE))
         self.outbox = outbox
         self.setWindowTitle("反馈记录")
-        self.setMinimumSize(360, 260)
-        self.resize(420, 360)
+        self.setMinimumSize(340, 260)
+        self.resize(400, 380)
         layout = QVBoxLayout(self)
-        title = QLabel("反馈记录", self)
-        title.setObjectName("feedbackTitle")
-        layout.addWidget(title)
-        self.rows = QVBoxLayout()
-        layout.addLayout(self.rows)
-        layout.addStretch()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        self.title = QLabel("反馈记录", self)
+        self.title.setObjectName("feedbackTitle")
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self.title)
+        # 记录最多 100 条，必须能滚动；行容器与视口都保持透明，让毛玻璃露出来。
+        body = QWidget(self)
+        self.rows = QVBoxLayout(body)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(8)
+        self.rows.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll_area.setWidget(body)
+        viewport = self.scroll_area.viewport()
+        if viewport is not None:
+            viewport.setAutoFillBackground(False)
+        layout.addWidget(self.scroll_area, 1)
+        buttons = QHBoxLayout()
         close_button = QPushButton("关闭", self)
+        close_button.setObjectName("cancel")
+        close_button.setAutoDefault(False)
         close_button.clicked.connect(self.close)
-        layout.addWidget(close_button)
+        buttons.addWidget(close_button)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        # 清理确认的超时表归对话框所有：窗口关掉它就跟着没了，不会在窗口重开后误解除新的上膛。
+        self._cleanup_timer = QTimer(self)
+        self._cleanup_timer.setSingleShot(True)
+        self._cleanup_timer.timeout.connect(self._disarm_cleanup)
         self.refresh()
         prepare_popup_surface(self)
+
+    def present(self, anchor=None):
+        """摆在锚点窗口中心（夹在所属屏幕可用区内）后显示并前置。"""
+        anchor = anchor or self.parentWidget()
+        if anchor is not None and not self.isVisible():
+            screen = QGuiApplication.screenAt(anchor.frameGeometry().center()) or QGuiApplication.primaryScreen()
+            center = anchor.frameGeometry().center()
+            x, y = center.x() - self.width() // 2, center.y() - self.height() // 2
+            if screen is not None:
+                area = screen.availableGeometry()
+                x = max(area.left(), min(x, area.right() - self.width() + 1))
+                y = max(area.top(), min(y, area.bottom() - self.height() + 1))
+            self.move(x, y)
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -102,8 +322,18 @@ class FeedbackHistoryDialog(GlassMixin, QDialog):
             QTimer.singleShot(0, self._inject_glass)
 
     def hideEvent(self, event):
+        self._drag_origin = None
+        self._reset_arm()
         self._close_glass()
         super().hideEvent(event)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._sync_glass_frame(force_mask=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_glass_frame(force_mask=True)
 
     def paintEvent(self, event):
         self._glass_mask_flush()
@@ -115,6 +345,7 @@ class FeedbackHistoryDialog(GlassMixin, QDialog):
             painter.end()
 
     def refresh(self):
+        self._reset_arm()
         while self.rows.count():
             item = self.rows.takeAt(0)
             widget = item.widget() if item is not None else None
@@ -122,32 +353,68 @@ class FeedbackHistoryDialog(GlassMixin, QDialog):
                 widget.deleteLater()
         try:
             rows = self.outbox.history()
-        except Exception:
-            self.rows.addWidget(QLabel("本机反馈记录暂时不可用。", self))
+        except Exception as exc:
+            log_swallow("sf_feedback_ui.FeedbackHistoryDialog.refresh", exc)
+            self._add_empty_note("本机反馈记录暂时不可用。")
             return
         if not rows:
-            self.rows.addWidget(QLabel("还没有反馈记录。", self))
+            self._add_empty_note("还没有反馈记录。")
             return
-        labels = {"locally_verified": "待提交", "submitting": "正在上传，稍后可重试", "response_unknown": "等待确认，可重试",
-                  "receipt_persisted": "已收件，本机资料待清理", "cleanup_pending": "已收件，等待本机清理",
-                  "cleaned": "已收件，本机资料已清理"}
         for row in rows:
             box = QWidget(self)
+            box.setObjectName("feedbackRow")
+            box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             line = QHBoxLayout(box)
-            case_id = row["case_id"] or "本机反馈"
-            timestamp = row["received_at"] or row["updated_at"]
-            text = "%s\n%s · %s · %s" % (case_id, timestamp, row["app_version"],
-                                           labels.get(row["status"], "本机记录"))
-            label = QLabel(text, box)
+            line.setContentsMargins(12, 10, 12, 10)
+            line.setSpacing(10)
+            status, waiting = _HISTORY_STATUS.get(row["status"], ("本机记录", False))
+            label = QLabel(_history_row_text(row["case_id"] or "本机反馈", row["received_at"] or row["updated_at"],
+                                             row["app_version"], status, waiting), box)
+            label.setTextFormat(Qt.TextFormat.RichText)
             label.setWordWrap(True)
             line.addWidget(label, 1)
             if row["status"] == "receipt_persisted":
                 clean = QToolButton(box)
                 clean.setText("清理")
                 clean.setToolTip("清理本机诊断资料；不会删除已收件的远端反馈。")
-                clean.clicked.connect(lambda _=False, ident=row["outbox_id"]: self._cleanup(ident))
+                clean.clicked.connect(lambda _=False, ident=row["outbox_id"], button=clean:
+                                      self._confirm_cleanup(ident, button))
                 line.addWidget(clean)
             self.rows.addWidget(box)
+
+    # 清理会删掉本机那份诊断资料（远端回执不受影响），但删了就没了：第一下只改按钮文字，
+    # 3 秒内再点一下才真执行；超时或刷新列表后自动恢复，不留“上膛”状态。
+    _cleanup_armed = None
+    _cleanup_button = None
+
+    def _confirm_cleanup(self, outbox_id, button):
+        if self._cleanup_armed == outbox_id:
+            self._reset_arm()
+            self._cleanup(outbox_id)
+            return
+        # 先复位上一次的“上膛”（可能是另一行）：计时器只有一个，别让旧计时器提前把新的一行解除。
+        self._reset_arm()
+        self._cleanup_armed = outbox_id
+        self._cleanup_button = button
+        button.setText("确认清理")
+        self._cleanup_timer.start(_CLEANUP_CONFIRM_MS)
+
+    def _reset_arm(self):
+        """停表、清标记、把上膛的那颗按钮改回原字。刷新、隐藏、超时、换行时都走这里。"""
+        self._cleanup_timer.stop()
+        button, self._cleanup_button = self._cleanup_button, None
+        self._cleanup_armed = None
+        if button is not None:
+            button.setText("清理")
+
+    def _disarm_cleanup(self):
+        self._reset_arm()
+
+    def _add_empty_note(self, text):
+        note = QLabel(text, self)
+        note.setObjectName("feedbackEmpty")
+        note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rows.addWidget(note)
 
     def _cleanup(self, outbox_id):
         try:
@@ -157,7 +424,7 @@ class FeedbackHistoryDialog(GlassMixin, QDialog):
         self.refresh()
 
 
-class FeedbackDialog(GlassMixin, QDialog):
+class FeedbackDialog(_TitleDragDialog):
     _prefer_liquid_glass = True
 
     def __init__(self, parent=None, *, snapshot, storage_dir, endpoint, sender=None, capture_again=None,
@@ -175,10 +442,12 @@ class FeedbackDialog(GlassMixin, QDialog):
             "QPlainTextEdit{background:rgba(255,255,255,0.06);border:1px solid rgba(154,163,181,0.30);"
             "border-radius:6px;padding:8px;font-size:12px;selection-background-color:rgba(79,124,255,0.65);}"
             "QPlainTextEdit:focus{border:1px solid rgba(174,190,212,0.70);}"
+            "QToolButton{background:rgba(255,255,255,0.10);color:%s;border:none;border-radius:6px;"
+            "padding:4px 10px;font-size:12px;} QToolButton:hover{background:rgba(255,255,255,0.18);}"
             "QCheckBox{font-size:12px;spacing:6px;} QComboBox{font-size:12px;padding:5px 8px;"
             "border:1px solid rgba(154,163,181,0.30);border-radius:6px;}"
             "QComboBox QAbstractItemView{background:rgb(36,36,36);color:%s;}"
-            "QCheckBox:disabled{color:%s;}" % (FG_TEXT_HEX, FG_DISABLED_HEX)))
+            "QCheckBox:disabled{color:%s;}" % (FG_TEXT_HEX, FG_TEXT_HEX, FG_DISABLED_HEX)))
         self.snapshot = snapshot
         self.draft_snapshot = json.loads(json.dumps(snapshot))
         self.capture_again = capture_again
@@ -198,6 +467,7 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.stage = "draft"
         self.last_error = ""
         self.last_failure_phase = ""
+        self.last_failure_detail: dict[str, Any] = {}
         self.preview_valid = False
         self.preview_files: dict[str, Any] | None = None
         self.validation_error = ""
@@ -220,6 +490,9 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.history_button.setAccessibleName("查看反馈记录")
         self.history_button.setToolTip("查看反馈记录")
         self.history_button.setFixedWidth(self.history_button.sizeHint().width())
+        # 样式表给按钮加了内边距，不钉高度的话标题行会被撑高、输入框随之缩小；
+        # 输入框尺寸是用户 2026-10-22 明确要求的（见 _DEFAULT_SIZE），不能被顺带改掉。
+        self.history_button.setFixedHeight(_TITLE_BUTTON_H)
         self.history_button.clicked.connect(self._open_history)
         # 与右侧按钮镜像的不可压缩占位，连同布局间距保持标题在整窗中线。
         title_placeholder = QWidget(self)
@@ -240,6 +513,22 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.description.setAccessibleName("问题描述（可选）")
         self.description.setPlaceholderText("告诉我们你遇到的问题或建议，这些信息将用于改进我们的产品。")
         layout.addWidget(self.description, 1)
+        # 描述框下的提示行：字数接近或超过上限时才出现；有待处理反馈占着窗口时给出“新建反馈”。
+        # 两者平时都隐藏，整行不占位。
+        notes = QHBoxLayout()
+        notes.setContentsMargins(0, 0, 0, 0)
+        self.new_button = QToolButton(self)
+        self.new_button.setText("新建反馈")
+        self.new_button.setToolTip("放下当前这条待处理反馈，另写一条新的；原反馈仍保留在本机，下次打开会再出现。")
+        self.new_button.clicked.connect(self._start_new)
+        self.new_button.hide()
+        notes.addWidget(self.new_button)
+        notes.addStretch()
+        self.counter = QLabel(self)
+        self.counter.setAccessibleName("字数提示")
+        self.counter.hide()
+        notes.addWidget(self.counter)
+        layout.addLayout(notes)
 
         # Keep the sealed preview object available to the upload pipeline and tests,
         # but do not expose raw diagnostic content in the feedback window.
@@ -248,8 +537,6 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.preview.setReadOnly(True)
         self.preview.setAccessibleName("实际上传内容预览")
         self.preview.hide()
-        self.counter = QLabel(self)
-        self.counter.hide()
         self.consent = QCheckBox("我已核对上传内容，同意发送诊断信息和填写的描述", self)
         self.consent.hide()
         self.history = QComboBox(self)
@@ -258,6 +545,8 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.status = QLabel(self)
         self.status.setWordWrap(True)
         self.status.hide()
+        # 只在“不能上传且原因必须让用户看见”时显示（见 _update_enabled）；平时隐藏、不占位。
+        layout.addWidget(self.status)
         buttons = QHBoxLayout()
         self.close_button = QPushButton("关闭", self)
         self.close_button.setObjectName("cancel")
@@ -284,7 +573,19 @@ class FeedbackDialog(GlassMixin, QDialog):
             self.storage_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
             self.storage_dir.chmod(0o700)
             self.outbox = FeedbackOutbox(self.storage_dir / "outbox.sqlite3", self.storage_dir / "objects")
-            self.outbox.recover_interrupted()
+            # 本进程第一次打开这个目录：此刻不可能有本进程的上传在跑，所有 submitting 都是上个进程
+            # 留下的，不必等租约过期（被杀后马上重启，旧行会一直不出现在待处理列表里）。
+            key = str(self.storage_dir.resolve())
+            first_look = key not in _RECOVERED_STORES
+            self.outbox.recover_interrupted(abandoned=first_look)
+            # 回收成功之后才登记：数据库此刻被锁住而失败的话，下次打开还要再试一次，
+            # 否则被杀进程留下的 submitting 行要一直等到租约过期才出现在待处理列表里。
+            _RECOVERED_STORES.add(key)
+            if first_look:
+                moved, failed = self.outbox.sweep_scratch()
+                if moved or failed:
+                    log_line("feedback scratch sweep: moved=%d failed=%d" % (moved, failed),
+                             "WARNING" if failed else "INFO")
             self.history.addItem("新建反馈", None)
             pending_index = 0
             for row in self.outbox.pending():
@@ -343,6 +644,9 @@ class FeedbackDialog(GlassMixin, QDialog):
     def hideEvent(self, event):
         self._drag_origin = None
         self._close_glass()
+        # 记录窗是独立顶层窗，Qt 隐藏父窗时不会带着它走；上传时反馈窗会 hide()，
+        # 记录窗于是留在屏幕上。所有“反馈窗消失”的路径都经过这里，统一收起。
+        self._close_history()
         super().hideEvent(event)
 
     def moveEvent(self, event):
@@ -362,26 +666,15 @@ class FeedbackDialog(GlassMixin, QDialog):
         finally:
             painter.end()
 
-    def mousePressEvent(self, event):
-        self._drag_origin = None
-        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= self.title.geometry().bottom() + 8:
-            handle = self.windowHandle()
-            if handle is None or not handle.startSystemMove():
-                self._drag_origin = event.globalPosition().toPoint() - self.pos()
-            event.accept()
-        else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._drag_origin is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_origin)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._drag_origin = None
-        super().mouseReleaseEvent(event)
+    def _close_history(self):
+        dialog = self._history_dialog
+        if dialog is None:
+            return
+        try:
+            if dialog.isVisible():
+                dialog.close()
+        except RuntimeError:
+            self._history_dialog = None    # 底层窗口已被销毁：丢掉句柄，下次重建
 
     def _open_history(self):
         if self.outbox is None:
@@ -392,15 +685,18 @@ class FeedbackDialog(GlassMixin, QDialog):
             self._history_dialog = dialog
         else:
             dialog.refresh()
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        dialog.present(self)
+        # 与反馈窗同一条抬层：反馈窗被主窗的工具层级抬高后，没抬层的子窗会沉到它下面。
+        # 测试里没有主窗，取不到就跳过。
+        raise_tool = getattr(self.parentWidget(), "_raise_tool_window", None)
+        if raise_tool is not None:
+            raise_tool(dialog)
 
     def _draft_changed(self):
         if self.current_id is None and self.stage == "draft":
             self.draft_key = None
         text = self.description.toPlainText()
-        self.counter.setText("%d / %d" % (len(text), MAX_DESCRIPTION))
+        self._refresh_counter(len(text))
         self.consent.setChecked(False)
         if self.current_id is not None:
             self._update_enabled()
@@ -423,6 +719,28 @@ class FeedbackDialog(GlassMixin, QDialog):
                 self.status.clear()
         self._update_enabled()
 
+    def _refresh_counter(self, length):
+        """字数提示：离上限还远时不出现；快到或超过上限时显示，超限给出明确的删减量。
+
+        原先 counter 建了就 hide，超过 4000 字时按钮只是变灰，原因只藏在悬停提示里。
+        """
+        if self.current_id is not None or length < _COUNTER_SHOW_AT:
+            self.counter.hide()
+            return
+        over = length - MAX_DESCRIPTION
+        self.counter.setText("已超出 %d 字，请删减后再上传" % over if over > 0
+                             else "%d / %d" % (length, MAX_DESCRIPTION))
+        self.counter.setStyleSheet("color:%s;font-size:11px;" % (FG_BRIGHT_HEX if over > 0 else FG_HINT_HEX))
+        self.counter.show()
+
+    def _start_new(self):
+        """放下当前待处理反馈，回到空白草稿；原反馈不删，下次打开仍会出现。"""
+        busy = self.worker is not None and self.worker.is_alive()
+        if busy or self.history.count() == 0:
+            return
+        self.history.setCurrentIndex(0)
+        self.description.setFocus()
+
     def _render_preview(self):
         files = self.preview_files
         if files is not None:
@@ -431,6 +749,13 @@ class FeedbackDialog(GlassMixin, QDialog):
 
     def _update_enabled(self):
         busy = self.worker is not None and self.worker.is_alive()
+        # 有待处理反馈占着窗口（正文只读）时，给一条出路；正在上传、已收件、包已损坏（那时
+        # 上传钮自己就是“新建反馈”）都不需要。
+        self.new_button.setVisible(bool(self.outbox is not None and self.current_id is not None and not busy
+                                        and self.stage in ("pending", "uncertain")
+                                        and self.last_error != "local_package_invalid"))
+        # 不能上传的原因（服务或存储没就绪等）必须让人看得见，不能只放进悬停提示。
+        self.status.setVisible(bool(self.last_error in _BLOCKING_ERRORS and self.status.text()))
         if self.last_error == "local_package_invalid" and self.outbox is not None and self.current_id is not None:
             self.upload_button.setText("新建反馈")
             self.upload_button.setToolTip("保留原反馈资料，开始新的反馈；不会立即上传。")
@@ -596,6 +921,7 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.consent.setEnabled(False)
         self.upload_button.setEnabled(False)
         self.status.setText("正在生成并校验反馈包…")
+        self.upload_button.setText("上传中…")
         self._show_feedback_status("反馈上传中", "正在上传反馈，请稍候。", buttons=())
         self.stage = "submitting"
         pending_id = self.current_id
@@ -604,6 +930,7 @@ class FeedbackDialog(GlassMixin, QDialog):
 
         def work():
             phase = "recovery"
+            started = time.monotonic()
             try:
                 if pending_id is None:
                     # A previous enqueue can commit before its readback fails.
@@ -657,7 +984,12 @@ class FeedbackDialog(GlassMixin, QDialog):
                 receipt = submit_pending(outbox, outbox_id, self.endpoint, **kwargs)
                 self.results.put(("received", receipt))
             except Exception as exc:
-                self.results.put(("failed", _failure(phase, exc)))
+                failed = _failure(phase, exc)
+                try:
+                    failed["detail"] = _failure_detail(exc, started)
+                except Exception:
+                    failed["detail"] = {}    # 取证失败不能吞掉失败本身
+                self.results.put(("failed", failed))
 
         try:
             self.worker = threading.Thread(target=work, name="feedback-upload", daemon=True)
@@ -677,20 +1009,16 @@ class FeedbackDialog(GlassMixin, QDialog):
             if kind == "restored":
                 expected, row, packet = value
                 if expected == self.current_id:
-                    self._apply_pending(row, packet)
+                    try:
+                        self._apply_pending(row, packet)
+                    except Exception as exc:
+                        # 读回的包校验不过时 _apply_pending 会抛；不能让异常逃出轮询、
+                        # 把界面永远留在“读取中”。按读取失败同一条路收口。
+                        self._restore_failed(type(exc).__name__)
             elif kind == "restore_failed":
                 expected, category = value
                 if expected == self.current_id:
-                    self.last_error = "local_package_invalid"
-                    self.stage = "pending"
-                    self.last_failure_phase = "restore"
-                    self.failure_count += 1
-                    self.preview_valid = False
-                    self.preview_files = None
-                    self.status.setText("完整反馈读取失败，未上传。请保留本地反馈资料联系维护者。")
-                    self._show_feedback_status("反馈资料读取失败", "未能读取上次反馈，未上传。",
-                                               "本机资料仍然保留，请联系维护者排查。")
-                    logging.getLogger(__name__).warning("feedback restore failed: category=%s", category)
+                    self._restore_failed(category)
             elif kind == "not_saved":
                 self.storage_uncertain = False
             elif kind == "sealed":
@@ -723,10 +1051,18 @@ class FeedbackDialog(GlassMixin, QDialog):
                               "uncertain" if self.storage_uncertain else "draft")
                 self.last_error = value["category"]
                 self.last_failure_phase = value["phase"]
+                self.last_failure_detail = dict(value.get("detail") or {})
                 self.failure_count += 1
                 logging.getLogger(__name__).warning(
                     "feedback failure: phase=%s category=%s queued=%s",
                     self.last_failure_phase, self.last_error, self.current_id is not None)
+                # 标准库 logging 在本程序里没有挂 handler，上面那行不会进 debug.log；
+                # 这一行才是用户机器上唯一留得下来的失败现场（状态码、服务端错误码、耗时）。
+                log_line("feedback failure: phase=%s category=%s queued=%s %s" % (
+                    self.last_failure_phase, self.last_error, self.current_id is not None,
+                    " ".join("%s=%s" % item for item in sorted(self.last_failure_detail.items()))), "WARNING")
+                hint = _failure_hint(self.last_failure_detail)
+                retryable = _failure_kind(self.last_failure_detail) == "retry"
                 self.status.setText(
                     "上传未完成或结果未知。反馈已进入本机待提交队列；重试使用原反馈编号。"
                     if self.current_id else
@@ -736,9 +1072,10 @@ class FeedbackDialog(GlassMixin, QDialog):
                 self._show_feedback_status(
                     "反馈上传未完成",
                     "反馈未能完成上传，请稍后重试。",
-                    "反馈已保存到本机，重试会使用原反馈编号。" if self.current_id else
-                    "保存结果暂无法确认，重试会先核对原记录。" if self.storage_uncertain else
-                    "当前草稿尚未保存。",
+                    ("反馈已保存到本机，重试会使用原反馈编号。" if self.current_id else
+                     "保存结果暂无法确认，重试会先核对原记录。" if self.storage_uncertain else
+                     "当前草稿尚未保存。") + ("\n" + hint if hint else "")
+                    + ("\n" + _REOPEN_TAIL if retryable else ""),
                 )
                 self.upload_button.setText("核对并重试" if self.stage == "uncertain" else "重试上传")
         if finished:
@@ -748,6 +1085,19 @@ class FeedbackDialog(GlassMixin, QDialog):
             self.consent.setEnabled(False)
             self.description.setReadOnly(self.current_id is not None or self.stage == "uncertain")
             self._update_enabled()
+
+    def _restore_failed(self, category):
+        self.last_error = "local_package_invalid"
+        self.stage = "pending"
+        self.last_failure_phase = "restore"
+        self.failure_count += 1
+        self.preview_valid = False
+        self.preview_files = None
+        self.status.setText("完整反馈读取失败，未上传。请保留本地反馈资料联系维护者。")
+        self._show_feedback_status("反馈资料读取失败", "未能读取上次反馈，未上传。",
+                                   "本机资料仍然保留，请联系维护者排查。")
+        logging.getLogger(__name__).warning("feedback restore failed: category=%s", category)
+        log_line("feedback restore failed: category=%s" % category, "WARNING")
 
     def closeEvent(self, event):
         # Closing hides the dialog, not the durable submission. No cancellation
@@ -770,5 +1120,6 @@ def feedback_diagnostics(owner):
             "failure_count": state.get("failure_count", 0),
             "last_error": state.get("last_error", ""),
             "last_failure_phase": state.get("last_failure_phase", ""),
+            "last_failure_detail": dict(state.get("last_failure_detail") or {}),
             "storage_uncertain": state.get("storage_uncertain", False),
             "outbox_ready": state.get("outbox") is not None}

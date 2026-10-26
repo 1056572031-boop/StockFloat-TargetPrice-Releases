@@ -2,25 +2,26 @@
 
 Mac 桌面上的股票行情小窗口。查看价格、涨跌幅和分时图，为股票设置目标价，到价时接收系统通知。它不连接券商账户，也不能下单。
 
-当前版本：**v1.4.104 Beta**。更新日期：2026-10-25。
+当前版本：**v1.4.105 Beta**。更新日期：2026-10-26。
 
 本版为 Beta 发行版，安装包、自动更新和对应源码经发布流程同步提供。
 
 ## 这版改了什么
 
-1. 反馈窗口标题保持居中，不再被右侧记录按钮带偏。
-2. 下载页发布后会确认统计记录已可用，并核对下载跳转正常。
-3. 自动隐藏窗口的异常旧设置会安全保持关闭，不会误开启摄像头检测。
+1. 反馈上传失败时，会说明原因和下一步该怎么做。
+2. 反馈记录窗口改为与反馈窗一致的样式，可滚动，清理前需再点一次确认。
+3. 程序意外退出后，没发完的反馈会重新出现在待处理里。
+4. 随反馈附带的日志会自动隐去邮箱、手机号和公网地址。
 
 ## 下载与安装
 
 适用于 **Apple 芯片的 Mac**，仅支持 **macOS 26 或更高版本**；不提供 macOS 25 及更早版本、Intel、Windows 或 Linux 安装包。支持范围的依据：装机版实机核验来自 macOS 27 的两台本机；macOS 26 由云端 CI 完成全量回归与原生平台冒烟，尚未做装机实机验收。低于支持范围的系统可能无法安装或运行，遇到问题请先升级系统再复现。
 
-1. [下载 `Skyrocket-V1.4.104.dmg`](https://skyrocket-downloads.pages.dev/download?version=1.4.104&asset=Skyrocket-V1.4.104.dmg)，不要下载页面底部 GitHub 自动生成的 Source code 作为安装包。该链接只做计数与跳转，文件仍由 GitHub 提供；打不开时改用[官方发行页](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)。
+1. [下载 `Skyrocket-V1.4.105.dmg`](https://skyrocket-downloads.pages.dev/download?version=1.4.105&asset=Skyrocket-V1.4.105.dmg)，不要下载页面底部 GitHub 自动生成的 Source code 作为安装包。该链接只做计数与跳转，文件仍由 GitHub 提供；打不开时改用[官方发行页](https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/tag/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0)。
 2. 双击打开 DMG，再双击磁盘里的「一键安装」。它会将程序安装到「应用程序」，旧版移到废纸篓保留，失败时显示原因。
 3. 安装后打开 `Skyrocket`。若被系统拦截，先阅读[完整安装说明](docs/INSTALL.md)，核对来源和文件校验值。
 
-发行页同时提供 `Skyrocket-1.4.104-SHA256SUMS.txt`，列出本版 DMG、应用 ZIP 和源码 ZIP 的 SHA-256。完整安装说明有校验命令；无法确认来源或校验不一致时不要运行。
+发行页同时提供 `Skyrocket-1.4.105-SHA256SUMS.txt`，列出本版 DMG、应用 ZIP 和源码 ZIP 的 SHA-256。完整安装说明有校验命令；无法确认来源或校验不一致时不要运行。
 
 **未签名、未公证：本项目没有 Apple Developer ID 开发者签名，也没有 Apple 公证。** 本地签名用于完整性与版本身份检查：历史发行包使用临时 ad-hoc，后续固定签名发行包使用项目自签名证书；两者均不代表 Apple 已确认开发者身份或审核程序。首次打开可能出现「身份不明的开发者」或「已损坏」提示；不要因此盲目放行，校验不一致或来源不明时应停止安装。固定签名的摄像头授权延续方案与迁移边界见[专项说明](docs/STABLE_CAMERA_AUTH.md)。
 

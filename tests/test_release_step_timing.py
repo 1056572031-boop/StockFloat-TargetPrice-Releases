@@ -89,6 +89,10 @@ class WholeScriptFailurePath(SFCase):
 
     def invoke(self, *args):
         env = {k: v for k, v in os.environ.items() if k != "SF_QUALITY_RECORD"}
+        # 公开仓 CI 在 public-source 上会给整个步骤设 SF_PUBLIC_REGRESSION=1，而 build_release.sh
+        # 对它的反应是在最开头拒绝运行（退出码 2）。本用例要走的是"跑到质量记录那一步才失败"，
+        # 所以必须把它显式拨回 0；否则本机永远绿、公开 CI 永远红（v1.4.104 公开 CI 实测）。
+        env["SF_PUBLIC_REGRESSION"] = "0"
         return subprocess.run(["/bin/bash", str(self.root / "build_release.sh"), *args],
                               capture_output=True, text=True, timeout=20, env=env, cwd=str(self.root))
 

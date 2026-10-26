@@ -226,7 +226,13 @@ class FeedbackAgent:
                     db.execute("UPDATE queue SET status='failed', error=? WHERE case_id=?",
                                (type(exc).__name__, case_id))
                 failed.append(case_id)
-        return {"ready": ready, "failed": failed, "discovered": len(rows),
+        # 只有 zip、没有回执的案件（上传到一半、回执没写出来）：管理端只认回执，所以它们在队列里
+        # 完全不可见。用户那边重试会补出回执，这里只给一个数量，让“有东西卡着”看得见；不列编号。
+        names = {a["name"] for a in assets}
+        unreceipted = sum(1 for name in names
+                          if name.startswith("feedback-") and name.endswith(".zip")
+                          and name[:-len(".zip")] + ".receipt.json" not in names)
+        return {"ready": ready, "failed": failed, "discovered": len(rows), "unreceipted_zips": unreceipted,
                 "capacity": {"asset_count": len(assets), "asset_limit": MAX_RELEASE_ASSETS,
                              "remaining_asset_slots": max(0, MAX_RELEASE_ASSETS - len(assets)),
                              "slots_per_new_case": 2, "near_limit": len(assets) >= MAX_RELEASE_ASSETS - 100}}

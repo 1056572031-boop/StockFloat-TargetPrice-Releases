@@ -20,7 +20,44 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.104
+version 1.4.105
+# ---- v1.4.105：反馈上传可靠性、记录窗口、日志脱敏（基线 a8d42e1，11 笔提交） ----
+# 失败原因：服务端回复只收固定形状的错误码，队列里的失败标签带状态码和错误码，界面按类别给下一步：
+check sf_feedback_transport::server_reply
+check sf_feedback_transport::error_label
+check sf_feedback_ui::_failure_hint
+check sf_feedback_ui::_failure_kind
+check sf_feedback_ui::_REJECTED_CODES
+# 反馈记录窗口（顶层玻璃窗、可滚动、清理需二次确认）与反馈窗、记录窗共用的标题拖动基类：
+check sf_feedback_ui::FeedbackHistoryDialog
+check sf_feedback_ui::_TitleDragDialog
+check sf_feedback_ui::_history_row_text
+check sf_feedback_ui::_HISTORY_STATUS
+# 意外退出后的待处理反馈：首次打开存储时回收上个进程留下的上传，并把残留的采集临时目录移走（不删除）：
+check sf_feedback_outbox::sweep_scratch
+check sf_feedback_ui::_RECOVERED_STORES
+# 日志附件脱敏：邮箱、手机号、公网地址、令牌，机器名按整词替换：
+check sf_privacy::scrub_pii
+check sf_diagnostics::scrub_pii
+check sf_diag::_GENERIC_HOSTS
+# 旧版本存下的包没有 feedback_ui.json，读回时不能被判成“诊断类别缺失”：
+check sf_feedback_bundle::OPTIONAL_DIAGNOSTICS
+# sf_feedback_notifications 只由维护者本机的反馈代理加载，不在 .app 里，不能 check（候选构建 3.6 实测报“模块不在包内”）；
+# 它的失败标识长度上限常量由 tests/test_feedback_hardening.py::NotificationIdentity 覆盖，下面不登记 testref 以免与上面的说明重复。
+# 随包升级助手：十六进制校验逐字符列出，不依赖区域设置下的区间展开（改的是包内 shell 资源）：
+checkfile Contents/Resources/updater/update_helper.sh::[!0123456789abcdef]
+forbidfile Contents/Resources/updater/update_helper.sh::[!a-f0-9]
+# 以下改动没有新的顶层名字或只改了函数体，证据是测试；testref 只证明用例仍在、以 test 开头、
+# 没被无条件跳过，不证明通过（通过由同轮完整回归证明），也不算本轮特征：
+#   sf_feedback_outbox：迟到的回执仍被保存、被上个进程遗弃的上传首次打开即回收、孤儿对象按全部记录判；
+#   sf_feedback_admin：管理端运行结果多报“只有包没有回执”的数量；
+testref tests/test_feedback_hardening.py::ReceiptAfterTheLeaseRanOut::test_a_validated_receipt_is_kept_even_when_it_arrives_after_expiry
+testref tests/test_feedback_hardening.py::RecoveryOfAbandonedSubmissions::test_a_live_lease_is_kept_by_default_and_taken_over_when_known_abandoned
+testref tests/test_feedback_ui_polish.py::OutboxOrphanCount::test_orphans_are_judged_against_every_record_not_just_the_latest_hundred
+testref tests/test_feedback_hardening.py::AdminUnreceiptedCount::test_a_zip_without_a_receipt_is_counted_and_a_complete_case_is_not
+testref tests/test_feedback_hardening.py::LogScrubbing::test_email_phone_jwt_and_public_ip_are_masked
+# 反馈接收服务（services/feedback-worker）不进 .app，由服务自己的测试与部署读回覆盖；本版发布不部署它。
+
 # ---- v1.4.104：反馈标题居中与下载入口上线核验 ----
 # 本轮包内只调整已有构造函数与配置读取，字节码没有新增可核验符号；下载页服务不进 .app。
 # 以新增的定向回归、Pages 上线读回、版本三方同源和既有包内特征共同验收。
@@ -235,9 +272,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.104 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.105 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.104
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.105
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

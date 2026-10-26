@@ -867,3 +867,79 @@ class TestBottomGapCeilingShape(SFCase):
             with self.subTest(line=bad):
                 self.assertTrue(_ceiling_line_problems(bad),
                                 "这条锁抓不到该种的错：%r" % (bad,))
+
+
+class TestFeedbackWorkerAllowlistParity(SFCase):
+    """客户端往诊断包里放的文件，服务端白名单必须认；两边的“可缺省”名单也必须一致。
+
+    守的是跨语言契约：服务端是 JS，没有可调用的 Python 行为，只能读它的源码取名单。
+    事故（2026-10-26）：1.4.104 起客户端固定带 feedback_ui.json，服务端白名单停在 10-20，
+    每个完整反馈都被 422 diagnostic_member 拒收，用户只看到“上传失败”，两边各自的测试都是绿的。
+    """
+
+    @staticmethod
+    def _worker_source():
+        return (ROOT / "services" / "feedback-worker" / "src" / "index.mjs").read_text(encoding="utf-8")
+
+    @classmethod
+    def _worker_json_names(cls):
+        import re
+        block = re.search(r"const jsonNames = new Set\(\[(.*?)\]\);", cls._worker_source(), re.S)
+        assert block, "服务端源码里找不到 jsonNames 白名单：解析失效，不是对账通过"
+        return set(re.findall(r"'([a-z_]+\.json)'", block.group(1)))
+
+    @classmethod
+    def _worker_optional_names(cls):
+        import re
+        line = re.search(r"if \(\[([^\]]*)\]\.includes\(name\)\) continue;", cls._worker_source())
+        assert line, "服务端源码里找不到可缺省名单：解析失效，不是对账通过"
+        return set(re.findall(r"'([a-z_]+\.json)'", line.group(1)))
+
+    def test_every_file_the_client_ships_is_accepted_by_the_worker(self):
+        from sf_feedback_bundle import DIAGNOSTIC_JSON
+        from sf_feedback_v3 import V3_DIAGNOSTIC_FILES
+        missing = (set(DIAGNOSTIC_JSON) - set(V3_DIAGNOSTIC_FILES)) - self._worker_json_names()
+        self.assertEqual(missing, set(), "客户端会带、服务端白名单不认（上传会被 422 拒收）：%s" % sorted(missing))
+
+    def test_worker_does_not_accept_names_the_client_never_ships(self):
+        from sf_feedback_bundle import DIAGNOSTIC_JSON
+        from sf_feedback_v3 import V3_DIAGNOSTIC_FILES
+        extra = self._worker_json_names() - (set(DIAGNOSTIC_JSON) - set(V3_DIAGNOSTIC_FILES))
+        self.assertEqual(extra, set(), "服务端白名单多出客户端不认的名字：%s" % sorted(extra))
+
+    def test_both_sides_agree_on_which_files_may_be_absent(self):
+        from sf_feedback_bundle import OPTIONAL_DIAGNOSTICS
+        self.assertEqual(self._worker_optional_names(), set(OPTIONAL_DIAGNOSTICS),
+                         "两边对“可缺省文件”的名单不一致：旧版客户端的包会被一边接受、另一边拒收")
+
+    def test_the_parser_reads_something_so_agreement_is_not_vacuous(self):
+        self.assertGreaterEqual(len(self._worker_json_names()), 10)
+        self.assertIn("feedback_ui.json", self._worker_json_names())
+
+    @classmethod
+    def _worker_rejections(cls):
+        """服务端源码里每一处字面量 reject('码', 状态)：{码: 状态}（缺省状态 422，与 Rejection 的默认值一致）。"""
+        import re
+        found = {}
+        for code, status in re.findall(r"reject\(\s*'([a-z_0-9]+)'\s*(?:,\s*(\d+))?\s*\)", cls._worker_source()):
+            found[code] = int(status or 422)
+        return found
+
+    def test_the_client_tells_a_permanent_refusal_from_a_temporary_one_for_every_worker_code(self):
+        # 事故形态（审查发现）：服务端新增或已有的拒绝码客户端认不出，用户被告知“稍后重试”，
+        # 而同一份包永远过不了。这里按服务端实际会发的 (码, 状态) 逐个问客户端怎么归类。
+        from sf_feedback_ui import _failure_kind
+        rejections = self._worker_rejections()
+        self.assertGreaterEqual(len(rejections), 60, "解析失效：读到的拒绝码太少，对账不能算通过")
+        waiting = {"submission_in_progress", "lease_superseded"}
+        # 这些是“服务端自己或上游出了问题”的 503，或请求太忙：客户端应当允许重试。
+        for code, status in sorted(rejections.items()):
+            kind = _failure_kind({"server_code": code, "http_status": status})
+            if code in ("case_budget", "inbox_asset_capacity", "inbox_capacity"):
+                self.assertEqual(kind, "full", code)
+            elif code in ("identity_conflict", "remote_binding", "request_headers") or status in (413, 422):
+                self.assertEqual(kind, "rejected", "%s(%s) 内容永远过不了，却被归成可重试" % (code, status))
+            elif code in waiting or status in (400, 429, 503):
+                self.assertEqual(kind, "retry", "%s(%s) 是暂时的，却被归成永久失败" % (code, status))
+            else:
+                self.fail("服务端的拒绝码 %s(%s) 没有归类预期，请决定它对用户算永久还是暂时" % (code, status))

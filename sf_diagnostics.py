@@ -7,6 +7,7 @@ import time
 import zipfile
 
 from sf_config import _read_json_or_none, redact_config
+from sf_privacy import scrub_pii
 
 
 class DiagnosticArchive:
@@ -82,7 +83,7 @@ def write_attachments(archive, paths, metadata, issues, helpers):
             continue
         try:
             text = read_text(source, name, metadata["log_max"], tail=True)
-            text_entry(name, public_text(text), metadata["log_max"], tail=True)
+            text_entry(name, scrub_pii(public_text(text)), metadata["log_max"], tail=True)
         except Exception as exc:
             issues.append("%s: %s" % (name, public_text(exc)))
     failures = paths["failures"]
@@ -92,7 +93,7 @@ def write_attachments(archive, paths, metadata, issues, helpers):
             try:
                 json_entry("last_failures.json", redact_config(json.loads(raw)))
             except json.JSONDecodeError:
-                text_entry("last_failures.invalid.txt", public_text(raw))
+                text_entry("last_failures.invalid.txt", scrub_pii(public_text(raw)))
                 issues.append("last_failures.json: invalid JSON")
         except Exception as exc:
             issues.append("last_failures.json: %s" % public_text(exc))
@@ -119,7 +120,7 @@ def write_attachments(archive, paths, metadata, issues, helpers):
                 except Exception as exc:
                     issues.append("crash_reports/%s: %s" % (name, public_text(exc)))
                     body = ""
-                body = public_text(helpers["extract_crash"](body))
+                body = scrub_pii(public_text(helpers["extract_crash"](body)))
                 if body:
                     archive.writestr("crash_reports/%s.txt" % name, body)
         except Exception as exc:

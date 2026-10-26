@@ -942,6 +942,41 @@ class ReadingAndCli(WalkthroughStage):
                                  (W.KVK["1"], 4242, False, False),
                                  (W.KVK["5"], 4242, False, True)])
 
+    def test_目标价样本按包的网络开关状态选_读不出不许猜成带开关(self):
+        self.assertEqual(W.pick_target_price(True), W.TARGET_PRICE_OFFLINE)
+        self.assertEqual(W.pick_target_price(False), W.TARGET_PRICE)
+        self.assertEqual(W.pick_target_price(None), W.TARGET_PRICE)
+        self.assertNotEqual(W.TARGET_PRICE_OFFLINE, W.TARGET_PRICE)
+
+    def test_离线目标价样本每个字符都能由键盘驱动敲出(self):
+        calls = []
+        with mock.patch.object(W, "hid_key",
+                               lambda code, pid, command=False, shift=False:
+                               calls.append((code, pid, command, shift))):
+            self._pristine_hid_type(W.TARGET_PRICE_OFFLINE, 4242)
+        self.assertEqual([code for code, _p, _m, _s in calls],
+                         [W.KVK[ch] for ch in W.TARGET_PRICE_OFFLINE],
+                         "按样本逐字符敲出对应键码，顺序不能乱")
+        self.assertTrue(all(not shift for _c, _p, _m, shift in calls), "整数样本不该需要 Shift")
+
+    def test_目标价动作敲的是本轮样本而不是写死的常量(self):
+        ctx = self.make_ctx(height=W.LAYOUT.MIN_H + 40)
+        self.assertEqual(ctx.target_price, W.TARGET_PRICE, "不传样本时默认仍是相对写法")
+        ctx.target_price = W.TARGET_PRICE_OFFLINE
+        self.config = {"code": "sh600519", "alerts": []}
+        self.write_state()
+        panel = {"X": W.SEED_X + 60, "Y": W.SEED_Y + 240,
+                 "Width": W.TP.PANEL_W, "Height": PANEL_HEIGHT}
+
+        def respond(x, y, right):
+            if not any(int(r["Width"]) == W.TP.PANEL_W for r in self.rows):
+                self.rows = [self.rows[0], dict(panel)]
+            self.write_state()
+
+        self.on_click = respond
+        W.action_target(ctx)
+        self.assertEqual(self.typed, [W.TARGET_PRICE_OFFLINE])
+
     def test_seed_config_起点固定且目标价从空开始(self):
         seed = W.seed_config()
         self.assertEqual((seed["x"], seed["y"]), (W.SEED_X, W.SEED_Y))
@@ -1355,7 +1390,10 @@ class NetworkGuardDisclosure(SFCase):
                                    return_value={"present": False, "note": "开头哨兵-来自探测"}), \
                  mock.patch.object(W, "run_walkthrough", return_value=evidence), \
                  redirect_stdout(out):
-                rc = W.main(["--i-am-at-the-machine", "--out", temp])
+                # 开头那行只在装机包路径存在时才打印；默认路径是 /Applications/Skyrocket.app，
+                # 装了正式版的开发机上存在、公开 CI 的空机器上不存在，于是本机绿而公开 CI 红。
+                # 所以显式指向一个一定存在的目录（取包版本等都已替身）。
+                rc = W.main(["--i-am-at-the-machine", "--app", temp, "--out", temp])
             self.assertEqual(rc, 0)
             text = out.getvalue()
             self.assertIn("网络隔离: 开头哨兵-来自探测", text)
@@ -1381,6 +1419,47 @@ class NetworkGuardDisclosure(SFCase):
             self.assertEqual(evidence["network_guard"], sentinel)
             written = json.loads((root / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(written["network_guard"], sentinel, "落盘的证据也必须带它")
+
+    def test_真实走查流程把同一份开关状态换成样本_既传给现场也写进证据(self):
+        """选样本只取一次守卫状态：交给 Ctx 的样本、证据里记的样本、证据里记的守卫必须是同一份。
+        三态各跑一遍；用一个会记下构造参数的 Ctx 替身截住 `run_walkthrough` 里的传参。"""
+        class _Alive:
+            pid = 80
+
+            @staticmethod
+            def poll():
+                return None
+
+        seen = []
+        real_ctx = W.Ctx
+
+        class _SpyCtx(real_ctx):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                seen.append(self.target_price)
+
+        row = {"X": W.SEED_X, "Y": W.SEED_Y, "Width": W.LAYOUT.W, "Height": W.LAYOUT.MIN_H}
+        cases = [(True, W.TARGET_PRICE_OFFLINE), (False, W.TARGET_PRICE), (None, W.TARGET_PRICE)]
+        for present, expected in cases:
+            with self.subTest(present=present), \
+                 tempfile.TemporaryDirectory(prefix="sf_click_sample_") as temp:
+                root = pathlib.Path(temp)
+                del seen[:]
+                guard = {"present": present, "note": "哨兵"}
+                with mock.patch.object(W, "launch_frozen", return_value=_Alive()), \
+                     mock.patch.object(W, "_terminate", lambda proc: None), \
+                     mock.patch.object(W, "user_data_stat", return_value={}), \
+                     mock.patch.object(W, "network_guard_state", return_value=guard), \
+                     mock.patch.object(W, "wait_startup", return_value={"ok": True}), \
+                     mock.patch.object(W, "wait_rows", return_value=row), \
+                     mock.patch.object(W, "read_log", return_value=""), \
+                     mock.patch.object(W, "Ctx", _SpyCtx):
+                    evidence = W.run_walkthrough(pathlib.Path("/tmp/Skyrocket.app"), root, [])
+                self.assertEqual(seen, [expected], "交给现场的样本必须由守卫状态决定")
+                self.assertEqual(evidence["target_price_sample"], expected)
+                self.assertEqual(evidence["network_guard"], guard)
+                written = json.loads((root / "result.json").read_text(encoding="utf-8"))
+                self.assertEqual(written["target_price_sample"], expected, "落盘的证据也必须带它")
 
     def test_报告档对存在的包也打印网络隔离说明(self):
         with tempfile.TemporaryDirectory(prefix="sf_click_netrep_") as temp:

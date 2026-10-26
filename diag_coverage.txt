@@ -27,6 +27,13 @@
 
 # "这个模块坏了用户会说什么" 的答案必须落到具体通路；纯函数/维护端模块才可申报 skip。
 
+version 1.4.105
+# 本版区间是 a8d42e1..HEAD（v1.4.104 发布源码以来，11 笔提交）。反馈队列与反馈窗的运行态本来就由 feedback.json、feedback_ui.json 带走，下面四个模块没有自己的常驻状态，逐条交代通路。
+skip sf_feedback_admin 只由维护者本机的反馈代理加载，客户端不启动它；本版新增的是运行结果里“只有包、没有回执”的数量，写入代理自己的运行报告，不属于用户诊断附件。
+skip sf_feedback_bundle 本版只把 feedback_ui.json 改为读回时可缺省，无模块级可变状态；旧包读回被拒的原因仍由反馈窗的阶段提示和队列的 last_error 留痕，feedback.json 的 queue.last_errors 输出最近几条。
+skip sf_feedback_notifications 只由私有反馈代理读取维护者通知索引，客户端不加载；本版只把失败标识长度上限抽成常量，失败由代理报告记录，不复制私有案件状态。
+skip sf_feedback_transport 发送函数无模块级可变状态；失败时的状态码与服务端错误码（只收固定形状的代码，不收自由文本）写进队列的 last_error，经 feedback.json 的 queue.last_errors 输出，界面侧的完整失败细节经 feedback_ui.json 的 last_failure_detail 输出，debug.log 另有一行失败 WARNING。
+
 version 1.4.104
 # 本轮新增反馈运行态已由 feedback.json 接入：sf_feedback_outbox / sf_run_session；其余以下模块逐条说明。
 skip sf_dock_motion 主窗上的临时动画控制器不持有独立持久状态；功能开关由 state.json 的 features 输出，动画截图/定时器失败由 debug.log 的 WARNING/SWALLOWED 留痕，估不出 Dock 位置的边界已在工具结果中明确为未判定。

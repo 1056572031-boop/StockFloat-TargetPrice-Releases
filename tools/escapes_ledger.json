@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-25",
+  "updated": "2026-10-26",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4536,6 +4536,45 @@
           "result": "该时刻是敲命令的时刻，不是现象首次可观测的时刻；找不到能证明首次现象的秒级证据，退回未知，不借会话、提交或文件时刻替代"
         }
       ]
+    },
+    {
+      "id": "N23",
+      "symptom": "v1.4.104 的反馈包包含接收端尚未登记的 feedback_ui.json，服务端按诊断成员校验拒收并返回 422 diagnostic_member，用户无法提交反馈",
+      "component": "反馈上传",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.104",
+      "introduced_note": null,
+      "found_version": "1.4.104",
+      "fixed_version": "1.4.105",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "发布前只分别覆盖客户端打包与接收端校验，没有用本版真实诊断文件名做客户端和接收端的双向清单对拍；feedback_ui.json 随 1.4.104 进入客户端后，接收端白名单未同步，端到端拒收直到发布后才暴露。",
+      "defense_added": [
+        "客户端与接收端诊断成员清单对拍回归：feedback_ui.json 按可缺省成员处理，任一端删掉或不一致即失败（tests/test_feedback_hardening.py）",
+        "服务端接收器回归覆盖真实诊断 ZIP 校验与 422 错误码；客户端将服务端错误码、阶段和状态码保存在队列与反馈诊断中，避免再次只剩通用 HTTPError"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "locate_unknown_reason": "仓库记录只能证明 1.4.104 的客户端包带着接收端当时不认识的 feedback_ui.json、服务端因此返回 422，无法证明谁在什么时候第一次观察到上传被拒，也没有独立日志锚点证明根因确认时刻；开条与盖根因戳在同一条命令里连续执行，相差 1 秒，只是记账时刻，不计定位时长。",
+      "source": "v1.4.104 已发布客户端包与接收端诊断成员白名单对照；修复提交 27f3ef3 记录了 422 diagnostic_member 的根因",
+      "evidence": "verified",
+      "rootcause_origin": "unknown",
+      "timestamp_audit": [
+        {
+          "audited_on": "2026-10-26",
+          "classification": "bookkeeping_not_duration",
+          "original_observed_at": "2026-10-26 17:24:49+08:00",
+          "original_rootcause_at": "2026-10-26 17:24:50+08:00",
+          "reason": "开条与盖根因戳在同一条命令里连续执行，相差 1 秒；该时刻是敲命令的时刻，不是现象首次可观测的时刻。",
+          "evidence_checked": [
+            "提交 27f3ef3 的说明（客户端自 1.4.104 起带 feedback_ui.json、接收端白名单不认识它，上传被 422 diagnostic_member 拒收）",
+            "本机 debug.log 中没有 diagnostic_member 或 422 记录，不能用它证明首次观察时刻"
+          ],
+          "result": "找不到能证明首次现象的秒级证据，退回未知，不借会话、提交或文件时刻替代"
+        }
+      ]
     }
   ],
   "rounds": [
@@ -5222,6 +5261,18 @@
         "requirements.lock 的 OSV 漏洞审计与 PyInstaller 构建时 setuptools 依赖声明"
       ],
       "zero_reason": "本轮发布前复核线上台账、反馈与发布记录，未发现新的用户报回线上逃逸；本轮修复的是发布守卫、依赖审计、反馈标题和下载入口上线核验，均在发布前完整回归中验证。"
+    },
+    {
+      "version": "1.4.105",
+      "date": "2026-10-26",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "完整回归、构建输入关卡戳和覆盖率来源凭据同源核验",
+        "反馈客户端与接收端诊断成员清单对拍、真实接收器错误码与错误分级回归",
+        "反馈记录窗口、崩溃后待处理恢复、迟到回执保存、采集临时文件移走和日志附件隐私脱敏的定向回归"
+      ],
+      "zero_reason": "本轮已登记 N23：1.4.104 的反馈包带有接收端当时不认识的 feedback_ui.json，上传被 422 拒收，已在 1.4.105 随客户端与接收端清单对拍收口。仓库记录无法证明谁通过哪个渠道发现它，所以 N23 登记为 shipped_unnoticed，不计入 online_user/second_machine/installed_field 的严格逃逸数，本轮严格口径下写 0；0 不等于上线后无故障，装机版真实上传到接收端的端到端结果发布后才能读回，仍未验证。"
     }
   ],
   "comparison_policy": {

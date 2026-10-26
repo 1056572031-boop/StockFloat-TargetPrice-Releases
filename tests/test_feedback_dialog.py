@@ -144,6 +144,10 @@ class DialogTests(_FeedbackCase):
         self.assertIsNotNone(clean)
         clean.click()
         QApplication.processEvents()
+        self.assertTrue(archive.exists(), "第一下只是确认，不能就把本机资料删了")
+        self.assertEqual(clean.text(), "确认清理")
+        clean.click()
+        QApplication.processEvents()
 
         self.assertFalse(archive.exists())
         cleaned = self.dialog.outbox.get(outbox_id)

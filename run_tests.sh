@@ -260,8 +260,25 @@ export SF_TEST_DURATIONS_OUT="${SF_TEST_DURATIONS_OUT-$(pwd)/build/test-duration
 echo "== 运行 tests/ 全部测试（tools/test_runner.py，覆盖率门禁 tools/coverage_gate.py）=="
 # COVERAGE_GATE_RAN 决定末尾配不配落关卡时间戳：只有真跑过覆盖率门禁的那一轮才算全绿。
 COVERAGE_GATE_RAN=0
+# SF_LANES=N：把整套用例拆成 N 条车道并行跑，再合并成一个结论；不设则走原来的串行路径。
+# 本脚本自己不设默认值（直接运行与云端回归仍是串行）；提交钩子在调用者没设置时替它定一个。
+# 随机序仍走串行：它的目的是暴露顺序依赖，
+# 和车道分配互相干扰。用法与取舍见 AGENTS.md 末尾“常用开关”。
+# BEGIN lanes_switch（tests/test_lane_runner.py 把这一段抽出来在 /bin/sh 里逐个环境值验证）
+SF_LANES_N="${SF_LANES:-}"
+case "$SF_LANES_N" in ""|*[!0-9]*) SF_LANES_N="" ;; esac
+[ "${SF_LANES_N:-0}" -gt 0 ] 2>/dev/null || SF_LANES_N=""
+if [ "${SF_RANDOM_ORDER:-0}" = "1" ]; then SF_LANES_N=""; fi
+# 质量执行器给的会话目录要求配置/日志/socket 路径全部落在它指定的位置，车道模式的
+# 定向运行会把这些路径改到各自的临时目录，所以有会话目录时一律串行。
+if [ -n "${SF_QUALITY_SESSION_DIR:-}" ]; then SF_LANES_N=""; fi
+# END lanes_switch
 if [ "${SF_SKIP_COVERAGE:-0}" = "1" ]; then
-  "$PY" tools/test_runner.py
+  if [ -n "$SF_LANES_N" ]; then
+    "$PY" tools/lane_runner.py --lanes "$SF_LANES_N"
+  else
+    "$PY" tools/test_runner.py
+  fi
 elif [ "${SF_RANDOM_ORDER:-0}" = "1" ]; then
   # 随机序跑不计覆盖率：目的是暴露顺序依赖，覆盖率交给常规轮次
   SF_RANDOM_ORDER=1 "$PY" tools/test_runner.py
@@ -269,7 +286,11 @@ else
   "$PY" -m coverage erase
   "$PY" tools/coverage_provenance.py begin
   COVERAGE_RC=0
-  "$PY" -m coverage run tools/test_runner.py || COVERAGE_RC=$?
+  if [ -n "$SF_LANES_N" ]; then
+    "$PY" tools/lane_runner.py --lanes "$SF_LANES_N" --coverage || COVERAGE_RC=$?
+  else
+    "$PY" -m coverage run tools/test_runner.py || COVERAGE_RC=$?
+  fi
   "$PY" tools/coverage_provenance.py finish --exit-code "$COVERAGE_RC" || exit 1
   "$PY" tools/coverage_provenance.py check || exit 1
   if [ "$PUBLIC_REGRESSION" = "1" ]; then

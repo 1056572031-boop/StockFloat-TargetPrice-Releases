@@ -24,7 +24,10 @@ DIAGNOSTIC_JSON = frozenset({
     "state.json", "storage.json", "config.json", "last_failures.json", "export.json",
     *V3_DIAGNOSTIC_FILES,
 })
-REQUIRED_DIAGNOSTICS = DIAGNOSTIC_JSON - {"config.json", "last_failures.json", *V3_DIAGNOSTIC_FILES}
+# feedback_ui.json 自 1.4.104 起才随包带上：更早版本存下的待处理包和已收件反馈都没有它，
+# 必填会让这些旧包读回时被判成“诊断类别缺失”。服务端白名单对它同样按可缺省处理。
+OPTIONAL_DIAGNOSTICS = frozenset({"config.json", "last_failures.json", "feedback_ui.json"})
+REQUIRED_DIAGNOSTICS = DIAGNOSTIC_JSON - OPTIONAL_DIAGNOSTICS - V3_DIAGNOSTIC_FILES
 _CREDENTIAL = re.compile(
     r'''(?<![\w])["']?(password|passwd|token|api[_-]?key|private[_-]?key|cookie|authorization)["']?\s*[:=]\s*(?:Bearer\s+)?("[^"\r\n]*"?|'[^'\r\n]*'?|[^\s,;&"'{}()\[\]\\]+)''',
     re.IGNORECASE)

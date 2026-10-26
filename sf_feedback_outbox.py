@@ -11,6 +11,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -90,6 +91,11 @@ def read_diagnostics(database_path: os.PathLike[str] | str,
                     result["archive_missing"] += 1
         objects = Path(objects_dir)
         if objects.is_dir():
+            # 孤儿要对着**全部**记录判：上面的 LIMIT 100 只是为了限制摘要大小，
+            # 拿“最近 100 条引用的文件”去比整个对象目录，记录一超过 100 条，
+            # 第 101 条以后的正常 zip 就会被误报成孤儿（实测 107 条记录误报 7 个）。
+            for row in connection.execute("SELECT archive_path FROM outbox"):
+                referenced.add(Path(row["archive_path"]).name)
             result["orphan_objects"] = sum(1 for item in objects.glob("*.zip")
                                            if item.name not in referenced)
         return result
@@ -323,11 +329,13 @@ class FeedbackOutbox:
             raise FeedbackProtocolError("invalid outbox lease transition")
         stamp = _utc_stamp(now)
         with self._db() as db:
+            # 排他靠 token + fence：别人接手必然换掉这两样，回收过期租约也会清掉 token。
+            # 不再要求“租约此刻没过期”——慢上传的回执恰好晚于租约到达时，那个条件只会把
+            # 一份已经校验过的回执丢掉，并让整包重传（实测：回执留在 submitting，随后被判 process_interrupted）。
             cursor = db.execute(
                 "UPDATE outbox SET status=?, last_error=?, lease_token=NULL, lease_kind=NULL, lease_until=NULL, "
-                "updated_at=? WHERE outbox_id=? AND lease_token=? AND lease_fence=? AND "
-                "(lease_until IS NOT NULL AND datetime(lease_until) > datetime(?))",
-                (status, error, stamp, outbox_id, token, fence, stamp),
+                "updated_at=? WHERE outbox_id=? AND lease_token=? AND lease_fence=?",
+                (status, error, stamp, outbox_id, token, fence),
             )
             if cursor.rowcount != 1:
                 row = db.execute("SELECT outbox_id FROM outbox WHERE outbox_id=?", (outbox_id,)).fetchone()
@@ -392,9 +400,8 @@ class FeedbackOutbox:
         with self._db() as db:
             cursor = db.execute(
                 "UPDATE outbox SET status='receipt_persisted', receipt_json=?, lease_token=NULL, lease_kind=NULL, "
-                "lease_until=NULL, updated_at=? WHERE outbox_id=? AND lease_token=? AND lease_fence=? "
-                "AND lease_until IS NOT NULL AND datetime(lease_until) > datetime(?)",
-                (json.dumps(checked, sort_keys=True), stamp, outbox_id, token, fence, stamp),
+                "lease_until=NULL, updated_at=? WHERE outbox_id=? AND lease_token=? AND lease_fence=?",
+                (json.dumps(checked, sort_keys=True), stamp, outbox_id, token, fence),
             )
             if cursor.rowcount != 1:
                 raise OutboxBusy("outbox lease was lost")
@@ -471,13 +478,20 @@ class FeedbackOutbox:
                 "SELECT outbox_id FROM outbox WHERE status != 'cleaned' ORDER BY created_at").fetchall()]
         return [self.get(item) for item in ids]
 
-    def recover_interrupted(self, *, now: datetime | None = None) -> int:
+    def recover_interrupted(self, *, now: datetime | None = None, abandoned: bool = False) -> int:
         """Recover expired submissions and interrupted local-cleanup work.
 
         A receipt has already been persisted before cleanup begins, so recovery
         never resubmits it.  If the local object is gone, cleanup crossed its
         destructive step before the process stopped and can safely be recorded
         as complete; otherwise the receipt is returned to the retryable state.
+
+        ``abandoned=True`` means the caller knows no live worker of this process can own a
+        submission (it is the first look at this store since the process started): every
+        ``submitting`` row then belongs to a process that is gone, even if its lease has not
+        expired yet.  Without it, an app killed and restarted inside the lease window left the
+        row invisible to the pending list until the lease ran out, and a new draft could be sent
+        in its place.
         """
         stamp = _utc_stamp(now)
         recovered = 0
@@ -485,8 +499,8 @@ class FeedbackOutbox:
             cursor = db.execute(
                 "UPDATE outbox SET status='response_unknown', last_error='process_interrupted', "
                 "lease_token=NULL, lease_kind=NULL, lease_until=NULL, updated_at=? "
-                "WHERE status='submitting' AND (lease_until IS NULL OR datetime(lease_until) <= datetime(?))",
-                (stamp, stamp),
+                "WHERE status='submitting' AND (? OR lease_until IS NULL OR datetime(lease_until) <= datetime(?))",
+                (stamp, 1 if abandoned else 0, stamp),
             )
             recovered += cursor.rowcount
             pending = db.execute(
@@ -503,6 +517,34 @@ class FeedbackOutbox:
                 )
                 recovered += cursor.rowcount
         return recovered
+
+    def sweep_scratch(self, *, older_than_sec: float = 3600.0, now: float | None = None) -> tuple[int, int]:
+        """Move stale capture scratch out of the store; returns (moved, failed).
+
+        A crash or kill during capture leaves ``capture-*`` directories (unredacted-adjacent
+        diagnostic material) and ``*.tmp`` copies behind, and nothing ever looked at them.
+        Nothing is deleted: stale entries are moved into a private folder under the system
+        temporary directory, which the OS reclaims on its own schedule.  Anything younger than
+        ``older_than_sec`` is left alone, so a capture in progress is never touched.
+        """
+        cutoff = (time.time() if now is None else now) - older_than_sec
+        candidates = [path for path in self.database_path.parent.glob("capture-*")]
+        candidates += [path for path in self.objects_dir.glob("*.tmp")]
+        moved = failed = 0
+        holder = Path(tempfile.gettempdir()) / "skyrocket-feedback-stale"
+        for path in candidates:
+            try:
+                if path.is_symlink() or path.stat().st_mtime > cutoff:
+                    continue
+                holder.mkdir(mode=0o700, exist_ok=True)
+                if holder.is_symlink():
+                    failed += 1
+                    continue
+                shutil.move(str(path), str(holder / (path.name + "-" + uuid.uuid4().hex[:8])))
+                moved += 1
+            except OSError:
+                failed += 1
+        return moved, failed
 
     def reconcile_orphans(self) -> list[str]:
         """Return unreferenced object files; never silently deletes them."""

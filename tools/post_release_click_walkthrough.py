@@ -104,6 +104,10 @@ CLICK_SETTLE_SEC = 0.03          # 指针到位到按下的停顿（主窗这类
 MENU_CLICK_SETTLE_SEC = 0.25     # 菜单专用慢档：等 QMenu 拿到鼠标抓取（实测快档只把菜单收掉）
 MENU_CLICK_HOLD_SEC = 0.20       # 菜单专用的按下时长，与上面同一条实测
 TARGET_PRICE = "+1%"             # 面板原生支持的相对涨幅：避免固定绝对价撞当天涨停（实测 1688 > 1450.34 被拒）
+# 包里带网络硬拒绝开关时，走查期间取不到行情，面板的 +N% 没有当前价可换算（提示「无法获取当前价」、
+# 不加条目、面板不关），随后点编辑还会被产品自己拦下；v1.4.104 走查 target/stock 判红即此。
+# 此时改敲不依赖行情的整数绝对价：无行情就没有涨停线可越，只要求是正数。键盘映射里没有小数点，所以只能是整数。
+TARGET_PRICE_OFFLINE = "1000"
 STOCK_CODE_DIGITS = "000001"     # 走查样本代码：平安银行，6 位纯数字，避开字典前缀分支
 STOCK_PREFIXED_CODE = "sz000001"
 SEED_X, SEED_Y = 140, 140        # 起点写死，免得走查窗口落在别的屏幕上
@@ -310,8 +314,9 @@ def judge_height(before_h: int, after_h: int | None, direction: str,
 def judge_alert_written(config: dict, code: str) -> dict:
     """目标价落盘判据：临时 config 里有一条**涨到方向**的有效条目，且归属当前股票。
 
-    走查输入用产品原生的相对写法 `+1%`，落盘值取决于当时真实行情，不能拿某只股票
-    的固定绝对价硬比；方向、归属与正数目标价才是这条交互真正要证明的事实。
+    走查输入默认用产品原生的相对写法 `+1%`（包带网络硬拒绝开关时改用离线整数价，见
+    `pick_target_price`），落盘值取决于当时真实行情或所选样本，不能拿某只股票的固定
+    绝对价硬比；方向、归属与正数目标价才是这条交互真正要证明的事实。
     """
     alerts = [a for a in (config.get("alerts") or []) if isinstance(a, dict)]
     hit = []
@@ -642,8 +647,17 @@ def hid_key(keycode: int, pid: int, command: bool = False,
         _CLOCK.sleep(0.02)
 
 
+def pick_target_price(guard_present: bool | None) -> str:
+    """按被测包有没有网络硬拒绝开关选目标价样本。
+
+    只有明确读到“带开关”才用离线整数价；没开关（旧包会真联网）或读不出（None）都沿用 `+1%`，
+    不把“读不出”猜成带开关：猜错的代价是在能联网的包上敲一个可能越过涨停线的绝对价。
+    """
+    return TARGET_PRICE_OFFLINE if guard_present is True else TARGET_PRICE
+
+
 def hid_type(text: str, pid: int) -> None:  # pragma: no cover - 真发 HID
-    """定向输入走查样本：六码数字与目标价相对写法 `+1%`。"""
+    """定向输入走查样本：六码数字、目标价相对写法 `+1%` 或离线整数价。"""
     for ch in text:
         code = KVK.get(ch)
         if code is not None:
@@ -832,11 +846,13 @@ def network_guard_state(app: pathlib.Path) -> dict:
 class Ctx:
     """一轮走查的现场：进程、临时目录、主窗当前位置、证据落点。"""
 
-    def __init__(self, pid: int, home: pathlib.Path, shot: pathlib.Path, main: dict):
+    def __init__(self, pid: int, home: pathlib.Path, shot: pathlib.Path, main: dict,
+                 target_price: str = TARGET_PRICE):
         self.pid = pid
         self.home = home
         self.shot = shot
         self.main = dict(main)
+        self.target_price = target_price
 
     def windows(self) -> list[dict]:
         return list_windows(self.pid)
@@ -1121,7 +1137,7 @@ def action_target(ctx: Ctx) -> dict:
                                                "panel_bounds": panel}}
     pts = panel_points(panel)
     hid_click(pts["input"]["x"], pts["input"]["y"])
-    hid_type(TARGET_PRICE, ctx.pid)
+    hid_type(ctx.target_price, ctx.pid)
     # 敲完先留一张图：这一条失败时唯一能回答"字到底进框了没有"的证据
     typed_shot = capture_region(panel, ctx.shot.with_name("panel-typed.png"))
     hid_click(pts["plus"]["x"], pts["plus"]["y"])
@@ -1191,6 +1207,8 @@ def run_walkthrough(app: pathlib.Path, out_dir: pathlib.Path, names: list[str]) 
     # 子进程 socket 路径有 104 字节上限：证据目录在主树 build/ 下太长，家目录必须放短路径。
     home = pathlib.Path(tempfile.mkdtemp(prefix=HOME_PREFIX))
     before_user = user_data_stat()
+    guard = network_guard_state(app)              # 只取一次：样本选择与证据里记的是同一份
+    target_price = pick_target_price(guard["present"])
     proc = launch_frozen(app, home, seed_config())
     results: list[dict] = []
     startup: dict = {}
@@ -1216,7 +1234,7 @@ def run_walkthrough(app: pathlib.Path, out_dir: pathlib.Path, names: list[str]) 
                                     "evidence": {"reason": "main_window_never_appeared",
                                                  "startup": startup}})
                 else:
-                    ctx = Ctx(proc.pid, home, out_dir / "pixel.png", first)
+                    ctx = Ctx(proc.pid, home, out_dir / "pixel.png", first, target_price)
                     acted = False
                     for name in names:
                         acted = True
@@ -1238,7 +1256,7 @@ def run_walkthrough(app: pathlib.Path, out_dir: pathlib.Path, names: list[str]) 
         _terminate(proc)
     summary = summarize(results)
     evidence = {"app": str(app), "version": bundle_version(app),
-                "network_guard": network_guard_state(app),
+                "network_guard": guard, "target_price_sample": target_price,
                 "pid": proc.pid, "startup": startup,
                 "results": results,
                 "summary": summary,
@@ -1457,6 +1475,18 @@ def self_test() -> int:
           NETWORK_GUARD_ENV in string_literals(
               compile("def f():\n    def g():\n        return '%s'\n" % NETWORK_GUARD_ENV,
                       "<selftest>", "exec")))
+
+    # 目标价样本：带开关用离线价；没开关沿用 +1%；读不出不许猜成带开关（猜错会在能联网的包上敲绝对价）。
+    check("包带网络开关时必须用离线整数价样本",
+          pick_target_price(True) == TARGET_PRICE_OFFLINE)
+    check("包没有开关时必须沿用相对涨幅样本",
+          pick_target_price(False) == TARGET_PRICE)
+    check("读不出开关状态时必须沿用相对涨幅样本，不许猜成带开关",
+          pick_target_price(None) == TARGET_PRICE)
+    check("离线样本必须是纯数字且每个字符键盘映射里都有",
+          TARGET_PRICE_OFFLINE.isdigit() and all(ch in KVK for ch in TARGET_PRICE_OFFLINE))
+    check("离线样本必须是正数且不同于相对样本",
+          int(TARGET_PRICE_OFFLINE) > 0 and TARGET_PRICE_OFFLINE != TARGET_PRICE)
 
     if problems:
         print("自检 %d 项判红：" % len(problems))

@@ -43,6 +43,20 @@ from verify_install_paths import launcher_script  # noqa: E402  （卷内双击�
 import apply_installer_icon as AIC  # noqa: E402  （卷内条目在 Finder 里的**显示名**，与发版链同一份实现）
 
 
+def _final_asset_names(parsed: urllib.parse.SplitResult) -> set[str]:
+    """最终落点声明的文件名：路径末段，以及签名链接 `rscd` 参数里的 filename。
+
+    GitHub 的发行资产最终会落到 release-assets.githubusercontent.com，那里路径末段是一串
+    UUID，文件名只出现在 `rscd=attachment; filename=...` 这个查询参数里。只认路径末段，
+    就会把一份完全正确的资产判成"不是本轮资产"（v1.4.104 发布时实测）。
+    """
+    names = {urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])}
+    for value in urllib.parse.parse_qs(parsed.query).get("rscd", []):
+        for match in re.finditer(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)\"?", value):
+            names.add(urllib.parse.unquote(match.group(1)))
+    return names
+
+
 def probe_asset(url: str) -> tuple[str, str]:
     """Follow the public redirect and require the named release asset to exist.
 
@@ -64,7 +78,7 @@ def probe_asset(url: str) -> tuple[str, str]:
     parsed = urllib.parse.urlsplit(final_url)
     if p.returncode == 0 and code == "200" and parsed.hostname in {
             "github.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com",
-            "release-assets.githubusercontent.com"} and parsed.path.endswith("/" + expected):
+            "release-assets.githubusercontent.com"} and expected in _final_asset_names(parsed):
         return "ok", "最终 HTTP 200：" + final_url
     if code == "404" or (p.returncode and code == "404"):
         return "missing", "HTTP 404：这一轮的包还没推上线"

@@ -16,6 +16,31 @@ const KEY = /^[a-f0-9]{32}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 let activeBodyBytes = 0;
+export const LEASE_MS = 120000;
+// GitHub 阶段的总时限必须短于租约：慢到租约过期才写回，会被别的重试顶掉，回执白白丢失。
+export const PUBLISH_DEADLINE_MS = 100000;
+// 单个来源每天最多的请求数。全局额度被一个来源灌满，别的用户当天就全部失败。
+export const CLIENT_DAILY_LIMIT = 30;
+export const CASE_PRUNE_AT = 900;
+// 每天最多退还多少次全局额度。退款让垃圾请求不再烧光当天额度，但每次退款都是一笔数据库写入；
+// 不设上限的话，换着来源地址发垃圾包的人能无限放大写入。超过上限就不再退，回到“垃圾也占额度”的保守行为。
+export const REFUND_DAILY_LIMIT = 500;
+// 这几个阶段失败说明请求本身有问题或者还没真正开始处理，不属于服务端的错，也不该替来源退额度。
+const CLIENT_SIDE_PHASES = ['headers', 'budget', 'body'];
+
+function secondsToUtcMidnight() {
+  const now = new Date();
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
+}
+
+// 429 才有意义的“多久后再来”；其余状态不带，避免客户端对永久错误傻等。
+export function retryAfter(code) {
+  if (code === 'receiver_busy') return 30;
+  if (code === 'submission_in_progress') return 60;
+  if (['daily_budget', 'daily_byte_budget', 'daily_client_budget'].includes(code)) return secondsToUtcMidnight();
+  return null;
+}
 
 export class Rejection extends Error {
   constructor(code, status = 422) { super(code); this.code = code; this.status = status; }
@@ -133,7 +158,7 @@ function checkV3Snapshot(name, value) {
 }
 
 export async function validateDiagnostics(archive, deep = true, payload = 2) {
-  const jsonNames = new Set(['network.json', 'startup_health.json', 'feedback.json', 'targets.json',
+  const jsonNames = new Set(['network.json', 'startup_health.json', 'feedback.json', 'feedback_ui.json', 'targets.json',
     'runtime.json', 'glass.json', 'notify.json', 'universe.json', 'calendar.json', 'state.json',
     'storage.json', 'config.json', 'last_failures.json', 'export.json', ...V3_DIAGNOSTIC_FILES]);
   const reader = new ZipReader(new Uint8ArrayReader(archive), { useWebWorkers: false });
@@ -197,7 +222,8 @@ export async function validateDiagnostics(archive, deep = true, payload = 2) {
   if (v3 && [...V3_DIAGNOSTIC_FILES].some(name => !inventory.has(name))) reject('diagnostic_v3_missing');
   if (!v3 && [...V3_DIAGNOSTIC_FILES].some(name => inventory.has(name))) reject('diagnostic_v3_mixed');
   for (const name of jsonNames) {
-    if (['config.json', 'last_failures.json', ...V3_DIAGNOSTIC_FILES].includes(name)) continue;
+    // feedback_ui.json 自 1.4.104 起才随包带上；旧版客户端没有它，不能因此被拒。
+    if (['config.json', 'last_failures.json', 'feedback_ui.json', ...V3_DIAGNOSTIC_FILES].includes(name)) continue;
     if (!inventory.has(name) && !exported.issues.some(issue => typeof issue === 'string' && issue.includes(name))) reject('diagnostic_missing_category');
   }
   const declared = new Set();
@@ -283,7 +309,7 @@ export async function validateArchive(archive, envelope, deepDiagnostics = true)
 let tokenCache;
 const base64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 
-export async function installationToken(env, fetcher = fetch) {
+export async function installationToken(env, fetcher = fetch, deadline = Infinity) {
   if (tokenCache && tokenCache.installation === env.GITHUB_INSTALLATION_ID && tokenCache.until > Date.now()) return tokenCache.value;
   const pem = env.GITHUB_PRIVATE_KEY_PKCS8;
   const pemHeader = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
@@ -297,7 +323,7 @@ export async function installationToken(env, fetcher = fetch) {
     + base64url(encoder.encode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: env.GITHUB_APP_ID })));
   const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, encoder.encode(payload));
   const response = await fetcher(`https://api.github.com/app/installations/${env.GITHUB_INSTALLATION_ID}/access_tokens`, {
-    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(30000),
+    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(Math.max(1, Math.min(30000, deadline - Date.now()))),
     headers: { Authorization: `Bearer ${payload}.${base64url(new Uint8Array(signature))}`,
       Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'Skyrocket-Feedback/1' },
     body: JSON.stringify({ repositories: ['Skyrocket-Private-Feedback'], permissions: { contents: 'write' } }),
@@ -314,11 +340,19 @@ export async function installationToken(env, fetcher = fetch) {
 }
 
 export class GitHubStore {
-  constructor(token, releaseId, fetcher = fetch) { this.token = token; this.releaseId = releaseId; this.fetcher = fetcher.bind(globalThis); }
+  constructor(token, releaseId, fetcher = fetch, deadline = Infinity) {
+    this.token = token; this.releaseId = releaseId; this.fetcher = fetcher.bind(globalThis); this.deadline = deadline;
+  }
+  // 每次上游调用的超时 = min(30 秒, 距总时限还剩多少)；总时限已过就不再发请求。
+  budget() {
+    const left = this.deadline - Date.now();
+    if (left <= 0) reject('upstream_timeout', 503);
+    return Math.min(30000, left);
+  }
   async request(path, { method = 'GET', body, binary = false, upload = false, maximum = 2 * 1024 * 1024 } = {}) {
     const host = upload ? 'uploads.github.com' : 'api.github.com';
     let response = await this.fetcher(`https://${host}/repos/${REPOSITORY}${path}`, {
-      method, body, redirect: 'manual', signal: AbortSignal.timeout(30000),
+      method, body, redirect: 'manual', signal: AbortSignal.timeout(this.budget()),
       headers: { Authorization: `Bearer ${this.token}`, 'User-Agent': 'Skyrocket-Feedback/1',
         Accept: binary ? 'application/octet-stream' : 'application/vnd.github+json',
         'Content-Type': upload ? 'application/octet-stream' : 'application/json', 'X-GitHub-Api-Version': '2022-11-28' },
@@ -326,7 +360,7 @@ export class GitHubStore {
     if (binary && [301, 302, 307].includes(response.status)) {
       const target = new URL(response.headers.get('Location'));
       if (target.protocol !== 'https:' || target.hostname !== 'release-assets.githubusercontent.com' || target.username || target.password) reject('asset_redirect', 503);
-      response = await this.fetcher(target, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
+      response = await this.fetcher(target, { redirect: 'manual', signal: AbortSignal.timeout(this.budget()) });
     }
     if (!response.ok) reject(`github_http_${response.status}`, 503);
     const bytes = await readBounded(response, maximum);
@@ -393,6 +427,31 @@ export default {
     if (!configured) return json({ error: 'receiver_not_ready' }, 503);
     let phase = 'headers';
     let reservedBytes = 0;
+    const started = Date.now();
+    const day = new Date().toISOString().slice(0, 10);
+    // 记下每一笔已经扣掉的额度：没走到 GitHub 就被拒的请求要把全局额度退回去，
+    // 否则一批垃圾请求（或一次白名单漏洞导致的反复重试）就能把当天的额度烧光。
+    const charged = { request: false, bytes: 0, clientKey: '' };
+    let reachedGitHub = false;
+    // 全局额度：没走到 GitHub 就退（有每日上限）。来源额度：只在服务端自己出错（5xx）时退，
+    // 否则 GitHub 故障期间用户的正常重试会把自己当天的 30 次烧光，界面还说“明天再来”，盖住真正的故障。
+    const refund = async serverFault => {
+      try {
+        if (!reachedGitHub && (charged.request || charged.bytes)) {
+          const room = await env.DB.prepare('INSERT INTO budget(day, requests) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET requests=requests+1 WHERE requests<? RETURNING requests')
+            .bind(day + ':refunds', REFUND_DAILY_LIMIT).first();
+          if (room) {
+            if (charged.request) await env.DB.prepare('UPDATE budget SET requests=MAX(requests-1,0) WHERE day=?').bind(day).run();
+            if (charged.bytes) await env.DB.prepare('UPDATE budget SET requests=MAX(requests-?,0) WHERE day=?').bind(charged.bytes, day + ':bytes').run();
+          }
+        }
+        if (serverFault && charged.clientKey) {
+          await env.DB.prepare('UPDATE budget SET requests=MAX(requests-1,0) WHERE day=?').bind(charged.clientKey).run();
+        }
+      } catch (refundError) {
+        console.error(JSON.stringify({ event: 'feedback_refund_failed', phase }));
+      }
+    };
     try {
       const size = Number(request.headers.get('Content-Length'));
       if (!Number.isSafeInteger(size) || size <= 4 || size > MAX_UPLOAD + MAX_HEADER + 4
@@ -401,20 +460,50 @@ export default {
       if (activeBodyBytes + size > MAX_UPLOAD + MAX_HEADER + 4) reject('receiver_busy', 429);
       activeBodyBytes += size;
       reservedBytes = size;
-      const day = new Date().toISOString().slice(0, 10);
       phase = 'budget';
+      // 先按来源限流：单个来源把自己的份额用完只影响它自己，不会拖垮全局额度。
+      // 只存“日期+来源”的哈希，不落真实地址；日期进了哈希，次日自然换桶。
+      const source = await digest(new TextEncoder().encode(day + '|' + (request.headers.get('CF-Connecting-IP') || 'unknown')));
+      const client = await env.DB.prepare('INSERT INTO budget(day, requests) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET requests=requests+1 WHERE requests<? RETURNING requests')
+        .bind(day + ':client:' + source.slice(0, 24), CLIENT_DAILY_LIMIT).first();
+      if (!client) reject('daily_client_budget', 429);
+      charged.clientKey = day + ':client:' + source.slice(0, 24);
       const allowed = await env.DB.prepare('INSERT INTO budget(day, requests) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET requests=requests+1 WHERE requests<100 RETURNING requests').bind(day).first();
       if (!allowed) reject('daily_budget', 429);
+      charged.request = true;
+      // 每天只清一次一周前的额度行（来源桶让这张表每天都在长）。判据不能用“今天第一笔额度”：
+      // 垃圾请求会把额度退回去，计数反复回到 1，每个请求都会触发一次全表扫描删除。
+      // 用一行当天的标记：只有真正插入成功的那一次才返回一行，退款碰不到它。
+      const firstOfDay = await env.DB.prepare('INSERT INTO budget(day, requests) VALUES (?, 1) ON CONFLICT(day) DO NOTHING RETURNING requests')
+        .bind(day + ':sweep').first();
+      if (firstOfDay) {
+        const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+        await env.DB.prepare('DELETE FROM budget WHERE substr(day, 1, 10) < ?').bind(cutoff).run();
+      }
       phase = 'body';
       const bytes = await readBounded(request, MAX_UPLOAD + MAX_HEADER + 4);
       if (bytes.length !== size) reject('request_size');
+      phase = 'byte_budget';
       const byteBudget = await env.DB.prepare('INSERT INTO budget(day, requests) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET requests=requests+excluded.requests WHERE requests+excluded.requests<=268435456 RETURNING requests')
         .bind(day + ':bytes', bytes.length).first();
       if (!byteBudget) reject('daily_byte_budget', 429);
+      charged.bytes = bytes.length;
+      phase = 'unpack';
       const { envelope, archive } = await unpackRequest(bytes);
       phase = 'archive';
       await validateArchive(archive, envelope, false);
       phase = 'case';
+      const total = await env.DB.prepare('SELECT COUNT(*) AS n FROM cases').bind().first();
+      if (total && total.n >= CASE_PRUNE_AT) {
+        // 案件表有硬上限。从未走完的行（失败、被中断、没有回执）租约一过期就没有保留价值：
+        // 重传会按同一幂等键重新建行，GitHub 侧按资产名幂等、校验和不符会被 409 拦住。
+        // 已收件的行是回执的唯一本地副本，永远不清。
+        // 注意这只清“没走完”的行，管不到真正的容量天花板：每份反馈在发布里占 zip 和回执两个资产，
+        // 发布的资产上限是 MAX_RELEASE_ASSETS(1000)，所以实际最多收约 500 份，之后只会得到
+        // inbox_asset_capacity。收件资产不自动删（保留策略是人工删除），要腾位置得维护者处理。
+        await env.DB.prepare("DELETE FROM cases WHERE state != 'received' AND lease_until <= ? AND idempotency_key != ?")
+          .bind(Date.now(), envelope.idempotency_key).run();
+      }
       await env.DB.prepare("INSERT OR IGNORE INTO cases SELECT ?, ?, 'new', 0, '', NULL WHERE (SELECT COUNT(*) FROM cases)<1000")
         .bind(envelope.idempotency_key, envelope.archive_sha256).run();
       const row = await env.DB.prepare('SELECT * FROM cases WHERE idempotency_key=?').bind(envelope.idempotency_key).first();
@@ -423,28 +512,48 @@ export default {
       const now = Date.now();
       const lease = crypto.randomUUID();
       phase = 'lease';
-      const owned = await env.DB.prepare("UPDATE cases SET state='uploading', lease_until=?, lease_token=? WHERE idempotency_key=? AND lease_until<=? RETURNING idempotency_key")
-        .bind(now + 120000, lease, envelope.idempotency_key, now).first();
+      // 已经有回执的行（重放一次已收件的案件）保持“已收件”，不能被临时改成 uploading：
+      // 重放中途失败会让它变成可被清理的状态，而回执的本地副本只在这一行里。
+      const owned = await env.DB.prepare("UPDATE cases SET state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'uploading' END, lease_until=?, lease_token=? WHERE idempotency_key=? AND lease_until<=? RETURNING idempotency_key")
+        .bind(now + LEASE_MS, lease, envelope.idempotency_key, now).first();
       if (!owned) reject('submission_in_progress', 409);
       try {
         phase = 'github_auth';
-        const token = await installationToken(env);
+        const deadline = now + PUBLISH_DEADLINE_MS;
+        const token = await installationToken(env, fetch, deadline);
+        // 拿到令牌才算真的用了上游：配置错误、证书导入失败这类没碰到 GitHub 的失败仍然退额度。
+        reachedGitHub = true;
         phase = 'github_storage';
-        const receipt = await new GitHubStore(token, env.GITHUB_RELEASE_ID).publish(envelope, archive);
+        const receipt = await new GitHubStore(token, env.GITHUB_RELEASE_ID, fetch, deadline).publish(envelope, archive);
         phase = 'receipt_commit';
         const saved = await env.DB.prepare("UPDATE cases SET state='received', lease_until=0, receipt=? WHERE idempotency_key=? AND lease_token=? RETURNING idempotency_key")
           .bind(JSON.stringify(receipt), envelope.idempotency_key, lease).first();
         if (!saved) reject('lease_superseded', 409);
         return json(receipt);
       } catch (error) {
-        await env.DB.prepare("UPDATE cases SET lease_until=0, state='unknown' WHERE idempotency_key=? AND lease_token=?")
+        await env.DB.prepare("UPDATE cases SET lease_until=0, state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'unknown' END WHERE idempotency_key=? AND lease_token=?")
           .bind(envelope.idempotency_key, lease).run();
         throw error;
       }
     } catch (error) {
-      console.error(JSON.stringify({ event: 'feedback_unconfirmed', phase,
+      // 解包和校验阶段抛出的非 Rejection 错误（坏 zip、坏 UTF-8、坏 JSON）说明请求内容本身有问题，
+      // 重试不会改变结果，应回 422；原先一律回 503，客户端会当成“服务暂时不可用”反复重试并烧额度。
+      const badContent = !(error instanceof Rejection) && ['unpack', 'archive'].includes(phase);
+      // 只有 GitHub 阶段的超时才算“上游超时”；客户端在读请求体时中断也会抛 AbortError，那不是上游的错。
+      const timedOut = !(error instanceof Rejection) && ['github_auth', 'github_storage'].includes(phase)
+        && ['TimeoutError', 'AbortError'].includes(error?.name);
+      const code = error instanceof Rejection ? error.code : badContent ? 'archive_invalid'
+        : timedOut ? 'upstream_timeout' : 'submission_unconfirmed';
+      const status = error instanceof Rejection ? error.status : badContent ? 422 : 503;
+      await refund(status >= 500 && !CLIENT_SIDE_PHASES.includes(phase));
+      console.error(JSON.stringify({ event: 'feedback_unconfirmed', phase, code, status,
+        elapsed_ms: Date.now() - started,
         category: error instanceof Rejection ? error.code : error instanceof TypeError ? 'type_error' : 'unexpected_error' }));
-      return json({ error: error instanceof Rejection ? error.code : 'submission_unconfirmed' }, error instanceof Rejection ? error.status : 503);
+      const wait = status === 429 || status === 409 ? retryAfter(code) : null;
+      const body = new Response(JSON.stringify({ error: code, phase }), { status,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+          ...(wait ? { 'Retry-After': String(wait) } : {}) } });
+      return body;
     } finally {
       activeBodyBytes -= reservedBytes;
     }

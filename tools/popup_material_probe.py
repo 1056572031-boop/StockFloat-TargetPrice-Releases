@@ -23,13 +23,41 @@ class CaptureScene:
         self.timer = main.top_timer
         self.timer_active = self.timer.isActive()
 
+    # backdrop, glass, main window, popup: the backdrop sits below the other three.
+    OFFSETS = (10, 11, 11, 12)
+
     def activate(self):
         from sf_glass import TOOL_WINDOW_LEVEL
         self.timer.stop()
-        for window, offset in zip(self.windows, (10, 11, 11, 12)):
+        for window, offset in zip(self.windows, self.OFFSETS):
             window.setHidesOnDeactivate_(False)
             window.setLevel_(TOOL_WINDOW_LEVEL + offset)
             window.orderFrontRegardless()
+
+    def drifted(self):
+        """Indexes of windows whose level is no longer the one activate() gave them.
+
+        Stopping the watchdog timer is not enough to keep the stack in place: the product also
+        arms a one-shot top re-assert shortly after launch, and when it fires while a scene is up
+        it puts the main window, glass and popup back at their production levels, below the
+        backdrop. The screenshot is then a flat backdrop colour and the material checks fail
+        for a reason that has nothing to do with the material (seen on an unchanged v1.4.104
+        tree, only in the first scene, only when the timer happened to land inside it).
+        """
+        from sf_glass import TOOL_WINDOW_LEVEL
+        return [index for index, (window, offset) in enumerate(zip(self.windows, self.OFFSETS))
+                if int(window.level()) != TOOL_WINDOW_LEVEL + offset]
+
+    def settle(self, observe, attempts=5):
+        """Re-stack until no level has drifted. Returns (stable, corrections)."""
+        corrections = 0
+        for _ in range(attempts):
+            if not self.drifted():
+                return True, corrections
+            corrections += 1
+            self.activate()
+            observe(0.1)
+        return not self.drifted(), corrections
 
     def close(self):
         if not self.saved:
@@ -42,6 +70,25 @@ class CaptureScene:
                 self.timer.start()
         finally:
             self.saved = []
+
+
+def capture_stable(scene, observe, take, attempts=3, paint_seconds=0.35):
+    """Take a screenshot with the stack settled before it and still settled after it.
+
+    A screenshot taken while a level had drifted is thrown away and retaken; if the stack never
+    holds, the caller gets stable=False and reports a failure of its own instead of a
+    misleading "material is not visible". Returns (stable, tries, corrections, result).
+    """
+    corrections = 0
+    result = None
+    for tries in range(1, attempts + 1):
+        stable, fixed = scene.settle(observe)
+        corrections += fixed
+        observe(paint_seconds)
+        result = take()
+        if stable and not scene.drifted():
+            return True, tries, corrections, result
+    return False, attempts, corrections, result
 
 
 def sample_surface(image, x, y, width, height, scale):
@@ -179,11 +226,16 @@ def verify_popups(main, app, out, check, wait, observe):
                                     ("warm", (184, 142, 114)), ("cool", (118, 162, 190))):
                 backdrop.color = QColor(*rgb)
                 backdrop.update()
-                observe(0.35)
                 path = out / ("popup-" + name + "-" + color_name + ".png")
-                capture = subprocess.run(["/usr/sbin/screencapture", "-x", "-o",
-                    f"-R{group.x()},{group.y()},{group.width()},{group.height()}", str(path)],
-                    capture_output=True, text=True, check=False)
+
+                def take(path=path):
+                    return subprocess.run(["/usr/sbin/screencapture", "-x", "-o",
+                        f"-R{group.x()},{group.y()},{group.width()},{group.height()}", str(path)],
+                        capture_output=True, text=True, check=False)
+
+                stable, tries, corrections, capture = capture_stable(scene, observe, take)
+                check(name + "_" + color_name + "_stack_stable", stable,
+                      {"tries": tries, "corrections": corrections, "drifted": scene.drifted()})
                 image = QImage(str(path))
                 valid = capture.returncode == 0 and not image.isNull()
                 check(name + "_" + color_name + "_capture", valid, capture.stderr or None)

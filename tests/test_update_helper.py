@@ -488,7 +488,7 @@ class TestHelperVerificationHome(SFCase):
         self.archive = self.root / "ota.zip"
         self.archive.write_bytes(b"not needed before validation")
 
-    def invoke(self, home, target=None, helper=HELPER, extra=()):
+    def invoke(self, home, target=None, helper=HELPER, extra=(), env_extra=None):
         import hashlib
         args = ["/bin/sh", str(helper), "--pid", "2147483646",
                 "--archive", str(self.archive), "--sha256",
@@ -498,7 +498,8 @@ class TestHelperVerificationHome(SFCase):
         if home is not None:
             args += ["--verification-home", str(home)]
         proc = subprocess.run(args + list(extra), capture_output=True, text=True,
-                              timeout=30, env=dict(os.environ, TMPDIR=str(self.root)))
+                              timeout=30, env=dict(os.environ, TMPDIR=str(self.root),
+                                                   **(env_extra or {})))
         payload = json.loads(self.result.read_text()) if self.result.exists() else {}
         return proc, payload
 
@@ -669,16 +670,20 @@ class TestHelperVerificationHome(SFCase):
 
     def test_handoff_token_must_be_exactly_32_lower_hex_characters(self):
         helper, _ = self.instrument_helper()
-        for token in ("A" * 32, "e" * 31, "f" * 33, "g" * 32):
-            with self.subTest(token=token):
-                self.target = _make_app(self.apps, version="1.0.0")
-                before = (self.target / "Contents" / "Info.plist").read_bytes()
-                _, payload = self.invoke(self.home, target=self.target, helper=helper,
-                                          extra=("--handoff", token))
-                self.assertEqual(payload.get("status"), "failed")
-                self.assertEqual(payload.get("message"), "handoff_invalid")
-                self.assertEqual((self.target / "Contents" / "Info.plist").read_bytes(), before)
-                self.assertEqual(list(self.apps.glob(".*.rollback-*")), [])
+        # 用户终端是 UTF-8 区域设置，开发机默认没设（走 C 分支）。大写字母是否被 a-f 区间放行
+        # 取决于这个设置，所以每个坏令牌在两种区域设置下都必须被拒。
+        for locale in ("C", "en_US.UTF-8"):
+            for token in ("A" * 32, "e" * 31, "f" * 33, "g" * 32):
+                with self.subTest(locale=locale, token=token):
+                    self.target = _make_app(self.apps, version="1.0.0")
+                    before = (self.target / "Contents" / "Info.plist").read_bytes()
+                    _, payload = self.invoke(self.home, target=self.target, helper=helper,
+                                             extra=("--handoff", token),
+                                             env_extra={"LC_ALL": locale})
+                    self.assertEqual(payload.get("status"), "failed")
+                    self.assertEqual(payload.get("message"), "handoff_invalid")
+                    self.assertEqual((self.target / "Contents" / "Info.plist").read_bytes(), before)
+                    self.assertEqual(list(self.apps.glob(".*.rollback-*")), [])
 
 
 class TestHandoffAcknowledgement(_PositiveRouteSupport, _HelperCase):

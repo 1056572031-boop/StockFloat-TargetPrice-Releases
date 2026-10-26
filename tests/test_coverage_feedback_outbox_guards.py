@@ -255,6 +255,15 @@ class _FakeLabel:
     def setWordWrap(self, _value):
         return None
 
+    def setObjectName(self, _name):
+        return None
+
+    def setAlignment(self, _value):
+        return None
+
+    def setTextFormat(self, _value):
+        return None
+
     def text(self):
         return self._text
 
@@ -276,11 +285,23 @@ class _FakeBox:
         self.label = None
         self.button = None
 
+    def setObjectName(self, _name):
+        return None
+
+    def setAttribute(self, *_args):
+        return None
+
 
 class _FakeRowLayout:
     def __init__(self, owner=None):
         self.items = []
         self.owner = owner
+
+    def setContentsMargins(self, *_margins):
+        return None
+
+    def setSpacing(self, _value):
+        return None
 
     def count(self):
         return len(self.items)
@@ -322,6 +343,8 @@ class HistoryDialogDegradationTests(SFCase):
         dialog = FeedbackHistoryDialog.__new__(FeedbackHistoryDialog)  # discipline-ok(R5): 纯替身绕过原生 QDialog 构造，只覆盖 refresh/cleanup 分支
         dialog.outbox = outbox
         dialog.rows = _FakeRowLayout()
+        # refresh() 开头会复位“清理确认”的上膛状态，需要对话框自带的计时器；绕过构造就要自己补一个替身。
+        dialog._cleanup_timer = mock.Mock()  # discipline-ok(R5): __new__ 绕过构造的替身对话框，必须自己装上被 refresh 读到的计时器
         return dialog
 
     def labels(self, dialog):

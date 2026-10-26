@@ -47,6 +47,10 @@ def _validate_versions(versions):
         raise ValueError("invalid notification report identities")
 
 
+# 失败标识的长度上限；代理拼出的组合标识必须不超过它，否则整次同步报 state_unavailable。
+MAX_FAILURE_IDENTITY = 128
+
+
 class FeedbackNotifications:
     def __init__(self, directory, *, sender=None):
         self.path = Path(directory).resolve() / "notifications.json"
@@ -61,7 +65,7 @@ class FeedbackNotifications:
         state = json.loads(self.path.read_text())
         if (not isinstance(state, dict) or set(state) != {"schema", "reports", "failure"}
                 or type(state["schema"]) is not int or state["schema"] != 1
-                or not isinstance(state["failure"], str) or len(state["failure"]) > 128):
+                or not isinstance(state["failure"], str) or len(state["failure"]) > MAX_FAILURE_IDENTITY):
             raise ValueError("invalid notification state")
         _validate_versions(state["reports"])
         return state
@@ -96,7 +100,7 @@ class FeedbackNotifications:
         result: dict[str, list[str]] = {"submitted": [], "failed": []}
         try:
             _validate_versions(versions)
-            if not isinstance(failure, str) or len(failure) > 128:
+            if not isinstance(failure, str) or len(failure) > MAX_FAILURE_IDENTITY:
                 raise ValueError("invalid notification failure identity")
             state = self._read()
         except Exception:

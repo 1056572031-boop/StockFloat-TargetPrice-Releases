@@ -87,6 +87,9 @@ class TestBranchMergeWorkflow(SFCase):
         stub = self.write(".venv/bin/python3", (
             "#!/bin/sh\n"
             'if [ "$1" = "--version" ]; then echo "Python stub"; exit 0; fi\n'
+            # 钩子里取并行车道默认值也会调一次解释器（-c），那不是编译；这条用例守的是
+            # “全部项目文件共用一次 py_compile 批处理”，所以只记 -m py_compile 的调用。
+            'if [ "$1" != "-m" ]; then exit 0; fi\n'
             f'printf "%s\\n" "--CALL--" >> "{calls}"\n'
             'shift 2\n'
             'for f in "$@"; do\n'

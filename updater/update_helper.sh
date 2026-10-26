@@ -172,8 +172,11 @@ case "$PID" in
   0|*[!0-9]*) fail "invalid_arguments" ;;
 esac
 if [ -n "$HANDOFF" ]; then
+  # 十六进制字符逐个列出，不写成 a-f 区间：macOS 自带 /bin/sh（bash 3.2）在 UTF-8 区域设置下
+  # 按排序规则展开区间，大写 A-F 会被一并放行（公开 CI 的 UTF-8 环境实测），而本机默认没设
+  # 区域，走 C 分支看不出来。
   case "$HANDOFF" in
-    *[!a-f0-9]* ) fail "handoff_invalid" ;;
+    *[!0123456789abcdef]* ) fail "handoff_invalid" ;;
   esac
   [ "${#HANDOFF}" -eq 32 ] || fail "handoff_invalid"
 fi

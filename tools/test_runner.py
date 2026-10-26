@@ -44,8 +44,10 @@
 import argparse
 import contextlib
 import faulthandler
+import gc
 import json
 import os
+import pathlib
 import random
 import re
 import stat
@@ -534,12 +536,24 @@ def write_durations(path, report):
         return "%s: %s" % (type(exc).__name__, exc)
 
 
+def gc_at_test_boundary():
+    """车道模式专用：关掉自动垃圾回收，只在每条用例收尾（已脱离事件循环）时手动回收一次。
+
+    为什么：把测试模块分到不同进程后，模块之间的相邻关系变了；实测 test_bugfix_155 排在
+    test_coverage_window_flows 前面时，自动回收恰好落在 Qt 切换激活窗口、应用级事件过滤器
+    正在包装对象的那一刻，主线程 SIGSEGV（关闭自动回收后同一组合 4/4 通过，回收放到用例之间
+    则 3/3 通过）。这是缓解而不是根治，所以只在显式设了 SF_GC_AT_TEST_BOUNDARY=1 时生效。
+    """
+    return os.environ.get("SF_GC_AT_TEST_BOUNDARY", "") == "1"
+
+
 class _Result(unittest.TextTestResult):
     """给每个用例挂超时：到点 dump 全线程栈并退出进程。"""
 
     def __init__(self, *a, **kw):
         self._timeout = kw.pop("sf_timeout", 60.0)
         self._ledger = kw.pop("sf_ledger", None)
+        self._gc_boundary = gc_at_test_boundary()
         super().__init__(*a, **kw)
 
     def startTest(self, test):
@@ -557,6 +571,8 @@ class _Result(unittest.TextTestResult):
         if self._ledger is not None:
             self._ledger.stop(test.id())
         super().stopTest(test)
+        if self._gc_boundary:
+            gc.collect()
 
 
 def verdict(failures, flaky, ui_violations, dirty):
@@ -695,16 +711,47 @@ def focused_environment():
                     os.environ[name] = value
 
 
+def list_modules(out_path, tests_dir=None):
+    """只发现、不运行：把 {模块: 用例数} 写成 JSON，供车道总指挥分配与核对总数。
+
+    导入失败的模块在 discover 里会变成 `unittest.loader._FailedTest`，模块名取它的
+    `_testMethodName`（即出错的模块名），这样它仍按名字出现在清单里，由真正跑它的车道报红。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tests_dir = tests_dir or os.path.join(root, "tests")
+    sys.path.insert(0, root)
+    sys.path.insert(0, tests_dir)
+    _preimport_project_modules()
+    # 按**文件**逐个加载，与 `--module` 完全同一条加载路径。不能按用例 id 里的模块名归类：
+    # 测试类被别的文件 import 进来时，同一批用例会在每个导入它的文件里各收集一遍，
+    # 按 id 归类会把它们记到定义它的那个文件头上，车道按文件分配时账就对不上了。
+    loader = unittest.TestLoader()
+    counts = {}
+    for path in sorted(pathlib.Path(tests_dir).glob("test_*.py")):
+        counts[path.stem] = loader.loadTestsFromName(path.stem).countTestCases()
+    problem = write_durations(out_path, {"schema": 1, "modules": counts, "total": sum(counts.values())})
+    if problem:
+        print("!! 模块清单没写成：" + problem)
+        return 2
+    print("模块清单已写入 %s（%d 个模块，%d 条用例）" % (out_path, len(counts), sum(counts.values())))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--self-test", action="store_true")
     action.add_argument("--module", action="append", type=module_name,
                         help="Run only this test module; repeat to combine (not the full gate)")
+    action.add_argument("--list-json", metavar="PATH",
+                        help="Discover every test module, write {module: case count} as JSON, run nothing")
     args = parser.parse_args(argv)
     if args.self_test:
         # 必须在任何发现/预导入之前分流，否则它会把整套用例再跑一遍（实测 88 秒）
         return self_test()
+    if args.list_json:
+        with focused_environment():
+            return list_modules(args.list_json)
     if args.module:
         with focused_environment():
             return run_tests(args.module)
@@ -712,6 +759,18 @@ def main(argv=None):
 
 
 def run_tests(modules=None):
+    boundary = gc_at_test_boundary()
+    was_enabled = gc.isenabled()
+    if boundary:
+        gc.disable()
+    try:
+        return _run_tests(modules)
+    finally:
+        if boundary and was_enabled:
+            gc.enable()
+
+
+def _run_tests(modules=None):
     timeout = float(os.environ.get("SF_TEST_TIMEOUT", "60") or 0)
     random_order = os.environ.get("SF_RANDOM_ORDER", "0") == "1"
     rerun = os.environ.get("SF_RERUN_FAILED", "1") == "1"
@@ -815,7 +874,17 @@ def run_tests(modules=None):
     # 退出码只有一个来源（verdict），这里不再自己判一遍：两处各写一份"什么算红"
     # 迟早会漂移，而这条判定决定 run_tests.sh 那句"可进行打包发布"能不能打印。
     # 结论字符串由 run_tests.sh 统一打印，此处不重复。
-    return verdict(failures, flaky, popped, dirty)
+    code = verdict(failures, flaky, popped, dirty)
+    # 车道总指挥靠这份结构化结果判定，不去解析打印出来的汇总文字（文字一改就悄悄失效）。
+    lane_out = os.environ.get("SF_LANE_RESULT_OUT", "").strip()
+    if lane_out:
+        problem = write_durations(lane_out, {
+            "schema": 1, "rc": code, "total": total,
+            "failures": [t.id() for t, _ in failures], "flaky": [t.id() for t in flaky],
+            "ui_violations": 1 if popped else 0, "dirty": [str(item) for item in (dirty or [])]})
+        if problem:
+            print("!! 车道结果没写成（总指挥会按缺结果判红）：" + problem)
+    return code
 
 
 def _exit_cleanly(code):

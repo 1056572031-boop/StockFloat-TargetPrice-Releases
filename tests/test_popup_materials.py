@@ -1,10 +1,13 @@
 """Cross-window material parity and same-window native view ownership."""
 
+import shutil
 import sys
+import tempfile
 import types
+from pathlib import Path
 from unittest import mock
 
-from PyQt6.QtCore import QCoreApplication, QEvent, QPoint
+from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QRect
 from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import QWidget
 
@@ -15,7 +18,8 @@ from sf_glass import GlassMixin, PopupGlassSurface, paint_popup_surface
 from sf_ui_render import RenderMixin
 from target_panel import TargetPanel
 from tests._base import SFCase
-from tools.popup_material_probe import CaptureScene, sample_surface
+import tools.popup_material_probe as probe
+from tools.popup_material_probe import CaptureScene, capture_stable, sample_surface, verify_popups
 
 _paint_main = RenderMixin._paint_background  # discipline-ok(R5): Compare actual background pixels without the paintEvent exception guard.
 _init = GlassMixin._init_glass_state  # discipline-ok(R5): The test host must have the same render state as production popups.
@@ -101,6 +105,265 @@ class SharedMaterialPixels(SFCase):
                 sample_surface(image, 0, 0, 200, 180, scale)
         with self.assertRaises(ValueError):
             sample_surface(QImage(20, 20, QImage.Format.Format_RGB32), 0, 0, 200, 180, 1)
+
+
+class _LevelWindow:
+    """A native window stand-in that remembers its level; `sticky` ignores setLevel_ (a window that will not stay put)."""
+
+    def __init__(self, sticky=False):
+        self.current = 25
+        self.sticky = sticky
+
+    def level(self):
+        return self.current
+
+    def setLevel_(self, value):
+        if not self.sticky:
+            self.current = value
+
+    def hidesOnDeactivate(self):
+        return True
+
+    def setHidesOnDeactivate_(self, value):
+        pass
+
+    def orderFrontRegardless(self):
+        pass
+
+
+class CaptureStackStability(SFCase):
+    """The colour-capture stack must hold its levels, or the shot is retaken (not misreported as a material fault)."""
+
+    def make_scene(self, sticky=False):
+        windows = [_LevelWindow(sticky=sticky) for _ in range(4)]
+        main, popup, backdrop = mock.Mock(), mock.Mock(), mock.Mock()
+        vars(main).update(_glass_window=windows[1])
+        mapping = {backdrop: windows[0], main: windows[2], popup: windows[3]}
+        with mock.patch.object(sf_glass, "content_ns_window", side_effect=mapping.get):
+            scene = CaptureScene(main, popup, backdrop)
+        scene.activate()
+        self.addCleanup(scene.close)
+        return scene, windows
+
+    def test_a_freshly_activated_stack_is_stable_and_costs_one_shot(self):
+        scene, _windows = self.make_scene()
+        shots, waits = [], []
+        self.assertEqual(scene.drifted(), [])
+        stable, tries, corrections, result = capture_stable(
+            scene, waits.append, lambda: shots.append("shot") or "taken")
+        self.assertEqual((stable, tries, corrections, result), (True, 1, 0, "taken"))
+        self.assertEqual(len(shots), 1)
+
+    def test_levels_reset_by_the_product_are_found_and_put_back_before_the_shot(self):
+        scene, windows = self.make_scene()
+        # The product's one-shot top re-assert: main window, glass and popup go back to production levels.
+        for index in (1, 2, 3):
+            windows[index].current = 25
+        self.assertEqual(scene.drifted(), [1, 2, 3])
+        shots = []
+        stable, tries, corrections, _result = capture_stable(scene, lambda seconds: None, lambda: shots.append(1))
+        self.assertTrue(stable)
+        self.assertEqual(tries, 1)
+        self.assertEqual(corrections, 1)
+        self.assertEqual(scene.drifted(), [])
+        self.assertEqual(len(shots), 1)
+        self.assertGreater(windows[2].level(), windows[0].level(), "main window must sit above the backdrop")
+
+    def test_a_reset_that_lands_during_the_shot_discards_it_and_retakes(self):
+        scene, windows = self.make_scene()
+        shots = []
+
+        def take():
+            shots.append(1)
+            if len(shots) == 1:
+                windows[3].current = 25          # drift lands while the screenshot is being taken
+            return len(shots)
+
+        stable, tries, corrections, result = capture_stable(scene, lambda seconds: None, take)
+        self.assertTrue(stable)
+        self.assertEqual((tries, len(shots), result), (2, 2, 2))
+        self.assertGreaterEqual(corrections, 1)
+        self.assertEqual(scene.drifted(), [])
+
+    def test_a_stack_that_never_holds_is_reported_not_passed(self):
+        scene, windows = self.make_scene(sticky=True)
+        windows[2].current = 25
+        shots = []
+        stable, tries, corrections, _result = capture_stable(
+            scene, lambda seconds: None, lambda: shots.append(1), attempts=3)
+        self.assertFalse(stable)
+        self.assertEqual((tries, len(shots)), (3, 3))
+        self.assertGreater(corrections, 0)
+        self.assertIn(2, scene.drifted())
+
+    def test_settle_gives_up_after_its_attempt_limit(self):
+        scene, windows = self.make_scene(sticky=True)
+        windows[0].current = 25
+        waits = []
+        stable, corrections = scene.settle(waits.append, attempts=4)
+        self.assertFalse(stable)
+        self.assertEqual(corrections, 4)
+        self.assertEqual(len(waits), 4)
+
+
+class _NativeWindow(_LevelWindow):
+    """A native window stand-in with the extra calls verify_popups makes on it."""
+
+    def __init__(self, sticky=False):
+        super().__init__(sticky=sticky)
+        self.content = mock.MagicMock()
+        self.view = mock.MagicMock()
+        self.view.window.return_value = self
+        self.view.superview.return_value = None
+        self.content.superview.return_value.subviews.return_value = [self.view, self.content]
+
+    def contentView(self):
+        return self.content
+
+    def setHasShadow_(self, value):
+        pass
+
+    def setCollectionBehavior_(self, value):
+        pass
+
+    def collectionBehavior(self):
+        return 0
+
+    def orderFront_(self, sender):
+        pass
+
+
+class _FakeTimer:
+    def isActive(self):
+        return True
+
+    def stop(self):
+        pass
+
+    def start(self):
+        pass
+
+
+class _FakeWidget:
+    """The few widget calls verify_popups makes on the main window and on a popup."""
+
+    def __init__(self, native, x, y, width, height, glass=None):
+        self.native = native
+        self.rect = QRect(x, y, width, height)
+        self.top_timer = _FakeTimer()
+        vars(self).update(_bg_effect=True, _glass_backend="legacy", _glass_window=glass,
+                          _popup_surface=types.SimpleNamespace(view=native.view),
+                          _glass_view=native.view)
+
+    def x(self):
+        return self.rect.x()
+
+    def y(self):
+        return self.rect.y()
+
+    def width(self):
+        return self.rect.width()
+
+    def height(self):
+        return self.rect.height()
+
+    def frameGeometry(self):
+        return QRect(self.rect)
+
+    def pos(self):
+        return QPoint(self.rect.x(), self.rect.y())
+
+    def move(self, *_args):
+        pass
+
+    def setAttribute(self, *_args):
+        pass
+
+    def hide(self):
+        pass
+
+    def show(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class VerifyPopupsStack(SFCase):
+    """Drive the real verify_popups with stand-in native windows and a fake screenshot tool."""
+
+    def run_probe(self, sticky_editor=False, drift_first_shot=False):
+        out = Path(tempfile.mkdtemp(prefix="sf_popup_probe_"))
+        self.addCleanup(shutil.rmtree, out, True)
+        backdrop_native = _NativeWindow()
+        main_native, glass_native = _NativeWindow(), _NativeWindow()
+        editor_native, targets_native = _NativeWindow(sticky=sticky_editor), _NativeWindow()
+        main = _FakeWidget(main_native, 400, 180, 184, 224, glass=glass_native)
+        editor = _FakeWidget(editor_native, 596, 180, 184, 151)
+        targets = _FakeWidget(targets_native, 596, 180, 206, 193)
+        vars(main).update(open_editor=lambda: None, _open_target_panel=lambda: None,
+                          _editor=editor, _target_panel=targets)
+        natives = {main: main_native, editor: editor_native, targets: targets_native}
+        shots, checks = [], {}
+
+        def fake_run(command, **_kwargs):
+            region = [part for part in command if part.startswith("-R")][0][2:].split(",")
+            image = QImage(int(region[2]), int(region[3]), QImage.Format.Format_RGB32)
+            image.fill(0xFF808080)
+            image.save(command[-1])
+            shots.append(Path(command[-1]).name)
+            if drift_first_shot and len(shots) == 1:
+                editor_native.current = 25     # the product's start-up re-assert lands during the shot
+            return types.SimpleNamespace(returncode=0, stderr="")
+
+        def check(name, value, detail=None):
+            checks[name] = (bool(value), detail)
+
+        try:
+            import AppKit
+        except ImportError:
+            self.skipTest("AppKit is not available; verify_popups imports it")
+        app = types.SimpleNamespace(processEvents=lambda: None)
+        with mock.patch.object(probe, "subprocess", types.SimpleNamespace(run=fake_run)), \
+                mock.patch.object(AppKit, "NSApp", types.SimpleNamespace(windows=lambda: []), create=True), \
+                mock.patch.object(sf_glass, "content_ns_window",
+                                  side_effect=lambda widget: natives.get(widget, backdrop_native)):
+            verify_popups(main, app, out, check, lambda predicate, timeout=5: bool(predicate()),
+                          lambda seconds: None)
+        return checks, shots
+
+    def stable_checks(self, checks):
+        return {name: value for name, value in checks.items() if name.endswith("_stack_stable")}
+
+    def test_a_steady_stack_is_reported_stable_for_every_popup_and_colour(self):
+        checks, shots = self.run_probe()
+        stable = self.stable_checks(checks)
+        self.assertEqual(len(stable), 8)
+        self.assertTrue(all(ok for ok, _detail in stable.values()))
+        self.assertTrue(all(detail["tries"] == 1 and detail["corrections"] == 0
+                            for _ok, detail in stable.values()))
+        self.assertEqual(len(shots), 8)
+        self.assertTrue(checks["editor_capture_restores_production_levels"][0])
+        self.assertTrue(checks["targets_capture_restores_production_levels"][0])
+
+    def test_a_reset_during_the_first_shot_is_corrected_and_the_shot_retaken(self):
+        checks, shots = self.run_probe(drift_first_shot=True)
+        ok, detail = checks["editor_light_stack_stable"]
+        self.assertTrue(ok)
+        self.assertEqual((detail["tries"], detail["corrections"]), (2, 1))
+        self.assertEqual(len(shots), 9, "exactly one shot was thrown away and retaken")
+        self.assertTrue(all(ok for ok, _detail in self.stable_checks(checks).values()))
+
+    def test_a_popup_that_will_not_hold_its_level_fails_its_own_check(self):
+        checks, shots = self.run_probe(sticky_editor=True)
+        stable = self.stable_checks(checks)
+        for colour in ("light", "dark", "warm", "cool"):
+            ok, detail = stable["editor_%s_stack_stable" % colour]
+            self.assertFalse(ok, colour)
+            self.assertEqual(detail["tries"], 3)
+            self.assertIn(3, detail["drifted"], "the popup is the window that drifted")
+            self.assertTrue(stable["targets_%s_stack_stable" % colour][0], colour)
+        self.assertEqual(len(shots), 12 + 4)
 
 
 class EmbeddedViewOwnership(SFCase):
