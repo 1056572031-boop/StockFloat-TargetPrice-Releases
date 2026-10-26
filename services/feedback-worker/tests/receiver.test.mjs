@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { ZipWriter, Uint8ArrayWriter, Uint8ArrayReader } from '@zip.js/zip.js';
-import worker, { FULL_POLICY, GitHubStore, INBOX_TAG, POLICY, REPOSITORY, digest, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
+import worker, { FULL_POLICY, FULL_V3_POLICY, GitHubStore, INBOX_TAG, POLICY, REPOSITORY, digest, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
 import { appJwt, manifest } from '../setup-github-app.mjs';
 
 const encoder = new TextEncoder();
@@ -17,10 +17,10 @@ const state = () => ({ app_version: '1.4.96', bundle_id: 'com.skyrocket.app', ru
   health: null, counts: { synthetic_error_count: 1 }, summary: { capture_issue_count: 0, loaded_modules: 1 },
   omitted: ['all_real_user_data'], truncated: [] });
 
-async function archiveFor({ text = 'SYNTHETIC TEST ONLY', value = state(), extra = false, wrongHash = false, symlink = false, problemName = 'problem.txt', diagnostics = null } = {}) {
+async function archiveFor({ text = 'SYNTHETIC TEST ONLY', value = state(), extra = false, wrongHash = false, symlink = false, problemName = 'problem.txt', diagnostics = null, payload = diagnostics ? 2 : 1 } = {}) {
   const files = { 'state.json': encoder.encode(JSON.stringify(value)), 'problem.txt': encoder.encode(text) };
   if (diagnostics) files['diagnostics.zip'] = diagnostics;
-  const meta = { schema_version: 1, diagnostic_payload_version: diagnostics ? 2 : 1, app_version: value.app_version,
+  const meta = { schema_version: 1, diagnostic_payload_version: payload, app_version: value.app_version,
     bundle_id: value.bundle_id, run_id: value.run_id, capture_started_at: value.capture_started_at,
     capture_completed_at: value.capture_completed_at, omitted: value.omitted, truncated: value.truncated,
     files: await Promise.all(Object.entries(files).map(async ([name, bytes]) => ({ name, size_bytes: bytes.length, sha256: wrongHash ? '0'.repeat(64) : await digest(bytes) }))) };
@@ -33,18 +33,28 @@ async function archiveFor({ text = 'SYNTHETIC TEST ONLY', value = state(), extra
       ...(symlink && name === 'problem.txt' ? { unixMode: 0o120777 } : {}) });
   }
   const archive = await writer.close();
-  const envelope = { schema_version: 1, diagnostic_payload_version: diagnostics ? 2 : 1, app_version: value.app_version,
-    consent_policy_version: diagnostics ? FULL_POLICY : POLICY, outbox_id: key(), idempotency_key: key(),
+  const envelope = { schema_version: 1, diagnostic_payload_version: payload, app_version: value.app_version,
+    consent_policy_version: payload === 3 ? FULL_V3_POLICY : diagnostics ? FULL_POLICY : POLICY, outbox_id: key(), idempotency_key: key(),
     size_bytes: archive.length, archive_sha256: await digest(archive) };
   return { archive, envelope };
 }
 
-async function fullDiagnostics(extra = {}) {
+async function v3Diagnostics() {
+  const extra = {
+    'environment.json': encoder.encode(JSON.stringify({ schema: 'environment.v1', available: true, data: {} })),
+    'permissions.json': encoder.encode(JSON.stringify({ schema: 'permissions.v1', available: false, reason: 'no_bundle' })),
+    'feedback_preferences.json': encoder.encode(JSON.stringify({ schema: 'feedback_preferences.v1', available: true, data: {} })),
+    'feedback_context.json': encoder.encode(JSON.stringify({ schema: 'feedback_context.v1', available: true, data: {} })),
+  };
+  return fullDiagnostics(extra, { diagnostic_schema_version: 3 });
+}
+
+async function fullDiagnostics(extra = {}, exportExtra = {}) {
   const files = { 'diagnostics.txt': encoder.encode('SYNTHETIC COMPLETE DIAGNOSTICS ONLY'),
     'runtime.json': encoder.encode('{"net_ok":true,"age":1.5}'), ...extra };
   for (const name of ['network.json', 'startup_health.json', 'feedback.json', 'targets.json', 'glass.json',
     'notify.json', 'universe.json', 'calendar.json', 'state.json', 'storage.json']) files[name] ??= encoder.encode('{}');
-  files['export.json'] = encoder.encode(JSON.stringify({ version: state().app_version, issues: [],
+  files['export.json'] = encoder.encode(JSON.stringify({ version: state().app_version, issues: [], ...exportExtra,
     files: Object.entries(files).map(([name, bytes]) => ({ name, size_bytes: bytes.length })) }));
   const writer = new ZipWriter(new Uint8ArrayWriter(), { useWebWorkers: false });
   for (const [name, bytes] of Object.entries(files)) await writer.add(name, new Uint8ArrayReader(bytes), { useWebWorkers: false });
@@ -66,6 +76,40 @@ test('full diagnostics preserve content with a distinct policy and old packets r
     assert.equal((await worker.fetch(request(legacy), env)).status, 200);
   });
   env.DB.native.close();
+});
+
+test('payload v3 requires four fixed metadata snapshots while retaining v1/v2 compatibility', async () => {
+  const v3 = await archiveFor({ diagnostics: await v3Diagnostics(), payload: 3 });
+  await validateArchive(v3.archive, v3.envelope);
+  const env = environment();
+  const remote = new FakeGitHub();
+  await withGitHub(remote, async () => {
+    const result = await worker.fetch(request(v3), env);
+    assert.equal(result.status, 200, await result.clone().text());
+    const v3Receipt = await result.json();
+    assert.equal(v3Receipt.consent_policy_version, FULL_V3_POLICY);
+    // 客户端对 v2/v3 完整包的回执都要求 validation_scope；缺了它客户端会把一次成功收件
+    // 判成「回执不属于当前批准的 GitHub 反馈」（生产合成包实测）。
+    assert.equal(v3Receipt.validation_scope, 'container_sha256_and_member_catalog');
+    const incomplete = await archiveFor({ diagnostics: await fullDiagnostics(), payload: 3 });
+    await assert.rejects(validateArchive(incomplete.archive, incomplete.envelope));
+    assert.equal((await worker.fetch(request(incomplete), env)).status, 422);
+  });
+  env.DB.native.close();
+});
+
+test('a historical v3 receipt missing validation scope remains idempotently recoverable', async () => {
+  const packet = await archiveFor({ diagnostics: await v3Diagnostics(), payload: 3 });
+  const remote = new FakeGitHub();
+  const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+  const first = await store.publish(packet.envelope, packet.archive);
+  const receiptAsset = [...remote.assets.values()].find(asset => asset.name.endsWith('.receipt.json'));
+  const legacy = JSON.parse(new TextDecoder().decode(receiptAsset.bytes));
+  delete legacy.validation_scope;
+  receiptAsset.bytes = encoder.encode(JSON.stringify(legacy));
+  const recovered = await store.publish(packet.envelope, packet.archive);
+  assert.equal(recovered.validation_scope, 'container_sha256_and_member_catalog');
+  assert.equal(remote.uploadCount, 2, 'recovery must reuse both already-stored assets');
 });
 
 test('full payload refuses wrong policy, nested traversal, bad JSON and mismatched capture context', async () => {
@@ -289,7 +333,10 @@ test('disabled service, invalid headers and quotas never transmit data', async (
   const remote = new FakeGitHub();
   await withGitHub(remote, async () => {
     assert.equal((await worker.fetch(request(packet), { ENABLED: 'false' })).status, 503);
-    assert.equal((await worker.fetch(new Request('https://receiver.example/health'), { ENABLED: 'false' })).status, 200);
+    const health = await worker.fetch(new Request('https://receiver.example/health'), { ENABLED: 'false' });
+    assert.equal(health.status, 200);
+    // /health 声明的版本必须与实际接受的版本一致：v3 已被接受却不声明，外部探测会据此误判。
+    assert.deepEqual((await health.json()).payloadVersions, [1, 2, 3]);
     assert.equal((await worker.fetch(new Request('https://receiver.example/unknown'), env)).status, 404);
     assert.equal((await worker.fetch(new Request('https://receiver.example/v1/feedback', { method: 'POST' }), env)).status, 400);
     env.DB.native.prepare('INSERT INTO budget VALUES (?,100)').run(new Date().toISOString().slice(0, 10));

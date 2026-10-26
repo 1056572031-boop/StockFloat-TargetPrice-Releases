@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
-from release_identity import NOTES_MAX_CHARS  # noqa: E402
+from release_identity import NOTES_MAX_CHARS, count_notes_chars, notes_over_limit_detail  # noqa: E402
 from sf_constants import APP_VERSION  # noqa: E402
 from sf_update import require_numbered_notes, UpdateError  # noqa: E402
 
@@ -63,8 +63,9 @@ def problems(root: Path, version: str) -> list[str]:
             require_numbered_notes(section[1].strip())
         except UpdateError as exc:
             bad.append("release_notes.txt: " + str(exc))
-        if len(re.sub(r"\s", "", section[0])) > NOTES_MAX_CHARS:
-            bad.append("release_notes.txt: this release exceeds %d characters" % NOTES_MAX_CHARS)
+        used = count_notes_chars(section[0])
+        if used > NOTES_MAX_CHARS:
+            bad.append("release_notes.txt: this release is " + notes_over_limit_detail(used, NOTES_MAX_CHARS))
     guide = texts.get("docs/INSTALL.md", "")
     if "本构建仅用于本机覆盖安装" not in guide:
         for filename in (f"Skyrocket-V{version}.dmg", f"Skyrocket-{version}-SHA256SUMS.txt"):

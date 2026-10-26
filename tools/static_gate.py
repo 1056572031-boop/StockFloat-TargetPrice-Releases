@@ -116,6 +116,25 @@ def product_files() -> list[pathlib.Path]:
     return sorted(p for p in ROOT.glob("*.py") if p.name not in PRODUCT_SKIP)
 
 
+def service_files() -> list[pathlib.Path]:
+    """辅助服务的 Python 工具。
+
+    这些脚本会把桌面程序身份、品牌和发布资产带到公开入口；漏扫它们会让
+    ruff 的 "全仓" 口径只停在桌面根目录。只选 Python，Node Worker 仍由自身测试守。
+    """
+    return sorted((ROOT / "services").glob("**/*.py"))
+
+
+def ratchet_files() -> list[pathlib.Path]:
+    """B 级 ruff 的范围：产品根模块和会随发布一同执行的 Python 工具。"""
+    return product_files() + service_files()
+
+
+def static_tool_files() -> list[pathlib.Path]:
+    """会参与发布或公开入口构建的 Python 工具，和 tools/ 同样要进类型层。"""
+    return service_files()
+
+
 def mypy_files() -> list[pathlib.Path]:
     """交给 mypy 计账的文件：产品根模块 + tools/。
 
@@ -127,8 +146,8 @@ def mypy_files() -> list[pathlib.Path]:
     全都出在 tools/，而它此前只被 ruff 的 A 级规则扫到（未定义名），
     属性拼错、None 解引用这类根本没进过视野。
     """
-    return product_files() + sorted(p for p in (ROOT / "tools").glob("*.py")
-                                    if p.name not in PRODUCT_SKIP)
+    return (product_files() + sorted(p for p in (ROOT / "tools").glob("*.py")
+                                    if p.name not in PRODUCT_SKIP) + static_tool_files())
 
 
 def _parse_ruff(stdout: str) -> collections.Counter:
@@ -162,8 +181,8 @@ def run_ruff_hard() -> tuple[collections.Counter, collections.Counter]:
 
 
 def run_ruff_ratchet() -> tuple[collections.Counter, str]:
-    """B 级：只扫产品根模块的未用导入/未用赋值。"""
-    files = [str(p.relative_to(ROOT)) for p in product_files()]
+    """B 级：扫产品与辅助服务的未用导入/未用赋值。"""
+    files = [str(p.relative_to(ROOT)) for p in ratchet_files()]
     cp = _run([_ruff_exe(), "check", "--no-cache", "--quiet",
                "--select", RUFF_RATCHET, "--output-format", "concise"] + files)
     if cp.returncode not in (0, 1):

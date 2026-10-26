@@ -24,7 +24,6 @@
   "mypy:sf_system_alert.py:assignment": 1,
   "mypy:sf_system_alert.py:misc": 1,
   "mypy:sf_system_alert.py:var-annotated": 1,
-  "mypy:sf_ui_render.py:assignment": 1,
   "mypy:sf_ui_render.py:attr-defined": 76,
   "mypy:sf_ui_render.py:call-overload": 3,
   "mypy:sf_ui_render.py:has-type": 6,
@@ -80,5 +79,5 @@
   "mypy:tools/verify_bundle_consts.py:var-annotated": 1,
   "ruff:stock_float_window.py:F401": 9
  },
- "total": 305
+ "total": 304
 }

@@ -1043,3 +1043,280 @@ class TestCommitCommandLine(CommitCase):
             with self.subTest(argv=argv), self.assertRaises(SystemExit) as raised:
                 w.main(argv)
             self.assertEqual(raised.exception.code, 2)
+
+
+class TestCheckReady(CommitCase):
+    """Every refusal `commit` can make before it touches the index, asked on its own and without side effects."""
+
+    def ready(self, **overrides):
+        args = dict(repo=self.repo, paths=["base.txt"], message_file=self.msg, author=None, expected_head=None)
+        args.update(overrides)
+        return w.check_ready(**args)
+
+    def test_it_reports_the_plan_without_printing_or_changing_anything(self):
+        self.change()
+        before = self.head()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ready = self.ready()
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual((ready["branch"], ready["head"], ready["paths"]), ("main", before, ["base.txt"]))
+        self.assertEqual((ready["identity"], ready["author"]), (self.HEAD_AUTHOR, "%s <%s>" % self.HEAD_AUTHOR))
+        self.assertIn("feat: probe", ready["message"])
+        self.assertEqual((self.staged(), self.head(), self.hook_ran()), ([], before, False))
+
+    def test_the_author_option_replaces_the_head_identity(self):
+        self.change()
+        self.assertEqual(self.ready(author="Cli User <cli@example.invalid>")["identity"],
+                         ("Cli User", "cli@example.invalid"))
+
+    def test_every_refusal_is_raised_before_anything_is_staged(self):
+        self.change()
+        cases = ((dict(paths=["/abs.txt"]), "distinct, exact"),
+                 (dict(message_file=self.root / "missing.txt"), "cannot read the message file"),
+                 (dict(message_file=self.put("blank.txt", " \n")), "is empty"),
+                 (dict(expected_head="0" * 40), "not the expected"),
+                 (dict(author="nonsense"), "--author must look like"),
+                 (dict(paths=["other.txt"]), "no pending change in: other.txt"))
+        for override, pattern in cases:
+            with self.subTest(pattern=pattern), self.assertRaisesRegex(w.WrapupError, pattern):
+                self.ready(**override)
+        self.assertEqual(self.staged(), [])
+
+    def test_an_index_that_already_holds_staged_changes_is_refused(self):
+        self.change("other.txt", "x\n")
+        self.git(self.repo, "add", "--", "other.txt")
+        self.change()
+        with self.assertRaisesRegex(w.WrapupError, "already holds staged changes"):
+            self.ready()
+        self.assertEqual(self.staged(), ["other.txt"])
+
+    def test_a_detached_head_is_refused(self):
+        self.change()
+        self.git(self.repo, "checkout", "-q", "--detach")
+        with self.assertRaisesRegex(w.WrapupError, "HEAD is detached"):
+            self.ready()
+
+class MergeCase(CommitCase):
+    """A repository with `main` and a diverged `side` branch, so a merge between them is a real two-parent one."""
+
+    def setUp(self):
+        super().setUp()
+        self.git(self.repo, "checkout", "-q", "-b", "side")
+        self.put("side.txt", "side\n", self.repo)
+        self.git(self.repo, "add", "--", "side.txt")
+        self.git_as(self.repo, self.HEAD_AUTHOR, "commit", "-qm", "side work")
+        self.side = self.head()
+        self.git(self.repo, "checkout", "-q", "main")
+        self.put("main.txt", "main\n", self.repo)
+        self.git(self.repo, "add", "--", "main.txt")
+        self.git_as(self.repo, self.HEAD_AUTHOR, "commit", "-qm", "main work")
+        (self.repo / ".git" / "hook-ran").unlink(missing_ok=True)  # the setup commits above ran the hook too
+        self.main = self.head()
+
+    def start_merge(self):
+        """Leave an unfinished, conflict-free merge of `side` into `main` and return its index tree."""
+        self.git(self.repo, "merge", "-q", "--no-ff", "--no-commit", "side")
+        return self.git(self.repo, "write-tree").stdout.strip()
+
+    def start_conflict(self):
+        """Leave an unfinished merge that has an unresolved conflict in base.txt."""
+        self.git(self.repo, "checkout", "-q", "-b", "clash", self.main)
+        self.change("base.txt", "clash side\n")
+        self.git(self.repo, "add", "--", "base.txt")
+        self.git_as(self.repo, self.HEAD_AUTHOR, "commit", "-qm", "clash")
+        self.git(self.repo, "checkout", "-q", "main")
+        self.change("base.txt", "main side\n")
+        self.git(self.repo, "add", "--", "base.txt")
+        self.git_as(self.repo, self.HEAD_AUTHOR, "commit", "-qm", "main edit")
+        merged = subprocess.run(["git", "merge", "-q", "--no-ff", "--no-commit", "clash"], cwd=str(self.repo),
+                                env=self.env, capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(merged.returncode, 1, merged.stdout + merged.stderr)
+
+    def write_hook(self, body):
+        """Replace the installed hook without committing (a commit would end the merge being tested)."""
+        installed = self.repo / ".git" / "hooks" / "pre-commit"
+        installed.write_text(body, encoding="utf-8")
+        installed.chmod(0o755)
+
+
+class TestMergeState(MergeCase):
+    def test_no_merge_means_no_heads(self):
+        self.assertEqual(w.merge_heads(self.repo), [])
+        self.assertEqual(w.merge_heads(self.root), [])  # not a repository at all
+
+    def test_an_unfinished_merge_names_the_commit_it_brings_in(self):
+        tree = self.start_merge()
+        self.assertEqual(w.merge_heads(self.repo), [self.side])
+        state = w.merge_state(self.repo)
+        self.assertEqual(state, {"head": self.main, "merge_heads": [self.side], "tree": tree, "unmerged": [],
+                                 "worktree_clean": True})
+
+    def test_an_edited_working_file_is_reported_as_not_clean(self):
+        self.start_merge()
+        self.change("main.txt", "edited after review\n")
+        self.assertFalse(w.merge_state(self.repo)["worktree_clean"])
+
+    def test_a_conflict_is_listed_and_leaves_no_tree(self):
+        self.start_conflict()
+        state = w.merge_state(self.repo)
+        self.assertEqual((state["unmerged"], state["tree"]), (["base.txt"], ""))
+        self.assertEqual(len(state["merge_heads"]), 1)
+
+    def test_outside_a_repository_every_field_fails_the_comparison(self):
+        state = w.merge_state(self.root)
+        self.assertEqual((state["head"], state["merge_heads"], state["tree"], state["unmerged"]), ("", [], "", []))
+
+class TestCheckMergeReady(MergeCase):
+    def ready(self, **overrides):
+        args = dict(repo=self.repo, message_file=self.msg, author=None, expected_head=self.main,
+                    source=self.side, expected_tree=self.tree)
+        args.update(overrides)
+        return w.check_merge_ready(**args)
+
+    def setUp(self):
+        super().setUp()
+        self.tree = self.start_merge()
+
+    def test_the_reviewed_merge_is_ready_and_nothing_is_printed_or_changed(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ready = self.ready()
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual((ready["branch"], ready["head"], ready["source"], ready["tree"]),
+                         ("main", self.main, self.side, self.tree))
+        self.assertEqual((ready["identity"], ready["author"]), (self.HEAD_AUTHOR, "%s <%s>" % self.HEAD_AUTHOR))
+        self.assertEqual((self.head(), w.merge_heads(self.repo), self.hook_ran()), (self.main, [self.side], False))
+
+    def test_the_reviewed_values_are_optional_for_a_caller_that_has_none(self):
+        self.assertEqual(self.ready(expected_head=None, source=None, expected_tree=None)["source"], self.side)
+
+    def test_the_author_option_replaces_the_head_identity(self):
+        self.assertEqual(self.ready(author="Cli User <cli@example.invalid>")["identity"],
+                         ("Cli User", "cli@example.invalid"))
+
+    def test_every_refusal_names_what_is_wrong(self):
+        cases = ((dict(source="0" * 40), "not the expected source"),
+                 (dict(expected_tree="0" * 40), "not the reviewed"),
+                 (dict(expected_head="0" * 40), "not the expected"),
+                 (dict(message_file=self.root / "missing.txt"), "cannot read the message file"),
+                 (dict(message_file=self.put("blank.txt", "\n")), "is empty"),
+                 (dict(author="nonsense"), "--author must look like"))
+        for override, pattern in cases:
+            with self.subTest(pattern=pattern), self.assertRaisesRegex(w.WrapupError, pattern):
+                self.ready(**override)
+
+    def test_a_working_file_that_differs_from_the_index_is_refused(self):
+        self.change("main.txt", "edited after review\n")
+        with self.assertRaisesRegex(w.WrapupError, "working files differ from the index"):
+            self.ready()
+
+    def test_a_merge_with_two_sources_is_refused(self):
+        (self.repo / ".git" / "MERGE_HEAD").write_text("%s\n%s\n" % (self.side, self.main), encoding="utf-8")
+        with self.assertRaisesRegex(w.WrapupError, "lists 2 commits"):
+            self.ready()
+
+    def test_a_tree_that_cannot_be_computed_is_refused(self):
+        broken = dict(w.merge_state(self.repo), tree="")
+        with mock.patch.object(w, "merge_state", return_value=broken), \
+                self.assertRaisesRegex(w.WrapupError, "write-tree failed"):
+            self.ready()
+
+    def test_no_merge_at_all_is_refused(self):
+        self.git(self.repo, "merge", "--abort")
+        with self.assertRaisesRegex(w.WrapupError, "no merge is in progress"):
+            self.ready()
+
+    def test_an_unresolved_conflict_is_listed_by_name(self):
+        self.git(self.repo, "merge", "--abort")
+        self.start_conflict()
+        with self.assertRaisesRegex(w.WrapupError, "unresolved conflicts: base.txt"):
+            self.ready(expected_head=None, source=None, expected_tree=None)
+
+
+class TestVerifyMerge(MergeCase):
+    def test_only_the_reviewed_merge_commit_is_accepted(self):
+        tree = self.start_merge()
+        self.git_as(self.repo, self.HEAD_AUTHOR, "commit", "-qm", "merge side")
+        good = dict(repo=self.repo, head=self.main, source=self.side, tree=tree, identity=self.HEAD_AUTHOR)
+        self.assertEqual(w.verify_merge(**good), self.head())
+        new = self.head()
+        for override, pattern in ((dict(head=new), "HEAD did not move"),
+                                  (dict(head=self.side, source=self.main), "has parents"),
+                                  (dict(source="0" * 40), "has parents"),
+                                  (dict(tree="0" * 40), "different tree"),
+                                  (dict(identity=("Someone", "else@example.invalid")), "carries the identity")):
+            with self.subTest(pattern=pattern), self.assertRaisesRegex(w.WrapupError, pattern):
+                w.verify_merge(**dict(good, **override))
+        (self.repo / ".git" / "MERGE_HEAD").write_text(self.side + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(w.WrapupError, "MERGE_HEAD is still present"):
+            w.verify_merge(**good)
+
+class TestMergeCommit(MergeCase):
+    def setUp(self):
+        super().setUp()
+        self.tree = self.start_merge()
+
+    def merge(self, **overrides):
+        args = dict(repo=self.repo, message_file=self.msg, author=None, expected_head=self.main, source=self.side,
+                    expected_tree=self.tree, apply=True, timeout=60, log=self.log)
+        args.update(overrides)
+        return w.merge_commit(**args)
+
+    def parents(self):
+        return self.git(self.repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[1:]
+
+    def test_a_dry_run_plans_the_merge_and_runs_nothing(self):
+        result = self.merge(apply=False)
+        self.assertEqual((result["head"], result["source"], result["tree"]), (self.main, self.side, self.tree))
+        self.assertEqual((self.head(), w.merge_heads(self.repo), self.hook_ran(), self.log.exists()),
+                         (self.main, [self.side], False, False))
+
+    def test_apply_commits_the_reviewed_merge_through_the_real_hook(self):
+        result = self.merge()
+        self.assertEqual(result["commit"], self.head())
+        self.assertEqual(self.parents(), [self.main, self.side])
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD^{tree}").stdout.strip(), self.tree)
+        self.assertEqual(self.ident(), list(self.HEAD_AUTHOR) * 2)
+        self.assertTrue(self.hook_ran(), "the real pre-commit hook must run")
+        self.assertIn("gate-says-hello", self.log.read_text(encoding="utf-8"))
+        self.assertEqual(w.merge_heads(self.repo), [])
+        self.assertEqual(self.git(self.repo, "log", "-1", "--format=%s").stdout.strip(), "feat: probe")
+
+    def test_the_author_option_is_applied_to_this_commit_only(self):
+        self.merge(author="Cli User <cli@example.invalid>")
+        self.assertEqual(self.ident(), ["Cli User", "cli@example.invalid"] * 2)
+        self.assertEqual(self.git(self.repo, "config", "user.name").stdout.strip(), "config-user")
+
+    def test_without_a_log_path_the_hook_output_goes_to_a_temp_file(self):
+        result = self.merge(log=None)
+        log = Path(result["log"])
+        self.addCleanup(log.unlink, missing_ok=True)
+        self.assertIn("gate-says-hello", log.read_text(encoding="utf-8"))
+
+    def test_a_refused_merge_never_reaches_the_hook(self):
+        with self.assertRaisesRegex(w.WrapupError, "not the reviewed"):
+            self.merge(expected_tree="0" * 40)
+        self.assertEqual((self.hook_ran(), self.head(), w.merge_heads(self.repo)), (False, self.main, [self.side]))
+
+    def test_a_failing_hook_leaves_the_merge_exactly_as_it_was_and_shows_its_message(self):
+        self.write_hook("#!/bin/sh\necho gate-rejected-this >&2\nexit 1\n")
+        with self.assertRaisesRegex(w.WrapupError, "still uncommitted") as raised:
+            self.merge()
+        self.assertIn("gate-rejected-this", str(raised.exception))
+        self.assertEqual((self.head(), w.merge_heads(self.repo)), (self.main, [self.side]))
+        self.assertEqual(w.merge_state(self.repo)["tree"], self.tree)
+        self.write_hook("#!/bin/sh\nexit 0\n")  # the same merge can simply be committed again
+        self.assertEqual(self.merge()["commit"], self.head())
+
+    def test_the_lost_lock_marker_survives_into_the_error_text(self):
+        self.write_hook("#!/bin/sh\necho 已有另一轮完整回归 >&2\nexit 1\n")
+        with self.assertRaises(w.WrapupError) as raised:
+            self.merge()
+        self.assertIn("已有另一轮完整回归", str(raised.exception))
+
+    def test_a_hook_that_changes_the_index_is_reported_after_the_fact(self):
+        self.write_hook("#!/bin/sh\necho more >> side.txt\ngit add side.txt\nexit 0\n")
+        with self.assertRaisesRegex(w.WrapupError, "different tree from the one reviewed"):
+            self.merge()
+        self.assertNotEqual(self.head(), self.main, "the commit exists, and the error says which one")

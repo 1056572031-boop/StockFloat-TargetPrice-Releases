@@ -895,6 +895,13 @@ class RenderMixin:
                     self._sf_first_frame_logged = True
                     log_line("first-frame painted %dx%d"
                              % (self.width(), self.height()))
+                    session = vars(self).get("_runtime_session")
+                    session_id = vars(self).get("_runtime_session_id")
+                    if session is not None and isinstance(session_id, str):
+                        try:
+                            session.mark_frame_ready(session_id)
+                        except Exception as exc:
+                            log_swallow("sf_ui_render.first_frame_session", exc)
             except Exception:
                 # v1.2.95 第3轮走查：绘制路径在动画/拖动时可达 60Hz，此处
                 # 无条件日志会把日志文件刷满。改为首条 + 每 60 条（约 1 秒

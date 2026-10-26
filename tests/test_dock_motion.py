@@ -39,7 +39,7 @@ def bezier_y(curve, x):
     return 3 * (1 - t) ** 2 * t * c1y + 3 * (1 - t) * t ** 2 * c2y + t ** 3
 
 
-CURVES = {"lead": D.CURVE_LEAD, "fall": D.CURVE_FALL, "soft": D.CURVE_SOFT}
+CURVES = {"lead": D.CURVE_LEAD, "soft": D.CURVE_SOFT}
 
 
 class TestCurves(SFCase):
@@ -106,6 +106,35 @@ class TestFlightPlan(SFCase):
             self.assertGreaterEqual(cy - half_h, -1e-6, "t=%.2f 上边被舞台窗裁掉" % t)
             self.assertLessEqual(cx + half_w, flight.stage[2] + 1e-6, "t=%.2f 右边被舞台窗裁掉" % t)
             self.assertLessEqual(cy + half_h, flight.stage[3] + 1e-6, "t=%.2f 下边被舞台窗裁掉" % t)
+
+    def test_center_travels_along_a_straight_line(self):
+        """用户 2026-10-23 要求轨迹是直线、不是弧线。判据取可观测的几何事实：
+        沿时间逐点算出窗口中心，每一点到「起点→终点」连线的距离都应为 0。
+        缩小与放大两个方向都要查。"""
+        for closing in (True, False):
+            flight = D.plan_flight(WIN, DOCK, closing)
+            (x0, y0), (x1, y1) = flight.centers
+            dx, dy = x1 - x0, y1 - y0
+            length = (dx * dx + dy * dy) ** 0.5
+            self.assertGreater(length, 50.0, "夹具里起终点太近，直线判据量不出东西")
+            for i in range(101):
+                t = i / 100.0
+                cx = x0 + dx * bezier_y(flight.curves["x"], t)
+                cy = y0 + dy * bezier_y(flight.curves["y"], t)
+                off_line = abs((cx - x0) * dy - (cy - y0) * dx) / length
+                self.assertLess(off_line, 1e-6, "closing=%s t=%.2f 中心偏离连线 %.3f，轨迹成了弧线"
+                                % (closing, t, off_line))
+
+    def test_position_axes_share_one_curve(self):
+        for closing in (True, False):
+            curves = D.plan_flight(WIN, DOCK, closing).curves
+            self.assertEqual(curves["x"], curves["y"], "横纵位置曲线不同，进度不同步，轨迹会拐弯")
+
+    def test_durations_are_short(self):
+        """用户 2026-10-23 要求缩短：缩小 0.15 秒、放大 0.18 秒、落地溶解 0.07 秒，上限以此为准。"""
+        self.assertLessEqual(D.COLLAPSE_SEC, 0.15)
+        self.assertLessEqual(D.EXPAND_SEC, 0.18)
+        self.assertLessEqual(D.DISSOLVE_SEC, 0.07)
 
     def test_durations_and_fade_shape(self):
         close, opened = D.plan_flight(WIN, DOCK, True), D.plan_flight(WIN, DOCK, False)

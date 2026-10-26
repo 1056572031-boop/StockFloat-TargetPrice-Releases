@@ -23,7 +23,7 @@ from nacl.signing import SigningKey
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_identity import NOTES_MAX_CHARS, REPO, TAG  # noqa: E402
+from release_identity import NOTES_MAX_CHARS, REPO, TAG, count_notes_chars  # noqa: E402
 # v1.4.55 全局改名：产物与清单里的身份字段一起换（REPO 名不动 —— 那是外部仓库地址，
 # 改它要连 GitHub 仓库一起搬，客户端里也有它）。
 APP_NAME = "Skyrocket.app"
@@ -75,12 +75,14 @@ def require_own_section(raw_notes, version):
     # 是弹在用户屏幕上的，长文等于没人看（v1.4.50~53 那几版都是 5~8 行）。
     # 计数口径：去掉所有空白后的字符数（中文按字、英文按字母，标题行一起算）。
     body = own_section_text(raw_notes, version)
-    n = len("".join(body.split()))
+    n = count_notes_chars(body)
     if n > NOTES_MAX_CHARS:
         raise SystemExit(
-            "v%s 这一节说明 %d 字，超过 %d 字上限 —— 用户定的永久规则："
-            "OTA 更新日志必须用最少的字说清更新内容。请删到 %d 字以内再打包。"
-            % (version, n, NOTES_MAX_CHARS, NOTES_MAX_CHARS))
+            "v%s 这一节说明 %d 字，上限 %d 字，超出 %d 字（空白不计，标题行和编号“1.”计入）"
+            " —— 用户定的永久规则：OTA 更新日志必须用最少的字说清更新内容。"
+            "请至少删掉 %d 字，到 %d 字以内再打包。"
+            % (version, n, NOTES_MAX_CHARS, n - NOTES_MAX_CHARS,
+               n - NOTES_MAX_CHARS, NOTES_MAX_CHARS))
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
     import sf_update

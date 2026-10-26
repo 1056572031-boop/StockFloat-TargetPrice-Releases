@@ -3,6 +3,7 @@
 
 import collections
 import http.client
+import os
 import ssl
 import threading
 import time
@@ -357,9 +358,15 @@ def http_get(url, gbk=True, timeout=HTTP_TIMEOUT, retries=HTTP_RETRIES, headers=
     """HTTP GET 统一入口（5.1/6.4 v1.2.5）：优先走连接池复用并埋点；
     连接池路径任何异常自动回退原 urllib 实现，埋点失败静默跳过，不影响主流程。
 
+    `SF_REJECT_NETWORK=1` 只由装机版的**受控走查子进程**设置：它在唯一网络入口上硬拒绝，
+    使六码换股票、后台行情/分时线程都不能偷偷出网。普通产品和发布流程不设该变量，行为不变；
+    拒绝抛 OSError，让产品既有“主备都失败”的兜底路线如实呈现，而不是伪造行情数据。
+
     v1.3.65：新增 pooled 参数。连接池 _NET_POOL 无锁，并发取/还连接会竞态，
     故**与行情线程并发**的请求（搜索的东财兜底）必须 pooled=False 走 urllib
     独立连接，不碰共享连接池。"""
+    if os.environ.get("SF_REJECT_NETWORK") == "1":
+        raise OSError("network disabled for controlled walkthrough")
     global _LAST_HTTP_STATUS
     # close_all() 只中止当时在途请求的重试等待；明确发起的新一轮请求换用新令牌。
     abort_event = _begin_network_round()

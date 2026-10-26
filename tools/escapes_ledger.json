@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-23",
+  "updated": "2026-10-25",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4460,6 +4460,82 @@
       "source": "2026-10-22 每日复核：sf_notify._PENDING_TTL_SEC 与 stock_float_window._evaluate_targets 代码走读，未在装机版复现",
       "evidence": "verified",
       "rootcause_origin": "unknown"
+    },
+    {
+      "id": "N21",
+      "symptom": "自动更新的回退包清理只认当前包名：改名（1.4.55）之前装的旧名隐藏回退包（.实时股价-目标价版.app.rollback-*）永远不被清理；用户机器实测 30 份约 5.22GB（1.4.101 诊断包 storage.json；同机 1.4.99 反馈里是 31 份约 5.39GB）。同族：S38、S48",
+      "component": "自动更新",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.59",
+      "introduced_note": "清理函数自诞生（0621149，1.4.59）起只扫当前包名，改名（1.4.55）前留下的旧名回退包从未在覆盖范围内；1.4.59 另有 S48 所述的目录错位，到 1.4.61 才真正生效",
+      "found_version": "1.4.99",
+      "fixed_version": "1.4.102",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "清理的用例与夹具只造当前包名（.Skyrocket.app.rollback-*）的回退包，没有任何一条用例造改名前的旧名目录；S38、S48 修的都是『当前名字的回退包不被清』，没人问『改名前留下的呢』。诊断包 storage.json 能看见这批目录，所以定位这一道没失守，失守的是验证。",
+      "defense_added": [
+        "updater/update_helper.sh：名字不同的隐藏回退包按 Info.plist 包标识（本程序两代之一）并要求后缀为纯数字 epoch 才纳入，按 epoch 数值排序留最新一份（94268fa 随 1.4.102 出包；清理由安装时已装的那份助手执行，所以用户机器要装上 1.4.102 之后、再下一次更新才真正清理）",
+        "tests/test_update_helper_legacy_rollbacks.py 六条：旧名按标识清理、跨名字按数值排序、别家目录与读不到标识与非纯数字后缀一概不动、单份旧名保留；2026-10-23 复验：退回只认当前包名、按路径排序、不核对标识、不要求纯数字后缀四处改坏均变红"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "locate_unknown_reason": "起点只能证明导出诊断包时该状态已存在，无法证明现象首次可观测的时刻；根因在 2026-10-22 对反馈包的代码走读中确认，没有独立日志锚点可证明确认时刻；开条时刻只是记账时刻，不计定位时长。",
+      "source": "feedback:59323c71ca824508a7487d0db295a02a（1.4.99）与 feedback:d4cd4cb6be9b4522864ae8b4db24dbb0（1.4.101）的 storage.json.updates.rollback_apps",
+      "evidence": "verified",
+      "rootcause_origin": "unknown",
+      "timestamp_audit": [
+        {
+          "audited_on": "2026-10-22",
+          "classification": "bookkeeping_not_duration",
+          "original_observed_at": "2026-10-22 13:54:12+08:00",
+          "original_rootcause_at": null,
+          "reason": "N21 与 N22 在同一条命令里连续开条，共用同一秒的记账时刻",
+          "evidence_checked": [
+            "feedback:d4cd4cb6be9b4522864ae8b4db24dbb0 的 storage.json / notify.json / runtime.json（只能证明导出时状态已存在）"
+          ],
+          "result": "该时刻是敲命令的时刻，不是现象首次可观测的时刻；找不到能证明首次现象的秒级证据，退回未知，不借会话、提交或文件时刻替代"
+        }
+      ]
+    },
+    {
+      "id": "N22",
+      "symptom": "诊断包 notify.json 的 authorization_cache.age_sec 在从未查询过授权时写成开机时长（实测 885193.9 秒，约 10.2 天）：缓存时间戳初值是 0.0，monotonic 从开机算起，两者相减就是开机时长；读诊断的人会以为 10 天前问过一次系统",
+      "component": "通知",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.101",
+      "introduced_note": null,
+      "found_version": "1.4.101",
+      "fixed_version": "1.4.102",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "年龄用例把假时钟起点设成 1000 并先写过缓存，没有任何一条用例在『从未写过缓存』且 monotonic 取真实量级时读一次 delivery_stats；0.0 同时当『未设置』哨兵和真实时钟读数，只在开机已久的真机上露头。",
+      "defense_added": [
+        "sf_notify.delivery_stats：时间戳仍是初值 0.0 时年龄按无穷处理，age_sec 落成 None 且不算新鲜（94268fa 随 1.4.102 出包；应用内读数，装上 1.4.102 起诊断包即正确）",
+        "tests/test_notify_stats_never_queried.py 两条：从未缓存→None 且 value=unknown；真缓存仍报真实年龄；2026-10-23 复验：撤回修复变红"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "locate_unknown_reason": "起点只能证明导出诊断包时该状态已存在，无法证明现象首次可观测的时刻；根因在 2026-10-22 对反馈包的代码走读中确认，没有独立日志锚点可证明确认时刻；开条时刻只是记账时刻，不计定位时长。",
+      "source": "feedback:d4cd4cb6be9b4522864ae8b4db24dbb0 notify.json.authorization_cache.age_sec=885193.9，同包 runtime.performance 的单调时钟读数约 885192，即开机时长",
+      "evidence": "verified",
+      "rootcause_origin": "unknown",
+      "timestamp_audit": [
+        {
+          "audited_on": "2026-10-22",
+          "classification": "bookkeeping_not_duration",
+          "original_observed_at": "2026-10-22 13:54:12+08:00",
+          "original_rootcause_at": null,
+          "reason": "N21 与 N22 在同一条命令里连续开条，共用同一秒的记账时刻",
+          "evidence_checked": [
+            "feedback:d4cd4cb6be9b4522864ae8b4db24dbb0 的 storage.json / notify.json / runtime.json（只能证明导出时状态已存在）"
+          ],
+          "result": "该时刻是敲命令的时刻，不是现象首次可观测的时刻；找不到能证明首次现象的秒级证据，退回未知，不借会话、提交或文件时刻替代"
+        }
+      ]
     }
   ],
   "rounds": [
@@ -5133,6 +5209,19 @@
         "更新说明字数上限由 100 放宽为 200：数值唯一来源 tools/release_identity.py，自检边界样本按它推算，tests/test_coverage_release_and_edges.py 与 make_update_assets --self-test 覆盖刚好在限与超一字。"
       ],
       "zero_reason": "本版尚未对外发行，只做到候选前的登记，无本版新发现的线上逃逸；0 仅表示未登记，不代表上线后无故障。Dock 动画在装机版真实 Dock 上的观感、系统外观切换后 Dock 图标是否真的更换、反馈弹窗在装机版的居中效果仍为未验证。"
+    },
+    {
+      "version": "1.4.104",
+      "date": "2026-10-25",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "完整回归 5921 项、构建输入关卡戳和覆盖率来源凭据同源核验",
+        "release_checks 版本演进、包内文档资源和历史发布日志金标的回归守卫",
+        "下载入口 D1 建表、健康表检查与本版 GitHub 302 跳转上线读回",
+        "requirements.lock 的 OSV 漏洞审计与 PyInstaller 构建时 setuptools 依赖声明"
+      ],
+      "zero_reason": "本轮发布前复核线上台账、反馈与发布记录，未发现新的用户报回线上逃逸；本轮修复的是发布守卫、依赖审计、反馈标题和下载入口上线核验，均在发布前完整回归中验证。"
     }
   ],
   "comparison_policy": {

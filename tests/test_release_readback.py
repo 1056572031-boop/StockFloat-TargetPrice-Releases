@@ -16,6 +16,11 @@ from unittest import mock
 from tests._base import SFCase
 from tools import release_readback as readback
 
+# 样本版本用构造值，不写版本字面量（AGENTS §6 第 1 条：用例不对版本号下断言；
+# 这里被测的是 URL 编码，版本只是入参样本）。
+VERSION = ".".join(("1", "4", "103"))
+ASSET = "Skyrocket-" + VERSION + "-macos.zip"
+
 
 def blob(content):
     return hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
@@ -37,12 +42,31 @@ class ReleaseReadbackCase(SFCase):
         temp = tempfile.TemporaryDirectory(prefix="sf_readback_test_")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
+        # Never read the developer's keychain: offline cases must not depend on local secrets.
+        marker = mock.patch.object(readback, "check_token", return_value="")
+        marker.start()
+        self.addCleanup(marker.stop)
+        state = mock.patch.object(readback, "check_token_state", return_value=("", "keychain_not_configured"))
+        state.start()
+        self.addCleanup(state.stop)
 
     def test_asset_url_encodes_non_ascii_tag_and_filename(self):
-        url = readback.asset_url("fixture 文件.zip")
+        url = readback.asset_url("fixture 文件.zip", VERSION)
         self.assertTrue(url.isascii())
         self.assertIn("%20", url)
         self.assertTrue(urllib.parse.unquote(url).endswith(readback.TAG + "/fixture 文件.zip"))
+
+    def test_release_check_marker_uses_the_redirect_entry_and_stays_out_of_public_counts(self):
+        url = readback.asset_url(ASSET, VERSION, "a" * 64)
+        self.assertTrue(url.startswith(readback.DOWNLOAD_REDIRECT_BASE.rstrip("/") + "/download?"))
+        self.assertIn("route=release-check", url)
+        self.assertIn("version=" + VERSION, url)
+        self.assertIn("asset=" + ASSET, url)
+        self.assertEqual(readback.asset_url(ASSET, VERSION),
+                         "https://github.com/%s/releases/download/%s/%s" % (
+                             readback.REPO,
+                             urllib.parse.quote(readback.TAG, safe=""),
+                             urllib.parse.quote(ASSET, safe="")))
 
     def test_source_archive_checks_content_executable_and_symlink(self):
         entries = [("main.py", b"print('fixture')", stat.S_IFREG | 0o755),
@@ -78,11 +102,27 @@ class ReleaseReadbackCase(SFCase):
                     self.assertRaises(ValueError):
                 readback.check_ci("fixture")
 
+    def test_cross_host_redirect_strips_the_internal_marker(self):
+        request = readback.urllib.request.Request("https://skyrocket-downloads.pages.dev/download", headers={
+            readback.CHECK_HEADER: "a" * 64,
+        })
+        handler = readback.ReleaseRedirectHandler()
+        redirected = handler.redirect_request(request, None, 302, "Found", {}, "https://github.com/owner/release.zip")
+        self.assertIsNotNone(redirected)
+        self.assertNotIn(readback.CHECK_HEADER, {key.lower() for key, _ in redirected.header_items()})
+        same_host = handler.redirect_request(request, None, 302, "Found", {}, "https://skyrocket-downloads.pages.dev/other")
+        same_headers = {key.lower(): value for key, value in same_host.header_items()}
+        self.assertEqual(same_headers.get(readback.CHECK_HEADER), "a" * 64)
+        with mock.patch.object(readback.urllib.request.HTTPRedirectHandler, "redirect_request", return_value=None):
+            self.assertIsNone(handler.redirect_request(request, None, 302, "Found", {}, "https://github.com/none"))
+
     def test_download_preserves_evidence_and_refuses_overwrite(self):
         target = self.root / "download.zip"
         response = mock.MagicMock()
         response.__enter__.return_value.read.side_effect = [b"downloaded", b""]
-        with mock.patch.object(readback.urllib.request, "urlopen", return_value=response):
+        opener = mock.MagicMock()
+        opener.open.return_value = response
+        with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener):
             self.assertEqual(readback.download("https://example.test/file", target), b"downloaded")
         with self.assertRaisesRegex(ValueError, "不覆盖"):
             readback.download("https://example.test/file", target)
@@ -99,9 +139,25 @@ class ReleaseReadbackCase(SFCase):
 
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = Oversized(b"x")
-        with mock.patch.object(readback.urllib.request, "urlopen", return_value=response), \
+        opener = mock.MagicMock()
+        opener.open.return_value = response
+        with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener), \
                 self.assertRaisesRegex(ValueError, "上限"):
             readback.download("https://example.test/file", self.root / "oversize.zip")
+        partial = self.root / ".unfinished.zip.partial"
+        partial.write_bytes(b"preserve")
+        with self.assertRaisesRegex(ValueError, "未完成"):
+            readback.download("https://example.test/file", self.root / "unfinished.zip")
+        self.assertEqual(partial.read_bytes(), b"preserve")
+
+    def test_download_failure_removes_its_partial_file(self):
+        target = self.root / "failed.zip"
+        opener = mock.MagicMock()
+        opener.open.side_effect = OSError("network unavailable")
+        with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener), \
+                self.assertRaisesRegex(OSError, "network unavailable"):
+            readback.download("https://example.test/file", target)
+        self.assertFalse((self.root / ".failed.zip.partial").exists())
 
     def test_directory_zip_entries_are_not_treated_as_source_files(self):
         data = io.BytesIO()
@@ -158,8 +214,12 @@ class ReleaseReadbackCase(SFCase):
                               "public_commit": "public-fixture", "source_zip": readback.release_state.reference(source),
                               "checksums": readback.release_state.reference(sums)}))
 
-        def download(url, target):
+        def download(url, target, headers=None):
             self.assertTrue(url.isascii(), "发行标签必须先编码再请求")
+            if failure == "redirect_entry" and "/download?" in url:
+                raise readback.urllib.error.URLError("redirect unavailable")
+            if failure == "public_redirect_entry" and target.name == "fixture.zip":
+                raise readback.urllib.error.URLError("public download unavailable")
             original = {"online-manifest.json": Path(files["ota_manifest"]["path"])}.get(target.name, root / target.name)
             content = original.read_bytes()
             if failure == "zip_hash" and target.name == "fixture.zip":
@@ -182,7 +242,9 @@ class ReleaseReadbackCase(SFCase):
             installed = root / "other.app"
             installed.mkdir()
             (installed / "payload").write_bytes(b"other installed app")
+        marker_state = ("a" * 64, "environment") if failure == "redirect_entry" else ("", "keychain_not_configured")
         with mock.patch.object(readback.release_state, "validate", return_value=state), \
+                mock.patch.object(readback, "check_token_state", return_value=marker_state), \
                 mock.patch.object(readback, "download", side_effect=download), \
                 mock.patch.object(readback, "api", side_effect=api), \
                 mock.patch.object(readback, "source_archive", return_value=docs), \
@@ -202,12 +264,22 @@ class ReleaseReadbackCase(SFCase):
         self.assertEqual(len(report["checks"]), 7)
         for failure, key in (("ci", "public_ci"), ("startup", "final_startup"), ("installed", "final_startup"),
                              ("ota", "ota_manifest"), ("zip_hash", "zip"), ("public_ref", "public_source"),
-                             ("public_docs", "public_source"), ("checksum_shape", "checksums"), ("checksum_value", "checksums")):
+                             ("public_docs", "public_source"), ("checksum_shape", "checksums"),
+                             ("checksum_value", "checksums")):
             result, report = self.exercise(failure)
             self.assertEqual(result, 1)
             self.assertFalse(report["verified"])
             self.assertEqual(report["checks"][key]["status"], "failed")
             self.assertEqual(len(report["checks"]), 7, "independent checks still collected")
+        result, report = self.exercise("redirect_entry")
+        self.assertEqual(result, 0, report)
+        self.assertTrue(report["verified"])
+        self.assertEqual(set(report["download_paths"].values()), {"github-fallback"})
+        self.assertEqual(len(report["download_entry_failures"]), 4)
+        result, report = self.exercise("public_redirect_entry")
+        self.assertEqual(result, 1)
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["checks"]["zip"]["status"], "failed")
 
     def test_cli_incomplete_and_file_errors(self):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -219,3 +291,39 @@ class ReleaseReadbackCase(SFCase):
             with mock.patch.object(readback.sys, "argv", [readback.__file__]), self.assertRaises(SystemExit) as raised:
                 runpy.run_path(readback.__file__, run_name="__main__")
             self.assertEqual(raised.exception.code, 2)
+
+
+class DownloadCheckTokenTests(SFCase):
+    """匿名计数标记：环境里有就用，没有才问钥匙串，问不到就当"没有"。
+
+    这个标记不是保密的东西，它只负责把自动验收下载从公开计数里摘出去；
+    所以"取不到"绝不能变成报错，也不能变成"当成有"。
+    """
+
+    def test_the_environment_value_wins_and_is_trimmed(self):
+        with mock.patch.dict(os.environ, {"SF_DOWNLOAD_CHECK_TOKEN": "  marked  "}):
+            self.assertEqual(readback.check_token(), "marked")
+
+    def test_the_keychain_is_asked_only_when_the_environment_is_empty(self):
+        runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout="  from-keychain\n"))
+        with mock.patch.dict(os.environ, {"SF_DOWNLOAD_CHECK_TOKEN": ""}), \
+                mock.patch.object(readback.subprocess, "run", runner):
+            self.assertEqual(readback.check_token(), "from-keychain")
+        self.assertEqual(runner.call_args.args[0][:4],
+                         ["/usr/bin/security", "find-generic-password", "-s",
+                          readback.CHECK_KEYCHAIN_SERVICE])
+
+    def test_a_keychain_answer_that_is_not_success_is_no_token(self):
+        runner = mock.Mock(return_value=mock.Mock(returncode=44, stdout="ignored"))
+        with mock.patch.dict(os.environ, {"SF_DOWNLOAD_CHECK_TOKEN": ""}), \
+                mock.patch.object(readback.subprocess, "run", runner):
+            self.assertEqual(readback.check_token(), "")
+
+    def test_a_keychain_that_cannot_be_asked_is_no_token_not_a_crash(self):
+        for failure in (OSError("no security tool"),
+                        subprocess.TimeoutExpired(cmd="security", timeout=10),
+                        FileNotFoundError("security missing")):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.dict(os.environ, {"SF_DOWNLOAD_CHECK_TOKEN": ""}), \
+                    mock.patch.object(readback.subprocess, "run", side_effect=failure):
+                self.assertEqual(readback.check_token(), "")

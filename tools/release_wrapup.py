@@ -450,11 +450,16 @@ def verify_commit(repo: Path, parent: str, tree: str, paths: list[str], identity
     listed = git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", "HEAD")
     if sorted(n for n in listed.stdout.split("\0") if n) != sorted(paths):
         raise WrapupError("commit %s changes files other than the requested paths" % new[:12])
+    check_identity(repo, new, identity)
+    return new
+
+
+def check_identity(repo: Path, new: str, identity: tuple[str, str]) -> None:
+    """Author and committer of HEAD must both be the planned identity."""
     actual = git_out(repo, "log", "-1", "--format=%an%x00%ae%x00%cn%x00%ce").split("\0")
     if actual != [identity[0], identity[1], identity[0], identity[1]]:
         raise WrapupError("commit %s carries the identity %s, not the planned %s <%s>"
                           % (new[:12], actual, identity[0], identity[1]))
-    return new
 
 
 def unstage(repo: Path, paths: list[str]) -> None:
@@ -462,29 +467,53 @@ def unstage(repo: Path, paths: list[str]) -> None:
     git(repo, "reset", "-q", "--", *paths)
 
 
-def commit(repo: Path, paths: list[str], message_file: Path, author: str | None, expected_head: str | None,
-           apply: bool, timeout: float = 1800, log: Path | None = None) -> dict[str, Any]:
-    """Stage exactly `paths`, run commit_preflight, commit through the real hook, check the result."""
-    check_paths(paths)
+def read_message(message_file: Path) -> str:
+    """The commit message text; an unreadable or blank file is refused."""
     try:
         message = message_file.read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
         raise WrapupError("cannot read the message file %s: %s" % (message_file, exc)) from exc
     if not message.strip():
         raise WrapupError("the message file %s is empty" % message_file)
+    return message
+
+
+def branch_and_head(repo: Path, expected_head: str | None) -> tuple[str, str]:
+    """The checked-out branch and its tip; detached HEAD or a tip other than the expected one is refused."""
     branch = git(repo, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
     head = git_out(repo, "rev-parse", "HEAD")
     if not branch:
         raise WrapupError("HEAD is detached; commit on a branch")
     if expected_head and expected_head != head:
         raise WrapupError("HEAD is %s, not the expected %s" % (head[:12], expected_head[:12]))
+    return branch, head
+
+
+def check_ready(repo: Path, paths: list[str], message_file: Path, author: str | None,
+                expected_head: str | None) -> dict[str, Any]:
+    """Every refusal `commit` can make before it touches the index, with nothing printed and nothing changed.
+
+    A queue calls this before it takes a place in line, so a staged index or a missing change shows up at
+    once instead of after the wait."""
+    check_paths(paths)
+    message = read_message(message_file)
+    branch, head = branch_and_head(repo, expected_head)
     if git_out(repo, "diff", "--cached", "--name-only"):
         raise WrapupError("the index already holds staged changes; commit or unstage them first")
     missing = sorted(set(paths) - changed_paths(repo))
     if missing:
         raise WrapupError("no pending change in: " + ", ".join(missing))
     identity = parse_author(author) if author else head_identity(repo)
-    result: dict[str, Any] = {"branch": branch, "head": head, "paths": paths, "author": "%s <%s>" % identity}
+    return {"branch": branch, "head": head, "paths": paths, "author": "%s <%s>" % identity,
+            "identity": identity, "message": message}
+
+
+def commit(repo: Path, paths: list[str], message_file: Path, author: str | None, expected_head: str | None,
+           apply: bool, timeout: float = 1800, log: Path | None = None) -> dict[str, Any]:
+    """Stage exactly `paths`, run commit_preflight, commit through the real hook, check the result."""
+    ready = check_ready(repo, paths, message_file, author, expected_head)
+    branch, head, message, identity = ready["branch"], ready["head"], ready["message"], ready["identity"]
+    result: dict[str, Any] = {key: ready[key] for key in ("branch", "head", "paths", "author")}
     print("commit on %s (HEAD %s) as %s <%s>: %s" % (branch, head[:12], *identity, ", ".join(paths)))
     print("message: " + message.strip().splitlines()[0])
     if not apply:
@@ -513,6 +542,101 @@ def commit(repo: Path, paths: list[str], message_file: Path, author: str | None,
         raise WrapupError("git commit exited %d, nothing committed (log %s):\n%s" % (code, sink, tail))
     result.update(commit=verify_commit(repo, head, tree, paths, identity), tree=tree, log=str(sink))
     print("committed %s on %s; tree %s matches the reviewed one" % (result["commit"][:12], branch, tree[:12]))
+    return result
+
+
+def merge_heads(repo: Path) -> list[str]:
+    """The commits an unfinished merge brings in (one per MERGE_HEAD line); empty when no merge is under way."""
+    where = git(repo, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD").stdout.strip()
+    try:
+        return Path(where).read_text(encoding="utf-8").split()
+    except OSError:
+        return []
+
+
+def merge_state(repo: Path) -> dict[str, Any]:
+    """What an unfinished merge looks like right now, as plain data a caller can freeze and compare later.
+
+    Nothing here raises: a value that cannot be read becomes one that fails the comparison."""
+    head, tree = git(repo, "rev-parse", "HEAD"), git(repo, "write-tree")
+    unmerged = git(repo, "diff", "--name-only", "-z", "--diff-filter=U").stdout.split("\0")
+    return {"head": head.stdout.strip() if head.returncode == 0 else "",
+            "merge_heads": merge_heads(repo),
+            "tree": tree.stdout.strip() if tree.returncode == 0 else "",
+            "unmerged": sorted(name for name in unmerged if name),
+            "worktree_clean": git(repo, "diff", "--quiet", "--exit-code").returncode == 0}
+
+
+def check_merge_ready(repo: Path, message_file: Path, author: str | None, expected_head: str | None,
+                      source: str | None, expected_tree: str | None) -> dict[str, Any]:
+    """Every refusal `merge_commit` can make before it runs the hook; nothing printed, nothing changed."""
+    message = read_message(message_file)
+    branch, head = branch_and_head(repo, expected_head)
+    state = merge_state(repo)
+    heads = state["merge_heads"]
+    if not heads:
+        raise WrapupError("no merge is in progress (no MERGE_HEAD); start one with `git merge --no-ff --no-commit`")
+    if len(heads) != 1:
+        raise WrapupError("MERGE_HEAD lists %d commits; only a two-parent merge is supported" % len(heads))
+    if source and heads[0] != source:
+        raise WrapupError("MERGE_HEAD is %s, not the expected source %s" % (heads[0][:12], source[:12]))
+    if state["unmerged"]:
+        raise WrapupError("unresolved conflicts: " + ", ".join(state["unmerged"]))
+    if not state["tree"]:
+        raise WrapupError("git write-tree failed, so the merge result cannot be compared with the reviewed tree")
+    if expected_tree and state["tree"] != expected_tree:
+        raise WrapupError("the index tree is %s, not the reviewed %s" % (state["tree"][:12], expected_tree[:12]))
+    if not state["worktree_clean"]:
+        raise WrapupError("tracked working files differ from the index; stage or restore them first")
+    identity = parse_author(author) if author else head_identity(repo)
+    return {"branch": branch, "head": head, "source": heads[0], "tree": state["tree"],
+            "author": "%s <%s>" % identity, "identity": identity, "message": message}
+
+
+def verify_merge(repo: Path, head: str, source: str, tree: str, identity: tuple[str, str]) -> str:
+    """The merge commit that now exists must be exactly the one that was reviewed."""
+    new = git_out(repo, "rev-parse", "HEAD")
+    if new == head:
+        raise WrapupError("HEAD did not move, so no merge commit was made")
+    parents = git_out(repo, "rev-list", "--parents", "-n", "1", "HEAD").split()[1:]
+    if parents != [head, source]:
+        raise WrapupError("commit %s has parents %s, not the planned [%s, %s]"
+                          % (new[:12], [p[:12] for p in parents], head[:12], source[:12]))
+    if git_out(repo, "rev-parse", "HEAD^{tree}") != tree:
+        raise WrapupError("commit %s has a different tree from the one reviewed: a hook changed the index"
+                          % new[:12])
+    if merge_heads(repo):
+        raise WrapupError("MERGE_HEAD is still present after the commit")
+    check_identity(repo, new, identity)
+    return new
+
+
+def merge_commit(repo: Path, message_file: Path, author: str | None, expected_head: str | None,
+                 source: str | None, expected_tree: str | None, apply: bool, timeout: float = 1800,
+                 log: Path | None = None) -> dict[str, Any]:
+    """Finish an unfinished merge through the real hook and check that the result is the reviewed merge.
+
+    On any failure the merge is left exactly as it was, so a retry needs no redo."""
+    ready = check_merge_ready(repo, message_file, author, expected_head, source, expected_tree)
+    branch, head, tree, identity = ready["branch"], ready["head"], ready["tree"], ready["identity"]
+    result: dict[str, Any] = {key: ready[key] for key in ("branch", "head", "source", "tree", "author")}
+    print("merge commit on %s (HEAD %s + %s) as %s <%s>; tree %s"
+          % (branch, head[:12], ready["source"][:12], *identity, tree[:12]))
+    print("message: " + ready["message"].strip().splitlines()[0])
+    if not apply:
+        print("dry-run (no --apply): the merge stays uncommitted")
+        return result
+    if log is None:
+        handle, name = tempfile.mkstemp(prefix="wrapup-merge-", suffix=".log")
+        os.close(handle)
+        log = Path(name)
+    print("running the pre-commit hook (a full gate takes minutes); live output: " + str(log))
+    code = run_commit(repo, message_file, commit_env(identity), log, timeout)
+    if code != 0:
+        tail = log.read_text(encoding="utf-8", errors="replace")[-1500:]
+        raise WrapupError("git commit exited %d, the merge is still uncommitted (log %s):\n%s" % (code, log, tail))
+    result.update(commit=verify_merge(repo, head, ready["source"], tree, identity), log=str(log))
+    print("committed merge %s on %s; tree %s matches the reviewed one" % (result["commit"][:12], branch, tree[:12]))
     return result
 
 

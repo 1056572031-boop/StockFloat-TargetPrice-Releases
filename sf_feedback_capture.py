@@ -13,7 +13,8 @@ from typing import Any
 import sf_diag
 from sf_feedback import PrivacyRejected, project_snapshot, utc_now, validate_archive, validate_receipt
 from sf_privacy import scrub_secrets
-from sf_feedback_bundle import FULL_CONSENT_VERSION, MAX_DIAGNOSTIC_BYTES, check_privacy, read_diagnostics
+from sf_feedback_bundle import FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION, MAX_DIAGNOSTIC_BYTES, check_privacy, read_diagnostics
+from sf_feedback_versions import PAYLOAD_V1, PAYLOAD_V2, PAYLOAD_V3, policy_for_payload
 
 MAX_DESCRIPTION = 4000
 CONSENT_VERSION = "github-private-feedback-v1"
@@ -148,7 +149,10 @@ def read_upload_archive(path, envelope=None):
         with zipfile.ZipFile(path) as archive:
             limits = {"manifest.json": 64 * 1024, "state.json": 48 * 1024, "problem.txt": 16 * 1024}
             manifest = parse_uploaded_json(archive.read("manifest.json"))
-            full = manifest.get("diagnostic_payload_version") == 2
+            full = manifest.get("diagnostic_payload_version") in (PAYLOAD_V2, PAYLOAD_V3)
+            payload = manifest.get("diagnostic_payload_version")
+            if payload not in (PAYLOAD_V1, PAYLOAD_V2, PAYLOAD_V3):
+                raise PrivacyRejected("反馈包版本不受支持")
             if not full and Path(path).stat().st_size > 256 * 1024:
                 raise PrivacyRejected("旧版精简反馈超过原有大小限制")
             if not full and "diagnostic_attachments" in manifest.get("truncated", []):
@@ -188,6 +192,9 @@ def read_upload_archive(path, envelope=None):
                 diagnostic_files = read_diagnostics(diagnostic_bytes)
                 if diagnostic_files["export.json"].get("version") != state["app_version"]:
                     raise PrivacyRejected("完整诊断与反馈应用版本不一致")
+                exported_v3 = diagnostic_files["export.json"].get("diagnostic_schema_version") == 3
+                if (payload == PAYLOAD_V3) != exported_v3:
+                    raise PrivacyRejected("完整诊断版本与反馈策略不一致")
         if envelope is not None:
             names = {"schema_version", "diagnostic_payload_version", "idempotency_key", "archive_sha256",
                      "size_bytes", "consent_policy_version", "app_version", "outbox_id"}
@@ -198,7 +205,7 @@ def read_upload_archive(path, envelope=None):
                     or type(envelope["idempotency_key"]) is not str or type(envelope["outbox_id"]) is not str
                     or not re.fullmatch(r"[a-f0-9]{32}", str(envelope["idempotency_key"]))
                     or not re.fullmatch(r"[a-f0-9]{32}", str(envelope["outbox_id"]))
-                    or envelope["consent_policy_version"] != (FULL_CONSENT_VERSION if full else CONSENT_VERSION)
+                    or envelope["consent_policy_version"] != policy_for_payload(payload)
                     or envelope["app_version"] != state["app_version"]
                     or type(envelope["size_bytes"]) is not int or envelope["size_bytes"] != Path(path).stat().st_size
                     or envelope["archive_sha256"] != hashlib.sha256(Path(path).read_bytes()).hexdigest()):
@@ -212,7 +219,7 @@ def read_upload_archive(path, envelope=None):
         raise PrivacyRejected("反馈包不符合当前上传协议") from exc
 
 
-def validate_upload_receipt(receipt, envelope):
+def validate_upload_receipt(receipt, envelope, *, allow_legacy_v2=False):
     checked = validate_receipt(receipt, envelope)
     if not isinstance(checked["received_at"], str):
         raise PrivacyRejected("回执时间格式不正确")
@@ -224,15 +231,18 @@ def validate_upload_receipt(receipt, envelope):
         raise PrivacyRejected("回执时间缺少时区")
     required = {"case_id", "archive_sha256", "size_bytes", "received_at", "storage_status", "validation_status",
                 "retention_until", "retention_policy", "repository", "asset_id", "consent_policy_version"}
-    if envelope.get("diagnostic_payload_version") == 2:
-        required.add("validation_scope")
-        if checked.get("validation_scope") != "container_sha256_and_member_catalog":
-            raise PrivacyRejected("完整诊断回执未说明容器校验范围")
+    payload_version = envelope.get("diagnostic_payload_version")
+    if payload_version in (PAYLOAD_V2, PAYLOAD_V3):
+        legacy_v2 = allow_legacy_v2 and payload_version == PAYLOAD_V2 and "validation_scope" not in checked
+        if not legacy_v2:
+            required.add("validation_scope")
+            if checked.get("validation_scope") != "container_sha256_and_member_catalog":
+                raise PrivacyRejected("完整诊断回执未说明容器校验范围")
     if (set(checked) != required or checked["case_id"] != "feedback-" + envelope["idempotency_key"]
             or checked["repository"] != FEEDBACK_REPOSITORY
             or type(checked["asset_id"]) is not int or not 0 < checked["asset_id"] <= 2 ** 53 - 1
             or checked["consent_policy_version"] != envelope["consent_policy_version"]
-            or checked["consent_policy_version"] not in (CONSENT_VERSION, FULL_CONSENT_VERSION)
+            or checked["consent_policy_version"] not in (CONSENT_VERSION, FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION)
             or checked["retention_policy"] != "manual_deletion"
             or checked["retention_until"] is not None
             or checked["storage_status"] != "stored" or checked["validation_status"] != "validated"):

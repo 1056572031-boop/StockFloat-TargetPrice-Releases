@@ -274,6 +274,114 @@ class TargetBubbleCase(SFCase):
         self.assertLessEqual(abs(bottom(clusters[1]) - bottom(clusters[2])), 1,
                              "价位与百分比的数字应落在同一条底线上")
 
+    # ---- 底边对齐（2026-10-23）：量「真正画出来的最低一行」，不是代码里的基线 ----
+    def render_at(self, dpr):
+        """按 dpr 倍的设备像素把气泡渲染进图片（逻辑坐标不变）。"""
+        img = QImage(self.bubble.width() * dpr, self.bubble.height() * dpr,
+                     QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.GlobalColor.transparent)
+        self.bubble.render(img)
+        return img
+
+    @staticmethod
+    def is_ink(c, fg):
+        """颜色离本体底色的距离达到「前景色离底色」的一半以上，算墨迹（抗锯齿边缘不算）。"""
+        bg = _rgb(B.BODY_COLOR)
+        full = sum(abs(a - b) for a, b in zip(fg, bg))
+        return sum(abs(a - b) for a, b in zip(_rgb(c), bg)) >= 0.5 * full
+
+    def ink_bottom(self, img, dpr, x0, x1, y0, y1, fg):
+        """逻辑矩形内最低一行墨迹的下边缘（逻辑 y）；矩形里没有墨迹返回 None。"""
+        for y in range(int(y1 * dpr) - 1, int(y0 * dpr) - 1, -1):
+            for x in range(int(x0 * dpr), int(x1 * dpr)):
+                if self.is_ink(img.pixelColor(x, y), fg):
+                    return (y + 1) / dpr
+        return None
+
+    def ink_clusters(self, img, dpr, x0, x1, y0, y1, fg):
+        """行内按列聚成簇（列间空隙超过 4 个逻辑像素就断开），返回逻辑 x 区间列表。"""
+        cols = [x for x in range(int(x0 * dpr), int(x1 * dpr))
+                if any(self.is_ink(img.pixelColor(x, y), fg)
+                       for y in range(int(y0 * dpr), int(y1 * dpr)))]
+        out, start, prev = [], None, None
+        for x in cols:
+            if start is None:
+                start = x
+            elif x - prev > 4 * dpr:
+                out.append((start / dpr, (prev + 1) / dpr))
+                start = x
+            prev = x
+        if start is not None:
+            out.append((start / dpr, (prev + 1) / dpr))
+        return out
+
+    def test_方向词_价位_百分比的可见底边齐平_1倍与2倍屏(self):
+        """方向词是汉字，笔画底部比数字低约 1px（实测 1.125 对 0.125）；只共用基线时三者的可见底边
+        差 1px，所以方向词要整体上提 WORD_RAISE。涨色行与跌色行、待触发与已触发行都要齐。"""
+        self.fill()
+        self.bubble.show_below(QPoint(400, 40), 20)
+        x0, x1 = B.MARGIN_X + B.PAD_X, B.MARGIN_X + self.body().width() - B.PAD_X
+        for dpr in (1, 2):
+            img = self.render_at(dpr)
+            for label, y0, fg in (
+                    ("待触发·涨", self.row_top(0), _rgb(B.UP_COLOR)),
+                    ("待触发·跌", self.row_top(1), _rgb(B.DOWN_COLOR)),
+                    ("已触发", self.row_top(0, after_sep=True), _rgb(B.HIT_TEXT_COLOR))):
+                with self.subTest(dpr=dpr, row=label):
+                    clusters = self.ink_clusters(img, dpr, x0, x1, y0, y0 + B.ROW_H, fg)
+                    want = 2 if label == "已触发" else 3     # 已触发行没有百分比
+                    self.assertEqual(len(clusters), want,
+                                     "方向词、价位%s应各成一簇：%r" % ("" if want == 2 else "、百分比", clusters))
+                    bottoms = [self.ink_bottom(img, dpr, a, b, y0, y0 + B.ROW_H, fg) for a, b in clusters]
+                    self.assertLessEqual(max(bottoms) - min(bottoms), 0.5,
+                                         "同一行里各列的可见底边应齐平（容差 0.5 逻辑像素）：%r" % (bottoms,))
+
+    def test_组标题圆点的底边与标题文字的可见底边齐平_1倍与2倍屏(self):
+        self.fill()
+        self.bubble.show_below(QPoint(400, 40), 20)
+        dot_x0 = B.MARGIN_X + B.PAD_X
+        text_x0 = dot_x0 + 12
+        pend_y = B.MARGIN_TOP + B.PAD_TOP
+        hit_y = self.row_top(0, after_sep=True) - B.HEADER_H - B.HEADER_GAP
+        for dpr in (1, 2):
+            img = self.render_at(dpr)
+            for label, y0, dot_color in (("待触发", pend_y, B.PENDING_DOT_COLOR),
+                                         ("已触发", hit_y, B.HIT_DOT_COLOR)):
+                with self.subTest(dpr=dpr, group=label):
+                    dot = self.ink_bottom(img, dpr, dot_x0, dot_x0 + B.DOT_SIZE + 1,
+                                          y0, y0 + B.HEADER_H, _rgb(dot_color))
+                    text = self.ink_bottom(img, dpr, text_x0, text_x0 + 60,
+                                           y0, y0 + B.HEADER_H, _rgb(B.HEADER_COLOR))
+                    self.assertIsNotNone(dot, "圆点没画出来")
+                    self.assertIsNotNone(text, "标题文字没画出来")
+                    self.assertLessEqual(abs(dot - text), 0.5,
+                                         "圆点底边 %.2f 与标题文字底边 %.2f 应齐平（容差 0.5 逻辑像素）" % (dot, text))
+
+    def test_组标题圆点整体落在标题行内_不被下移顶出行外(self):
+        """圆点下移之后仍要完整落在该组标题行（HEADER_H 高）里，不能压到下面第一行数据。"""
+        self.fill()
+        self.bubble.show_below(QPoint(400, 40), 20)
+        dot_x0 = B.MARGIN_X + B.PAD_X
+        y0 = B.MARGIN_TOP + B.PAD_TOP
+        gold = _rgb(B.PENDING_DOT_COLOR)
+
+        def gold_pixels(img, dpr, ya, yb):
+            # 只认「接近金黄的实心像素」：标题行下面第一行的方向词与圆点同在左边一列，
+            # 红色离底色的距离超过金黄的一半，用「离底色够远」的判法会把红字误当圆点。
+            return [(x, y) for y in range(int(ya * dpr), int(yb * dpr))
+                    for x in range(int(dot_x0 * dpr), int((dot_x0 + B.DOT_SIZE + 1) * dpr))
+                    if _near(img.pixelColor(x, y), gold)]
+
+        for dpr in (1, 2):
+            img = self.render_at(dpr)
+            with self.subTest(dpr=dpr):
+                self.assertTrue(gold_pixels(img, dpr, y0, y0 + B.HEADER_H), "标题行里应画出了圆点")
+                self.assertEqual(gold_pixels(img, dpr, y0 + B.HEADER_H,
+                                             y0 + B.HEADER_H + B.HEADER_GAP + B.ROW_H), [],
+                                 "圆点不该画到标题行下面去")
+                self.assertEqual(gold_pixels(img, dpr, y0 - 4, y0), [], "圆点不该顶到标题行上沿之外")
+
     def test_组标题前的圆点_待触发金黄_已触发灰蓝(self):
         self.fill()
         self.bubble.show_below(QPoint(400, 40), 20)

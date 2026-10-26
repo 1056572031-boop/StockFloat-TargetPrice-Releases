@@ -159,7 +159,7 @@ class GitHubInbox:
                     "repository": REPOSITORY, "asset_id": archive_asset["id"],
                     "consent_policy_version": envelope["consent_policy_version"],
                 }
-                if envelope["diagnostic_payload_version"] == 2:
+                if envelope["diagnostic_payload_version"] >= 2:
                     receipt["validation_scope"] = "container_sha256_and_member_catalog"
                 receipt_asset = self.api.upload(release["id"], prefix + ".receipt.json",
                                                 json.dumps(receipt, sort_keys=True).encode())

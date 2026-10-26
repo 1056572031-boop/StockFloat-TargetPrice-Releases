@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "change_id": "RELEASE-V1.4.100-FINAL-20261021",
+  "status": "development",
+  "intent": "全屏弹窗恢复、反馈隐私校验与反馈界面简化、更新等待框按钮调整",
+  "scope": [
+    "README.md",
+    "diag_coverage.txt",
+    "docs/FULL_DIAGNOSTIC_FEEDBACK.md",
+    "docs/GITHUB_FEEDBACK.md",
+    "release_checks.txt",
+    "release_notes.txt",
+    "services/feedback-worker/src/index.mjs",
+    "services/feedback-worker/tests/receiver.test.mjs",
+    "sf_diag.py",
+    "sf_feedback.py",
+    "sf_feedback_admin.py",
+    "sf_feedback_analyzer.py",
+    "sf_feedback_bundle.py",
+    "sf_feedback_capture.py",
+    "sf_feedback_github.py",
+    "sf_feedback_transport.py",
+    "sf_feedback_ui.py",
+    "sf_privacy.py",
+    "tests/test_coverage_runner_and_gate_failures.py",
+    "tests/test_coverage_window_diagnostics.py",
+    "tests/test_feedback_admin_tools.py",
+    "tests/test_feedback_analyzer.py",
+    "tests/test_feedback_dialog.py",
+    "tests/test_feedback_full_bundle.py",
+    "tests/test_feedback_pipeline.py",
+    "tests/test_feedback_upload_binding.py",
+    "tests/test_public_release.py",
+    "tools/feedback_agent.py",
+    "tools/test_runner.py",
+    "stock_float_window.py",
+    "tests/test_v1444_update_stale_cancel.py"
+  ],
+  "acceptance": [
+    "最终源码完整关卡通过且候选同源",
+    "反馈提交立即隐藏窗口且成功提示不含维护者分析说明",
+    "本机安装升级与OTA回滚验证通过"
+  ],
+  "acceptance_map": [],
+  "verification_evidence": [
+    {
+      "command": "待执行最终源码完整关卡与冻结候选验收",
+      "exit_code": -1
+    }
+  ],
+  "artifact_fingerprint": {
+    "source": "pending",
+    "artifacts": []
+  },
+  "release_qualification": {
+    "stage": "development",
+    "policy_version": 2,
+    "excluded_scenarios": {
+      "fullscreen": "用户永久排除第三方浏览器专项；不代表常规自动全屏测试通过",
+      "camera_upgrade": "用户永久排除 camera_upgrade 专项；不代表摄像头升级验证通过",
+      "second_mac": "用户永久排除 second_mac 专项；不代表第二台 Mac 实测通过",
+      "browser_download": "用户永久排除 browser_download/Gatekeeper 专项；不代表下载与 Gatekeeper 实测通过"
+    },
+    "capability_boundaries": {
+      "intel": {
+        "status": "not_applicable",
+        "required": false,
+        "reason": "当前产品不支持 ARM 包安装到 Intel；不支持不代表通过，也不得声称 Intel 实测通过"
+      }
+    }
+  },
+  "release_artifacts": {
+    "version": "1.4.100",
+    "roles": {},
+    "ota": {
+      "archive_role": "zip",
+      "manifest_role": "ota_manifest"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "local_mac",
+      "status": "unverified",
+      "required": true,
+      "reason": "尚无真实执行证据",
+      "receipts": []
+    },
+    {
+      "id": "second_mac",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 second_mac 专项；不代表第二台 Mac 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "intel",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "当前产品不支持 ARM 包安装到 Intel；不支持不代表通过，也不得声称 Intel 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "fresh_install",
+      "status": "unverified",
+      "required": true,
+      "reason": "尚无真实执行证据",
+      "receipts": []
+    },
+    {
+      "id": "upgrade_install",
+      "status": "unverified",
+      "required": true,
+      "reason": "尚无真实执行证据",
+      "receipts": []
+    },
+    {
+      "id": "camera_upgrade",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 camera_upgrade 专项；不代表摄像头升级验证通过",
+      "receipts": []
+    },
+    {
+      "id": "fullscreen",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除第三方浏览器专项；不代表常规自动全屏测试通过",
+      "receipts": []
+    },
+    {
+      "id": "browser_download",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 browser_download/Gatekeeper 专项；不代表下载与 Gatekeeper 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "ota_rollback",
+      "status": "unverified",
+      "required": true,
+      "reason": "尚无真实执行证据",
+      "receipts": []
+    }
+  ],
+  "unverified_limitations": [
+    "最终源码完整关卡和候选验收尚未完成；旧候选证据不复用。",
+    "四项永久排除及Intel不支持均不代表通过；线上反馈服务部署状态尚未核验。"
+  ]
+}

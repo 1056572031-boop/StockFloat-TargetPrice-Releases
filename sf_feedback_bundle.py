@@ -11,16 +11,20 @@ import unicodedata
 import zipfile
 
 from sf_feedback import PrivacyRejected, check_zip_directory
+from sf_feedback_v3 import V3_DIAGNOSTIC_FILES, is_v3_export, validate_snapshot
+from sf_feedback_versions import POLICY_V2, POLICY_V3
 
-FULL_CONSENT_VERSION = "github-private-feedback-full-v2"
+FULL_CONSENT_VERSION = POLICY_V2
+FULL_V3_CONSENT_VERSION = POLICY_V3
 MAX_DIAGNOSTIC_BYTES = 32 * 1024 * 1024
 MAX_DIAGNOSTIC_EXPANDED = 32 * 1024 * 1024
 DIAGNOSTIC_JSON = frozenset({
-    "network.json", "startup_health.json", "feedback.json", "targets.json",
+    "network.json", "startup_health.json", "feedback.json", "feedback_ui.json", "targets.json",
     "runtime.json", "glass.json", "notify.json", "universe.json", "calendar.json",
     "state.json", "storage.json", "config.json", "last_failures.json", "export.json",
+    *V3_DIAGNOSTIC_FILES,
 })
-REQUIRED_DIAGNOSTICS = DIAGNOSTIC_JSON - {"config.json", "last_failures.json"}
+REQUIRED_DIAGNOSTICS = DIAGNOSTIC_JSON - {"config.json", "last_failures.json", *V3_DIAGNOSTIC_FILES}
 _CREDENTIAL = re.compile(
     r'''(?<![\w])["']?(password|passwd|token|api[_-]?key|private[_-]?key|cookie|authorization)["']?\s*[:=]\s*(?:Bearer\s+)?("[^"\r\n]*"?|'[^'\r\n]*'?|[^\s,;&"'{}()\[\]\\]+)''',
     re.IGNORECASE)
@@ -136,6 +140,14 @@ def read_diagnostics(data):
     exported = files["export.json"]
     if not isinstance(exported, dict) or not isinstance(exported.get("issues"), list):
         raise PrivacyRejected("完整诊断采集结果无效")
+    v3 = is_v3_export(exported)
+    if v3:
+        if not V3_DIAGNOSTIC_FILES.issubset(files):
+            raise PrivacyRejected("诊断v3缺少固定快照")
+        if any(not validate_snapshot(name, files[name]) for name in V3_DIAGNOSTIC_FILES):
+            raise PrivacyRejected("诊断v3快照格式无效")
+    elif any(name in files for name in V3_DIAGNOSTIC_FILES):
+        raise PrivacyRejected("旧版诊断混入v3快照")
     if any(isinstance(issue, str) and any(marker in issue for marker in (
             "identity USER", "identity USERNAME", "getpass.getuser:", "expanduser:"))
            for issue in exported["issues"]):

@@ -376,8 +376,11 @@ class TestModuleFloors(SFCase):
             saved = CG.load_baseline(path)
         self.assertEqual(saved["module_floors"], baseline["module_floors"])
         self.assertEqual(saved["module_baseline"], baseline["module_baseline"])
-        self.assertEqual(baseline["chain_floor"], 78)
-        self.assertEqual(saved["product_floor"], 89)
+        self.assertEqual(baseline["product_floor"], 94)
+        self.assertEqual(baseline["chain_floor"], 87)
+        self.assertEqual(saved["product_floor"], baseline["product_floor"])
+        self.assertEqual(saved["chain_floor"], 77)
+        self.assertLessEqual(saved["chain_floor"], baseline["chain_floor"])
 
 
 if __name__ == "__main__":

@@ -57,7 +57,8 @@ class DiagnosticSources:
     bundle_id: str
 
 
-def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
+def prepare_diagnostics(window, temp_out, sources: DiagnosticSources, *,
+                        feedback_context: dict[str, Any] | None = None):
     from sf_diagnostics import DiagnosticArchive, write_attachments as write_diagnostic_attachments
     import sf_diag
     import sf_menu_trace
@@ -216,7 +217,7 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
             import sf_startup_health
             return sf_startup_health.diagnostics(window)
         _snapshot("startup_health.json", _startup_health_snapshot)
-        _snapshot("feedback.json", lambda: feedback_diagnostics(window))
+        _snapshot("feedback_ui.json", lambda: feedback_diagnostics(window))
         alerts = _field("alerts", window._safe_alerts, [], "targets")
         now = sources.beijing_now()
         target_counts = {"pending": 0, "hit": 0, "expired": 0, "invalid": 0}
@@ -445,6 +446,52 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
             return data
         _snapshot("universe.json", _universe_snapshot)
         _snapshot("calendar.json", sources.calendar_sync_status)
+        # feedback.json：本机反馈队列与运行会话账本**此刻**的状态。
+        # 这三句话在包里只有这里答得上来（§5.7 的口径：每项回答"这项坏了用户会说什么"）——
+        #   「点了上传，反馈记录为什么还写着待提交/等待确认」→ queue.by_status + last_errors
+        #   「本机资料为什么清不掉」→ queue.awaiting_cleanup / archive_missing / orphan_objects
+        #   「上次没正常退出，为什么没问我？为什么每次都问我？」→ session.current/pending
+        # 全程只读：队列文件不存在就是"这台机器没用过反馈"，绝不为了出诊断包新建目录或建库。
+        def _feedback_snapshot():
+            import sf_constants
+            import sf_feedback_outbox as queue
+            import sf_run_session as sessions
+            root = os.path.join(str(sf_constants.APP_SUPPORT_DIR), "feedback")
+            database = os.path.join(root, "outbox.sqlite3")
+            home = os.path.expanduser("~")
+            shown = ("~" + root[len(home):]) if root.startswith(home + os.sep) else root
+            payload: dict[str, Any] = {
+                "schema": "feedback.v1",
+                "storage_dir": shown,
+                "queue": {"present": os.path.exists(database), "recent": 0, "by_status": {},
+                          "last_errors": [], "awaiting_cleanup": 0, "archive_missing": 0,
+                          "orphan_objects": None},
+                "session": {"present": False, "current": None, "pending": None,
+                            "pending_unasked": False},
+            }
+            if payload["queue"]["present"]:
+                payload["queue"] = queue.read_diagnostics(database, os.path.join(root, "objects"))
+            ledger = sessions.RuntimeSessionLedger(sessions.session_path_for_log(sources.log_path))
+            current_entry = ledger.current()
+            pending_entry = ledger.pending()
+            for name, entry in (("current", current_entry), ("pending", pending_entry)):
+                if not isinstance(entry, dict):
+                    continue
+                payload["session"]["present"] = True
+                payload["session"][name] = {
+                    "session": str(entry.get("session_id") or "")[:8],
+                    "phase": entry.get("phase"), "prompt_state": entry.get("prompt_state"),
+                    "prompt_count": entry.get("prompt_count"),
+                    "app_version": entry.get("app_version"), "ended_at": entry.get("ended_at"),
+                }
+            payload["session"]["pending_unasked"] = bool(
+                isinstance(pending_entry, dict) and pending_entry.get("prompt_state") == "none")
+            return payload
+        _snapshot("feedback.json", _feedback_snapshot)
+        if feedback_context is not None:
+            from sf_feedback_diagnostics import v3_snapshots
+            for name, value in v3_snapshots(window, feedback_context=feedback_context).items():
+                _json_entry(name, value)
         # state.json：自动采集层（sf_diag）。上面那些文件都是**人工立意**的现场
         # —— 每项回答"这项坏了用户会说什么"。这一份不同：它按命名约定把产品
         # 模块与实例字典里的状态位扫进包，所以新加一个 `self._xxx_fail_count`
@@ -459,6 +506,7 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources):
                  "failures": sources.last_failures_path(),
                  "crashes": os.path.expanduser("~/Library/Logs/DiagnosticReports")}
         metadata = {"version": APP_VERSION, "code": window.code,
+                    "diagnostic_schema_version": 3 if feedback_context is not None else None,
                     "last_ok_time": window._last_ok_time or "",
                     "quote_source": network["quote_source"],
                     "http_status": network["last_http_status"],

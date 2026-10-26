@@ -29,7 +29,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sf_constants import APP_DISPLAY_NAME, APP_VERSION, DESKTOP_OUTPUT_DIR  # noqa: E402
+from sf_constants import (  # noqa: E402  （安装命令与产品两代名称必须同源）
+    APP_DISPLAY_NAME,
+    APP_VERSION,
+    DESKTOP_OUTPUT_DIR,
+    DOWNLOAD_REDIRECT_BASE,
+    LEGACY_APP_DISPLAY_NAMES,
+)
 
 from release_identity import SUPPORT_EMAIL  # noqa: E402
 import make_update_assets  # noqa: E402  （资产命名；发行身份来自 sf_constants）
@@ -38,27 +44,33 @@ import apply_installer_icon as AIC  # noqa: E402  （卷内条目在 Finder 里�
 
 
 def probe_asset(url: str) -> tuple[str, str]:
-    """HEAD 一下线上资产，返回 (状态类别, 说明)。
+    """Follow the public redirect and require the named release asset to exist.
 
-    为什么要这一条（2026-10-10 实测出来的）：`APP_VERSION` 是**源码**里的版本，而说明里那行
-    curl 命令必须指向**线上真的存在**的那个包。v1.4.58 正是这种错位：源码已经 1.4.58、
-    DMG 也装好了，线上资产 HEAD 回来是 404，而 1.4.57 还在 302 —— 这时候把按源码渲染的
-    说明发出去，用户照抄就是 404。所以发版链把渲染挪到 OTA 发布**之后**，这里再核一次。
+    The installation guide names a specific user download.  A 302 from the
+    analytics entry only proves that its route parser accepted the query; it
+    does not prove that GitHub has published the requested byte stream.
     """
     try:
-        p = subprocess.run(["/usr/bin/curl", "-sSI", "--max-time", "25",
-                            "-o", "/dev/null", "-w", "%{http_code}", url],
-                           capture_output=True, text=True)
+        p = subprocess.run([
+            "/usr/bin/curl", "-fsSIL", "--max-time", "25", "--max-redirs", "4",
+            "-o", "/dev/null", "-w", "%{http_code}\n%{url_effective}", url,
+        ], capture_output=True, text=True)
     except OSError as exc:
         return "unknown", "探不了（%r），这条未核验" % (exc,)
-    code = (p.stdout or "").strip()
-    if code in ("200", "302"):
-        return "ok", "HTTP " + code
-    if code == "404":
+    lines = (p.stdout or "").splitlines()
+    code = lines[0].strip() if lines else ""
+    final_url = lines[1].strip() if len(lines) > 1 else ""
+    expected = archive_name()
+    parsed = urllib.parse.urlsplit(final_url)
+    if p.returncode == 0 and code == "200" and parsed.hostname in {
+            "github.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com",
+            "release-assets.githubusercontent.com"} and parsed.path.endswith("/" + expected):
+        return "ok", "最终 HTTP 200：" + final_url
+    if code == "404" or (p.returncode and code == "404"):
         return "missing", "HTTP 404：这一轮的包还没推上线"
     if p.returncode != 0 or not code or not code.isdigit():
-        return "unknown", "拿不到状态码（网络/代理异常），这条未核验"
-    return "unknown", "HTTP " + code
+        return "unknown", "拿不到最终状态码（网络、代理或重定向异常），这条未核验"
+    return "missing", "最终下载地址不是本轮 GitHub 资产（HTTP %s：%s）" % (code, final_url or "无")
 
 # 放 docs/ 而不是顶层：build_public_snapshot.py 把 .sf-opensource/docs/*.md 整批带进公开快照，
 # 顶层文件要逐个登记；这份说明是要对外的，跟着 docs 走才不会哪天被漏掉。
@@ -75,11 +87,10 @@ def checksums_name(version: str = APP_VERSION) -> str:
 
 
 def download_url(version: str = APP_VERSION) -> str:
-    # TAG 是中文「版本更新」，URL 里必须百分号编码，否则 curl 会 404。
-    return "https://github.com/%s/releases/download/%s/%s" % (
-        make_update_assets.REPO,
-        urllib.parse.quote(make_update_assets.TAG, safe=""),
-        archive_name(version))
+    # 公开下载统一走匿名计数入口：它只记录版本、文件、通路类别与时间，然后 302 到
+    # GitHub 官方资产。安装包字节仍由 GitHub 提供；入口故障时统计失败不会挡住下载。
+    query = urllib.parse.urlencode({"version": version, "asset": archive_name(version)})
+    return "%s/download?%s" % (DOWNLOAD_REDIRECT_BASE.rstrip("/"), query)
 
 
 def manifest_sha256() -> str | None:
@@ -101,16 +112,16 @@ def manifest_sha256() -> str | None:
 
 
 def curl_line() -> str:
-    """主线：一条命令装完，且**不需要任何放行步骤**。
-
-    实测依据（tools/verify_install_paths.py 的 R1）：来历标签是浏览器/微信下载这个动作
-    贴上去的，curl 取回的文件不带它；ditto 解出来的 app 也不带 —— 所以装完第一次就能开。
-    三个动作都在同一行里，肉眼读得完整、只连 github.com、不含 sudo、不含删除。
-    """
+    """首次安装专用：任一两代 app 存在时拒绝解压合并。"""
     name = archive_name()
-    return ("curl -fsSL -o ~/Downloads/%s '%s'"
+    app_paths = ["/Applications/%s.app" % APP_DISPLAY_NAME]
+    app_paths.extend("/Applications/%s.app" % legacy for legacy in LEGACY_APP_DISPLAY_NAMES)
+    absent = " && ".join("test ! -e '%s'" % path for path in app_paths)
+    return ("%s || { echo '已安装 Skyrocket：请改用 DMG 里的「一键安装」升级。' >&2; exit 1; }; "
+            "curl -fsSL -o ~/Downloads/%s '%s'"
             " && ditto -x -k ~/Downloads/%s /Applications/"
-            " && open /Applications/%s.app") % (name, download_url(), name, APP_DISPLAY_NAME)
+            " && open '/Applications/%s.app'") % (
+                absent, name, download_url(), name, APP_DISPLAY_NAME)
 
 
 def release_line() -> str:
@@ -226,15 +237,15 @@ def render(local_only: bool = False) -> str:
         curl_line(),
         "```",
         "",
-        "这一行只做三件事：从 github.com 下载本版安装包 → 解压到「应用程序」→ 打开它。",
+        "这一行会先确认「应用程序」里没有旧版，再经官方下载入口跳转到 github.com 取回本版安装包、解压并打开它。",
         "它不使用 `sudo`，不删除任何文件，也不会碰你别的目录。",
+        "已经装过旧版本时，它会停下并提示你使用下方 DMG 里的「一键安装」；不要用 ZIP 直接覆盖旧图标。",
         "",
         "为什么这样装不会被系统拦：拦下未签名程序靠的是文件上那张「来历标签」，",
         "而那张标签是**浏览器或微信下载**这个动作贴上去的，用上面这行命令取回来的文件不带它，",
         "这不会增加文件的可信度；企业设备策略仍可能阻止运行。",
         "",
-        "**已经装过旧版本的人请用第二种**（它会先把旧版移到废纸篓再装新版），"
-        "或先把「应用程序」里那个旧图标拖进废纸篓，再执行上面这一行。",
+        "**已经装过旧版本的人请用第二种**（它会先把旧版移到废纸篓再装新版）。",
         "",
         "## 二、双击安装（拿到的是 DMG，且不想碰终端）",
         "",
@@ -248,8 +259,8 @@ def render(local_only: bool = False) -> str:
         # 这句得跟着变，而各说各话不会有任何地方报错。
         "2. 打开那个磁盘，**双击 `%s`**（图标是一枚银灰色驱动器）；"
         % AIC.volume_displayed_name(launcher_script().name),
-        "3. 它会把旧版本移到废纸篓（不是删除）、装入新版、清掉刚装入那一份的来历标签、",
-        "   校验包体完整性，然后自己打开。",
+        "3. 它会把当前名称和旧名称的版本移到废纸篓（不是删除）、装入新版、清掉刚装入那一份的来历标签、",
+        "   校验包体完整性，然后尝试自动打开；没有自动打开时，到「应用程序」中双击 Skyrocket。",
         "",
         "如果你只看到「无法打开，因为来自身份不明的开发者」，那是 macOS 在问你确不确认：",
         "确认来源和校验值无误后，到「系统设置 → 隐私与安全性」查看是否有「仍要打开」。",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import math
+import os
 import plistlib
 import sys
 from pathlib import Path
@@ -190,6 +191,19 @@ def schedule(window):
             return
         try:
             window._startup_health = capture(window)
+            session = vars(window).get("_runtime_session")
+            session_id = vars(window).get("_runtime_session_id")
+            if window._startup_health.get("status") == "passed":
+                if session is not None and isinstance(session_id, str):
+                    session.mark_healthy(session_id)
+                try:
+                    import sf_update
+                    sf_update.acknowledge_pending_handoff(
+                        version=APP_VERSION, bundle_id=BUNDLE_ID, session_id=session_id or "",
+                        handoff_id=os.environ.get("SF_UPDATE_HANDOFF"))
+                except Exception as exc:
+                    from sf_logging import log_swallow
+                    log_swallow("sf_startup_health.handoff_ack", exc)
         except Exception as exc:
             window._startup_health = _result("unverified", reason=type(exc).__name__)
             from sf_logging import log_swallow

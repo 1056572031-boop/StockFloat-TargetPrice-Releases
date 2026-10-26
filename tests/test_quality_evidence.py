@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -538,7 +539,7 @@ class TestVerifyIntegration(SFCase):
         log.write_text("\n".join([
             "已安装: " + str(app), "版本: " + version,
             "published_archive=Skyrocket-" + version + "-macos.zip",
-            "最终启动复验：" + str(app), "结论: 冒烟通过", "发版完成 v" + version,
+            "最终启动复验：" + str(app), "结论: 冒烟通过", "发布动作完成 v" + version,
         ]), encoding="utf-8")
         raw = (self.base / "Skyrocket-update.json").read_bytes()
         info = SimpleNamespace(version=version, archive_sha256=evidence.sha256_file(
@@ -681,6 +682,44 @@ class TestVerifyIntegration(SFCase):
                     self.seal()
                 errors = self.verify()
                 self.assertTrue(any(expected in error for error in errors), errors)
+
+
+class TestPublishLogAgainstARealRelease(SFCase):
+    """拿已入库的真实发布日志当金标，而不是每个夹具各抄一份六条证据行。
+
+    为什么要金标：那六条里有五条仍由别的脚本打印（build_release.sh、publish_update_release.py、
+    smoke_frozen_app.py），原先只有夹具里的字符串互相印证 —— 4874df1 改措辞时就是这么漏过去的。
+    金标只能证明「校验器对上一次真实发布的文本仍成立」，脚本以后再改措辞，仍要靠真跑收尾段的判据。
+    """
+
+    def test_archived_real_publish_log_still_satisfies_the_reader(self):
+        from sf_constants import APP_VERSION
+        # 未发布版本没有自己的 publish.log；取最新、且低于当前版本的已归档真实日志。
+        # 不能按目录名的字典序挑（1.4.100 会排在 1.4.99 前），按三段整数比较。
+        current = tuple(int(part) for part in APP_VERSION.lstrip("v").split("."))
+        candidates = []
+        for folder in (evidence.ROOT / "outputs/release-candidates").glob("v*"):
+            match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", folder.name)
+            log = folder / "publish.log"
+            if match and log.is_file():
+                version = tuple(int(part) for part in match.groups())
+                if version < current:
+                    candidates.append((version, log))
+        self.assertTrue(candidates, "缺少已归档的真实发布日志金标；不要改成跳过，先恢复归档或给出替代金标")
+        version_tuple, log = max(candidates)
+        version = ".".join(str(part) for part in version_tuple)
+        text = log.read_text(encoding="utf-8")
+        app = Path("/Applications/Skyrocket.app")
+        # 安装那一步在同一份真实日志里，和证据行是同一段输出：先证明它确实被打印过。
+        self.assertIn("已安装: " + str(app), text)
+        markers = evidence.publish_log_markers(app, version)
+        missing = [marker for marker in markers if marker not in text]
+        self.assertEqual(missing, [], "真实发布的日志已对不上校验器要求的证据行")
+        # 反向对照：把金标里最后那行收尾语换掉，必须恰好那一条被判缺；否则断言会恒真。
+        assert markers[-1] in text
+        drifted = text.replace(markers[-1], "发版完成 v" + version)
+        self.assertNotEqual(drifted, text)
+        self.assertEqual([m for m in markers if m not in drifted], [markers[-1]])
 
 
 if __name__ == "__main__":

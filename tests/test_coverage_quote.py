@@ -17,6 +17,7 @@ import datetime
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -450,6 +451,93 @@ class TestMinutePrimaryToFallback(QuoteCase):
             sf_quote.fetch_minute("sh600519")
         self.assertEqual(bump.call_count, 0, "主源空点集不算格式异常")
         reset.assert_any_call("minute")
+
+
+class TestApiUrlOverrides(QuoteCase):
+    def setUp(self):
+        super().setUp()
+        self._saved_urls = (sf_quote.QUOTE_URL, sf_quote.QUOTE_URL_FALLBACK,
+                            sf_quote.SINA_REFERER)
+
+    def tearDown(self):
+        sf_quote.QUOTE_URL, sf_quote.QUOTE_URL_FALLBACK, sf_quote.SINA_REFERER = self._saved_urls
+        super().tearDown()
+
+    def test_only_https_overrides_are_applied(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "config.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump({"api_urls": {
+                    "quote": "https://custom.test/quote",
+                    "quote_fallback": "http://insecure.test/quote",
+                    "sina_referer": "https://custom.test/referer",
+                    "minute": "",
+                }}, stream)
+            with mock.patch.object(sf_quote, "CONFIG_PATH", path), \
+                 mock.patch("sf_credentials.resolve_config_urls",
+                             side_effect=lambda _path, config: config["api_urls"]):
+                changed = sf_quote.load_api_urls()
+        self.assertEqual(changed, ["quote", "sina_referer"])
+        self.assertEqual(sf_quote.QUOTE_URL, "https://custom.test/quote")
+        self.assertEqual(sf_quote.SINA_REFERER, "https://custom.test/referer")
+        self.assertNotEqual(sf_quote.QUOTE_URL_FALLBACK, "http://insecure.test/quote")
+
+    def test_invalid_config_or_secure_storage_failure_keeps_defaults(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "config.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write("{broken")
+            with mock.patch.object(sf_quote, "CONFIG_PATH", path):
+                self.assertEqual(sf_quote.load_api_urls(), [])
+
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump({"api_urls": {"quote": "https://private.test/q"}}, stream)
+            with mock.patch.object(sf_quote, "CONFIG_PATH", path), \
+                 mock.patch("sf_credentials.resolve_config_urls",
+                             side_effect=RuntimeError("keychain unavailable")):
+                self.assertEqual(sf_quote.load_api_urls(), [])
+
+
+class TestPrimaryMinuteParsing(QuoteCase):
+    def _payload(self, rows, date="2026-02-18"):
+        return json.dumps({"data": {"sh600519": {
+            "data": {"date": date, "data": rows}
+        }}})
+
+    def test_malformed_primary_payload_follows_existing_failure_shapes(self):
+        with mock.patch.object(sf_quote, "http_get", return_value="not-json"):
+            with self.assertRaises(json.JSONDecodeError):
+                sf_quote._fetch_minute_primary("sh600519")  # discipline-ok(R5): 原始主源解析异常只能直调入口
+        with mock.patch.object(sf_quote, "http_get", return_value=json.dumps({"data": None})):
+            with self.assertRaises(AttributeError):
+                sf_quote._fetch_minute_primary("sh600519")  # discipline-ok(R5): 同上，断言缺失数据的原始失败形态
+        with mock.patch.object(sf_quote, "http_get",
+                               return_value=json.dumps({"data": {"sh600519": {}}})):
+            points = sf_quote._fetch_minute_primary("sh600519")  # discipline-ok(R5): 空主源负载不经过公共重试包装
+        self.assertEqual(points, [])
+
+    def test_primary_rows_skip_invalid_values_and_keep_valid_rows(self):
+        body = self._payload([
+            "09:31 -- 100 10000",
+            "09:32 10.5 100 bad",
+            "09:33 11.5 100 112000",
+        ])
+        with mock.patch.object(sf_quote, "http_get", return_value=body), \
+             fixed_clock(datetime.datetime(2026, 2, 18, 10, 0)):
+            points = sf_quote._fetch_minute_primary("sh600519")  # discipline-ok(R5): 脏行过滤属于主源解析边界
+        self.assertEqual(points, [("09:33", 11.5, 11.2)])
+
+    def test_primary_response_is_limited_to_current_trading_day(self):
+        body = self._payload([
+            "09:31 10 100 1000",
+            "09:40 11 100 1100",
+            "10:05 12 100 1200",
+        ], date="2026-02-18")
+        with mock.patch.object(sf_quote, "http_get", return_value=body), \
+             fixed_clock(datetime.datetime(2026, 2, 18, 10, 0)), \
+             mock.patch.object(sf_quote, "_is_trading_time", return_value=True):
+            points = sf_quote._fetch_minute_primary("sh600519")  # discipline-ok(R5): 主源按交易时段裁剪需直测解析入口
+        self.assertEqual(points, [("09:31", 10.0, 10.0), ("09:40", 11.0, 11.0)])
 
 
 if __name__ == "__main__":

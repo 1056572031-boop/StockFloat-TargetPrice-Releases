@@ -254,6 +254,9 @@ grep "== 结论" "$GAP_LOG" || { echo "!! 像素核验没打印结论行，判�
 # 下限随之从 76 抬到 84（留 3 个百分点余量给计时类用例的分支抖动）。
 # 要把这个数再抬：先补用例，实测涨上来之后才改这里，不要先改数字再"凑"覆盖。
 COVER_MIN="${SF_COVER_MIN:-}"
+# 按模块的用例耗时明细：只是观测，不参与任何判定。默认写到本树 build/ 下，
+# 方便事后回答"这一轮时间花在哪些模块"；显式设为空串可关掉，写失败只提示、不改结论。
+export SF_TEST_DURATIONS_OUT="${SF_TEST_DURATIONS_OUT-$(pwd)/build/test-durations.json}"
 echo "== 运行 tests/ 全部测试（tools/test_runner.py，覆盖率门禁 tools/coverage_gate.py）=="
 # COVERAGE_GATE_RAN 决定末尾配不配落关卡时间戳：只有真跑过覆盖率门禁的那一轮才算全绿。
 COVERAGE_GATE_RAN=0

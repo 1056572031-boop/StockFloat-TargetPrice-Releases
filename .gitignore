@@ -36,6 +36,11 @@ package.json
 package-lock.json
 !services/feedback-worker/package.json
 !services/feedback-worker/package-lock.json
+!services/download-analytics/package.json
+!services/download-analytics/package-lock.json
+# Cloudflare CLI stores the locally selected account in this root-level cache.
+# It is deployment metadata, not project source; do not allow a broad git add to publish it.
+.wrangler/
 services/feedback-worker/.wrangler/
 services/feedback-worker/.dev.vars*
 services/feedback-worker/wrangler.production.jsonc

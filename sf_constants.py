@@ -40,7 +40,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.103'
+APP_VERSION = '1.4.104'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -145,6 +145,9 @@ _FEATURE_DEFAULTS = {'private_spaces': True, 'conn_pool': True, 'net_monitor': T
                    # 收起到 Dock / 从 Dock 恢复的过渡动画（sf_dock_motion）。同样是 kill switch：
                    # 动画出问题时 features.ini 写 dock_motion=0，两个入口立刻退回瞬间收起与恢复。
                    'dock_motion': True,
+                   # v3 完整反馈在 Worker 部署并完成真实读回前保持关闭；默认 v2
+                   # 不能提前向尚未识别 v3 的生产入口发送增强诊断包。
+                   'feedback_v3': False,
                    # v1.4.37：默认**关回**自绘拖拽。原因不是"系统拖拽不跟手"，而是它
                    # 与独立毛玻璃背景层原理上不可兼得：位移交给 WindowServer 后，内容窗
                    # 当帧就被挪走，背景层要等本进程问一次真实位置、再写一次自己的位置，
@@ -380,6 +383,11 @@ APP_SUPPORT_DIR = os.path.expanduser('~/Library/Application Support/StockFloatTa
 # Public receiver only. Never place administrator GitHub credentials here.
 FEEDBACK_ENDPOINT = os.environ.get(
     'SF_FEEDBACK_ENDPOINT', 'https://skyrocket-feedback-1056572031.pages.dev/v1/feedback')
+# 公开下载入口（独立 Cloudflare Pages 免费项目）：只做匿名计数与跳转到 GitHub 官方资产。
+# 统计库不保存 IP、账号、设备信息或原始浏览器标识；实际安装包仍由 GitHub 提供。
+# 应用内 OTA 继续直连 GitHub —— 免费入口当天额度用尽时不该让所有自动更新一起失败。
+DOWNLOAD_REDIRECT_BASE = (os.environ.get('SF_DOWNLOAD_REDIRECT_BASE', '').strip()
+                          or 'https://skyrocket-downloads.pages.dev')
 # 自动更新：公开 GitHub Release 分发；清单必须经内置公钥验签。
 # 检查调度：启动15秒首检；失败后5分钟补一次，继续失败则30分钟；稳定运行每6小时复查。
 UPDATE_INITIAL_DELAY_MS = 15000
@@ -420,7 +428,7 @@ STAGING_PRUNE_GRACE_SEC = 3600
 # 一小时内改过的任何文件都当作"**可能正在写**"，一律不动：本机实测一次完整下载
 # 在上行 ~57KB/s 的最坏档要几分钟，正常档远短于此；一小时之后还躺在 staging 里的
 # 分片/断点状态，只可能是没有主人的孤儿。
-STAGING_PRUNE_GRACE_SEC = 3600
+# （这里以前把同一个常量定义了两次，保留一处，避免未来只改到失效的那一份。）
 # V1.3.96 起新客户端从 releases 仓库 main 分支的固定文件读取签名清单。
 # 旧客户端仍读取固定 Release 资产，发布时不删除该资产以保持兼容。
 # v1.4.55 改名后走**新的清单文件**。为什么不能沿用旧清单：清单里写着 bundle_id
@@ -506,6 +514,14 @@ BTN_ICON_DEVICE_RATIO = 2.0      # 出图倍率：与 Retina 的 1pt=2px 对齐
 MENU_ICON_PT = 16
 MENU_ICON_CONTENT_SCALE = 0.65
 MENU_ICON_DEVICE_RATIO = 2.0
+# 右键菜单版本行改用股价同款数字字体 D-DIN（2026-10-23，用户看图选定「常规 · 14px · 字距 +0.6」）。
+# 取值来源如实写明：字号与字距这两个数是看六档效果图挑出来的（字重固定常规），不是公式算出来的。离屏真帧实测的依据是——
+# 系统字体 13px 的版本串宽 82px、字间空隙中位 1.5px；D-DIN 13px 字距 0 时宽 66px、空隙中位 0.5px、
+# 墨量只有现状的 78%，在深色底上偏细偏挤；14px + 0.6 后空隙中位回到 1.5px、墨量约 90%，
+# 且没有像粗体档那样出现字形粘连。字距是绝对像素（QFont.AbsoluteSpacing），不随字号缩放。
+# 想换档是一次新的设计决定：同时改这两个数与 tests/test_menu_version_font.py 里钉值的那一条。
+MENU_VERSION_FONT_PX = 14
+MENU_VERSION_LETTER_SPACING_PX = 0.6
 # 铃铛气泡的悬停节拍（2026-10-23，用户反馈"鼠标经过或停留时窗口一闪一闪，太敏感了"）。
 # 来源如实写明：这两个数是设计取值，不是实测出来的手速。依据只有一条算术与一条探针计数：
 # ① 铃铛感应区宽 22px，与右邻「编辑」按钮的感应区紧挨着、中间没缝；停满 DWELL 才弹，

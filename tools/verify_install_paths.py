@@ -525,7 +525,8 @@ def check_dmg_launcher_route(work: Path, stamp_script: bool = False,
                              script_text: str | None = None,
                              inner_tag: str | None = "removable",
                              force_lang: str | None = None,
-                             fixture: str = "real") -> tuple[bool, str]:
+                             fixture: str = "real",
+                             check_appearance: bool = True) -> tuple[bool, str]:
     """R2：带标签的 DMG 里，脚本本身不带标签（所以能双击）；跑完装出的 app 递归读回无标签。
 
     2026-10-12 起这条还看**卷里那条目长什么样**：图标必须是本轮画出来的图标，
@@ -538,7 +539,8 @@ def check_dmg_launcher_route(work: Path, stamp_script: bool = False,
       · 全程用用户那一侧的 UTF-8 locale（`force_lang` 只给变异自检用）。
     """
     image, _ = build_user_dmg(work, "r2", stamp_script=stamp_script,
-                              with_icon=with_icon, hide_ext=hide_ext,
+                              with_icon=with_icon and check_appearance,
+                              hide_ext=hide_ext and check_appearance,
                               script_text=script_text, inner_tag=inner_tag,
                               fixture=fixture)
     lang = "C" if force_lang == "C" else user_lang()
@@ -549,10 +551,11 @@ def check_dmg_launcher_route(work: Path, stamp_script: bool = False,
     try:
         mount(image, mnt)
         script, target_dir = volume_script(mnt, work, "r2apps")
-        look_ok, look_note = AIC.check(script)
-        if not look_ok:
-            return False, ("卷内脚本的外观不对（用户看到的仍是一页写着 COMMAND 的缩略图，"
-                           "或仍带着 .command 后缀）：" + look_note)
+        if check_appearance:
+            look_ok, look_note = AIC.check(script)
+            if not look_ok:
+                return False, ("卷内脚本的外观不对（用户看到的仍是一页写着 COMMAND 的缩略图，"
+                               "或仍带着 .command 后缀）：" + look_note)
         if has_quarantine(script):
             return False, "卷内脚本被贴了标签 —— 双击会被 Gatekeeper 拦，这条路线不成立"
         # 这一条不测"旧版在跑"（R2c 才是）：本机上「应用程序」里那份与临时目录里那份
@@ -1004,7 +1007,8 @@ def self_test(work: Path) -> list[tuple[str, bool | None, str]]:
     cases.append(("S10 核验跑在 C locale 时 R2 会红",
                   lambda: mutate_case("S10 核验跑在 C locale 时 R2 会红",
                                       lambda: _red(check_dmg_launcher_route(
-                                          work / "s10", force_lang="C", fixture="light"),
+                                          work / "s10", force_lang="C", fixture="light",
+                                          check_appearance=False),
                                           "居然还是绿的（站在安全一侧测这一族缺陷等于没测）"))))
 
     with ThreadPoolExecutor(max_workers=4) as pool:

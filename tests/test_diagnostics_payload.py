@@ -102,6 +102,10 @@ class _Clock:
 class PayloadCase(DiagnosticsBranchCase):
     """真导一次包，逐桶验新增现场 + 两条诚实性红线。"""
 
+    def setUp(self):
+        super().setUp()
+        sf_ui_render.load_bundled_fonts()
+
     # ---- 桶 1：分时恢复现场（台账 S52）----
 
     def test_minute_block_reflects_a_real_write(self):
@@ -499,7 +503,7 @@ class PayloadCase(DiagnosticsBranchCase):
         # 会和真值撞车 —— 这条先按零，再让真那一帧去覆盖它。
         sf_ui_render._PAINT_DIAG["bottom_shrink"] = None     # discipline-ok(R5): 前置归零，判据看产品写入
         sf_ui_render._PAINT_DIAG["bottom_dropped"] = None    # discipline-ok(R5): 同上
-        self._paint(_q(high="16888.88", low="16666.66", price="16777.77",
+        self._paint(_q(high="1688888888888888.88", low="1666666666666666.66", price="1677777777777777.77",
                        pct="0.00", change="0.00"))
         diag = sf_ui_render.paint_diagnostics()
         self.assertIsNotNone(diag["bottom_shrink"], "画过一帧而末态还是 None，说明没接线")
@@ -966,7 +970,7 @@ class PaintEvidenceCase(DiagnosticsBranchCase):
         with mock.patch.object(sf_glass, "native_cocoa_active", lambda: True), \
              mock.patch.object(sf_glass, "join_active_space",
                                lambda w: "queued:shown-not-on-space"):
-            sf_glass.watch_active_space(probe)     # discipline-ok(R5): 这条链的唯一公开入口就是这个函数
+            sf_glass.watch_active_space(probe)  # machine-state-ok: 这条诊断取证必须真实登记续补名单
         self.addCleanup(sf_glass.clear_popup_space_watch)
         body = json.loads(self._export()["glass.json"])["popup_space"]
         self.assertGreaterEqual(body["pending"], 1, "名单里明明有一块弹层，包里说没有")

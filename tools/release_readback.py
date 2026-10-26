@@ -7,10 +7,12 @@ import base64
 import hashlib
 import io
 import json
+import os
 import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -24,9 +26,65 @@ import quality_evidence as evidence
 import release_state
 import sf_update
 from release_identity import REPO, TAG, MANIFEST_PATH  # noqa: E402
+from sf_constants import DOWNLOAD_REDIRECT_BASE  # noqa: E402
+
+CHECK_KEYCHAIN_SERVICE = "SkyrocketDownloadCheck"
+CHECK_HEADER = "x-skyrocket-check"
 
 
-def asset_url(name: str) -> str:
+class ReleaseRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirects never carry the internal download marker to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        source = urllib.parse.urlsplit(req.full_url).hostname
+        destination = urllib.parse.urlsplit(newurl).hostname
+        marker = next((value for key, value in req.header_items()
+                       if key.lower() == CHECK_HEADER), None)
+        if source != destination:
+            for headers_map in (redirected.headers, redirected.unredirected_hdrs):
+                for key in tuple(headers_map):
+                    if key.lower() == CHECK_HEADER:
+                        del headers_map[key]
+        elif marker:
+            # urllib 默认重建 30x 请求时不会复制自定义头；同站重定向仍需带给入口。
+            redirected.add_header(CHECK_HEADER, marker)
+        return redirected
+
+
+def check_token_state() -> tuple[str, str]:
+    """Return the release-check marker and a non-secret source/unavailability reason."""
+    token = os.environ.get("SF_DOWNLOAD_CHECK_TOKEN", "").strip()
+    if token:
+        return token, "environment"
+    try:
+        result = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", CHECK_KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return "", "keychain_tool_missing"
+    except subprocess.TimeoutExpired:
+        return "", "keychain_timeout"
+    except OSError:
+        return "", "keychain_unavailable"
+    token = result.stdout.strip()
+    if result.returncode == 0 and token:
+        return token, "keychain"
+    return "", "keychain_not_configured"
+
+
+def check_token() -> str:
+    """Read the release-check marker without exposing its source or value."""
+    return check_token_state()[0]
+
+
+def asset_url(name: str, version: str, token: str = "") -> str:
+    if token:
+        query = urllib.parse.urlencode({"version": version, "asset": name, "route": "release-check"})
+        return DOWNLOAD_REDIRECT_BASE.rstrip("/") + "/download?" + query
     return (f"https://github.com/{REPO}/releases/download/"
             f"{urllib.parse.quote(TAG, safe='')}/{urllib.parse.quote(name, safe='')}")
 
@@ -37,17 +95,27 @@ def api(path: str) -> Any:
     return json.loads(result.stdout)
 
 
-def download(url: str, target: Path) -> bytes:
+def download(url: str, target: Path, headers: dict[str, str] | None = None) -> bytes:
     if target.exists():
         raise ValueError("不覆盖已有下载证据: " + str(target))
-    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
-    with urllib.request.urlopen(request, timeout=90) as response, target.open("xb") as stream:
-        total = 0
-        while chunk := response.read(1024 * 1024):
-            total += len(chunk)
-            if total > 512 * 1024 * 1024:
-                raise ValueError("下载超过 512 MiB 上限")
-            stream.write(chunk)
+    temporary = target.with_name("." + target.name + ".partial")
+    if temporary.exists():
+        raise ValueError("不覆盖未完成下载: " + str(temporary))
+    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache", **(headers or {})})
+    # The marker only authenticates our Pages hop. Never forward it to GitHub's host.
+    opener = urllib.request.build_opener(ReleaseRedirectHandler())
+    try:
+        with opener.open(request, timeout=90) as response, temporary.open("xb") as stream:
+            total = 0
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > 512 * 1024 * 1024:
+                    raise ValueError("下载超过 512 MiB 上限")
+                stream.write(chunk)
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
     return target.read_bytes()
 
 
@@ -120,12 +188,17 @@ def verify(root: Path, state_path: Path, publication: Path, out: Path, installed
     if receipt.get("source") != state["source"] or receipt.get("version") != state["version"]:
         raise ValueError("公开发布回执与候选不同源")
     version = state["version"]
+    marker, marker_source = check_token_state()
     out.parent.mkdir(parents=True, exist_ok=True)
     downloads = Path(tempfile.mkdtemp(prefix="readback-", dir=out.parent))
     checks: dict[str, Any] = {}
+    download_paths: dict[str, str] = {}
+    download_entry_failures: dict[str, str] = {}
     report = {"version": version, "source": state["source"], "artifacts": state["artifacts"],
               "generated_at": evidence.now(), "verified": False, "checks": checks,
               "publication": release_state.reference(publication), "downloads": str(downloads),
+              "release_check_marker": bool(marker), "release_check_marker_source": marker_source,
+              "download_paths": download_paths, "download_entry_failures": download_entry_failures,
               "boundary": "下载与本机装机读回；不代表跨机、Gatekeeper 或未执行真实场景通过"}
 
     def observe(name, action):
@@ -136,8 +209,18 @@ def verify(root: Path, state_path: Path, publication: Path, out: Path, installed
             checks[name] = {"status": "failed", "reason": str(exc)}
 
     def asset(name, expected):
-        url = asset_url(name)
-        raw = download(url, downloads / name)
+        redirect = asset_url(name, version, marker)
+        headers = {CHECK_HEADER: marker} if marker else None
+        try:
+            raw = download(redirect, downloads / name, headers)
+            download_paths[name] = "release-check" if marker else "github-direct"
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            if not marker:
+                raise
+            direct = asset_url(name, version)
+            raw = download(direct, downloads / name, None)
+            download_paths[name] = "github-fallback"
+            download_entry_failures[name] = str(exc)
         if hashlib.sha256(raw).hexdigest() != expected:
             raise ValueError("下载摘要不一致: " + name)
         return raw

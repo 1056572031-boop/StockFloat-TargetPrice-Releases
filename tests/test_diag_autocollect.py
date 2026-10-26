@@ -322,7 +322,8 @@ class PureCollectorCase(SFCase):
         broken = types.ModuleType("sf_probe_unreadable")
         sys.modules["sf_probe_unreadable"] = broken
         self.addCleanup(sys.modules.pop, "sf_probe_unreadable", None)
-        with mock.patch.object(sf_diag, "collect_module", side_effect=RuntimeError("读不动")):
+        with mock.patch.object(sf_diag, "_module_names", return_value=["sf_probe_unreadable"]), \
+                mock.patch.object(sf_diag, "collect_module", side_effect=RuntimeError("读不动")):
             body = sf_diag.collect(None)
         self.assertTrue(any("sf_probe_unreadable" in str(item) for item in body["issues"]),
                         "读不到的模块必须点名；静默跳过等于「这台机器没有状态」那句假话")

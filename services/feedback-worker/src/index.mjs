@@ -5,6 +5,10 @@ export const REPOSITORY = '1056572031-boop/Skyrocket-Private-Feedback';
 export const INBOX_TAG = 'feedback-inbox-v1';
 export const POLICY = 'github-private-feedback-v1';
 export const FULL_POLICY = 'github-private-feedback-full-v2';
+export const FULL_V3_POLICY = 'github-private-feedback-full-v3';
+export const V3_DIAGNOSTIC_FILES = new Set([
+  'environment.json', 'permissions.json', 'feedback_preferences.json', 'feedback_context.json',
+]);
 export const MAX_UPLOAD = 32 * 1024 * 1024;
 export const MAX_RELEASE_ASSETS = 1000;
 const MAX_HEADER = 64 * 1024;
@@ -82,12 +86,15 @@ export async function unpackRequest(bytes) {
   const envelope = strictJson(bytes.subarray(4, 4 + length));
   const names = ['schema_version', 'diagnostic_payload_version', 'idempotency_key', 'archive_sha256',
     'size_bytes', 'consent_policy_version', 'app_version', 'outbox_id'];
-  if (!exact(envelope, names) || envelope.schema_version !== 1 || ![1, 2].includes(envelope.diagnostic_payload_version)
+  const expectedPolicy = envelope.diagnostic_payload_version === 1 ? POLICY
+    : envelope.diagnostic_payload_version === 2 ? FULL_POLICY
+    : envelope.diagnostic_payload_version === 3 ? FULL_V3_POLICY : null;
+  if (!exact(envelope, names) || envelope.schema_version !== 1 || ![1, 2, 3].includes(envelope.diagnostic_payload_version)
       || !KEY.test(envelope.idempotency_key) || !KEY.test(envelope.outbox_id) || !HASH.test(envelope.archive_sha256)
-      || envelope.consent_policy_version !== (envelope.diagnostic_payload_version === 2 ? FULL_POLICY : POLICY)
+      || envelope.consent_policy_version !== expectedPolicy
       || !/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(envelope.app_version)) reject('envelope_schema');
   const archive = bytes.subarray(4 + length);
-  if (archive.length > (envelope.diagnostic_payload_version === 2 ? MAX_UPLOAD : 256 * 1024) || envelope.size_bytes !== archive.length
+  if (archive.length > (envelope.diagnostic_payload_version >= 2 ? MAX_UPLOAD : 256 * 1024) || envelope.size_bytes !== archive.length
       || await digest(archive) !== envelope.archive_sha256) reject('archive_binding');
   return { envelope, archive };
 }
@@ -111,10 +118,24 @@ export function validateState(state, envelope) {
   if (envelope.diagnostic_payload_version !== 2 && state.truncated.includes('diagnostic_attachments')) reject('omission_schema');
 }
 
-export async function validateDiagnostics(archive, deep = true) {
+function checkV3Snapshot(name, value) {
+  const schemas = {
+    'environment.json': 'environment.v1',
+    'permissions.json': 'permissions.v1',
+    'feedback_preferences.json': 'feedback_preferences.v1',
+    'feedback_context.json': 'feedback_context.v1',
+  };
+  const reason = new Set(['query_failed', 'unsupported', 'no_bundle', 'not_applicable']);
+  if (!object(value) || value.schema !== schemas[name] || typeof value.available !== 'boolean') reject('diagnostic_v3_snapshot');
+  if (value.available) {
+    if (!exact(value, ['schema', 'available', 'data']) || !object(value.data)) reject('diagnostic_v3_snapshot');
+  } else if (!exact(value, ['schema', 'available', 'reason']) || !reason.has(value.reason)) reject('diagnostic_v3_snapshot');
+}
+
+export async function validateDiagnostics(archive, deep = true, payload = 2) {
   const jsonNames = new Set(['network.json', 'startup_health.json', 'feedback.json', 'targets.json',
     'runtime.json', 'glass.json', 'notify.json', 'universe.json', 'calendar.json', 'state.json',
-    'storage.json', 'config.json', 'last_failures.json', 'export.json']);
+    'storage.json', 'config.json', 'last_failures.json', 'export.json', ...V3_DIAGNOSTIC_FILES]);
   const reader = new ZipReader(new Uint8ArrayReader(archive), { useWebWorkers: false });
   const inventory = new Map();
   let expanded = 0, exported;
@@ -160,17 +181,23 @@ export async function validateDiagnostics(archive, deep = true) {
       if (jsonNames.has(name)) {
         const value = strictJson(bytes, true);
         if (name === 'export.json') exported = value;
+        if (V3_DIAGNOSTIC_FILES.has(name)) checkV3Snapshot(name, value);
       } else utf8.decode(bytes);
     }
   } finally { await reader.close(); }
   if (!deep) {
     if (!inventory.has('diagnostics.txt') || !inventory.has('export.json')) reject('diagnostic_export');
+    if (payload === 3 && [...V3_DIAGNOSTIC_FILES].some(name => !inventory.has(name))) reject('diagnostic_v3_missing');
+    if (payload !== 3 && [...V3_DIAGNOSTIC_FILES].some(name => inventory.has(name))) reject('diagnostic_v3_mixed');
     return null;
   }
   if (!inventory.has('diagnostics.txt') || !object(exported) || !Array.isArray(exported.issues)
       || !Array.isArray(exported.files) || exported.files.length !== inventory.size - 1) reject('diagnostic_export');
+  const v3 = exported.diagnostic_schema_version === 3;
+  if (v3 && [...V3_DIAGNOSTIC_FILES].some(name => !inventory.has(name))) reject('diagnostic_v3_missing');
+  if (!v3 && [...V3_DIAGNOSTIC_FILES].some(name => inventory.has(name))) reject('diagnostic_v3_mixed');
   for (const name of jsonNames) {
-    if (['config.json', 'last_failures.json'].includes(name)) continue;
+    if (['config.json', 'last_failures.json', ...V3_DIAGNOSTIC_FILES].includes(name)) continue;
     if (!inventory.has(name) && !exported.issues.some(issue => typeof issue === 'string' && issue.includes(name))) reject('diagnostic_missing_category');
   }
   const declared = new Set();
@@ -186,7 +213,7 @@ export async function validateArchive(archive, envelope, deepDiagnostics = true)
   const reader = new ZipReader(new Uint8ArrayReader(archive), { useWebWorkers: false });
   const files = new Map();
   const caps = { 'manifest.json': 16 * 1024, 'state.json': 32 * 1024, 'problem.txt': 16 * 1024 };
-  const full = envelope.diagnostic_payload_version === 2;
+  const full = envelope.diagnostic_payload_version >= 2;
   if (full) caps['diagnostics.zip'] = MAX_UPLOAD;
   try {
     const entries = [];
@@ -243,8 +270,9 @@ export async function validateArchive(archive, envelope, deepDiagnostics = true)
     if (JSON.stringify(manifest[name]) !== JSON.stringify(state[name])) reject('manifest_context');
   }
   if (full) {
-    const exported = await validateDiagnostics(files.get('diagnostics.zip'), deepDiagnostics);
+    const exported = await validateDiagnostics(files.get('diagnostics.zip'), deepDiagnostics, envelope.diagnostic_payload_version);
     if (exported && exported.version !== envelope.app_version) reject('diagnostic_version');
+    if (exported && ((envelope.diagnostic_payload_version === 3) !== (exported.diagnostic_schema_version === 3))) reject('diagnostic_payload_schema');
   }
   const description = utf8.decode(files.get('problem.txt'));
   checkDiagnosticPrivacy(description);
@@ -333,15 +361,21 @@ export class GitHubStore {
         received_at: new Date().toISOString(), storage_status: 'stored', validation_status: 'validated',
         retention_until: null, retention_policy: 'manual_deletion', repository: REPOSITORY,
         asset_id: zip.id, consent_policy_version: envelope.consent_policy_version };
-      if (envelope.diagnostic_payload_version === 2) receipt.validation_scope = 'container_sha256_and_member_catalog';
+      if (envelope.diagnostic_payload_version >= 2) receipt.validation_scope = 'container_sha256_and_member_catalog';
       receiptAsset = await this.request(`/releases/${this.releaseId}/assets?name=${caseId}.receipt.json`, {
         method: 'POST', body: new TextEncoder().encode(JSON.stringify(receipt)), upload: true });
     }
     const receipt = strictJson(await this.request(`/releases/assets/${receiptAsset.id}`, { binary: true, maximum: 64 * 1024 }));
+    // The first deployed v3 receiver stored an otherwise bound receipt without this
+    // field. Preserve idempotency for that already-stored package: all data needed to
+    // derive the scope is immutable and has just been re-read from the authoritative ZIP.
+    if (envelope.diagnostic_payload_version >= 2 && receipt.validation_scope === undefined) {
+      receipt.validation_scope = 'container_sha256_and_member_catalog';
+    }
     if (receipt.case_id !== caseId || receipt.archive_sha256 !== envelope.archive_sha256 || receipt.size_bytes !== archive.length
         || receipt.asset_id !== zip.id || receipt.repository !== REPOSITORY || receipt.storage_status !== 'stored'
         || receipt.validation_status !== 'validated' || receipt.consent_policy_version !== envelope.consent_policy_version) reject('receipt_binding', 503);
-    if (envelope.diagnostic_payload_version === 2 && receipt.validation_scope !== 'container_sha256_and_member_catalog') reject('receipt_validation_scope', 503);
+    if (envelope.diagnostic_payload_version >= 2 && receipt.validation_scope !== 'container_sha256_and_member_catalog') reject('receipt_validation_scope', 503);
     return receipt;
   }
 }
@@ -354,7 +388,7 @@ export default {
     const json = (data, status = 200) => new Response(JSON.stringify(data), { status,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
     if (request.method === 'GET' && url.pathname === '/health') return json({ ready: Boolean(configured), protocol: 1,
-      payloadVersions: [1, 2], maxUploadBytes: MAX_UPLOAD, freeOnly: true });
+      payloadVersions: [1, 2, 3], maxUploadBytes: MAX_UPLOAD, freeOnly: true });
     if (request.method !== 'POST' || url.pathname !== '/v1/feedback' || url.search) return json({ error: 'not_found' }, 404);
     if (!configured) return json({ error: 'receiver_not_ready' }, 503);
     let phase = 'headers';

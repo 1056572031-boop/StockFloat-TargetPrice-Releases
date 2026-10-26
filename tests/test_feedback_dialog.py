@@ -6,6 +6,7 @@ import threading
 import zipfile
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6 import sip
 from PyQt6.QtGui import QContextMenuEvent, QGuiApplication
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QToolButton, QWidget
 
 import stock_float_window as window
 from sf_feedback import FeedbackProtocolError, build_archive
@@ -99,28 +100,59 @@ class DialogTests(_FeedbackCase):
         self.assertEqual(len(self.api.rows), 2)
         self.assertEqual(self.dialog.outbox.get(self.dialog.current_id)["status"], "receipt_persisted")
 
-    def test_feedback_controls_are_hidden_and_description_uses_product_language(self):
-        self.assertFalse(hasattr(self.dialog, "tabs"))
-        self.assertEqual(self.dialog.findChildren(QTabWidget), [])
-        self.assertFalse(self.dialog.preview.isVisible())
-        self.assertFalse(self.dialog.counter.isVisible())
-        self.assertFalse(self.dialog.consent.isVisible())
-        self.assertFalse(self.dialog.history.isVisible())
-        self.assertFalse(self.dialog.status.isVisible())
-        self.assertEqual(
-            [label.text() for label in self.dialog.findChildren(QLabel) if label.isVisible()],
-            ["反馈问题"],
-        )
-        self.assertEqual(self.dialog.title.alignment(), Qt.AlignmentFlag.AlignCenter)
-        # 用户输入的正文左对齐（2026-10-22）；标题仍居中。
-        self.assertEqual(self.dialog.description.document().defaultTextOption().alignment(),
-                         Qt.AlignmentFlag.AlignLeft)
-        self.assertEqual(
-            self.dialog.description.placeholderText(),
-            "告诉我们你遇到的问题或建议，这些信息将用于改进我们的产品。",
-        )
+    def test_feedback_history_entry_opens_safe_receipt_view_and_reuses_dialog(self):
+        # 标题的可见中心必须落在整窗中线；右侧“记录”按钮不能把它推左。
+        title_center = self.dialog.title.geometry().center().x()
+        dialog_center = self.dialog.contentsRect().center().x()
+        self.assertAlmostEqual(title_center, dialog_center, delta=1,
+                               msg="反馈标题应在窗口中线，实测 %d / %d" % (title_center, dialog_center))
 
-    def test_description_box_is_half_of_the_previous_size(self):
+        self.dialog.description.setPlainText("synthetic history description")
+        self.dialog.upload_button.click()
+        self.finish()
+        case_id = self.dialog.outbox.get(self.dialog.current_id)["receipt"]["case_id"]
+
+        with patch.object(self.dialog.outbox, "history", wraps=self.dialog.outbox.history) as history:
+            self.dialog.history_button.click()
+            QApplication.processEvents()
+            history_dialog = self.dialog._history_dialog  # discipline-ok(R5): verify the real button reuses its secondary dialog.
+            self.assertIsNotNone(history_dialog)
+            self.track_widget(history_dialog)
+            self.assertTrue(history_dialog.isVisible())
+            self.assertEqual(history.call_count, 1)
+            self.assertIn(case_id, "\n".join(label.text() for label in history_dialog.findChildren(QLabel)))
+            self.assertNotIn("synthetic history description",
+                             "\n".join(label.text() for label in history_dialog.findChildren(QLabel)))
+
+            self.dialog.history_button.click()
+            QApplication.processEvents()
+            self.assertIs(self.dialog._history_dialog, history_dialog)  # discipline-ok(R5): reuse is the no-duplicate-window behavior.
+            self.assertEqual(history.call_count, 2)
+
+    def test_feedback_history_cleanup_removes_archive_but_keeps_remote_receipt(self):
+        self.dialog.upload_button.click()
+        self.finish()
+        outbox_id = self.dialog.current_id
+        row = self.dialog.outbox.get(outbox_id)
+        archive = Path(row["archive_path"])
+        case_id = row["receipt"]["case_id"]
+        self.dialog.history_button.click()
+        QApplication.processEvents()
+        history_dialog = self.dialog._history_dialog  # discipline-ok(R5): cleanup command must target the dialog opened by the real entry.
+        self.track_widget(history_dialog)
+        clean = history_dialog.findChild(QToolButton)
+        self.assertIsNotNone(clean)
+        clean.click()
+        QApplication.processEvents()
+
+        self.assertFalse(archive.exists())
+        cleaned = self.dialog.outbox.get(outbox_id)
+        self.assertEqual(cleaned["status"], "cleaned")
+        self.assertEqual(cleaned["receipt"]["case_id"], case_id)
+        self.assertIn(case_id, "\n".join(label.text() for label in history_dialog.findChildren(QLabel)))
+        self.assertIn("已收件，本机资料已清理",
+                      "\n".join(label.text() for label in history_dialog.findChildren(QLabel)))
+
         # 2026-10-22 用户要求：输入框宽、高各为原来的一半。原值取自改动前实测：
         # 输入框 500x383（窗口 540x500，四周留白与标题、按钮行共 117pt 不变）。
         previous_width, previous_height = 500, 383
@@ -321,8 +353,9 @@ class DialogTests(_FeedbackCase):
         self.assertEqual(self.dialog.stage, "received")
         row = self.dialog.outbox.get(previous)
         receipt = {**row["receipt"], "repository": "unapproved/repository"}
-        with sqlite3.connect(self.dialog.outbox.database_path) as db:
-            db.execute("UPDATE outbox SET receipt_json=? WHERE outbox_id=?", (json.dumps(receipt), previous))
+        with closing(sqlite3.connect(self.dialog.outbox.database_path)) as db:
+            with db:
+                db.execute("UPDATE outbox SET receipt_json=? WHERE outbox_id=?", (json.dumps(receipt), previous))
         self.dialog.history.setCurrentIndex(0)
         self.dialog.history.setCurrentIndex(index)
         self.assertEqual(self.dialog.last_error, "local_package_invalid")

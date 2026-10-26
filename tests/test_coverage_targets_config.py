@@ -555,5 +555,66 @@ class TestRedaction(ConfigCase):
         self.assertNotIn("SECRET", out)
 
 
+class TestFaceGuardPreference(ConfigCase):
+    def test_corrupt_or_non_object_config_defaults_face_guard_to_off(self):
+        for raw in ("{broken", "[1, 2, 3]"):
+            with self.subTest(raw=raw):
+                self._write_cfg(raw)
+                self.assertFalse(sf_config.load_face_guard_pref())
+
+    def test_non_boolean_face_guard_values_default_to_off(self):
+        for value in ("false", "true", 1, 0, None, []):
+            with self.subTest(value=value):
+                self._write_cfg({"face_guard": value})
+                self.assertFalse(sf_config.load_face_guard_pref())
+        self._write_cfg({"face_guard": True})
+        self.assertTrue(sf_config.load_face_guard_pref())
+
+    def test_saving_face_guard_preference_preserves_other_config(self):
+        self._write_cfg({"code": "sh600519", "version": 1,
+                         "api_urls": {"quote": "https://example.test/q"},
+                         "alerts": [_alert()]})
+        self.assertTrue(sf_config.save_face_guard_pref(True))
+        saved = self._read_cfg()
+        self.assertTrue(saved[sf_config.FACE_GUARD_CONFIG_KEY])
+        self.assertEqual(saved["api_urls"]["quote"], "https://example.test/q")
+        self.assertEqual(saved["alerts"][0]["target"], 12.34)
+        self.assertTrue(sf_config.load_face_guard_pref())
+
+    def test_future_schema_refuses_face_guard_preference_write(self):
+        self._write_cfg({"code": "sh600519",
+                         "version": sf_config.CONFIG_SCHEMA_VERSION + 1,
+                         "face_guard": False})
+        with mock.patch.object(sf_config, "log_line") as log:
+            self.assertFalse(sf_config.save_face_guard_pref(True))
+        self.assertFalse(self._read_cfg()["face_guard"])
+        self.assertIn("future schema", log.call_args.args[0])
+
+
+class TestConfigRestoreWriteback(ConfigCase):
+    def _write_restore_pair(self):
+        self._write_cfg("{broken")
+        self._write_cfg({"code": "sz000001", "x": 31, "y": 42,
+                         "h": 220, "bg": "glass",
+                         "version": sf_config.CONFIG_SCHEMA_VERSION}, self.bak)
+
+    def test_load_config_restores_a_valid_backup_and_repairs_main_file(self):
+        self._write_restore_pair()
+        with mock.patch.object(sf_config, "_migrate_legacy_config"):
+            self.assertEqual(sf_config.load_config(),
+                             ("sz000001", 31, 42, 220, "glass"))
+        self.assertEqual(self._read_cfg()["code"], "sz000001")
+
+    def test_restore_writeback_failure_is_reported_without_hiding_recovered_values(self):
+        self._write_restore_pair()
+        with mock.patch.object(sf_config, "_migrate_legacy_config"), \
+             mock.patch.object(sf_config, "_atomic_write_json",
+                               side_effect=OSError("disk full")), \
+             mock.patch.object(sf_config, "log_line") as log:
+            self.assertEqual(sf_config.load_config()[0], "sz000001")
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertTrue(any("写回主配置失败" in message for message in messages))
+
+
 if __name__ == "__main__":
     unittest.main()

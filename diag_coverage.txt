@@ -25,8 +25,30 @@
 # 出去"（universe.json / debug.log 的哪一行 / runtime.json 的哪个键），而不是
 # "不重要"。
 
+# "这个模块坏了用户会说什么" 的答案必须落到具体通路；纯函数/维护端模块才可申报 skip。
+
+version 1.4.104
+# 本轮新增反馈运行态已由 feedback.json 接入：sf_feedback_outbox / sf_run_session；其余以下模块逐条说明。
+skip sf_dock_motion 主窗上的临时动画控制器不持有独立持久状态；功能开关由 state.json 的 features 输出，动画截图/定时器失败由 debug.log 的 WARNING/SWALLOWED 留痕，估不出 Dock 位置的边界已在工具结果中明确为未判定。
+skip sf_feedback 纯协议与归档函数，无模块级可变状态；上传前拒绝由反馈窗的阶段提示，上传后状态与错误类型由 feedback.json 的 queue.by_status/last_errors 输出。
+skip sf_feedback_analyzer 只在维护者本机分析反馈包，不由装机客户端加载；分析结论写入案件报告，不属于用户诊断附件中的运行态。
+skip sf_feedback_bundle 只做诊断 ZIP 的路径、容量、隐私和快照形状校验，无模块级状态；拒绝结果由反馈上传阶段提示并由 outbox 的 last_error 留痕，诊断包不重复采集上传包正文。
+skip sf_feedback_capture 只做主动采集的投影、同意和上传前兼容校验，无模块级状态；失败停在反馈窗阶段并写入 outbox 错误，feedback.json 只报告最终队列事实。
+skip sf_feedback_github 只由私有收件服务与维护端加载，客户端不启动它；服务端 API、私有仓库和管理凭据不属于用户诊断包，服务端错误由维护端报告记录。
+skip sf_feedback_notifications 只由私有反馈代理读取维护者通知索引，客户端不加载该队列；收件/分析版本由代理报告与维护端工具输出，不能把私有案件状态复制进用户诊断包。
+skip sf_feedback_transport HTTPS 发送器本身无模块级状态；发送成功/失败、租约丢失和错误类型由 feedback.json 的 queue 状态与 last_errors 输出，不采集服务地址、请求正文或凭据。
+skip sf_feedback_versions 只保存 payload/policy 常量和纯映射函数，无运行时可变状态；当前生效版本由反馈信封与 feedback.json 的队列记录间接体现。
+
 version 1.4.103
-# 本版区间是 efc4c50..HEAD（v1.4.102 发布源码以来，12 笔非合并提交）；闸门点名三个模块，逐个交代，理由都核对过源码。
+# 本版反馈可靠性收口：以下模块没有独立常驻业务状态，用户可见阶段/失败类别/队列状态
+# 由 feedback.json、反馈窗阶段提示与 debug.log 留痕；维护端模块不由客户端加载。
+skip sf_feedback 纯协议与归档函数，无模块级可变状态；上传前拒绝由反馈窗阶段提示，上传后状态与错误类型由 feedback.json 的 queue.by_status/last_errors 输出。
+skip sf_feedback_bundle 只做诊断 ZIP 的路径、容量、隐私和快照形状校验，无模块级状态；拒绝结果由反馈上传阶段提示并由 outbox 的 last_error 留痕。
+skip sf_feedback_capture 只做主动采集的投影、同意和上传前兼容校验，无模块级状态；失败停在反馈窗阶段并写入 outbox 错误。
+skip sf_feedback_github 只由私有收件服务与维护端加载，客户端不启动它；服务端错误由维护端报告记录，管理凭据不进入客户端诊断附件。
+skip sf_feedback_notifications 只由私有反馈代理读取维护者通知索引，客户端不加载该队列；失败由维护端报告记录，不复制私有案件状态。
+skip sf_feedback_transport HTTPS 发送器本身无模块级状态；发送成功/失败、租约丢失和错误类型由 feedback.json 的 queue 状态与 last_errors 输出。
+skip sf_feedback_versions 只保存 payload/policy 常量和纯映射函数，无运行时可变状态；当前生效版本由反馈信封与 feedback.json 的队列记录体现。
 skip sf_dock_motion 动画控制器是挂在主窗上的逐次临时对象（截图、在飞动画、定时器、预热标记），没有模块级可变状态；开关 dock_motion 的生效值已在 runtime.json 的 features 里；截图取不到写 WARNING 行，各步抛错走 log_swallow 写 SWALLOWED 行，debug.log 与轮转文件随诊断包带走。已知只有两条退回路径不留痕：系统开了减少动态效果，以及估不出 Dock 图标位置，包里看不出为什么没有动画，本轮不单独接。
 skip sf_feedback_analyzer 离线分析函数，只被维护者本机的反馈管理工具调用，客户端不自动启动；本版新增的是对诊断包 menu_trace 的解读，结论写入案件报告，不进入用户诊断附件。
 skip sf_system_alert 本版新增 NativeAlert._center_paragraph（给传入文本设居中段落样式）和每个弹窗实例自己的 _paragraph_centered 布尔值，随弹窗销毁；模块级可变状态仍只有基线就有的 _screen_anchor 那一个；段落样式没设上时走 _swallow 写 SWALLOWED 行，现场在 debug.log。

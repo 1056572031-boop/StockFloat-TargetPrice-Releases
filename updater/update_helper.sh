@@ -8,6 +8,7 @@ EXPECTED_SHA256=""
 EXPECTED_VERSION=""
 TARGET=""
 RESULT=""
+HANDOFF=""
 VERIFICATION_HOME=""
 
 # 正式 Developer ID 签名启用后，须同时填写两项并随发布证书轮换更新。
@@ -21,17 +22,24 @@ EXTRACT_TIMEOUT=90
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --pid) PID="$2"; shift 2 ;;
-    --archive) ARCHIVE="$2"; shift 2 ;;
-    --sha256) EXPECTED_SHA256="$2"; shift 2 ;;
-    --version) EXPECTED_VERSION="$2"; shift 2 ;;
-    --target) TARGET="$2"; shift 2 ;;
-    --result) RESULT="$2"; shift 2 ;;
+    --pid|--archive|--sha256|--version|--target|--result|--handoff|--team-id|--cert-sha1)
+      [ "$#" -ge 2 ] || exit 64
+      case "$1" in
+        --pid) PID="$2" ;;
+        --archive) ARCHIVE="$2" ;;
+        --sha256) EXPECTED_SHA256="$2" ;;
+        --version) EXPECTED_VERSION="$2" ;;
+        --target) TARGET="$2" ;;
+        --result) RESULT="$2" ;;
+        --handoff) HANDOFF="$2" ;;
+        --team-id) EXPECTED_TEAM_ID="$2" ;;
+        --cert-sha1) EXPECTED_CERT_SHA1="$2" ;;
+      esac
+      shift 2
+      ;;
     --verification-home)
       [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$VERIFICATION_HOME" ] || exit 64
       VERIFICATION_HOME="$2"; shift 2 ;;
-    --team-id) EXPECTED_TEAM_ID="$2"; shift 2 ;;
-    --cert-sha1) EXPECTED_CERT_SHA1="$2"; shift 2 ;;
     *) exit 64 ;;
   esac
 done
@@ -121,15 +129,28 @@ launch_app() {
   [ "$1" = "$TARGET" ] || return 1
   vh_checked="$(validate_verification_home)" || return 1
   VERIFICATION_HOME="$vh_checked"
-  /usr/bin/open -n -g \
-    --env "SF_CONFIG_PATH=$VERIFICATION_HOME/config.json" \
-    --env "SF_UNIVERSE_PATH=$VERIFICATION_HOME/universe.json" \
-    --env "SF_LAST_QUOTE_PATH=$VERIFICATION_HOME/last_quote.json" \
-    --env "SF_LOG_PATH=$VERIFICATION_HOME/debug.log" \
-    --env "SF_SINGLE_SOCK=$VERIFICATION_HOME/single.sock" \
-    --env SF_ALLOW_TEMP_LAUNCH=1 \
-    --env QT_QPA_PLATFORM=offscreen \
-    --env SF_SEED_FIRST_SCREEN=0 "$1"
+  if [ -n "$HANDOFF" ]; then
+    /usr/bin/open -n -g \
+      --env "SF_CONFIG_PATH=$VERIFICATION_HOME/config.json" \
+      --env "SF_UNIVERSE_PATH=$VERIFICATION_HOME/universe.json" \
+      --env "SF_LAST_QUOTE_PATH=$VERIFICATION_HOME/last_quote.json" \
+      --env "SF_LOG_PATH=$VERIFICATION_HOME/debug.log" \
+      --env "SF_SINGLE_SOCK=$VERIFICATION_HOME/single.sock" \
+      --env SF_ALLOW_TEMP_LAUNCH=1 \
+      --env QT_QPA_PLATFORM=offscreen \
+      --env SF_SEED_FIRST_SCREEN=0 \
+      --env "SF_UPDATE_HANDOFF=$HANDOFF" "$1"
+  else
+    /usr/bin/open -n -g \
+      --env "SF_CONFIG_PATH=$VERIFICATION_HOME/config.json" \
+      --env "SF_UNIVERSE_PATH=$VERIFICATION_HOME/universe.json" \
+      --env "SF_LAST_QUOTE_PATH=$VERIFICATION_HOME/last_quote.json" \
+      --env "SF_LOG_PATH=$VERIFICATION_HOME/debug.log" \
+      --env "SF_SINGLE_SOCK=$VERIFICATION_HOME/single.sock" \
+      --env SF_ALLOW_TEMP_LAUNCH=1 \
+      --env QT_QPA_PLATFORM=offscreen \
+      --env SF_SEED_FIRST_SCREEN=0 "$1"
+  fi
 }
 
 rollback_or_fail() {
@@ -147,6 +168,15 @@ rollback_or_fail() {
 }
 
 [ -n "$PID" ] && [ -n "$ARCHIVE" ] && [ -n "$EXPECTED_SHA256" ] && [ -n "$EXPECTED_VERSION" ] && [ -n "$TARGET" ] && [ -n "$RESULT" ] || fail "invalid_arguments"
+case "$PID" in
+  0|*[!0-9]*) fail "invalid_arguments" ;;
+esac
+if [ -n "$HANDOFF" ]; then
+  case "$HANDOFF" in
+    *[!a-f0-9]* ) fail "handoff_invalid" ;;
+  esac
+  [ "${#HANDOFF}" -eq 32 ] || fail "handoff_invalid"
+fi
 if [ -n "$VERIFICATION_HOME" ]; then
   vh_checked="$(validate_verification_home)" || fail "verification_home_invalid"
   VERIFICATION_HOME="$vh_checked"
@@ -359,13 +389,44 @@ while [ "$count" -lt 20 ]; do
   sleep 0.5
 done
 [ "$started" -eq 1 ] || rollback_or_fail "restart_new_app_failed"
-# 首次出现后再观察 10 秒；期间进程消失视为启动后崩溃，立即恢复旧版本。
-count=0
-while [ "$count" -lt 20 ]; do
-  /usr/bin/pgrep -f "$new_exec" >/dev/null 2>&1 || rollback_or_fail "restart_new_app_failed"
-  count=$((count + 1))
-  sleep 0.5
-done
+# 首次出现后走握手确认；旧调用仍观察十秒存活，防止启动后立即退出被误报成功。
+  ack_ticks=60
+  if [ -n "$VERIFICATION_HOME" ]; then
+    case "${SF_HANDOFF_ACK_TICKS:-}" in
+      ""|*[!0-9]*) : ;;
+      *) if [ "${SF_HANDOFF_ACK_TICKS:-0}" -ge 1 ] && [ "${SF_HANDOFF_ACK_TICKS:-0}" -le 600 ]; then
+           ack_ticks="$SF_HANDOFF_ACK_TICKS"
+         fi ;;
+    esac
+  fi
+if [ -n "$HANDOFF" ]; then
+    handoff_ack="$(dirname "$RESULT")/handoff-$HANDOFF.ack.json"
+    count=0
+  confirmed=0
+  while [ "$count" -lt "$ack_ticks" ]; do
+    /usr/bin/pgrep -f "$new_exec" >/dev/null 2>&1 || rollback_or_fail "restart_new_app_failed"
+    if [ -f "$handoff_ack" ] \
+       && LC_ALL=C /usr/bin/grep -F "\"handoff_id\":\"$HANDOFF\"" "$handoff_ack" >/dev/null 2>&1 \
+       && LC_ALL=C /usr/bin/grep -F "\"version\":\"$EXPECTED_VERSION\"" "$handoff_ack" >/dev/null 2>&1 \
+       && LC_ALL=C /usr/bin/grep -F '"bundle_id":"com.skyrocket.app"' "$handoff_ack" >/dev/null 2>&1
+    then
+      confirmed=1
+      break
+    fi
+    count=$((count + 1))
+    sleep 0.5
+  done
+  [ "$confirmed" -eq 1 ] || rollback_or_fail "startup_confirmation_timeout"
+else
+  # Legacy callers do not create a handoff acknowledgement. Preserve the
+  # previously released 10-second post-launch survival check for them.
+  count=0
+  while [ "$count" -lt 20 ]; do
+    /usr/bin/pgrep -f "$new_exec" >/dev/null 2>&1 || rollback_or_fail "restart_new_app_failed"
+    count=$((count + 1))
+    sleep 0.5
+  done
+fi
 write_result "installed" "ok"
 
 # ---- 回退包只保留最近一份（v1.4.59 起，S6 第一项）----

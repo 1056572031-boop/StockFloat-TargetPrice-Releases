@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -664,6 +665,67 @@ def download_update(info, cancel_event=None, timeout=300, progress_callback=None
         raise
 
 
+def _handoff_path(handoff_id, suffix):
+    if not isinstance(handoff_id, str) or not re.fullmatch(r"[a-f0-9]{32}", handoff_id):
+        raise UpdateError("更新交接标识无效")
+    return Path(UPDATE_STAGING_DIR) / ("handoff-" + handoff_id + suffix)
+
+
+def handoff_ack_path(handoff_id):
+    return _handoff_path(handoff_id, ".ack.json")
+
+
+def handoff_context_path(handoff_id):
+    return _handoff_path(handoff_id, ".context.json")
+
+
+def _atomic_handoff_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_handoff_context(handoff_id, *, expected_version, bundle_id=BUNDLE_ID):
+    path = handoff_context_path(handoff_id)
+    _atomic_handoff_json(path, {"handoff_id": handoff_id, "expected_version": str(expected_version),
+                                "bundle_id": str(bundle_id), "created_at": time.time()})
+    return path
+
+
+def write_handoff_ack(handoff_id, *, version, bundle_id=BUNDLE_ID, session_id=""):
+    """Record that the new app reached first-frame and startup-health completion."""
+    path = handoff_ack_path(handoff_id)
+    _atomic_handoff_json(path, {"handoff_id": handoff_id, "version": str(version), "bundle_id": str(bundle_id),
+                                "session_id": str(session_id), "acknowledged_at": time.time()})
+
+
+def acknowledge_pending_handoff(*, version, bundle_id=BUNDLE_ID, session_id="", handoff_id=None):
+    """Acknowledge only the context belonging to this process's handoff token."""
+    handoff_id = handoff_id or os.environ.get("SF_UPDATE_HANDOFF")
+    if not isinstance(handoff_id, str) or not re.fullmatch(r"[a-f0-9]{32}", handoff_id):
+        return False
+    path = handoff_context_path(handoff_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if (data.get("handoff_id") != handoff_id
+                or data.get("expected_version") != str(version)
+                or data.get("bundle_id") != str(bundle_id)):
+            return False
+        write_handoff_ack(handoff_id, version=version, bundle_id=bundle_id, session_id=session_id)
+        path.unlink(missing_ok=True)
+        return True
+    except (OSError, TypeError, ValueError, UpdateError):
+        return False
+
+
 def _parse_install_result(raw):
     """update-result.json 的公共解析与校验（consume 与 peek 共用一份口径）。"""
     if len(raw) > 2048:
@@ -942,7 +1004,18 @@ def installed_bundle_path():
     return executable.split(marker, 1)[0] + ".app"
 
 
-def launch_installer(archive_path, expected_sha256, expected_version, target_app=None):
+class _InstallerLaunch(list):
+    """命令列表兼容旧调用，同时携带可回收的 helper 进程。"""
+
+    def __init__(self, command, process, handoff_id, context, copied):
+        super().__init__(command)
+        self.process = process
+        self.handoff_id = handoff_id
+        self.context = context
+        self.copied = copied
+
+
+def launch_installer(archive_path, expected_sha256, expected_version, target_app=None, handoff_id=None):
     """把助手拷到 App 外再启动；主程序随后调用既有 quit() 优雅退出。"""
     target_app = target_app or installed_bundle_path()
     if not target_app or not os.path.isdir(target_app):
@@ -952,6 +1025,9 @@ def launch_installer(archive_path, expected_sha256, expected_version, target_app
         raise UpdateError("更新助手不可用")
     root = Path(UPDATE_STAGING_DIR)
     root.mkdir(parents=True, exist_ok=True)
+    handoff = handoff_id or uuid.uuid4().hex
+    handoff_ack_path(handoff).unlink(missing_ok=True)
+    context = write_handoff_context(handoff, expected_version=expected_version)
     copied = root / ("update_helper-%d.sh" % time.time_ns())
     shutil.copy2(helper, copied)
     os.chmod(copied, 0o700)
@@ -961,12 +1037,14 @@ def launch_installer(archive_path, expected_sha256, expected_version, target_app
         raise UpdateError("更新签名身份配置不完整")
     command = ["/bin/sh", str(copied), "--pid", str(os.getpid()), "--archive", archive_path,
                "--sha256", expected_sha256, "--version", expected_version,
-               "--target", target_app, "--result", str(result),
+               "--target", target_app, "--result", str(result), "--handoff", handoff,
                "--team-id", UPDATE_SIGNING_TEAM_ID,
                "--cert-sha1", UPDATE_SIGNING_CERT_SHA1]
     try:
-        subprocess.Popen(command, close_fds=True, start_new_session=True)
+        process = subprocess.Popen(command, close_fds=True, start_new_session=True)
     except OSError as exc:
         copied.unlink(missing_ok=True)
+        context.unlink(missing_ok=True)
+        handoff_ack_path(handoff).unlink(missing_ok=True)
         raise UpdateError("无法启动更新助手") from exc
-    return command
+    return _InstallerLaunch(command, process, handoff, context, copied)

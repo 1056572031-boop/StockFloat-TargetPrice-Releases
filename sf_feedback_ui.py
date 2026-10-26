@@ -18,7 +18,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QGuiApplication, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QVBoxLayout,
+    QPushButton, QToolButton, QVBoxLayout, QWidget,
 )
 
 from sf_feedback import FeedbackProtocolError, build_archive
@@ -26,8 +26,10 @@ from sf_feedback_capture import (
     CONSENT_VERSION, MAX_DESCRIPTION, package_files, read_upload_archive, validate_capture_context, validate_upload_receipt,
 )
 from sf_feedback_outbox import FeedbackOutbox
-from sf_feedback_bundle import FULL_CONSENT_VERSION, read_diagnostics
+from sf_feedback_bundle import FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION, read_diagnostics
 from sf_feedback import utc_now
+from sf_feedback_versions import PAYLOAD_V3, is_full_payload
+from sf_logging import feature_enabled
 from sf_feedback_transport import endpoint_url, submit_pending
 from sf_glass import GlassMixin, paint_popup_surface, popup_stylesheet, prepare_popup_surface
 from sf_constants import FG_DISABLED_HEX, FG_TEXT_HEX
@@ -40,7 +42,21 @@ _BLOCKING_ERRORS = {"configuration_or_storage_unavailable", "configuration_unava
 _DEFAULT_SIZE = (290, 309)
 _MIN_SIZE = (270, 290)
 _FULL_UPLOAD_HINT = "发送完整脱敏诊断资料，包含运行日志、设置和功能状态；会去除已识别的凭据与身份字段，不采集摄像头画面。"
+_V3_UPLOAD_HINT = ("发送完整脱敏诊断资料，包含运行日志、设置和功能状态，以及运行环境、权限状态、反馈偏好和本次反馈上下文；"
+                   "会去除已识别的凭据与身份字段，不采集摄像头画面或截图。")
 _LEGACY_UPLOAD_HINT = "按原资料提交旧版反馈；不会重新采集或添加完整诊断内容。"
+
+
+def _upload_hint(payload_version: int) -> str:
+    if payload_version == PAYLOAD_V3:
+        return _V3_UPLOAD_HINT
+    if is_full_payload(payload_version):
+        return _FULL_UPLOAD_HINT
+    return _LEGACY_UPLOAD_HINT
+
+
+def _new_payload_version(diagnostic_capture) -> int:
+    return PAYLOAD_V3 if diagnostic_capture is not None and feature_enabled("feedback_v3") else 2 if diagnostic_capture is not None else 1
 
 
 def _failure(phase, exc):
@@ -52,6 +68,93 @@ def _failure(phase, exc):
         if isinstance(exc, kind):
             return {"phase": phase, "category": category}
     return {"phase": phase, "category": "unexpected_error"}
+
+
+class FeedbackHistoryDialog(GlassMixin, QDialog):
+    """Read-only feedback receipt history; never opens local archives."""
+
+    _prefer_liquid_glass = True
+
+    def __init__(self, outbox, parent=None):
+        super().__init__(parent)
+        self._init_glass_state()
+        self.outbox = outbox
+        self.setWindowTitle("反馈记录")
+        self.setMinimumSize(360, 260)
+        self.resize(420, 360)
+        layout = QVBoxLayout(self)
+        title = QLabel("反馈记录", self)
+        title.setObjectName("feedbackTitle")
+        layout.addWidget(title)
+        self.rows = QVBoxLayout()
+        layout.addLayout(self.rows)
+        layout.addStretch()
+        close_button = QPushButton("关闭", self)
+        close_button.clicked.connect(self.close)
+        layout.addWidget(close_button)
+        self.refresh()
+        prepare_popup_surface(self)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._glass_pending:
+            self._glass_pending = False
+            QTimer.singleShot(0, self._inject_glass)
+
+    def hideEvent(self, event):
+        self._close_glass()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):
+        self._glass_mask_flush()
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            paint_popup_surface(self, painter)
+        finally:
+            painter.end()
+
+    def refresh(self):
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        try:
+            rows = self.outbox.history()
+        except Exception:
+            self.rows.addWidget(QLabel("本机反馈记录暂时不可用。", self))
+            return
+        if not rows:
+            self.rows.addWidget(QLabel("还没有反馈记录。", self))
+            return
+        labels = {"locally_verified": "待提交", "submitting": "正在上传，稍后可重试", "response_unknown": "等待确认，可重试",
+                  "receipt_persisted": "已收件，本机资料待清理", "cleanup_pending": "已收件，等待本机清理",
+                  "cleaned": "已收件，本机资料已清理"}
+        for row in rows:
+            box = QWidget(self)
+            line = QHBoxLayout(box)
+            case_id = row["case_id"] or "本机反馈"
+            timestamp = row["received_at"] or row["updated_at"]
+            text = "%s\n%s · %s · %s" % (case_id, timestamp, row["app_version"],
+                                           labels.get(row["status"], "本机记录"))
+            label = QLabel(text, box)
+            label.setWordWrap(True)
+            line.addWidget(label, 1)
+            if row["status"] == "receipt_persisted":
+                clean = QToolButton(box)
+                clean.setText("清理")
+                clean.setToolTip("清理本机诊断资料；不会删除已收件的远端反馈。")
+                clean.clicked.connect(lambda _=False, ident=row["outbox_id"]: self._cleanup(ident))
+                line.addWidget(clean)
+            self.rows.addWidget(box)
+
+    def _cleanup(self, outbox_id):
+        try:
+            self.outbox.cleanup_local(outbox_id)
+        except Exception:
+            logging.getLogger(__name__).warning("feedback local cleanup failed", exc_info=True)
+        self.refresh()
 
 
 class FeedbackDialog(GlassMixin, QDialog):
@@ -80,7 +183,7 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.draft_snapshot = json.loads(json.dumps(snapshot))
         self.capture_again = capture_again
         self.diagnostic_capture = diagnostic_capture
-        self.payload_version = 2 if diagnostic_capture is not None else 1
+        self.payload_version = _new_payload_version(diagnostic_capture)
         self.full_capture = None
         self.endpoint = endpoint
         self.sender = sender
@@ -99,6 +202,7 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.preview_files: dict[str, Any] | None = None
         self.validation_error = ""
         self._feedback_status_dialog = None
+        self._history_dialog: FeedbackHistoryDialog | None = None
         self.setWindowTitle("反馈问题")
         self.setMinimumSize(*_MIN_SIZE)
         self.resize(*_DEFAULT_SIZE)
@@ -109,7 +213,22 @@ class FeedbackDialog(GlassMixin, QDialog):
         self.title.setObjectName("feedbackTitle")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(self.title)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        self.history_button = QToolButton(self)
+        self.history_button.setText("记录")
+        self.history_button.setAccessibleName("查看反馈记录")
+        self.history_button.setToolTip("查看反馈记录")
+        self.history_button.setFixedWidth(self.history_button.sizeHint().width())
+        self.history_button.clicked.connect(self._open_history)
+        # 与右侧按钮镜像的不可压缩占位，连同布局间距保持标题在整窗中线。
+        title_placeholder = QWidget(self)
+        title_placeholder.setFixedWidth(self.history_button.width())
+        title_placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        title_row.addWidget(title_placeholder)
+        title_row.addWidget(self.title, 1)
+        title_row.addWidget(self.history_button)
+        layout.addLayout(title_row)
         self.description = QPlainTextEdit(self)
         document = self.description.document()
         if document is not None:
@@ -149,7 +268,7 @@ class FeedbackDialog(GlassMixin, QDialog):
         buttons.addStretch()
         self.upload_button = QPushButton("上传反馈", self)
         self.upload_button.setFixedWidth(max(100, self.upload_button.fontMetrics().horizontalAdvance("核对并重试") + 32))
-        self.upload_button.setToolTip(_FULL_UPLOAD_HINT if self.payload_version == 2 else _LEGACY_UPLOAD_HINT)
+        self.upload_button.setToolTip(_upload_hint(self.payload_version))
         self.upload_button.setObjectName("ok")
         self.upload_button.setDefault(True)
         self.upload_button.clicked.connect(self._upload)
@@ -264,6 +383,19 @@ class FeedbackDialog(GlassMixin, QDialog):
         self._drag_origin = None
         super().mouseReleaseEvent(event)
 
+    def _open_history(self):
+        if self.outbox is None:
+            return
+        dialog = self._history_dialog
+        if dialog is None:
+            dialog = FeedbackHistoryDialog(self.outbox, self)
+            self._history_dialog = dialog
+        else:
+            dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
     def _draft_changed(self):
         if self.current_id is None and self.stage == "draft":
             self.draft_key = None
@@ -306,7 +438,7 @@ class FeedbackDialog(GlassMixin, QDialog):
             return
         reason = self.validation_error or (self.status.text() if self.last_error in _BLOCKING_ERRORS else "")
         self.description.setToolTip(self.validation_error)
-        self.upload_button.setToolTip(reason or (_FULL_UPLOAD_HINT if self.payload_version == 2 else _LEGACY_UPLOAD_HINT))
+        self.upload_button.setToolTip(reason or _upload_hint(self.payload_version))
         valid = self.preview_valid and self.preview_files is not None and len(self.description.toPlainText()) <= MAX_DESCRIPTION
         self.upload_button.setEnabled(bool(self.outbox is not None and self.last_error not in _BLOCKING_ERRORS
                                            and valid and not busy
@@ -354,12 +486,12 @@ class FeedbackDialog(GlassMixin, QDialog):
             self.stage = "pending"
             try:
                 row = self.outbox.get(self.current_id)
-                if row["envelope"].get("diagnostic_payload_version") == 2:
+                if is_full_payload(row["envelope"].get("diagnostic_payload_version")):
                     self._restore_full_pending(row)
                     return
                 packet = read_upload_archive(row["archive_path"], row["envelope"])
                 if row["status"] == "receipt_persisted":
-                    validate_upload_receipt(row["receipt"], row["envelope"])
+                    validate_upload_receipt(row["receipt"], row["envelope"], allow_legacy_v2=True)
                 self._apply_pending(row, packet)
             except Exception:
                 self.last_error = "local_package_invalid"
@@ -370,7 +502,7 @@ class FeedbackDialog(GlassMixin, QDialog):
                 self.status.setText("本地待处理反馈损坏或格式不符合要求，禁止提交。请保留诊断包联系维护者。")
         else:
             self.full_capture = None
-            self.payload_version = 2 if self.diagnostic_capture is not None else 1
+            self.payload_version = _new_payload_version(self.diagnostic_capture)
             if self.capture_again is not None and self.stage != "draft":
                 try:
                     self.draft_snapshot = self.capture_again()
@@ -417,7 +549,7 @@ class FeedbackDialog(GlassMixin, QDialog):
             try:
                 packet = read_upload_archive(row["archive_path"], row["envelope"])
                 if row["status"] == "receipt_persisted":
-                    validate_upload_receipt(row["receipt"], row["envelope"])
+                    validate_upload_receipt(row["receipt"], row["envelope"], allow_legacy_v2=True)
                 self.results.put(("restored", (expected, row, packet)))
             except Exception as exc:
                 self.results.put(("restore_failed", (expected, type(exc).__name__)))
@@ -449,7 +581,9 @@ class FeedbackDialog(GlassMixin, QDialog):
                 snapshot = self.capture_again() if self.capture_again else snapshot
                 snapshot["capture_started_at"] = started
                 snapshot["omitted"] = ["camera", "screenshots"]
-                self.full_capture = {"job": self.diagnostic_capture(None), "bytes": None, "state": snapshot}
+                context = {"trigger": "manual"} if self.payload_version == PAYLOAD_V3 else None
+                self.full_capture = {"job": self.diagnostic_capture(context), "bytes": None, "state": snapshot,
+                                     "payload_version": self.payload_version}
             capture = self.full_capture if self.current_id is None else None
         except Exception as exc:
             self.results.put(("failed", _failure("prepare", exc)))
@@ -506,11 +640,13 @@ class FeedbackDialog(GlassMixin, QDialog):
                                           bundle_id=snapshot["bundle_id"], run_id=snapshot["run_id"],
                                           omitted=snapshot["omitted"], truncated=snapshot["truncated"],
                                           capture_started_at=snapshot["capture_started_at"],
-                                          capture_completed_at=snapshot["capture_completed_at"])
+                                          capture_completed_at=snapshot["capture_completed_at"],
+                                          diagnostic_payload_version=(capture["payload_version"] if capture else None))
                             read_upload_archive(path)
                             phase = "enqueue"
                             row = outbox.enqueue(path, app_version=snapshot["app_version"],
-                                                 consent_policy_version=(FULL_CONSENT_VERSION if capture else CONSENT_VERSION),
+                                                 consent_policy_version=(FULL_V3_CONSENT_VERSION if capture and capture["payload_version"] == PAYLOAD_V3
+                                                                          else FULL_CONSENT_VERSION if capture else CONSENT_VERSION),
                                                  idempotency_key=draft_key)
                     outbox_id = row["outbox_id"]
                 else:

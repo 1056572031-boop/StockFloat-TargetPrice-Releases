@@ -203,15 +203,16 @@ class CoverageGateCli(SFCase):
         self.assertTrue(seen["allow_drop"], "--allow-drop 没转发 = 下调下限永远判红")
 
     def test_min_改写的是本次判定不是基线(self):
+        baseline = {"product_floor": 94, "chain_floor": 87,
+                    "module_floors": dict.fromkeys(cg.REQUIRED_MODULES, 90)}
         captured = {}
 
-        def fake_report(baseline):
-            captured["product_floor"] = baseline["product_floor"]
-            return 0
-
-        self.track_patch(mock.patch.object(cg, "cmd_report", side_effect=fake_report))
-        run(cg.main, [PROG, "--report", "--min=91"])
-        self.assertEqual(captured["product_floor"], 91)
+        self.track_patch(mock.patch.object(cg, "load_baseline", return_value=baseline))
+        self.track_patch(mock.patch.object(
+            cg, "load_data", return_value=(synthetic_data(product=[1000, 40, 10], chain=[100, 10, 10]), "")))
+        rc, _ = run(cg.main, [PROG, "--min=95"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(baseline["product_floor"], 95)
         self.assertEqual(REAL_COVERAGE_BASELINE.read_bytes(), self.real_bytes,
                          "--min 只该改本次门槛；写了基线就等于偷偷放宽棘轮")
 
@@ -239,7 +240,8 @@ class CoverageGateCli(SFCase):
 
     def test_默认档通过时要带上记账口径提醒(self):
         self.track_patch(mock.patch.object(cg, "load_data",
-                                           return_value=(synthetic_data(), "")))
+                                           return_value=(synthetic_data(product=[1000, 40, 10],
+                                                                        chain=[100, 10, 10]), "")))
         rc, out = run(cg.main, [PROG])
         self.assertEqual(rc, 0, out)
         self.assertIn("这是记账口径不是没测", out)

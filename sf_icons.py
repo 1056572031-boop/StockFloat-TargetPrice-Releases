@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """模块化拆分 v1.2.13：sf_icons —— 由 stock_float_window.py 搬移生成，行为零变化。"""
 
+import math
 import os
 import queue
 import threading
@@ -10,7 +11,6 @@ from PyQt6.QtGui import (QColor, QGuiApplication, QIcon, QImage, QLinearGradient
 from sf_constants import (ICON_PATH, BTN_ICON_PT, BTN_ICON_DEVICE_RATIO,
                           MENU_ICON_PT, MENU_ICON_CONTENT_SCALE, MENU_ICON_DEVICE_RATIO)
 from sf_logging import log_line, log_swallow
-from renderer import smooth_round_rect_path
 
 # 主界面与各弹窗共用的顶部按钮 SVG；弹窗禁止再用近似自绘造型。
 _SEARCH_ICON_SVG = (
@@ -73,8 +73,16 @@ _BRAND_DARK_SWAP = {"#f40000": "#fe0118", "#14181f": "#f2f4f8"}
 
 # 色块占画布边长的比例：留 ~10% 透明边，和 Dock 里相邻图标的外轮廓同量级。
 APP_ICON_PLATE_SCALE = 0.805
-# 色块圆角半径占色块边长的比例（走与主窗同一份超椭圆路径，见 renderer.smooth_round_rect_path）。
-APP_ICON_PLATE_RADIUS = 0.225
+# 色块的角形状：超椭圆 |dx/r|^N + |dy/r|^N = r^N，半径 r 占色块边长的比例与指数 N。
+# 数值来自实测（2026-10-23，macOS 27.0.1）：对已装 Skyrocket.app 的包体图标取
+# NSWorkspace.iconForFile_ 的系统处理图（Dock 启动前显示的就是它），按 1024 像素逐行量左缘，
+# 拟合得 N=3、r=0.36 时均方根误差 1.33 像素（普通圆弧最好 4.33 像素，主窗用的
+# renderer.smooth_round_rect_path 在 0.225 半径下 40 像素）。运行时程序把自己的图直接交给
+# Dock、不再经系统遮罩，所以色块自己的角必须长成系统遮罩的样子，启动前后才一致。
+# 不复用 smooth_round_rect_path：那是主窗/玻璃层共用的曲线，改它会连带四处圆角。
+APP_ICON_PLATE_CORNER_RADIUS = 0.36
+APP_ICON_PLATE_CORNER_EXPONENT = 3.0
+APP_ICON_PLATE_CORNER_STEPS = 48      # 每个角的采样段数；再少 1024 像素下会露出折线
 # 标志的 SVG 外框占色块边长的比例。实测此时墨迹宽约占色块的 56%（外框 78% × 墨迹/外框 0.71）。
 APP_ICON_MARK_IN_PLATE = 0.78
 # svg_pixmap 的 content_scale（占整张画布）。包体 icon.icns / icon.png 必须按同一组数出图，
@@ -157,6 +165,32 @@ def menu_icon(key):
         log_swallow("sf_icons.menu_icon", exc)
         return None
 
+def app_icon_plate_path(x, y, side):
+    """应用图标色块的轮廓：四角为超椭圆（参数见 APP_ICON_PLATE_CORNER_*），边为直线。"""
+    r = side * APP_ICON_PLATE_CORNER_RADIUS
+    n = APP_ICON_PLATE_CORNER_EXPONENT
+    power = 2.0 / n
+    steps = APP_ICON_PLATE_CORNER_STEPS
+    # 四个角的圆心，依次是右上、右下、左下、左上；每个角扫 90°，起点沿顺时针衔接。
+    corners = ((x + side - r, y + r, -math.pi / 2), (x + side - r, y + side - r, 0.0),
+               (x + r, y + side - r, math.pi / 2), (x + r, y + r, math.pi))
+    path = QPainterPath()
+    first = True
+    for cx, cy, start in corners:
+        for i in range(steps + 1):
+            t = start + (math.pi / 2) * i / steps
+            c, s = math.cos(t), math.sin(t)
+            px = cx + r * math.copysign(abs(c) ** power, c)
+            py = cy + r * math.copysign(abs(s) ** power, s)
+            if first:
+                path.moveTo(px, py)
+                first = False
+            else:
+                path.lineTo(px, py)
+    path.closeSubpath()
+    return path
+
+
 def render_app_icon(mode="light", s=512):
     """按外观档出一张 s×s 的应用图标：圆角方形色块底 + 品牌标志。不落盘、无副作用。
 
@@ -177,8 +211,7 @@ def render_app_icon(mode="light", s=512):
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     side = s * APP_ICON_PLATE_SCALE
     off = (s - side) / 2
-    p.fillPath(smooth_round_rect_path(off, off, side, side, side * APP_ICON_PLATE_RADIUS),
-               QColor(APP_ICON_PLATE_HEX[mode]))
+    p.fillPath(app_icon_plate_path(off, off, side), QColor(APP_ICON_PLATE_HEX[mode]))
     p.drawImage(0, 0, mark)
     p.end()
     return img

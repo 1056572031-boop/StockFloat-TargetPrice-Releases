@@ -17,12 +17,14 @@ import tempfile
 # ---- v1.4.5 启动位置守卫：必须在 PyQt6 之前（旧副本从 /tmp 误启动会在
 # Qt 导入期 SIGSEGV，只留"程序意外退出"弹窗；守卫改为提示后正常退出）----
 from sf_bootstrap import guard_temporary_launch
+from sf_run_session import RuntimeSessionLedger, session_path_for_log
+
 guard_temporary_launch()
 
 from PyQt6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QRectF, pyqtSignal,
                           QCoreApplication, QEvent)
 from PyQt6.QtGui import (QAction, QPainter, QColor, QPen, QIcon, QPixmap,
-                         QFont, QFontMetrics, QGuiApplication, QPainterPath,
+                         QFont, QFontInfo, QFontMetrics, QGuiApplication, QPainterPath,
                          QPolygonF)
 from typing import Any, Optional
 from PyQt6.QtWidgets import QApplication, QWidget, QToolTip, QProgressBar, QMessageBox
@@ -152,7 +154,7 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
                           POLL_INTERVAL_OFF_MARKET, POLL_NORMAL,
                           RELEASE_STAGE, BUNDLE_ID, LEGACY_BUNDLE_IDS,
                           UI_WATCHDOG_INTERVAL_MS,
-                          BETA_SUFFIX,
+                          BETA_SUFFIX, MENU_VERSION_FONT_PX, MENU_VERSION_LETTER_SPACING_PX,
                           LAST_QUOTE_MIN_WRITE_INTERVAL, UPDATE_INITIAL_DELAY_MS,
                           TEMP_SWEEP_DELAY_MS, STAGING_PRUNE_DELAY_MS,
                           UPDATE_PERIODIC_MS, UPDATE_RESUME_MIN_GAP_SEC,
@@ -333,6 +335,23 @@ def _set_menu_icon(act, key, tag=None):
         act.setIcon(_ic)
     if tag is not None and act is not None:
         act.setData(tag)    # 固定名字：菜单会话记录按它认是哪一项，不依赖文案与行号
+
+
+def _menu_version_font():
+    """右键菜单版本行的字体：股价同款数字字体 D-DIN，常规字重，像素字号与绝对字距取自 sf_constants。
+
+    返回 None 表示 D-DIN 没解析到（字体文件缺失或没注册）——调用方此时不给这一行单独设字体，
+    保持菜单原有字体。不带着一个落到兜底字体、又被加了字距的字形上屏：那样会比现状更松散。
+    字号用像素而不是磅，与样式表里 `font-size: 13px` 同一单位；字距用 AbsoluteSpacing，
+    单位是像素，不随字号缩放（QFont.PercentageSpacing 是另一个量纲，别混）。
+    """
+    f = QFont(NUM_FONT)
+    if QFontInfo(f).family() != NUM_FONT:
+        return None
+    f.setPixelSize(MENU_VERSION_FONT_PX)
+    f.setWeight(QFont.Weight.Normal)
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, MENU_VERSION_LETTER_SPACING_PX)
+    return f
 
 
 def _menu_context(window):
@@ -583,6 +602,14 @@ class TargetBubble(QWidget):
     SEP_GAP_BOTTOM = 6
     COL_GAP = 6
     PCT_GAP = 14                # 价位与百分比之间，在列距之外再留的空
+    # ---- 底边对齐（2026-10-23 效果图 B 方案）----
+    # 三列共用一条基线，但「涨到/跌到」的笔画底部实测比数字低约 1px（8 倍屏量：方向词 1.125、价位与百分比
+    # 都是 0.125，差 1.0），所以方向词整体上提 WORD_RAISE，让可见的底边落在同一条线上。
+    # 组标题「待触发/已触发」的文字底边比基线低 HEADER_INK_OVER（实测 1.0），前面的圆点底边与它齐平。
+    # 两个数是按这两套字体量出来的设计取值；换字体或字号要重量，不要凭感觉改。
+    WORD_RAISE = 1.0
+    HEADER_INK_OVER = 1.0
+    DOT_SIZE = 6
     # ---- 与铃铛的关系 ----
     GAP_TO_ICON = 8             # 本体边到铃铛图标边；悬停底板比图标各大 4px，三角尖端正好顶到底板
     CARET_H = 4.25
@@ -799,7 +826,8 @@ class TargetBubble(QWidget):
         p.end()
 
     def _paint_rows(self, p):
-        """组标题 + 每行三列。三列共用同一条文字底线（取价位字体的度量，方向词与百分比跟着它）。"""
+        """组标题 + 每行三列。三列共用同一条文字基线（取价位字体的度量，方向词与百分比跟着它），
+        方向词再上提 WORD_RAISE 抵掉汉字笔画的下探，使三列可见底边齐平；标题圆点底边与标题文字底边齐平。"""
         price_f, pct_f, word_f, header_f = self._fonts()
         word_w, price_w, pct_w = self._columns()
         hfm, pfm = QFontMetrics(header_f), QFontMetrics(price_f)
@@ -816,7 +844,14 @@ class TargetBubble(QWidget):
             base = y + head_off
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(dot)
-            p.drawEllipse(QRectF(self.PAD_X, base - 4 - 3, 6, 6))     # 圆点底边离底线 1px
+            # 圆点底边与标题文字的可见底边齐平（文字底边 = 基线 + HEADER_INK_OVER）。
+            # 标题基线常落在半像素上（实测 20.5）：2 倍屏上刚好是设备像素边界，1 倍屏上文字会被取整而圆点
+            # 按半像素抗锯齿，差出 1px，所以圆点底边按所在设备的像素向上取整。
+            # 缩放取两处的较大值：直接画到窗口时 device() 报真实倍率；render() 到 2 倍图片时 device() 仍是
+            # 窗口本身（实测报 1.0），真实缩放只在 deviceTransform() 里（报 2.0）。
+            dpr = max(1.0, p.device().devicePixelRatioF(), p.deviceTransform().m11())
+            dot_bottom = math.ceil((base + self.HEADER_INK_OVER) * dpr - 1e-6) / dpr
+            p.drawEllipse(QRectF(self.PAD_X, dot_bottom - self.DOT_SIZE, self.DOT_SIZE, self.DOT_SIZE))
             p.setFont(header_f)
             p.setPen(self.HEADER_COLOR)
             p.drawText(QPointF(self.PAD_X + 12, base), title)
@@ -829,7 +864,7 @@ class TargetBubble(QWidget):
                     color = self.UP_COLOR if is_up else self.DOWN_COLOR
                 p.setPen(color)
                 p.setFont(word_f)
-                p.drawText(QPointF(x_word, base), "涨到" if is_up else "跌到")
+                p.drawText(QPointF(x_word, base - self.WORD_RAISE), "涨到" if is_up else "跌到")
                 p.setFont(price_f)
                 p.drawText(QPointF(x_price, base), price_text)
                 if pct_text:
@@ -2401,6 +2436,13 @@ QMenu::separator {
                          + (BETA_SUFFIX if RELEASE_STAGE == "beta" else ""))
         _v.setEnabled(False)
         _v.setData("version")
+        # 2026-10-23（用户看图选定）：版本号改用股价同款数字字体 D-DIN，常规 14px、字距 +0.6。
+        # 只设这一行；其余四行与整个菜单的样式表字体不动。"Beta" 与版本号同属一个字符串，
+        # 会一并换成 D-DIN（要保持原字体需把这一行做成自定义控件，本轮不做）。
+        # D-DIN 没解析到时 _menu_version_font() 返回 None，这一行保持原字体，不降级成半吊子。
+        _vf = _menu_version_font()
+        if _vf is not None:
+            _v.setFont(_vf)
         # 注意：macOS 上 QMenu.exec() 会走原生 NSMenu 渲染，QSS 样式(圆角/背景/描边)全部失效，
         # 因此改用非阻塞 popup() 让 Qt 自绘样式生效；同时持有引用防止菜单被 GC 关闭。
         self._ctx_menu = m
@@ -2439,7 +2481,8 @@ QMenu::separator {
                 dialog = FeedbackDialog(
                     self, snapshot=snapshot,
                     storage_dir=os.path.join(APP_SUPPORT_DIR, "feedback"), endpoint=FEEDBACK_ENDPOINT,
-                    diagnostic_capture=lambda _: self._export_diagnostics(prepare_only=True),
+                    diagnostic_capture=lambda context: self._export_diagnostics(
+                        prepare_only=True, feedback_context=context),
                     capture_again=lambda: capture_snapshot(
                         self, app_version=_bundle_version(), bundle_id=BUNDLE_ID, run_id=RUN_ID, index_only=True))
                 sf_menu_trace.feedback_mark(attempt, "built_ms")
@@ -2875,7 +2918,23 @@ QMenu::separator {
         """把已校验的 ZIP 交给助手并退出当前进程。"""
         try:
             import sf_update
-            sf_update.launch_installer(archive, update.archive_sha256, update.version)
+            import uuid
+            handoff_id = uuid.uuid4().hex
+            launch = sf_update.launch_installer(archive, update.archive_sha256, update.version,
+                                                handoff_id=handoff_id)
+            session = vars(self).get("_runtime_session")
+            session_id = vars(self).get("_runtime_session_id")
+            if isinstance(session, RuntimeSessionLedger) and isinstance(session_id, str):
+                try:
+                    session.mark_update_handoff(session_id, handoff_id=handoff_id,
+                                                expected_version=update.version)
+                except Exception:
+                    process = getattr(launch, "process", None)
+                    if process is not None:
+                        process.terminate()
+                    sf_update.handoff_context_path(handoff_id).unlink(missing_ok=True)
+                    sf_update.handoff_ack_path(handoff_id).unlink(missing_ok=True)
+                    raise
         except Exception as exc:
             log_line("update handoff failed: %r" % (exc,), "ERROR")
             self._show_update_message("更新未完成",
@@ -3053,7 +3112,8 @@ QMenu::separator {
                         "available": [av.x(), av.y(), av.width(), av.height()]})
         return out
 
-    def _export_diagnostics(self, background=False, *, prepare_only=False):
+    def _export_diagnostics(self, background=False, *, prepare_only=False,
+                            feedback_context=None):
         """导出诊断包：config + 日志 + 近期崩溃报告（含正文关键段）打包为 zip 到桌面，
         便于反馈问题时快速定位原因（可观测性）。
 
@@ -3111,7 +3171,7 @@ QMenu::separator {
                 log_keep=LOG_ROTATE_KEEP,
                 bundle_id=BUNDLE_ID,
             )
-            z = prepare_diagnostics(self, temp_out, sources)
+            z = prepare_diagnostics(self, temp_out, sources, feedback_context=feedback_context)
             if prepare_only:
                 return z
             assert temp_out is not None
@@ -6774,7 +6834,66 @@ def _warm_universe():
         pass
 
 
-if __name__ == "__main__":
+def _begin_runtime_session():
+    """把这次运行登记进会话账本，返回 (账本, 本次会话号, 上一次会话的判定)。
+
+    账本读不到/写不进都只留一条 SWALLOWED 痕 —— 登记失败绝不能挡在窗口起来之前。
+    三项都可能是 None，调用方按 isinstance 决定后续接线，不假设账本一定在。
+    """
+    session = None
+    session_id = None
+    previous = None
+    try:
+        session = RuntimeSessionLedger(session_path_for_log(LOG_PATH))
+        previous = session.begin(app_version=APP_VERSION, bundle_id=BUNDLE_ID)
+        current = session.current()
+        session_id = current.get("session_id") if isinstance(current, dict) else None
+    except Exception as exc:
+        log_swallow("stock_float_window.runtime_session.begin", exc)
+    return session, session_id, previous
+
+
+def _mark_runtime_session_clean(session, session_id):
+    """正常退出那一刻把账本落成 clean_exit；失败只留痕，不打扰用户。"""
+    try:
+        session.mark_clean_exit(session_id)
+    except Exception as exc:
+        log_swallow("stock_float_window.runtime_session.clean_exit", exc)
+
+
+def _offer_unfinished_session_feedback(win, session, session_id):
+    """上次没正常退出时问一次要不要描述；答案必须写回账本，同一会话不重复问。
+
+    系统框不可用（返回 None）只写一行日志 —— 问不出话与答案丢了是两件事，
+    都不能把这次会话标成"已经问过"以外的状态。
+    """
+    import sf_system_alert
+    try:
+        def _answer_unfinished_session_prompt(button) -> None:
+            try:
+                if button == "描述问题":
+                    win._queue_feedback_open()
+                    session.mark_prompt(session_id, "opened_feedback")
+                else:
+                    session.mark_prompt(session_id, "dismissed")
+            except Exception as exc:
+                log_swallow("stock_float_window.runtime_session.prompt_answer", exc)
+
+        dialog = sf_system_alert.show_alert(
+            title="反馈问题",
+            text="刚才似乎没有正常退出，要描述一下吗？",
+            buttons=("暂不", "描述问题"), default="描述问题", cancel="暂不",
+            icon_path=sf_system_alert.bundled_icon_path(), on_result=_answer_unfinished_session_prompt,
+        )
+        if dialog is None:
+            log_line("unfinished-session prompt unavailable", "WARNING")
+            return
+        session.mark_prompt(session_id, "deferred")
+    except Exception as exc:
+        log_swallow("stock_float_window.runtime_session.prompt", exc)
+
+
+if __name__ == "__main__":  # pragma: no cover - 进程入口：判断都在上面的具名函数里逐条有判据，产物冒烟关卡真跑这一段
     if len(sys.argv) > 1 and sys.argv[1] == "--verify-camera":
         from sf_camera_check import main as camera_check_main
         raise SystemExit(camera_check_main(sys.argv[2:]))
@@ -6801,9 +6920,20 @@ if __name__ == "__main__":
     if not _become_single_instance():
         # 多开保护：已有实例在运行，直接退出
         sys.exit(0)
+    session, session_id, previous_session = _begin_runtime_session()
     win = FloatWindow()
+    vars(win)["_runtime_session"] = session
+    vars(win)["_runtime_session_id"] = session_id
+    if isinstance(session, RuntimeSessionLedger) and isinstance(session_id, str):
+        def _clean_exit() -> None:
+            _mark_runtime_session_clean(session, session_id)
+        app.aboutToQuit.connect(_clean_exit)
     _win_ref = win            # 19.2 崩溃日志上下文：暴露当前股票代码
     win.show()
+    if previous_session is not None and previous_session.should_prompt and isinstance(session, RuntimeSessionLedger):
+        def _offer() -> None:
+            _offer_unfinished_session_feedback(win, session, previous_session.session_id)
+        QTimer.singleShot(2200, _offer)
     # v1.3.45：崩溃报告检查是纯诊断，不需要挡在首帧前面 —— 挪到界面露出之后
     # 再跑（下一个事件循环空闲），把这段读盘时间从关键路径上摘掉。
     QTimer.singleShot(0, _check_recent_crashes)

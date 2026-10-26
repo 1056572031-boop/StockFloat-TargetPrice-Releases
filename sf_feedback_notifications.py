@@ -6,6 +6,7 @@ import fcntl
 import re
 import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 
 from sf_feedback import _atomic_replace
@@ -31,7 +32,7 @@ def report_versions(directory):
                   database.with_name("queue.sqlite3-shm"))
     if not database.exists():
         return {}
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as db:
         rows = db.execute("SELECT case_id, substr(report,1,65537) FROM queue WHERE status='ready' LIMIT 1001").fetchall()
     versions = {case: json.loads(report)["analysis_run_id"] for case, report in rows}
     _validate_versions(versions)

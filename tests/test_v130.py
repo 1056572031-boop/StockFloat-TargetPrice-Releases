@@ -37,43 +37,54 @@ _QUOTE_OK = _quote(price="410.00", pct="1.61", change="6.50", volume="12345")
 
 
 class _WinBase(unittest.TestCase):
-    """公共夹具：与 test_ui/test_render 相同的 patch 模式，构造后停掉后台线程。"""
+    """公共夹具：真窗口、真业务路径，但不为无关断言启动常驻 worker。"""
 
     @classmethod
     def setUpClass(cls):
         cls._app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self._runtime_starts = []
+
+        def block_runtime_start(controller, quote_target, minute_target):
+            self.assertEqual(controller.threads(), (None, None),
+                             "夹具构造前不应已有行情或分时 worker")
+            self._runtime_starts.append((controller, quote_target, minute_target))
+
         self._patches = [
             patch.object(m, "load_config",
                          return_value=("sh600519", 100, 100, 200, "translucent")),
-            patch.object(m, "save_config", lambda *a, **k: None),
+            patch.object(m, "save_config", lambda *a, **k: True),
             patch.object(sf_quote, "http_get", lambda *a, **k: ""),
             patch.object(m, "start_icon_worker", lambda: None),
             patch.object(m.FloatWindow, "_force_top", lambda self: None),
             patch.object(m.FloatWindow, "_setup_reopen_handler", lambda self: None),
+            patch.object(m.QuoteRuntimeController, "start", block_runtime_start),
             patch("PyQt6.QtWidgets.QMenu.popup", lambda *a, **k: None),
         ]
         for p in self._patches:
             p.start()
+            self.addCleanup(p.stop)
         self.win = m.FloatWindow()
+        self.assertEqual(len(self._runtime_starts), 1,
+                         "窗口构造必须把两条常驻循环交给运行时控制器")
+        controller, quote_target, minute_target = self._runtime_starts[0]
+        self.assertIs(controller, self.win._quote_runtime)  # discipline-ok(R5): 接线断言必须取窗口持有的运行时控制器
+        self.assertEqual(quote_target.__name__, "_quote_loop_wrapper")
+        self.assertEqual(minute_target.__name__, "_minute_loop_wrapper")
+        self.assertEqual(controller.threads(), (None, None),
+                         "本文件不测后台抓取，不应真的创建 worker")
         self.win.running = False
         self.win._wake.set()
         self.win.timer.stop()
         self.win.top_timer.stop()
         self.win._anim_timer.stop()
         self.win._flash_timer.stop()
-        # join 后台线程：确保 _minute_loop/_quote_loop 已退出，避免其持 _minute_lock
-        for _t in (getattr(self.win, "_quote_thread", None),
-                   getattr(self.win, "_minute_thread", None)):
-            if _t is not None:
-                _t.join(timeout=1.5)
         self.win.show()
 
     def tearDown(self):
+        self.win._exit_persisted = True  # discipline-ok(R5): §6.11 规定关窗前必须阻止真实配置落盘
         self.win.close()
-        for p in self._patches:
-            p.stop()
 
 
 # =====================================================================

@@ -22,7 +22,6 @@ import io
 import os
 import sys
 import unittest
-from contextlib import redirect_stdout, redirect_stderr
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -58,6 +57,10 @@ IN_SUITE = (
     "apply_installer_icon",      # 卷内安装脚本的图标：贴法与"读回比像素"的判据（v1.4.63 补）
     "verify_face_presence",      # 自动隐藏窗口的三条计数口径 + 三档判据本身能不能失败
     "quality_evidence",           # 修改单、receipt、manifest 与产物身份的离线证据协议
+    "post_release_click_walkthrough",
+    #                              （2026-10-23 补：发布后真点击走查工具。它的 self_test 全是
+    #                               纯几何与纯判据的种错，不发事件、不起产物进程，所以能进全量；
+    #                               真正跑装机包的那条路线只在 P6 发布后验收里人工发起。）
     "release_state",             # 临时 Git 中验证跳阶段、源码变化、目录篡改的真实拒绝
     #                              （2026-10-12 补：边脸放宽与 1.5 米闸门落地时，这套判据
     #                              是唯一能长期回答"那条曲线还成立吗"的东西；它此前只有
@@ -119,36 +122,16 @@ class ChainToolSelfTestsRunInProcess(SFCase):
                          "发版链上出现了没安排的工具（要么加入本进程清单，要么写明为什么不起）：%s"
                          % unaccounted)
 
-    def test_all_self_tests_pass_in_process(self):
-        failed = []
-        for name in IN_SUITE:
-            try:
-                mod = _load(name)
-            except Exception as exc:                         # noqa: BLE001
-                failed.append("%s（导入失败 %r）" % (name, exc))
-                continue
-            fn = getattr(mod, "self_test", None)
-            if not callable(fn):
-                failed.append("%s（没有 self_test）" % name)
-                continue
-            buf_out, buf_err = io.StringIO(), io.StringIO()
-            saved_argv = list(sys.argv)
-            sys.argv = [name + ".py", "--self-test"]
-            try:
-                with redirect_stdout(buf_out), redirect_stderr(buf_err):
-                    rc = fn()
-            except SystemExit as exc:                        # 允许用 sys.exit 表达失败
-                rc = exc.code if isinstance(exc.code, int) else 1
-            except Exception as exc:                         # noqa: BLE001
-                rc = "抛异常 %r" % (exc,)
-            finally:
-                sys.argv = saved_argv
-            if rc not in (0, None):
-                failed.append("%s → %s｜%s" % (name, rc,
-                                               (buf_err.getvalue() or buf_out.getvalue())[-160:]))
-        self.assertEqual(failed, [],
-                         "这些发版链核验工具的自检在本进程里没通过（它们会红，所以本轮结论不算数）：\n  "
-                         + "\n  ".join(failed))
+    def test_cli_self_test_ownership_is_documented(self):
+        """工具自检的唯一执行者是 test_release_gates 的独立 CLI 路径。
+
+        这里不再在本进程重复执行 self_test：同一批工具若在进程内和子进程各跑一遍，
+        只会重复创建临时仓库/解释器/系统资源；CLI 测试已覆盖真实退出码和隔离环境。
+        """
+        self.assertTrue(IN_SUITE, "链上工具自检清单不能为空")
+        self.assertNotIn("static_gate", SKIPPED)
+        self.assertNotIn("pyobjc_sig_check", IN_SUITE,
+                         "PyObjC 必须由 run_tests.sh 的独立进程关卡负责")
 
     def test_skipped_tools_stay_documented(self):
         """被排除的工具要一直有理由 —— 三年后没人记得为什么不起它。"""

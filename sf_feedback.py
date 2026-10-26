@@ -22,8 +22,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
 
+from sf_feedback_versions import PAYLOAD_V1, PAYLOAD_V2, PAYLOAD_V3, SUPPORTED_PAYLOADS
+
 SCHEMA_VERSION = 1
-DIAGNOSTIC_PAYLOAD_VERSION = 1
+DIAGNOSTIC_PAYLOAD_VERSION = PAYLOAD_V1
 DEFAULT_CONSENT_POLICY_VERSION = "feedback-consent-v1"
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 MAX_FULL_ARCHIVE_BYTES = 32 * 1024 * 1024
@@ -168,8 +170,17 @@ def build_archive(path: os.PathLike[str] | str, files: Mapping[str, bytes | str]
                   omitted: list[str] | None = None,
                   truncated: list[str] | None = None,
                   capture_started_at: str | None = None,
-                  capture_completed_at: str | None = None) -> dict[str, Any]:
+                  capture_completed_at: str | None = None,
+                  diagnostic_payload_version: int | None = None) -> dict[str, Any]:
     """Write a self-contained feedback ZIP and return its package metadata."""
+    full = "diagnostics.zip" in files
+    if diagnostic_payload_version is None:
+        diagnostic_payload_version = PAYLOAD_V2 if full else PAYLOAD_V1
+    if (type(diagnostic_payload_version) is not int
+            or diagnostic_payload_version not in SUPPORTED_PAYLOADS
+            or (full and diagnostic_payload_version not in (PAYLOAD_V2, PAYLOAD_V3))
+            or (not full and diagnostic_payload_version != PAYLOAD_V1)):
+        raise FeedbackProtocolError("diagnostic payload does not match archive members")
     if "manifest.json" in files:
         raise FeedbackProtocolError("manifest.json is generated and cannot be supplied")
     if not files or len(files) > MAX_MEMBER_COUNT - 1:
@@ -186,7 +197,7 @@ def build_archive(path: os.PathLike[str] | str, files: Mapping[str, bytes | str]
         prepared[name] = data
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "diagnostic_payload_version": 2 if "diagnostics.zip" in prepared else DIAGNOSTIC_PAYLOAD_VERSION,
+        "diagnostic_payload_version": diagnostic_payload_version,
         "app_version": str(app_version),
         "bundle_id": str(bundle_id),
         "run_id": str(run_id),
@@ -251,12 +262,13 @@ def validate_archive(path: os.PathLike[str] | str) -> dict[str, Any]:
                 manifest = json.loads(manifest_bytes.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise FeedbackProtocolError("manifest is not valid UTF-8 JSON") from exc
-            if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION \
-                    or manifest.get("diagnostic_payload_version") not in (1, 2):
+            if (not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION
+                    or manifest.get("diagnostic_payload_version") not in SUPPORTED_PAYLOADS):
                 raise FeedbackProtocolError("unsupported manifest version")
-            if manifest["diagnostic_payload_version"] == 1 and size > MAX_ARCHIVE_BYTES:
+            payload = manifest["diagnostic_payload_version"]
+            if payload == PAYLOAD_V1 and size > MAX_ARCHIVE_BYTES:
                 raise FeedbackProtocolError("legacy archive exceeds the size limit")
-            if manifest["diagnostic_payload_version"] == 2 and set(names) != {
+            if payload in (PAYLOAD_V2, PAYLOAD_V3) and set(names) != {
                     "manifest.json", "state.json", "problem.txt", "diagnostics.zip"}:
                 raise FeedbackProtocolError("full archive members are incomplete")
             declared = manifest.get("files")

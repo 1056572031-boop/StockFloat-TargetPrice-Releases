@@ -18,9 +18,10 @@ from typing import Any, TypedDict
 
 from sf_feedback import sha256_file, validate_archive
 from sf_feedback_bundle import read_diagnostics
+from sf_feedback_v3 import V3_DIAGNOSTIC_FILES, is_v3_export
 
-ANALYZER_SCHEMA_VERSION = 3
-ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v8"
+ANALYZER_SCHEMA_VERSION = 4
+ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v9"
 DEFAULT_RULESET = {
     "required_members": ["state.json"],
     "health_false_conclusion": "suspected_problem",
@@ -364,8 +365,17 @@ def diagnostic_evidence(content, run_id=None):
         text_evidence[name] = {"line_count": len(lines), "matching_line_count": len(relevant),
                                "tail": [line[:1000] for line in relevant[-40:]],
                                "excerpt_truncated": len(relevant) > 40 or any(len(line) > 1000 for line in relevant[-40:])}
+    v3 = is_v3_export(files.get("export.json"))
+    v3_snapshots = {}
+    if v3:
+        for name in V3_DIAGNOSTIC_FILES:
+            value = files.get(name)
+            if isinstance(value, dict):
+                v3_snapshots[name] = {key: value.get(key) for key in ("schema", "available", "reason")
+                                      if key in value}
     return {"archive_sha256": hashlib.sha256(content).hexdigest(),
-            "inventory": sorted(files), "snapshots": snapshots, "text_evidence": text_evidence,
+            "inventory": sorted(files), "snapshots": snapshots, "v3_snapshots": v3_snapshots,
+            "diagnostic_schema_version": 3 if v3 else 1, "text_evidence": text_evidence,
             "analysis": _full_analysis(files, run_id),
             "collection_issues": files["export.json"]["issues"],
             "limitation": "日志与崩溃为历史线索，不自动认定属于本次反馈；原文保留在完整诊断附件中。"}
@@ -445,7 +455,7 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
     context_mismatches: list[str] = []
     with zipfile.ZipFile(archive) as package:
         members = set(package.namelist())
-        if manifest["diagnostic_payload_version"] == 2:
+        if manifest["diagnostic_payload_version"] >= 2:
             full_diagnostics = diagnostic_evidence(package.read("diagnostics.zip"), manifest.get("run_id"))
         if "problem.txt" in members:
             description = package.read("problem.txt").decode("utf-8", errors="replace")[:4000]

@@ -29,6 +29,48 @@ set -euo pipefail
 PROJ="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJ"
 
+# BEGIN step_timing
+# 发版链分步耗时：只观测，不参与任何判定，也不改变任何退出码。
+# 为什么要有：这条链从候选到收口要几十分钟，日志里只有状态切换的时刻，没有每一步用了多久，
+# "慢在哪一步"只能凭印象猜。每个 step_begin 先记下上一步的耗时；脚本无论正常结束还是中途退出，
+# 都会打印一张表（EXIT 陷阱都经过 release_lock，由它调用 step_report）。
+# 约束：不用数组（bash 3.2 在 set -u 下展开空数组会报未绑定变量）；步骤名里不能有竖线；
+# 取时钟收在 step_tick 一处，测试里重写它就能构造精确的耗时，不靠真睡眠。
+STEP_NAME=""
+STEP_BEGAN=0
+STEP_NOW=0
+STEP_SUMMARY=""
+step_tick() {
+  STEP_NOW=$SECONDS
+}
+step_flush() {
+  [ -n "$STEP_NAME" ] || return 0
+  step_tick
+  STEP_SUMMARY="${STEP_SUMMARY}${STEP_NAME}|$((STEP_NOW - STEP_BEGAN))"$'\n'
+  STEP_NAME=""
+  return 0
+}
+step_begin() {
+  step_flush
+  step_tick
+  STEP_NAME="$1"
+  STEP_BEGAN=$STEP_NOW
+  return 0
+}
+step_report() {
+  step_flush
+  [ -n "$STEP_SUMMARY" ] || return 0
+  step_tick
+  echo "== 发版链分步耗时（只观测，不参与判定；自脚本启动共 ${STEP_NOW}s）=="
+  printf '%s' "$STEP_SUMMARY" | while IFS='|' read -r step_label step_secs; do
+    [ -n "$step_label" ] || continue
+    printf '   %5ss  %s\n' "$step_secs" "$step_label"
+  done
+  STEP_SUMMARY=""
+  return 0
+}
+# END step_timing
+
 # 单项目原子并发锁：mkdir 具备原子占位语义；退出时仅移除自身锁目录。
 LOCK_DIR="$PROJ/.build_release_targetprice.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -49,6 +91,8 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 printf '%s\n' "$$" > "$LOCK_DIR/pid"
 release_lock() {
+  # 所有 EXIT 陷阱都会经过这里，所以中途失败时也能看到已完成各步与失败那一步的耗时。
+  step_report || true
   if [ -f "$LOCK_DIR/pid" ] && [ ! -L "$LOCK_DIR/pid" ] \
     && [ "$(cat "$LOCK_DIR/pid")" = "$$" ]; then
     rm "$LOCK_DIR/pid"
@@ -115,6 +159,7 @@ fi
 
 # 质量记录是发布资格的输入，不应等到 3.75 的昂贵产物核验之后才发现缺失。
 # 发布重试必须显式绑定本轮同源记录；只允许复用已固定候选，不允许用旧记录冒充。
+step_begin "质量记录与发布基线校验"
 QUALITY_RECORD="${SF_QUALITY_RECORD:-}"
 if [ -z "$QUALITY_RECORD" ]; then
   echo "!! 缺少 SF_QUALITY_RECORD：请绑定本轮质量记录后再发布" >&2
@@ -148,6 +193,7 @@ cleanup_prechecks() {
   mv "$PRECHECK_DIR" "${TMPDIR:-/tmp}/skyrocket-release-precheck-finished.$$.${RANDOM}" 2>/dev/null || true
 }
 trap 'cleanup_prechecks; release_lock' EXIT
+step_begin "前置核验（签名/公开文档/公开历史/公开树，并行）"
 echo "== 发版前置核验：固定签名 / 公开文档 / 既有公开历史 / 公开树（并行）=="
 "$VENV_PY" tools/stable_signing.py preflight >"$PRECHECK_DIR/signing.log" 2>&1 &
 PRECHECK_SIGNING=$!
@@ -200,6 +246,7 @@ fi
 # 现在的行为：时间戳与当前代码同源就直接过（不重跑，省两分钟）；不可用就自动补跑一整轮
 # 回归，红则中止发版。只有显式 --skip-tests 才跳过，且大声打印 WARNING。
 # 判据实现见 tools/gate_stamp.py（内容指纹而非 HEAD，带 11 项变异自检）。
+step_begin "0 回归关卡（核验时间戳，不同源则补跑整轮）"
 GATE_STAMP_VALID=0
 if [ "$SKIP_TESTS" -eq 1 ]; then
   echo "!! WARNING: --skip-tests 生效 —— 本轮**没有**核验回归关卡，直接进打包。" >&2
@@ -217,6 +264,7 @@ else
 fi
 
 # ---- 1) 版本号（唯一来源） ----
+step_begin "1 版本号与发布状态初始化"
 VERSION="$("$VENV_PY" -c "import sf_constants as c; print(c.APP_VERSION)")"
 echo "== 版本号: v$VERSION =="
 
@@ -247,6 +295,7 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
 fi
 
 # ---- 2) 上一轮产物改名移走（避免 PyInstaller 批量删除触发拦截）----
+step_begin "2 移走上一轮产物并清扫临时副本"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 PREV="$PROJ/build/_prev"
 PREV_TMP="/tmp/sf_prev_targetprice_${STAMP}_$$"
@@ -279,6 +328,7 @@ fi
   || echo "   （临时目录清扫未完成，不影响本次发版）" >&2
 
 # ---- 3) PyInstaller 打包 ----
+step_begin "3 PyInstaller 打包、固定签名与版本闸门"
 if [ "$DO_BUILD" -eq 1 ]; then
   echo "== PyInstaller 打包 StockFloat.spec =="
   # 不要加 --clean：它删缓存同样会触发批量删除拦截。
@@ -322,6 +372,7 @@ fi
 #   ③ smoke_frozen_app：把产物真起一次、等首帧、再干净退出（v1.4.18 下载完退出
 #      必崩 rc=139、以及"双击没反应一行日志都不写"的缺插件类故障）。
 # 想跳过请显式改脚本并说明理由：这里刻意不提供 --skip 开关。
+step_begin "3.6 产物核验（特征/import 闭包/真产物冒烟）"
 echo "== 3.6 产物核验：本轮特征 / import 闭包 / 真产物冒烟 =="
 "$VENV_PY" tools/release_feature_check.py "$PROJ/dist/$APP_BUNDLE" \
   || { echo "!! 本轮产物特征核验未过：不要把证明不了本次改动的包发出去" >&2; exit 1; }
@@ -333,6 +384,7 @@ echo "   产物核验三件套全部通过"
 
 # ---- 3.65) Permanent card-corner gate (2026-10-15) ----
 # Always runs, including --skip-tests/--skip-build retries; keep it before DMG/install/OTA.
+step_begin "3.65 卡片圆角（含重试）"
 echo "== 3.65 卡片圆角：像素矩阵 / 包内几何同源 / 原生四角与交互走查 =="
 CARD_OK=0
 for card_attempt in 1 2 3; do
@@ -355,6 +407,7 @@ done
 # 别把假缺陷写进唯一数据源（本轮真实踩过，已把这条写成 --self-test 的断言）。
 # 填法：tools/quality_trend.py --round "$VERSION" --escapes N --defense "防线落点"
 #       本轮 0 逃逸也要明写 --escapes 0 --zero-reason "为什么是 0"
+step_begin "3.7 逃逸复盘"
 echo "== 3.7 逃逸复盘：台账自洽 + 本轮复盘声明 =="
 # quality_trend's mutation tests are already part of the full regression suite.
 # When the content-fingerprint gate is valid, running them again here only
@@ -370,6 +423,7 @@ fi
   || { echo "!! 逃逸复盘未收口：先写本轮复盘声明与防线落点，再出包" >&2; exit 1; }
 
 # ---- 3.75) Real binary compatibility, before DMG/install/OTA ----
+step_begin "3.75 二进制与 Qt 运行库兼容"
 echo "== 3.75 macOS 26/27 二进制与 Qt 运行库兼容核验 =="
 "$VENV_PY" tools/verify_macos_compat.py "$PROJ/dist/$APP_BUNDLE" --runtime \
   || { echo "!! 包内系统门槛、架构或依赖不兼容，拒绝发布" >&2; exit 1; }
@@ -383,6 +437,7 @@ echo "== 3.75 macOS 26/27 二进制与 Qt 运行库兼容核验 =="
 # 更新助手停在哪一步）。它第一次跑就抓到一处真实缺陷：v1.4.55 改名时漏改
 # updater/update_helper.sh 的包内顶层名，装机版助手对线上 1.4.57 资产必失败
 # archive_layout_invalid —— 也就是改名之后自动更新从未成功过，而全量回归一直是绿的。
+step_begin "3.8 首装与更新路线"
 echo "== 3.8 首装路线：curl 零放行 / DMG 双击 / 助手认两代包名 =="
 "$VENV_PY" tools/verify_install_paths.py \
   || { echo "!! 安装路线核验未过：照指引装完仍会被拦，或助手认不出本轮包名" >&2; exit 1; }
@@ -395,12 +450,14 @@ echo "== 3.8 首装路线：curl 零放行 / DMG 双击 / 助手认两代包名 
 # 判据三档：curated（导出面符号闭包读得到）／auto（sf_diag 按命名约定自动采走）／
 # 在 diag_coverage.txt 当前版本段留一行 skip 理由。三档都不沾又没申报 → 拒绝出包。
 # 排在 DMG / 安装 / OTA 之前：那三步都不可逆（同 3.6 的理由）。
+step_begin "3.9 诊断覆盖"
 echo "== 3.9 诊断覆盖：本轮改过的模块，包里要么有现场、要么有写得出来的理由 =="
 # 发布基线 SF_RELEASE_BASELINE 的必填检查在脚本前部（质量记录校验之后）。
 "$VENV_PY" tools/diag_coverage_check.py --version "$VERSION" --baseline "$SF_RELEASE_BASELINE" \
   || { echo "!! 诊断覆盖核对未过：本轮改的模块在诊断包里既没有现场、也没有申报理由" >&2; exit 1; }
 
 # ---- 4) DMG ----
+step_begin "4 DMG（组装、压缩、挂载复验）"
 if [ "$USE_PREPARED" -eq 1 ]; then
   DESKTOP_DMG="$DESKTOP_OUTPUT_DIR/${DMG_NAME}-V${VERSION}.dmg"
   DMG_OUT="$PROJ/build/${DMG_NAME}-V${VERSION}.dmg"
@@ -490,6 +547,7 @@ fi
 fi
 
 # ---- 5) 候选 OTA 资产（正式资格检查前只生成，不上传、不覆盖桌面）----
+step_begin "5 候选更新资产"
 if [ "$LOCAL_ONLY" -eq 0 ]; then
   NOTES_FILE="$PROJ/release_notes.txt"
   [ -s "$NOTES_FILE" ] || { echo "!! 发布说明缺失或为空：$NOTES_FILE" >&2; exit 1; }
@@ -514,9 +572,11 @@ if [ "$PREPARE_ONLY" -eq 1 ]; then
   echo "   DMG: $DMG_OUT"
   echo "   ZIP: $UPDATE_ZIP"
   echo "   OTA: $UPDATE_JSON"
+  step_report || true
   exit 0
 fi
 
+step_begin "正式资格检查与发布状态切换"
 # 产物角色在这里才全部存在。正式资格检查必须早于 /Applications、桌面清理和远端写入；
 # publish_update_release.py 还会在读取凭据前用同一个入口再核验一次固定字节。
 if [ "$LOCAL_ONLY" -eq 0 ]; then
@@ -543,27 +603,68 @@ publish_desktop_dmg() {
   done
 }
 # END publish_desktop_dmg
+step_begin "5.1 桌面 DMG 覆盖与安装到应用程序"
 publish_desktop_dmg "$DMG_OUT" "$DESKTOP_DMG"
 
 # ---- 5.1) 安装到 /Applications（默认行为）----
 if [ "$DO_INSTALL" -eq 1 ]; then
   APP_DST="$INSTALL_DIR"
-  # 旧包 mv 到工程内作回退副本（不用 rm -rf 删 /Applications 下的内容）
-  if [ -e "$APP_DST" ]; then
-    mv "$APP_DST" "$PROJ/build/_rollback_Skyrocket_$STAMP.app"
-    echo "   旧包已备份: $PROJ/build/_rollback_Skyrocket_$STAMP.app"
-  fi
-  # v1.4.55 改名：旧名字的包还躺在 /Applications 里会变成"两个程序"——Dock 里分不清、
-  # LaunchServices 可能把旧的拉起来。一律 mv 成回退副本（不删文件），装完只剩一个 Skyrocket。
-  for legacy in "$(dirname "$APP_DST")"/*.app; do
-    [ -e "$legacy" ] || continue
-    case "$legacy" in "$APP_DST") continue ;; esac
-    lb="$(basename "$legacy")"
-    case "$lb" in 实时股价-目标价版.app) ;; *) continue ;; esac
-    mv "$legacy" "$PROJ/build/_rollback_${lb%.app}_$STAMP.app"
-    echo "   改名前的旧包已移出 /Applications: $PROJ/build/_rollback_${lb%.app}_$STAMP.app"
+  INSTALL_RECOVERY=""
+  restore_installed_apps() {
+    local record original backup
+    [ -n "$INSTALL_RECOVERY" ] || return 0
+    while IFS='|' read -r original backup; do
+      [ -n "$original" ] && [ -d "$backup" ] || continue
+      if mv "$backup" "$original"; then
+        echo "   已恢复旧包: $original"
+      else
+        echo "!! 旧包恢复失败，仍在: $backup" >&2
+      fi
+    done <<EOF
+$INSTALL_RECOVERY
+EOF
+  }
+  install_failed() {
+    local reason="$1"
+    local broken="$2"
+    if [ -n "$broken" ] && [ -d "$broken" ]; then
+      if mv "$broken" "$PROJ/build/_failed_install_$(basename "$broken")_$STAMP.app" 2>/dev/null; then
+        echo "   未完成新包已移出 /Applications"
+      else
+        echo "!! 未完成新包仍在: ${broken}；为避免把旧包嵌进坏包目录，旧包保留在 build 回退副本中" >&2
+        echo "!! 本机安装失败：$reason" >&2
+        exit 1
+      fi
+    fi
+    restore_installed_apps
+    echo "!! 本机安装失败：$reason" >&2
+    exit 1
+  }
+  # 当前和历史名称都要备份；记录原路径，复制失败时才知道每一份该放回哪里。
+  for installed in "$APP_DST" "$(dirname "$APP_DST")/实时股价-目标价版.app"; do
+    [ -e "$installed" ] || continue
+    case "$installed" in
+      "$APP_DST") backup="$PROJ/build/_rollback_Skyrocket_$STAMP.app" ;;
+      *) backup="$PROJ/build/_rollback_$(basename "${installed%.app}")_$STAMP.app" ;;
+    esac
+    if ! mv "$installed" "$backup"; then
+      restore_installed_apps
+      echo "!! 旧包备份失败，未继续复制新包: $installed" >&2
+      exit 1
+    fi
+    INSTALL_RECOVERY="${INSTALL_RECOVERY}${installed}|${backup}
+"
+    echo "   旧包已备份: $backup"
   done
-  cp -R "$PROJ/dist/$APP_BUNDLE" "$APP_DST"
+  if ! cp -R "$PROJ/dist/$APP_BUNDLE" "$APP_DST"; then
+    install_failed "复制新包到 /Applications 失败，旧包已尝试恢复" "$APP_DST"
+  fi
+  if [ ! -d "$APP_DST" ]; then
+    install_failed "复制结束后没有找到新包，旧包已尝试恢复" "$APP_DST"
+  fi
+  if ! /usr/bin/codesign --verify --deep --strict "$APP_DST" >/dev/null 2>&1; then
+    install_failed "复制后的新包签名校验失败，旧包已尝试恢复" "$APP_DST"
+  fi
   echo "   已安装: $APP_DST"
   echo "   版本: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
         "$APP_DST/Contents/Info.plist")"
@@ -601,6 +702,7 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
 #      2026-09-22 更正：原注释写作"只本地生成，上传须人工确认"，与实际不符，
 #      曾导致两次"OTA 未推送"的错误汇报。） ----
 # 分发目录只保留当前应用最新的自动更新 ZIP 与清单；旧文件先入项目回退区，再送废纸篓。
+step_begin "6 更新包拷贝、上传并切换线上清单"
 cp -p "$UPDATE_ZIP" "$DESKTOP_OUTPUT_DIR/$(basename "$UPDATE_ZIP")"
 cp -p "$UPDATE_JSON" "$DESKTOP_OUTPUT_DIR/Skyrocket-update.json"
 UPDATE_DESKTOP_BACKUP="$PROJ/build/_prev/update_assets_$STAMP"
@@ -616,18 +718,26 @@ echo "   自动更新资产: $UPDATE_ASSET_DIR"
 "$VENV_PY" tools/publish_update_release.py --assets "$UPDATE_ASSET_DIR" --notes "$NOTES_FILE"
 echo "   GitHub 发布说明来源: $NOTES_FILE"
 
-# ---- 6.1) 对外安装说明（必须在 OTA 发布**之后**渲染并核验）----
-# 顺序不是偏好，是 2026-10-10 实测逼出来的：那一轮源码已经是 1.4.58、DMG 也装好了，
-# 但线上资产 HEAD 回来还是 404（1.4.57 仍 302）。如果按源码在发布前就渲染，那行 curl 命令
-# 指向的是一个还不存在的包 —— 用户照抄就是 404，而且错误看起来像"你的地址写错了"。
-# 所以这一步既刷新说明，也顺带复核"OTA 真的发上去了"（--check 里带线上可达性核对）。
-# 第 6 步上传超时（本机上行只有 ~57KB/s）时不会走到这里，说明就停在对线上真实的那一版。
-echo "== 6.1 对外安装说明（含线上资产可达性核对）=="
+# ---- 6.1) 公开下载入口（必须在 OTA 发布之后部署并读回）----
+# 安装说明改走入口后，入口本身就是交付路径。部署失败或仍是旧版都不能继续生成
+# 对外命令，否则本地检查只能看到入口的 302，无法证明对应 GitHub 资产真的能下载。
+step_begin "6.1 公开下载入口部署与读回"
+echo "== 6.1 公开下载入口部署与读回 =="
+(
+  cd "$PROJ/services/download-analytics"
+  node deploy-pages.mjs
+) || { echo "!! 公开下载入口部署或读回失败，别生成对外安装命令" >&2; exit 1; }
+
+# ---- 6.2) 对外安装说明（必须在 OTA 与公开入口之后渲染并核验）----
+# 顺序不是偏好：说明里的 curl 命令必须经过已部署入口，最终落到本轮 GitHub 资产。
+step_begin "6.2 对外安装说明"
+echo "== 6.2 对外安装说明（含最终 GitHub 资产可达性核对）=="
 "$VENV_PY" tools/render_install_guide.py \
   || { echo "!! 安装说明渲染失败，或命令块不合 FR-12 约束（不许 sudo/删除）" >&2; exit 1; }
 "$VENV_PY" tools/render_install_guide.py --check \
   || { echo "!! 安装说明与本轮不同源，或线上还取不到这一轮的包 —— 别对外发" >&2; exit 1; }
 
+step_begin "6.2 公开源码、许可与 DMG 同步"
 echo "== 6.2 对应源码、GPL 许可、公开文档与 DMG 同步发行 =="
 "$VENV_PY" tools/public_release.py --publish \
   || { echo "!! OTA 已发布，但公开源码或分发资料未齐，不能报告完整交付" >&2; exit 1; }
@@ -640,6 +750,7 @@ echo "== 6.2 对应源码、GPL 许可、公开文档与 DMG 同步发行 =="
 # run_tests.sh"是同一个根子：只靠人记得的事，迟早不发生。
 # 为什么排在 OTA 之后：推源码不该成为出包的前置条件（网络或权限问题不该让一次已经
 # 完成的发版回滚），但失败必须大声，并写进结尾那行结论里，不许静默吞掉。
+step_begin "7 推送当前分支到远端"
 echo "== 7) 源码同步到 origin =="
 SRC_BRANCH="$(git -C "$PROJ" rev-parse --abbrev-ref HEAD)"
 DIRTY_COUNT="$(git -C "$PROJ" status --porcelain | wc -l | tr -d ' ')"
@@ -672,6 +783,7 @@ fi
 # 没有任何一步碰过，旧了也不报错（实测：一份说明文档停在 10-10，旧一代清单停在 1.4.54）。
 # 本步核对版本绑定件与冻结件，通过后改写已登记文档的对账段；排在 OTA 与源码同步之后，所以
 # 失败只写进结尾结论、不回滚已完成的发布（同 SYNC_NOTE 的口径），但绝不静默。
+step_begin "7.1 桌面分发目录对账"
 echo "== 7.1 桌面分发目录与本轮对账 =="
 DESKTOP_NOTE=""
 DESKTOP_RC=0
@@ -694,10 +806,12 @@ FINAL_APP="$PROJ/dist/$APP_BUNDLE"
 if [ "$DO_INSTALL" -eq 1 ]; then
   FINAL_APP="$INSTALL_DIR"
 fi
+step_begin "8 最终启动复验"
 echo "== 8) 最终启动复验：$FINAL_APP =="
 "$VENV_PY" tools/smoke_frozen_app.py "$FINAL_APP" --platform cocoa --timeout 30 \
   || { echo "!! 最终启动复验未过：本版不能报告为完整交付" >&2; exit 1; }
 
+step_report || true
 echo
 if [ "$LOCAL_ONLY" -eq 1 ]; then
   echo "== 本机覆盖完成 v${VERSION}（未发布 GitHub/OTA）=="

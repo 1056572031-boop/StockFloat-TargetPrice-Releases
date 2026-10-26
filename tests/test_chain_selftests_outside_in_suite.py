@@ -54,6 +54,8 @@ import static_gate as sg                               # noqa: E402
 import make_update_assets as mua                      # noqa: E402
 import bundle_closure_check as bcc                    # noqa: E402
 import sf_constants as sfc                            # noqa: E402
+from tools import quality_evidence as quality         # noqa: E402
+import diag_coverage_check as diag                    # noqa: E402
 
 REAL_STATIC_BASELINE = ROOT / "tools" / "static_gate_baseline.json"
 
@@ -80,6 +82,16 @@ def call(fn):
         if not isinstance(code, int):
             out.write("%s\n" % (code or ""))
     return rc, out.getvalue() + err.getvalue()
+
+
+class QualityAndDiagnosticToolSelfChecks(SFCase):
+    def test_quality_evidence_self_test_runs_in_the_parent_process(self):
+        rc, out = call(quality.self_test)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("artifact tamper", out)
+
+    def test_diag_coverage_self_test_runs_in_the_parent_process(self):
+        self.assertEqual(diag.self_test(ROOT), 0)
 
 
 class TestRunnerVerdictSelfCheck(SFCase):

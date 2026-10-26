@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULES = ("sf_feedback.py", "sf_feedback_capture.py", "sf_feedback_github.py",
+MODULES = ("sf_feedback.py", "sf_feedback_versions.py", "sf_feedback_v3.py", "sf_feedback_capture.py", "sf_feedback_github.py",
            "sf_feedback_bundle.py",
            "sf_feedback_transport.py", "sf_feedback_admin.py", "sf_feedback_analyzer.py",
            "sf_diag.py", "sf_privacy.py", "sf_feedback_notifications.py")

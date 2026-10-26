@@ -20,7 +20,32 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.103
+version 1.4.104
+# ---- v1.4.104：反馈标题居中与下载入口上线核验 ----
+# 本轮包内只调整已有构造函数与配置读取，字节码没有新增可核验符号；下载页服务不进 .app。
+# 以新增的定向回归、Pages 上线读回、版本三方同源和既有包内特征共同验收。
+stale-feature 1.4.104 反馈标题和自动隐藏开关仅调整已有函数体；下载统计建表与跳转核验仅在 Pages 服务部署链，均无新增 .app co_names，不能用旧符号冒充本轮产物证据。
+testref tests/test_feedback_dialog.py::DialogTests::test_feedback_history_entry_opens_safe_receipt_view_and_reuses_dialog
+testref tests/test_coverage_targets_config.py::TestFaceGuardPreference::test_non_boolean_face_guard_values_default_to_off
+# Worker 的建表和真实跳转探测由服务独立测试与部署脚本上线读回覆盖。
+
+# ---- v1.4.103：反馈可靠性、更新交接与本轮发布链修复 ----
+check sf_run_session::RuntimeSessionLedger
+check sf_run_session::unfinished
+check sf_update::acknowledge_pending_handoff
+check sf_update::write_handoff_context
+check sf_update::write_handoff_ack
+check sf_feedback_outbox::claim
+check sf_feedback_outbox::finish_claim
+check sf_feedback_outbox::recover_interrupted
+check sf_feedback_ui::_upload_hint
+check sf_feedback_v3::validate_snapshot
+check sf_feedback_capture::validate_upload_receipt
+check stock_float_window::_offer_unfinished_session_feedback
+# 诊断覆盖声明、旧回执兼容和 v3 文案由本轮定向回归覆盖。
+testref tests/test_run_session.py::RuntimeSessionLedgerTests::test_a_busy_database_is_not_quarantined
+testref tests/test_update_helper.py::TestHandoffAcknowledgement::test_a_matching_ack_completes_the_install
+testref tests/test_feedback_full_bundle.py::FullDiagnosticDialogTests::test_v3_pending_packet_restores_with_full_upload_disclosure
 # ---- v1.4.103：基线 efc4c50（v1.4.102 发布源码）以来并入主线的改动，各至少一个包内新名字 ----
 # 收起到 Dock / 从 Dock 恢复的过渡动画（整个模块是新增的）：
 check sf_dock_motion::DockMotion
@@ -210,9 +235,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.103 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.104 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.103
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.104
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

@@ -14,9 +14,11 @@
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import pathlib
+import re
 import runpy
 import sys
 import tempfile
@@ -102,6 +104,82 @@ class T:
 ''')
         bad, _ = gate.scan(root)
         self.assertEqual(len(bad), 1, "活动 Space 的探针没进视野")
+
+    def test_direct_name_probe_call_without_stub_is_named(self):
+        """直接 import 后的名称调用也必须进入预筛，不能只认模块属性。"""
+        root = _repo_with('''
+from sf_presence import screen_unavailable
+class T:
+    def test_reads_imported_screen_state(self):
+        return screen_unavailable()
+''')
+        bad, _ = gate.scan(root)
+        self.assertEqual(len(bad), 1, "直接名称探针被漏掉，扫描器会说假话")
+        self.assertEqual(bad[0][1], "test_reads_imported_screen_state")
+
+    def test_candidate_that_fails_final_regex_is_safely_ignored(self):
+        """预筛只是提速；最终正则答不出时必须跳过，不能误报或抛错。"""
+        source = '''
+class T:
+    def test_candidate(self):
+        return screen_unavailable()
+'''
+        tree = ast.parse(source)
+        functions = gate._function_index(tree, source)  # discipline-ok(R5): 需验证预建函数索引与候选调用的配合
+        with mock.patch.object(re, "search", return_value=None):
+            self.assertEqual(gate._probe_calls(tree, source, functions), [])  # discipline-ok(R5): 直接测最终规则拒绝候选时的私有探针提取器
+
+    def test_dynamic_getattr_probe_without_stub_is_named(self):
+        """动态属性读取仍是本机状态前提，优化预筛不能把它漏成绿灯。"""
+        root = _repo_with('''
+import sf_presence
+class T:
+    def test_reads_screen_state_dynamically(self):
+        return getattr(sf_presence, "screen_unavailable")()
+''')
+        bad, _ = gate.scan(root)
+        self.assertEqual(len(bad), 1, "动态 getattr 探针被漏掉，扫描器会说假话")
+        self.assertEqual(bad[0][1], "test_reads_screen_state_dynamically")
+        self.assertIn("屏幕锁定/显示器休眠", bad[0][3])
+
+    def test_unrelated_patch_does_not_cover_real_dynamic_probe(self):
+        """同一函数的无关 patch 不能让真实本机状态读取漏成绿灯。"""
+        root = _repo_with('''
+import sf_presence
+from unittest import mock
+class T:
+    def test_reads_dynamic_screen_state_after_unrelated_patch(self):
+        with mock.patch.object(sf_presence, "unrelated_helper", lambda: None):
+            return getattr(sf_presence, "screen_unavailable")()
+''')
+        bad, _ = gate.scan(root)
+        self.assertEqual(len(bad), 1, "无关 patch 把真实动态探针盖掉，扫描器会说假话")
+        self.assertEqual(bad[0][1], "test_reads_dynamic_screen_state_after_unrelated_patch")
+
+    def test_probe_specific_patch_covers_dynamic_probe(self):
+        """只认当前探针自己的 patch，不能把正确的受控用例报成违规。"""
+        root = _repo_with('''
+import sf_presence
+from unittest import mock
+class T:
+    def test_reads_dynamic_screen_state_under_its_own_patch(self):
+        with mock.patch.object(sf_presence, "screen_unavailable", lambda: False):
+            return getattr(sf_presence, "screen_unavailable")()
+''')
+        self.assertEqual(gate.scan(root)[0], [])
+
+    def test_nested_dynamic_getattr_probe_without_stub_is_named(self):
+        """动态调用被外层包装时，预筛也不能因 callee 是 Call 而漏检。"""
+        root = _repo_with('''
+import sf_presence
+class T:
+    def test_reads_nested_dynamic_screen_state(self):
+        return bool(getattr(sf_presence, "screen_unavailable")())
+''')
+        bad, _ = gate.scan(root)
+        self.assertEqual(len(bad), 1, "嵌套动态 getattr 探针被漏掉，扫描器会说假话")
+        self.assertEqual(bad[0][1], "test_reads_nested_dynamic_screen_state")
+        self.assertIn("屏幕锁定/显示器休眠", bad[0][3])
 
 
 class LegitimateShapesAreNotFlagged(SFCase):

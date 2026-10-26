@@ -135,6 +135,15 @@ class TestDependencyClaimGate(SFCase):
                       "spec 里没有该模块名时竟然不算可疑 —— 判据已经退化成'包名在任意文本里"
                       "出现过就行'，那正是本文件要拆掉的那台假门")
 
+    def test_setuptools_is_only_accepted_with_a_pyinstaller_build_landing(self):
+        with_builder = _fake_tree(["setuptools==84.1.0"], "from PyInstaller import __main__\n")
+        without_builder = _fake_tree(["setuptools==84.1.0"], "# no build tool\n")
+        self._tmps += [with_builder, without_builder]
+        self.assertEqual(self._run_with(with_builder), [],
+                         "PyInstaller 的构建时 setuptools 依赖被误报未使用")
+        self.assertIn("setuptools", self._run_with(without_builder),
+                      "没有 PyInstaller 落点的 setuptools 竟未被报出，构建依赖别名过宽")
+
     # 4) 前瞻锁：新增框架必须有落点声明
     def test_new_framework_without_landing_is_flagged(self):
         tmp = _fake_tree(["pyobjc-framework-BrandNew==12.2.2"],

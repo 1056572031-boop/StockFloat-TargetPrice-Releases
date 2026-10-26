@@ -947,8 +947,8 @@ class TestSessionPlumbing(SFCase):
             self.assertIsNotNone(cls[key], "%s 没取到" % key)
 
 
-class TestWindowWiring(SFCase):
-    """主窗接线：菜单、触发、以及「谁收的窗决定摄像头停不停」。"""
+class _WindowWiringSupport:
+    """主窗接线夹具：只提供公共 setup/辅助方法，不承载可收集的测试。"""
 
     @classmethod
     def setUpClass(cls):
@@ -1141,6 +1141,10 @@ class TestWindowWiring(SFCase):
         return self.win.face_guard_status_text(self._state())
 
     # ---- 断言 ----
+
+
+class TestWindowWiring(_WindowWiringSupport, SFCase):
+    """主窗接线：菜单、触发、以及「谁收的窗决定摄像头停不停」。"""
     def test_menu_shows_toggle_without_status_rows(self):
         """菜单里只有那一项开关，**不再有任何灰字提示行**（v1.4.51 用户要求）。
 
@@ -1825,7 +1829,7 @@ class TestWindowWiring(SFCase):
         self.assertIn("已暂停", self._status_line())
 
 
-class TestZeroFrameWindowAndFriendlyErrors(TestWindowWiring):
+class TestZeroFrameWindowAndFriendlyErrors(_WindowWiringSupport, SFCase):
     """v1.4.45 复核 A2：零帧窗口期说实话，并提前判中断（60 秒留给"来过帧"的会话）。"""
 
     def test_zero_frame_window_reports_honestly(self):

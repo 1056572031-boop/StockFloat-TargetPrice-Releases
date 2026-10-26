@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import hashlib
 import struct
@@ -46,7 +47,7 @@ def submit_https(url, envelope, archive_path, *, allow_loopback=False):
     request = Request(url, data=struct.pack("!I", len(header)) + header + archive,
                       headers={"Content-Type": "application/vnd.skyrocket.feedback-v1",
                                "User-Agent": "Skyrocket-Feedback/1", "Accept": "application/json"}, method="POST")
-    timeout = 120 if envelope["diagnostic_payload_version"] == 2 else 30
+    timeout = 120 if envelope["diagnostic_payload_version"] >= 2 else 30
     with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
         if response.status != 200:
             raise FeedbackProtocolError("反馈服务没有返回已收件回执")
@@ -70,12 +71,25 @@ def submit_pending(outbox, outbox_id, url, *, sender=submit_https):
     if row["status"] == "receipt_persisted":
         return validate_upload_receipt(row["receipt"], row["envelope"])
     endpoint_url(url)
-    outbox.transition(outbox_id, "submitting")
+    claimed = outbox.claim(outbox_id, kind="submit", statuses=(row["status"],),
+                           target_status="submitting", lease_seconds=300)
+    token, fence = claimed["lease_token"], claimed["lease_fence"]
     try:
-        receipt = sender(url, row["envelope"], row["archive_path"])
-        checked = validate_upload_receipt(receipt, row["envelope"])
-        outbox.persist_receipt(outbox_id, checked)
+        receipt = sender(url, claimed["envelope"], claimed["archive_path"])
+        checked = validate_upload_receipt(receipt, claimed["envelope"])
+        outbox.persist_claimed_receipt(outbox_id, checked, token=token, fence=fence)
         return checked
     except Exception as exc:
-        outbox.transition(outbox_id, "response_unknown", error=type(exc).__name__)
+        try:
+            outbox.finish_claim(outbox_id, token=token, fence=fence,
+                                status="response_unknown", error=type(exc).__name__)
+        except Exception as finish_exc:
+            # The original network error is more useful to the caller; finish_claim
+            # can only fail because a newer worker already owns the row (normal
+            # control flow).  Leave a trace when the logging layer exists, but the
+            # GUI-free agent runtime snapshot intentionally has no sf_logging
+            # (it drags in PyQt6), so a missing import degrades silently here.
+            with contextlib.suppress(ImportError):
+                from sf_logging import log_swallow
+                log_swallow("sf_feedback_transport.submit_pending.finish_claim", finish_exc)
         raise

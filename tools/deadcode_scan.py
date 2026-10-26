@@ -409,6 +409,9 @@ def requirement_deps():
         "pyobjc-framework-CoreAudio": ["CoreAudio"],
         "pyobjc-framework-Security": ["Security"],
         "pyinstaller": ["PyInstaller", "pyinstaller"],
+        # setuptools 是 PyInstaller 的构建时依赖（Requires-Dist setuptools>=42）；
+        # 显式锁版本供 OSV 审计，产品源码不会直接 import 它。
+        "setuptools": ["PyInstaller", "pyinstaller"],
         "coverage": ["coverage"],
     }
     out = []

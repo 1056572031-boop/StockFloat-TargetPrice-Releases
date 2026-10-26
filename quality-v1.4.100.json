@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "change_id": "RELEASE-V1.4.100-20261021",
+  "status": "release_candidate",
+  "intent": "修复全屏网页上两个二级窗口的显示时序与失活隐藏",
+  "scope": [
+    "sf_glass.py",
+    "tests/test_popup_fullscreen_space.py",
+    "tools/escapes_ledger.json",
+    "sf_constants.py",
+    "README.md",
+    "release_notes.txt",
+    "docs/INSTALL.md",
+    "release_checks.txt",
+    "diag_coverage.txt"
+  ],
+  "acceptance": [
+    "两个主窗按钮在全屏Space打开可输入的二级窗",
+    "完整关卡与同源候选验收通过"
+  ],
+  "acceptance_map": [
+    {
+      "acceptance": "两个主窗按钮在全屏Space打开可输入的二级窗",
+      "evidence_index": 0
+    },
+    {
+      "acceptance": "两个主窗按钮在全屏Space打开可输入的二级窗",
+      "evidence_index": 1
+    },
+    {
+      "acceptance": "两个主窗按钮在全屏Space打开可输入的二级窗",
+      "evidence_index": 2
+    },
+    {
+      "acceptance": "完整关卡与同源候选验收通过",
+      "evidence_index": 0
+    },
+    {
+      "acceptance": "完整关卡与同源候选验收通过",
+      "evidence_index": 1
+    },
+    {
+      "acceptance": "完整关卡与同源候选验收通过",
+      "evidence_index": 2
+    }
+  ],
+  "verification_evidence": [
+    {
+      "command": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip --old-app build/release-v1.4.100/old/Skyrocket.app --out build/release-v1.4.100/delivery.json",
+      "exit_code": 0,
+      "receipt": "build/release-v1.4.100/evidence/delivery/70ed1a1d7fdf42a7ac74122df1e6740a/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 -c 'import pathlib,subprocess; p=pathlib.Path(\"/tmp/sf-popup-review-commit-20261021.log\"); text=p.read_text(); assert \"== 全部测试通过，可进行打包发布 ==\" in text; assert \"== [pre-commit] 全部检查通过，允许提交 ==\" in text; subprocess.run([\"./.venv/bin/python3\",\"tools/gate_stamp.py\",\"check\"],check=True); subprocess.run([\"./.venv/bin/python3\",\"tools/coverage_provenance.py\",\"check\"],check=True)'",
+      "exit_code": 0,
+      "receipt": "build/release-v1.4.100/evidence/gate/b2a8bd768d274c418ea9e11ccba877c8/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 tools/smoke_frozen_app.py dist/Skyrocket.app --platform cocoa --keep-dir",
+      "exit_code": 0,
+      "receipt": "build/release-v1.4.100/evidence/local-success/bce89d9ba3474756bb562d8ec902cd17/receipt.json"
+    }
+  ],
+  "artifact_fingerprint": {
+    "source": "b823a618227e6b1e6262e079945c1dbd",
+    "artifacts": [
+      {
+        "path": "dist/Skyrocket.app"
+      },
+      {
+        "path": "build/Skyrocket-V1.4.100.dmg"
+      },
+      {
+        "path": "build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip"
+      },
+      {
+        "path": "build/update_assets/V1.4.100/Skyrocket-update.json"
+      }
+    ]
+  },
+  "release_qualification": {
+    "stage": "pre_release",
+    "policy_version": 2,
+    "excluded_scenarios": {
+      "fullscreen": "用户永久排除第三方浏览器专项；不代表常规自动全屏测试通过",
+      "camera_upgrade": "用户永久排除 camera_upgrade 专项；不代表摄像头升级验证通过",
+      "second_mac": "用户永久排除 second_mac 专项；不代表第二台 Mac 实测通过",
+      "browser_download": "用户永久排除 browser_download/Gatekeeper 专项；不代表下载与 Gatekeeper 实测通过"
+    },
+    "capability_boundaries": {
+      "intel": {
+        "status": "not_applicable",
+        "required": false,
+        "reason": "当前产品不支持 ARM 包安装到 Intel；不支持不代表通过，也不得声称 Intel 实测通过"
+      }
+    }
+  },
+  "release_artifacts": {
+    "version": "1.4.100",
+    "roles": {
+      "app": {
+        "path": "dist/Skyrocket.app"
+      },
+      "dmg": {
+        "path": "build/Skyrocket-V1.4.100.dmg"
+      },
+      "zip": {
+        "path": "build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip"
+      },
+      "ota_manifest": {
+        "path": "build/update_assets/V1.4.100/Skyrocket-update.json"
+      }
+    },
+    "ota": {
+      "archive_role": "zip",
+      "manifest_role": "ota_manifest"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "local_mac",
+      "status": "passed",
+      "required": true,
+      "reason": "本机真实冻结候选和旧包隔离验收，不代表跨机或Gatekeeper通过",
+      "receipts": [
+        "build/release-v1.4.100/evidence/local-success/bce89d9ba3474756bb562d8ec902cd17/receipt.json"
+      ],
+      "observation": {
+        "source": "b823a618227e6b1e6262e079945c1dbd",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "Qoder release execution",
+        "procedure": "./.venv/bin/python3 tools/smoke_frozen_app.py dist/Skyrocket.app --platform cocoa --keep-dir",
+        "observed_at": "2026-10-21T03:34:03.574866+00:00",
+        "artifact_sha256": "f3d59ece95413dfb6aec7c629bad9d58ca802c7cdf4386350fe0420c6ac8b33c",
+        "signals": {
+          "first_frame": true,
+          "clean_exit": true
+        },
+        "attachments": [
+          {
+            "path": "build/release-v1.4.100/evidence/local-success/bce89d9ba3474756bb562d8ec902cd17/command.log",
+            "sha256": "704b83c961778607f009466b37821973271892d5b12811f2735dc5820de0b243"
+          }
+        ]
+      }
+    },
+    {
+      "id": "second_mac",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 second_mac 专项；不代表第二台 Mac 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "intel",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "当前产品不支持 ARM 包安装到 Intel；不支持不代表通过，也不得声称 Intel 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "fresh_install",
+      "status": "passed",
+      "required": true,
+      "reason": "本机真实冻结候选和旧包隔离验收，不代表跨机或Gatekeeper通过",
+      "receipts": [
+        "build/release-v1.4.100/evidence/delivery/70ed1a1d7fdf42a7ac74122df1e6740a/receipt.json"
+      ],
+      "observation": {
+        "source": "b823a618227e6b1e6262e079945c1dbd",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "Qoder release execution",
+        "procedure": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip --old-app build/release-v1.4.100/old/Skyrocket.app --out build/release-v1.4.100/delivery.json",
+        "observed_at": "2026-10-21T03:33:10.518821+00:00",
+        "artifact_sha256": "f3d59ece95413dfb6aec7c629bad9d58ca802c7cdf4386350fe0420c6ac8b33c",
+        "signals": {
+          "installed_version": true,
+          "signature_valid": true,
+          "first_frame": true
+        },
+        "attachments": [
+          {
+            "path": "build/release-v1.4.100/delivery.json",
+            "sha256": "17d05df79d7d9a0fb5a4dd0fd693a7cc892778e48fb14c4cdfdec6d4e1fc7527"
+          }
+        ]
+      }
+    },
+    {
+      "id": "upgrade_install",
+      "status": "passed",
+      "required": true,
+      "reason": "本机真实冻结候选和旧包隔离验收，不代表跨机或Gatekeeper通过",
+      "receipts": [
+        "build/release-v1.4.100/evidence/delivery/70ed1a1d7fdf42a7ac74122df1e6740a/receipt.json"
+      ],
+      "observation": {
+        "source": "b823a618227e6b1e6262e079945c1dbd",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "Qoder release execution",
+        "procedure": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip --old-app build/release-v1.4.100/old/Skyrocket.app --out build/release-v1.4.100/delivery.json",
+        "observed_at": "2026-10-21T03:33:10.518821+00:00",
+        "artifact_sha256": "f3d59ece95413dfb6aec7c629bad9d58ca802c7cdf4386350fe0420c6ac8b33c",
+        "signals": {
+          "installed_version": true,
+          "user_data_preserved": true,
+          "first_frame": true
+        },
+        "attachments": [
+          {
+            "path": "build/release-v1.4.100/delivery.json",
+            "sha256": "17d05df79d7d9a0fb5a4dd0fd693a7cc892778e48fb14c4cdfdec6d4e1fc7527"
+          }
+        ]
+      }
+    },
+    {
+      "id": "camera_upgrade",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 camera_upgrade 专项；不代表摄像头升级验证通过",
+      "receipts": []
+    },
+    {
+      "id": "fullscreen",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除第三方浏览器专项；不代表常规自动全屏测试通过",
+      "receipts": []
+    },
+    {
+      "id": "browser_download",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 browser_download/Gatekeeper 专项；不代表下载与 Gatekeeper 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "ota_rollback",
+      "status": "passed",
+      "required": true,
+      "reason": "本机真实冻结候选和旧包隔离验收，不代表跨机或Gatekeeper通过",
+      "receipts": [
+        "build/release-v1.4.100/evidence/delivery/70ed1a1d7fdf42a7ac74122df1e6740a/receipt.json"
+      ],
+      "observation": {
+        "source": "b823a618227e6b1e6262e079945c1dbd",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "Qoder release execution",
+        "procedure": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip --old-app build/release-v1.4.100/old/Skyrocket.app --out build/release-v1.4.100/delivery.json",
+        "observed_at": "2026-10-21T03:33:10.518821+00:00",
+        "artifact_sha256": "f3d59ece95413dfb6aec7c629bad9d58ca802c7cdf4386350fe0420c6ac8b33c",
+        "signals": {
+          "failure_injected": true,
+          "rollback_restored": true,
+          "old_app_started": true,
+          "user_data_preserved": true
+        },
+        "attachments": [
+          {
+            "path": "build/release-v1.4.100/delivery.json",
+            "sha256": "17d05df79d7d9a0fb5a4dd0fd693a7cc892778e48fb14c4cdfdec6d4e1fc7527"
+          }
+        ]
+      }
+    }
+  ],
+  "unverified_limitations": [
+    "现场唯一根因未稳定复现；本机源码按钮全屏探针通过，不等于用户机器安装版验收；四专项不适用及Intel不支持均不等于通过。"
+  ]
+}

@@ -374,12 +374,13 @@ FACE_GUARD_CONFIG_KEY = "face_guard"
 
 def load_face_guard_pref():
     """用户有没有开启人脸守卫。**默认 False**：要摄像头权限的功能不能默认打开
-    （一开就亮绿灯且无法隐藏）。配置缺失/损坏一律按未开启处理 —— 与"保护没在跑"
-    这个事实一致，而不是假装在跑。"""
+    （一开就亮绿灯且无法隐藏）。配置缺失/损坏或不是布尔值一律按未开启处理 —— 与"保护没在跑"
+    这个事实一致，而不是把字符串 "false" 误当成已开启。"""
     d = _as_config_dict(_read_json_or_none(CONFIG_PATH), CONFIG_PATH)
     if not isinstance(d, dict):
         return False
-    return bool(d.get(FACE_GUARD_CONFIG_KEY, False))
+    value = d.get(FACE_GUARD_CONFIG_KEY, False)
+    return value if isinstance(value, bool) else False
 
 
 def save_face_guard_pref(enabled):

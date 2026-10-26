@@ -11,8 +11,8 @@
 
 只收一类，故意不收的三类同样重要
 --------------------------------
-判据只盯一种形状：**用例里真实调用了"系统对本机瞬时状态的回答"，而同一个函数体里没有
-桩、没有带理由的跳过、没有申报标记**。宽一格就没人信它了，所以明确**不算违规**的三种：
+判据只盯一种形状：**用例里真实调用了"系统对本机瞬时状态的回答"，而该探针本身没有
+桩、没有假对象承载、没有带理由的跳过或申报标记**。宽一格就没人信它了，所以明确**不算违规**的三种：
 
 1. **探针本身就是被测对象**（`tests/test_update_helper.py` 验助手对临时根的判断、
    `tests/test_v1423_temp_sweep.py` 扫进程表）—— 那些不是"前提"，是"题目"；
@@ -57,45 +57,82 @@ PROBES = {
     "活动 Space 与合成": [r"\bCGSGetActiveSpace\b", r"\bisOnActiveSpace\b",
                      r"\bCGWindowListCopyWindowInfo\b", r"\bwatch_active_space\b"],
 }
-# 体内出现这些就说明前提是被显式控制的（桩 / 假对象 / 带理由跳过 / 申报标记）
-GUARDS = re.compile(
-    r"patch\.object|patch\.dict|patch\.attribute|mock\.patch|MagicMock|Mock\("
-    r"|SkipTest|skipIf|skipUnless|unittest\.skip|_Fake[A-Za-z]*\(|return_value\s*="
-)
+# 行内申报必须有理由；当前探针的 patch / 假对象识别在 _body_has_guard() 里按调用上下文判断。
 DECL = re.compile(r"#\s*machine-state-ok\s*:\s*(\S.*)$")
 
 FAMILY_FOR = {p: fam for fam, pats in PROBES.items() for p in pats}
+PROBE_NAMES = frozenset(p.removeprefix(r"\b").removesuffix(r"\b") for p in FAMILY_FOR)
 
 
-def _probe_calls(tree: ast.AST, source: str):
+def _function_index(tree: ast.AST, source: str):
+    """一次建好函数范围与正文，避免每个 Call 都重走整棵 AST。"""
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        out.append((node.name, node.lineno, node.end_lineno or node.lineno,
+                    ast.get_source_segment(source, node) or ""))
+    return out
+
+
+def _callee_may_name_probe(callee: ast.AST) -> bool:
+    """快速筛掉不可能是探针的调用，仍保留动态 getattr 的真调用。
+
+    最终是否命中仍由源码片段正则确认；这里绝不能只认普通 Attribute，
+    因为 ``getattr(module, "screen_unavailable")()`` 也是本机状态探针。
+    """
+    for node in ast.walk(callee):
+        if isinstance(node, ast.Name) and node.id in PROBE_NAMES:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr in PROBE_NAMES:
+            return True
+        if not isinstance(node, ast.Call):
+            continue
+        getter = node.func
+        is_getattr = ((isinstance(getter, ast.Name) and getter.id == "getattr")
+                      or (isinstance(getter, ast.Attribute) and getter.attr == "getattr"))
+        if (is_getattr and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and node.args[1].value in PROBE_NAMES):
+            return True
+    return False
+
+
+def _probe_calls(tree: ast.AST, source: str, test_functions):
     """返回 (探针名, 调用所在函数名, 行号)：只算**真调用**，纯字符串出现不算。"""
     out = []
-    lines = source.splitlines()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Call) or not _callee_may_name_probe(node.func):
             continue
         seg = ast.get_source_segment(source, node.func) or ""
         hit = next((p for pats in PROBES.values() for p in pats if re.search(p, seg)), None)
         if hit is None:
             continue
-        owner = ""
-        for fn in [n for n in ast.walk(tree)
-                   if isinstance(n, ast.FunctionDef) and n.name.startswith("test")]:
-            if fn.lineno <= node.lineno <= (fn.end_lineno or fn.lineno):
-                owner = fn.name
-                break
+        owner = next((name for name, first, last, _body in test_functions
+                      if name.startswith("test") and first <= node.lineno <= last), "")
         out.append((FAMILY_FOR[hit], owner, node.lineno, seg))
     return out
 
 
-def _body_has_guard(source: str, tree: ast.AST, fname: str, lineno: int) -> bool:
-    """同一个函数体里有没有桩/假对象/带理由跳过；申报标记只看那一行。"""
-    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-        if fn.name == fname and fn.lineno <= lineno <= (fn.end_lineno or fn.lineno):
-            body = ast.get_source_segment(source, fn) or ""
-            if GUARDS.search(body):
-                return True
-    line = source.splitlines()[lineno - 1] if lineno <= len(source.splitlines()) else ""
+def _body_has_guard(source_lines, functions, fname: str, lineno: int, segment: str) -> bool:
+    """当前探针是否真的被桩或假对象控制；申报标记只看调用行。
+
+    函数里出现任何 ``mock.patch`` 不等于当前探针被控制：无关 patch 不能让真实
+    本机状态读取漏成绿灯。只认 patch 的目标名与本次调用命中的探针相同，或调用
+    表达式本身明确由 `_Fake…` 对象承载。
+    """
+    probe = next((name for name in PROBE_NAMES
+                  if re.search(rf"\b{re.escape(name)}\b", segment)), "")
+    if probe and any(name == fname and first <= lineno <= last
+                     and re.search(rf"(?:mock\.)?patch\.object\([^,]+,\s*['\"]{re.escape(probe)}['\"]",
+                                   body)
+                     for name, first, last, body in functions):
+        return True
+    if any(name == fname and first <= lineno <= last and "_Fake" in body
+           for name, first, last, body in functions):
+        return True
+    line = source_lines[lineno - 1] if lineno <= len(source_lines) else ""
     m = DECL.search(line)
     return bool(m and m.group(1).strip())
 
@@ -111,10 +148,12 @@ def scan(root: pathlib.Path):
         except (SyntaxError, UnicodeDecodeError):
             bad.append((p.name, "-", 0, "解析失败（尺子不许把读不动当干净）"))
             continue
-        for fam, fname, lineno, seg in _probe_calls(tree, source):
+        lines = source.splitlines()
+        functions = _function_index(tree, source)
+        for fam, fname, lineno, seg in _probe_calls(tree, source, functions):
             if not fname:
                 continue          # 模块级或辅助函数：不是"用例的前提"，交给模块级约定
-            if _body_has_guard(source, tree, fname, lineno):
+            if _body_has_guard(lines, functions, fname, lineno, seg):
                 continue
             bad.append((p.name, fname, lineno, f"{fam} 直调 {seg}"))
     return bad, len(files)
@@ -172,6 +211,12 @@ class T:
     def test_real_compositor_call(self):
         self.assertTrue(sf_glass.CGSGetActiveSpace())
 '''
+    f = '''
+import sf_presence
+class T:
+    def test_dynamic_probe_call(self):
+        return getattr(sf_presence, "screen_unavailable")()
+'''
     return {"探针直调无桩": (a, 1), "桩在另一个用例里不算": (b, 1),
             "申报标记没写理由": (c, 1), "字符串里出现探针名不算违规": (d, 0),
             "假对象造前提不算违规": ('''
@@ -183,7 +228,7 @@ class T:
         w = _FakeWin(on_active_space=False)
         self.assertTrue(w.isOnActiveSpace())
 ''', 0),
-            "真调用活动 Space": (e, 1)}
+            "真调用活动 Space": (e, 1), "动态 getattr 调用探针": (f, 1)}
 
 
 def self_test() -> int:

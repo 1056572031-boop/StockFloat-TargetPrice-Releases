@@ -54,6 +54,8 @@ TOPICS = {
         "tests.test_commit_preflight_edges",
         "tests.test_release_lock_cleanup", "tests.test_release_desktop_staging",
         "tests.test_public_release",
+        "tests.test_change_predict", "tests.test_gate_queue", "tests.test_gate_queue_repo",
+        "tests.test_test_runner_durations", "tests.test_release_step_timing",
     )),
 }
 

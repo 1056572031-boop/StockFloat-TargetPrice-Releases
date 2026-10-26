@@ -75,6 +75,22 @@ class RenderedGuideCarriesNoPlaceholders(_GuideCase):
                 self.g.OUT_DEFAULT.write_text(broken)
                 self.assertEqual(self.g.main(["guide", "--check"]), 1)
 
+    def test_probe_requires_the_final_github_asset_not_just_a_redirect(self):
+        good = __import__("types").SimpleNamespace(returncode=0,
+            stdout="200\nhttps://github.com/owner/releases/download/tag/" + self.g.archive_name())
+        wrong = __import__("types").SimpleNamespace(returncode=0,
+            stdout="302\nhttps://skyrocket-downloads.pages.dev/download?wrong")
+        missing = __import__("types").SimpleNamespace(returncode=22,
+            stdout="404\nhttps://github.com/owner/releases/download/tag/" + self.g.archive_name())
+        unreachable = __import__("types").SimpleNamespace(returncode=28, stdout="")
+        with patch.object(self.g.subprocess, "run", side_effect=(good, wrong, missing, unreachable)):
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "ok")
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "missing")
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "missing")
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "unknown")
+        with patch.object(self.g.subprocess, "run", side_effect=OSError("curl unavailable")):
+            self.assertEqual(self.g.probe_asset("https://entry.example/download")[0], "unknown")
+
     def test_rendered_text_has_no_literal_percent_s(self):
         with patch.dict(os.environ, {self.g.CONTACT_ENV: "support@example.com"}):
             text = self.g.render()

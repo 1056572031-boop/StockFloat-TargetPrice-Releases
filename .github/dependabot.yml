@@ -5,8 +5,18 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Group every Actions bump into one pull request so one weekly review covers them all.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    # Version-update PRs are paused on purpose. Dependabot edits only requirements.txt and cannot
+    # regenerate the hash-pinned requirements.lock, so tools/dependency_audit.py fails closed on
+    # every such PR (observed on 2026-10-23: coverage expected 7.16.2, installed 7.16.1).
+    # Raise pins by hand with uv, then regenerate the lock. Security updates use a separate
+    # limit and are not controlled by this value.
+    open-pull-requests-limit: 0

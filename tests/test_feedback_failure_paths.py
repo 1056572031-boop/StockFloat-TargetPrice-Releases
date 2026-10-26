@@ -273,7 +273,7 @@ class ClientFailureResults(PipelineCase):
         receipt = GitHubInbox(self.api).accept(row["envelope"], path.read_bytes())
         with self.assertRaises(FeedbackProtocolError):
             transport.submit_pending(outbox, row["outbox_id"], "https://receiver.example", sender=lambda *args: {**receipt, "validation_status": "pending"})
-        with patch.object(outbox, "persist_receipt", side_effect=OSError("disk full")):
+        with patch.object(outbox, "persist_claimed_receipt", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 transport.submit_pending(outbox, row["outbox_id"], "https://receiver.example", sender=lambda *args: receipt)
         self.assertEqual(outbox.get(row["outbox_id"])["status"], "response_unknown")

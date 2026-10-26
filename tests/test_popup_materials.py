@@ -263,7 +263,7 @@ class PopupNativeSetup(SFCase):
         try:
             with mock.patch.object(sf_glass, "native_cocoa_active", return_value=True), \
                     mock.patch.object(sf_glass, "join_active_space", return_value="pending:space"):
-                sf_glass.watch_active_space(host)
+                sf_glass.watch_active_space(host)  # machine-state-ok: 原生入口由 native_cocoa_active 与 join_active_space 桩控制
             host.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             with mock.patch.object(sf_glass, "join_active_space") as join, \

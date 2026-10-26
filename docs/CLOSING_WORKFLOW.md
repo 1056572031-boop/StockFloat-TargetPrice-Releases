@@ -127,7 +127,8 @@
 | 打包、安装、发布及其收口 | [RELEASE_PREPARATION_WORKFLOW.md](RELEASE_PREPARATION_WORKFLOW.md) |
 
 本仓库的授权按层判断：`AGENTS.md` 的持续执行授权满足各流程里的授权确认要求，覆盖任务范围内的本地提交，
-但不扩大本轮范围；并入主线须用户明确同意；推送、打包、安装、发布另按各自流程办理；
-用户明确的暂停、只读或范围限制优先。
+但不扩大本轮范围；并入主线按 [BRANCH_MERGE_WORKFLOW.md](BRANCH_MERGE_WORKFLOW.md) 第 1.1 节判断：
+执行者自建、已提交且审查闭环的任务分支自动合并，其余情况仍须用户明确同意；推送、打包、安装、发布
+另按各自流程办理；用户明确的暂停、只读或范围限制优先。
 
 交接字段见 [DAILY_WORK_TEMPLATES.md](DAILY_WORK_TEMPLATES.md) 的“收尾检查”。

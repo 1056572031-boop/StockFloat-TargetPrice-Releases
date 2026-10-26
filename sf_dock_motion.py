@@ -25,9 +25,9 @@ from PyQt6.QtGui import QCursor, QGuiApplication
 
 from sf_logging import log_line, log_swallow
 
-COLLAPSE_SEC = 0.22          # 缩小：偏利落，点下去立刻见到动静
-EXPAND_SEC = 0.26            # 放大：多留一点时间让落地显得柔和
-DISSOLVE_SEC = 0.10          # 放大落地后，舞台层盖在真实窗口上淡出的时长
+COLLAPSE_SEC = 0.15          # 缩小：利落，点下去立刻见到动静（2026-10-23 由 0.22 缩短）
+EXPAND_SEC = 0.18            # 放大：比缩小多一点，让落地不显得生硬（由 0.26 缩短）
+DISSOLVE_SEC = 0.07          # 放大落地后，舞台层盖在真实窗口上淡出的时长（由 0.10 缩短）
 FINISH_SLACK = 0.03          # 定时器比动画多等一点，免得最后一帧还没播完就撤舞台
 PREWARM_DELAY_MS = 4000      # 玻璃层建好后多久做一次后台预热截图
 STAGE_PAD = 8.0              # 舞台窗在起终点外包矩形之外再多留的边
@@ -114,11 +114,14 @@ def refine_with_cursor(rect, cursor, geometry, thickness, magnified_size):
 
 # ---------------- 纯算法：飞行计划（图层动画的起点、终点与曲线） ----------------
 # 曲线是三次贝塞尔的两个控制点 (c1x, c1y, c2x, c2y)，起点 (0,0)、终点 (1,1)。
-# 这些值是按"先快后缓 / 先缓后快"的常见手感定的，没有逐帧目测调过；改它们先跑
+# 这些值是按"先快后缓"的常见手感定的，没有逐帧目测调过；改它们先跑
 # 测试里的单调性与"时间反转恰好镜像"两条判据。
+# 轨迹必须是直线（用户 2026-10-23 要求，此前是弧线）：窗口中心的横、纵位置共用同一条
+# 曲线，两个方向的进度每一刻都相等，中心点就只在起点到终点的连线上走。旧写法横向用
+# 起步快的曲线、纵向用起步缓的曲线，进度不同步，轨迹才拐成弧。要改手感只换这一条曲线，
+# 不许再给横纵各配一条。
 CURVE_LEAD = (0.20, 0.00, 0.10, 1.00)   # 起步快、长长地收尾
-CURVE_FALL = (0.50, 0.00, 0.90, 0.50)   # 起步缓、越落越快
-CURVE_SOFT = (0.42, 0.00, 0.58, 1.00)   # 标准缓入缓出
+CURVE_SOFT = (0.42, 0.00, 0.58, 1.00)   # 标准缓入缓出（只管纵向缩放，不影响轨迹）
 FADE_HOLD = 0.55                        # 缩小时不透明保持到这个进度，之后淡出到 0
 
 Flight = namedtuple("Flight", "stage size duration closing centers scales fade curves")
@@ -145,7 +148,7 @@ def plan_flight(window, icon, closing):
     win_c = (window[0] + window[2] / 2.0 - left, window[1] + window[3] / 2.0 - top)
     icon_c = (icon[0] + icon[2] / 2.0 - left, icon[1] + icon[3] / 2.0 - top)
     icon_s = (icon[2] / window[2], icon[3] / window[3])
-    curves = {"x": CURVE_LEAD, "y": CURVE_FALL, "sx": CURVE_LEAD, "sy": CURVE_SOFT}
+    curves = {"x": CURVE_LEAD, "y": CURVE_LEAD, "sx": CURVE_LEAD, "sy": CURVE_SOFT}
     if closing:
         return Flight(stage, (window[2], window[3]), COLLAPSE_SEC, True, (win_c, icon_c),
                       ((1.0, 1.0), icon_s), ((1.0, 1.0, 0.0), (0.0, FADE_HOLD, 1.0)), curves)

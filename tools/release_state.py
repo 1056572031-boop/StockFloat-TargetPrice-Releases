@@ -130,7 +130,41 @@ def begin_publish(root: Path, path: Path, record_path: Path) -> dict[str, Any]:
     return advance(path, state, "released_pending_acceptance")
 
 
-def finish(root: Path, path: Path, record_path: Path, readback: Path) -> dict[str, Any]:
+def check_walkthrough(app: dict[str, Any], evidence_path: Path) -> dict[str, Any]:
+    """Require a real installed-app walkthrough result before marking a release complete."""
+    evidence_value = evidence.load(evidence_path)
+    walked_app = Path(evidence_value.get("app", ""))
+    if (not walked_app.is_dir()
+            or evidence.artifact_token(walked_app) != {key: value for key, value in app.items() if key != "path"}):
+        raise ValueError("装机点击走查不是当前候选包")
+    if evidence_value.get("version") != _bundle_version(walked_app):
+        raise ValueError("装机点击走查版本与安装包不一致")
+    summary = evidence_value.get("summary", {})
+    if (not isinstance(summary, dict) or summary.get("ok") is not True
+            or summary.get("ran") != 6 or summary.get("passed") != 6
+            or summary.get("failed") != 0 or summary.get("skipped") != 0):
+        raise ValueError("装机点击走查未完整通过")
+    user_data = evidence_value.get("user_data", {})
+    if not isinstance(user_data, dict) or user_data.get("ok") is not True:
+        raise ValueError("装机点击走查没有保持用户数据隔离")
+    return reference(evidence_path)
+
+
+def _bundle_version(app: Path) -> str:
+    import plistlib
+
+    try:
+        with (app / "Contents" / "Info.plist").open("rb") as stream:
+            value = plistlib.load(stream).get("CFBundleShortVersionString")
+    except (OSError, plistlib.InvalidFileException, ValueError) as exc:
+        raise ValueError("安装包版本不可读") from exc
+    if not isinstance(value, str) or not value:
+        raise ValueError("安装包版本不可读")
+    return value
+
+
+def finish(root: Path, path: Path, record_path: Path, readback: Path,
+           walkthrough: Path | None = None) -> dict[str, Any]:
     state = validate(root, path, "released_pending_acceptance")
     quality(root, state, record_path, complete=True)
     report = evidence.load(readback)
@@ -182,11 +216,15 @@ def finish(root: Path, path: Path, record_path: Path, readback: Path) -> dict[st
             raise ValueError("发布后下载证据已变化")
     if any(downloads[name].get("content_sha256") != digest for name, digest in expected.items()):
         raise ValueError("实际下载内容与已绑定发布资产不一致")
+    if walkthrough is None:
+        raise ValueError("缺少装机点击走查证据")
+    walkthrough_reference = check_walkthrough(state["artifacts"]["app"], walkthrough)
     state["observations"]["publication"] = publication
     state["observations"].update({"download_" + name: item for name, item in downloads.items()})
     state["observations"].update(acceptance_quality=reference(record_path),
                                  acceptance_manifest=reference(record_path.with_suffix(".manifest.json")),
-                                 readback=reference(readback))
+                                 readback=reference(readback),
+                                 click_walkthrough=walkthrough_reference)
     return advance(path, state, "complete")
 
 
@@ -328,13 +366,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("init", "qualify-source", "candidate", "begin-publish", "complete", "validate", "report"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--state", type=Path, required=True)
-    for name in ("app", "dmg", "zip", "ota", "quality", "readback", "delivery", "out"):
+    for name in ("app", "dmg", "zip", "ota", "quality", "readback", "walkthrough", "delivery", "out"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--version")
     parser.add_argument("--stage", choices=STAGES)
     args = parser.parse_args(raw)
     required = {"init": ("version",), "candidate": ("version", "app", "dmg", "zip", "ota"),
-                "begin-publish": ("quality",), "complete": ("quality", "readback"), "report": ("out",)}
+                "begin-publish": ("quality",), "complete": ("quality", "readback", "walkthrough"), "report": ("out",)}
     if any(getattr(args, name) is None for name in required.get(args.command, ())):
         parser.error("缺少本阶段必需参数: " + ", ".join(required[args.command]))
     try:
@@ -348,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "begin-publish":
             value = begin_publish(root, args.state, args.quality)
         elif args.command == "complete":
-            value = finish(root, args.state, args.quality, args.readback)
+            value = finish(root, args.state, args.quality, args.readback, args.walkthrough)
         elif args.command == "report":
             value = write_report(root, args.state, args.out, args.quality, args.readback, args.delivery)
         else:

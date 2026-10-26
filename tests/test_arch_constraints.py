@@ -465,6 +465,15 @@ class TestReleaseChainCallsTheGate(SFCase):
         self.assertIn("不落关卡时间戳", s,
                       "跳过档必须打印「不落关卡时间戳」，否则人只会看见没戳而不知为何")
 
+    def test_build_release_deploys_the_download_entry_before_rendering_its_public_command(self):
+        """安装说明引用该入口时，部署与线上读回应是发版链的一部分。"""
+        source = self._text("build_release.sh")
+        ota = source.find("publish_update_release.py")
+        deploy = source.find("node deploy-pages.mjs")
+        guide = source.find('"$VENV_PY" tools/render_install_guide.py \\')
+        self.assertGreater(deploy, ota, "下载入口必须在 OTA 资产出现后才部署")
+        self.assertGreater(guide, deploy, "安装说明只能在入口部署并读回后生成")
+
     def test_build_release_pushes_source_after_ota_and_confirms_by_readback(self):
         """发版链第 7 步：推源码必须在 OTA 之后，且以**回读归零**为准。
 
@@ -594,14 +603,106 @@ class TestLocalReleaseBoundaries(SFCase):
     def source(self):
         return (ROOT / "build_release.sh").read_text()
 
-    def run_block(self, block, root, local, interpreter="/usr/bin/false"):
+    def run_block(self, block, root, local, interpreter="/usr/bin/false", extra_env=None):
         import os
         import subprocess
         env = dict(os.environ, LOCAL_ONLY=str(local), PROJ=str(root), VERSION="fixture",
                    APP_BUNDLE="Skyrocket.app", DO_INSTALL="1", INSTALL_DIR=str(root / "app"),
                    VENV_PY=interpreter)
-        return subprocess.run(["/bin/bash", "-c", "set -eu\n" + block], env=env,
+        env.update(extra_env or {})
+        # 被切出来的段里有分步计时的调用，函数定义在脚本头部，不在切片里：不先加载，
+        # 公开模式会在 step_begin 处以 127 提前退出，"必须走到会失败的资产工具"就不再成立。
+        timing = self.source().split("# BEGIN step_timing", 1)[1].split("# END step_timing", 1)[0]
+        return subprocess.run(["/bin/bash", "-c", "set -eu\n" + timing + "\n" + block], env=env,
                               capture_output=True, text=True, timeout=10)
+
+    def test_release_script_parses_before_any_release_action(self):
+        """发版脚本有语法错误时，不能等到真发版才发现。"""
+        import subprocess
+        result = subprocess.run(["/bin/bash", "-n", str(ROOT / "build_release.sh")],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_local_install_copy_failure_restores_current_and_legacy_apps(self):
+        """复制失败不能留下空的应用程序目录或两个只存在于 build/ 的旧包。"""
+        import os
+        import subprocess
+        import tempfile
+        source = self.source()
+        start = source.index('# ---- 5.1) 安装到 /Applications（默认行为）----')
+        end = source.index('\nif [ "$LOCAL_ONLY" -eq 0 ]; then', start)
+        block = source[start:end]
+        with tempfile.TemporaryDirectory(prefix="sf_release_restore_") as directory:
+            root = pathlib.Path(directory)
+            apps = root / "Applications"
+            current = apps / "Skyrocket.app"
+            legacy = apps / "实时股价-目标价版.app"
+            for app, marker in ((current, "current"), (legacy, "legacy")):
+                (app / "Contents").mkdir(parents=True)
+                (app / "Contents" / "marker").write_text(marker, encoding="utf-8")
+            (root / "dist" / "Skyrocket.app").mkdir(parents=True)
+            (root / "build").mkdir()
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_cp = fake_bin / "cp"
+            fake_cp.write_text(
+                "#!/bin/sh\nmkdir -p \"$3/Contents\"\nprintf partial > \"$3/Contents/marker\"\nexit 1\n",
+                encoding="utf-8")
+            fake_cp.chmod(0o755)
+            env = dict(os.environ, PROJ=str(root), DO_INSTALL="1", LOCAL_ONLY="1",
+                       INSTALL_DIR=str(current), APP_BUNDLE="Skyrocket.app", STAMP="fixture",
+                       PATH=str(fake_bin) + ":" + os.environ.get("PATH", ""))
+            result = subprocess.run(["/bin/bash", "-c", "set -eu\nstep_begin(){ :; }\n" + block],
+                                    capture_output=True, text=True, env=env, timeout=20)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((current / "Contents" / "marker").read_text(encoding="utf-8"), "current",
+                             "半成品移出后必须把原来的当前名称旧包恢复到安装路径")
+            self.assertEqual((legacy / "Contents" / "marker").read_text(encoding="utf-8"), "legacy")
+            failed = list((root / "build").glob("_failed_install_*"))
+            self.assertEqual(len(failed), 1, "半成品必须移到 build，不能静默丢掉或留在应用程序")
+            self.assertEqual((failed[0] / "Contents" / "marker").read_text(encoding="utf-8"), "partial")
+
+    def test_local_install_copy_failure_keeps_backups_when_partial_app_cannot_move(self):
+        """半成品若移不动，旧包宁可留在 build 回退区，也不能被嵌进坏目录。"""
+        import os
+        import subprocess
+        import tempfile
+        source = self.source()
+        start = source.index('# ---- 5.1) 安装到 /Applications（默认行为）----')
+        end = source.index('\nif [ "$LOCAL_ONLY" -eq 0 ]; then', start)
+        block = source[start:end]
+        with tempfile.TemporaryDirectory(prefix="sf_release_stuck_partial_") as directory:
+            root = pathlib.Path(directory)
+            apps = root / "Applications"
+            current = apps / "Skyrocket.app"
+            legacy = apps / "实时股价-目标价版.app"
+            for app, marker in ((current, "current"), (legacy, "legacy")):
+                (app / "Contents").mkdir(parents=True)
+                (app / "Contents" / "marker").write_text(marker, encoding="utf-8")
+            (root / "dist" / "Skyrocket.app").mkdir(parents=True)
+            (root / "build").mkdir()
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            (fake_bin / "cp").write_text(
+                "#!/bin/sh\nmkdir -p \"$3/Contents\"\nprintf partial > \"$3/Contents/marker\"\nexit 1\n",
+                encoding="utf-8")
+            (fake_bin / "mv").write_text(
+                "#!/bin/sh\ncase \"$2\" in *'_failed_install_'*) exit 1 ;; esac\nexec /bin/mv \"$@\"\n",
+                encoding="utf-8")
+            for tool in (fake_bin / "cp", fake_bin / "mv"):
+                tool.chmod(0o755)
+            env = dict(os.environ, PROJ=str(root), DO_INSTALL="1", LOCAL_ONLY="1",
+                       INSTALL_DIR=str(current), APP_BUNDLE="Skyrocket.app", STAMP="fixture",
+                       PATH=str(fake_bin) + ":" + os.environ.get("PATH", ""))
+            result = subprocess.run(["/bin/bash", "-c", "set -eu\nstep_begin(){ :; }\n" + block],
+                                    capture_output=True, text=False, env=env, timeout=20)
+            output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+            self.assertNotEqual(result.returncode, 0, output)
+            self.assertEqual((current / "Contents" / "marker").read_text(encoding="utf-8"), "partial")
+            self.assertFalse((current / "Skyrocket.app").exists(),
+                             "旧包被嵌入坏包目录却仍被误报为恢复")
+            rollbacks = list((root / "build").glob("_rollback_*.app"))
+            self.assertEqual(len(rollbacks), 2, "两代旧包都应作为可手动恢复的回退副本保留")
 
     def test_local_mode_has_no_publication_side_effects_and_default_still_enters_publish(self):
         import tempfile
@@ -617,6 +718,8 @@ class TestLocalReleaseBoundaries(SFCase):
             self.assertEqual(list(root.iterdir()), [notes])
             public = self.run_block(source[start:end], root, 0)
             self.assertNotEqual(public.returncode, 0, "Default publication must reach its failing asset tool")
+            self.assertNotIn("command not found", public.stderr,
+                             "公开模式不是因为缺函数提前退出，而是真的走到了会失败的资产工具")
 
     def test_local_mode_still_fails_when_final_startup_check_fails(self):
         import tempfile
@@ -635,6 +738,66 @@ class TestLocalReleaseBoundaries(SFCase):
         source = self.source()
         self.assertIn("发布动作完成 v${VERSION}，发布后验收待完成", source)
         self.assertNotIn("发版完成 v${VERSION}（发布动作完成", source)
+
+    def test_closing_line_the_script_really_prints_satisfies_the_post_release_checker(self):
+        # 真跑收尾段、拿它实际打印的那一行去喂发布后验收的校验器，而不是各抄一份字面量：
+        # 4874df1 改了脚本的收尾语、校验器没跟着改，夹具又各自抄着旧句子，于是一路全绿，
+        # 直到发布后验收才被拒（隔了约 14 小时）。读脚本文本做字符串断言拦不住这种漂移。
+        import tempfile
+        from tools import quality_evidence as evidence
+        block = self.source()[self.source().index("# ---- 8)"):]
+        version = "9.9.9"
+        app = pathlib.Path("/Applications/Skyrocket.app")
+        env = {"VERSION": version, "SRC_BRANCH": "feat/fixture"}
+
+        def missing(log):
+            # 与 post_release_record 同一口径：清单取自 publish_log_markers，逐条要求出现在日志里。
+            return [marker for marker in evidence.publish_log_markers(app, version) if marker not in log]
+
+        with tempfile.TemporaryDirectory(prefix="sf_closing_line_") as directory:
+            root = pathlib.Path(directory)
+
+            def printed_log(script_block, sync_note):
+                done = self.run_block(script_block, root, 0, "/usr/bin/true",
+                                      dict(env, SYNC_NOTE=sync_note))
+                self.assertEqual(done.returncode, 0, done.stderr)
+                closing = [line for line in done.stdout.splitlines() if "完成 v" + version in line]
+                self.assertEqual(len(closing), 1, done.stdout)
+                others = [m for m in evidence.publish_log_markers(app, version)
+                          if "完成 v" + version not in m]
+                return "\n".join(others + closing)
+
+            for sync_note in ("", "源码未同步"):
+                with self.subTest(sync_note=sync_note):
+                    log = printed_log(block, sync_note)
+                    self.assertEqual(missing(log), [])
+            # 反向对照：脚本把措辞改回旧说法时，这条判据必须当场红，否则它什么都没守。
+            drifted = block.replace("发布动作完成 v${VERSION}", "发版完成 v${VERSION}")
+            self.assertNotEqual(drifted, block)
+            self.assertEqual(missing(printed_log(drifted, "")), ["发布动作完成 v" + version])
+            # 「最终启动复验：」也是同一段打印的，同样拿真实输出对，而不是各抄一份。
+            self.assertIn("最终启动复验：" + str(app), printed_log(block, ""))
+
+    def test_local_only_log_cannot_pass_as_publish_evidence(self):
+        # 本机覆盖模式也打印「已安装:」，只差发布那一半。它绝不能当成发布证据：
+        # 否则一次本机重装就能生成 post_release.json。
+        import tempfile
+        from tools import quality_evidence as evidence
+        block = self.source()[self.source().index("# ---- 8)"):]
+        version = "9.9.9"
+        app = pathlib.Path("/Applications/Skyrocket.app")
+        with tempfile.TemporaryDirectory(prefix="sf_local_evidence_") as directory:
+            done = self.run_block(block, pathlib.Path(directory), 1, "/usr/bin/true",
+                                  {"VERSION": version, "SRC_BRANCH": "feat/fixture"})
+            self.assertEqual(done.returncode, 0, done.stderr)
+            log = done.stdout
+            missing = [m for m in evidence.publish_log_markers(app, version) if m not in log]
+            # 「已安装:」「版本:」两步不在这段切片里（它们要用真 .app 和 PlistBuddy），
+            # 所以这里只钉住本机能判的差：发布资产行与收尾语都不该出现。
+            self.assertIn("published_archive=", " ".join(missing))
+            self.assertIn("发布动作完成 v" + version, missing)
+            self.assertIn("本机覆盖完成 v" + version, log)
+            self.assertNotIn("发布动作完成 v" + version, log)
 
     def test_local_argument_does_not_enable_gate_or_build_skips(self):
         import subprocess

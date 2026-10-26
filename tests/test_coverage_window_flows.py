@@ -295,7 +295,9 @@ class TestHandleUpdateDownload(WindowCase):
     def test_a_successful_handoff_launches_then_quits(self):
         with patch.object(sf_update, "launch_installer") as launch:
             self.win._handle_update_download(self.update, "/tmp/a.zip", None)
-        launch.assert_called_once_with("/tmp/a.zip", "b" * 64, "9.9.9")
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.args, ("/tmp/a.zip", "b" * 64, "9.9.9"))
+        self.assertRegex(launch.call_args.kwargs["handoff_id"], r"[a-f0-9]{32}")
         self.assertEqual(self.quits, [1])
         self.assertEqual(self.messages, [])
 

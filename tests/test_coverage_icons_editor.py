@@ -47,6 +47,14 @@ MARK_MAX_FRACTION_OF_PLATE = 0.65   # 上限：再大就几乎贴住色块边缘
 SHIPPED_ICON_BBOX_TOLERANCE_PX = 2
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLATE_HEX = {"light": "#e8ebf0", "dark": "#12151d"}   # 定稿底色；测试自己写一份，不引用被测常量
+# 系统图标遮罩的左上角实测（2026-10-23，macOS 27.0.1，对已装 Skyrocket.app 取 NSWorkspace.iconForFile_
+# 的处理图、1024 像素、色块边长 824）。每项 = (距色块顶边的相对高度, 该行左缘离直边的相对距离)，
+# 都按色块边长归一。测试自己存一份，不引用被测常量，免得改常量时判据跟着一起变。
+SYSTEM_MASK_ROWS = ((0.0121, 0.1881), (0.0243, 0.1505), (0.0485, 0.1068), (0.0728, 0.0789),
+                    (0.1214, 0.0400), (0.1820, 0.0146), (0.2427, 0.0036))
+SYSTEM_MASK_TOLERANCE = 0.015     # 新形状最大偏差约 0.010；旧形状最上面几行差 0.13
+SYSTEM_MASK_PIXEL_SLACK = 3.0     # 再按"像素数 / 色块边长"补的余量：行取整 + 抗锯齿，边长越小占比越大
+OLD_MAIN_WINDOW_CORNER_RADIUS = 0.225   # 改动前色块用的半径（主窗曲线），仅用于判据自证
 
 
 def _plate_sample(img):
@@ -217,6 +225,60 @@ class TestAppIcon(IconCase):
                                     "标志%s只占色块的 %.1f%%，低于下限 %.0f%%：图形被缩回去了"
                                     % (label, got * 100, MARK_MIN_FRACTION_OF_PLATE * 100))
             self.assertLessEqual(got, MARK_MAX_FRACTION_OF_PLATE, "标志撑得太满，几乎贴住色块边缘")
+
+    def _corner_gaps(self, img):
+        """色块左上角：在 SYSTEM_MASK_ROWS 给的各个相对高度上，左缘离直边多远（都按色块边长归一）。"""
+        left, top, right, bottom = _ink_bbox(img)
+        side = right - left + 1
+        gaps = []
+        for row_frac, _want in SYSTEM_MASK_ROWS:
+            row = top + int(round(row_frac * side))
+            col = next(c for c in range(img.width()) if (img.pixel(c, row) >> 24) & 0xFF > 128)
+            gaps.append((col - left) / side)
+        return gaps, side
+
+    def _assert_corner_matches_system_mask(self, img, label):
+        gaps, side = self._corner_gaps(img)
+        # 小图要多留余量：Qt 只能解出 icns 里的一档（本机 64 像素，色块约 51 像素），最上面几行
+        # 曲线最陡（斜率约 3），行位置取整 0.5 像素就会放大成约 1.5 像素的左缘偏差，再加列上抗锯齿。
+        slack = SYSTEM_MASK_TOLERANCE + SYSTEM_MASK_PIXEL_SLACK / side
+        for (row_frac, want), got in zip(SYSTEM_MASK_ROWS, gaps):
+            self.assertLessEqual(
+                abs(got - want), slack,
+                "%s：色块左上角在 %.1f%% 高度处离直边 %.3f 倍边长，系统遮罩是 %.3f（容差 %.3f）。"
+                "角形状与系统遮罩不一致，Dock 里启动前后圆角会不同" % (label, row_frac * 100, got, want, slack))
+
+    def test_plate_corner_matches_the_system_icon_mask(self):
+        """2026-10-23 用户报“启动后 Dock 图标圆角变了”的根因判据。
+        Dock 在程序启动前显示的是包体图标经系统遮罩处理后的样子，启动后程序交给它的是原图、
+        不再过遮罩，所以原图色块自己的角必须长成系统遮罩的形状。SYSTEM_MASK_ROWS 是对已装
+        Skyrocket.app 取 NSWorkspace 系统处理图、按 1024 像素逐行量出来的；旧形状（主窗曲线 22.5%
+        半径）在最上面几行差 0.13 倍边长，远超容差。量的是相对边长的比例，不依赖出图尺寸。"""
+        self._assert_corner_matches_system_mask(sf_icons.make_app_icon(), "运行时出图（浅色）")
+        self._assert_corner_matches_system_mask(sf_icons.make_app_icon("dark"), "运行时出图（深色）")
+
+    def test_shipped_icon_png_and_icns_have_the_system_mask_corner(self):
+        """随包 icon.png 与 icon.icns 也要是新角形状：只改了代码没重出图，装机后访达/启动台
+        与 Dock 启动前用的是旧形状，而测试若只看运行时出图会全绿。"""
+        self._assert_corner_matches_system_mask(QImage(os.path.join(REPO_ROOT, "icon.png")), "随包 icon.png")
+        self._assert_corner_matches_system_mask(QImage(os.path.join(REPO_ROOT, "icon.icns")), "随包 icon.icns")
+
+    def test_corner_judge_rejects_the_old_main_window_curve(self):
+        """判据自证：把色块换回主窗的曲线（22.5% 半径），上面那条判据必须判红，
+        否则它只是在量一条恒成立的线。"""
+        from PyQt6.QtGui import QPainter
+        from renderer import smooth_round_rect_path
+        side = APP_ICON_PX * sf_icons.APP_ICON_PLATE_SCALE
+        off = (APP_ICON_PX - side) / 2
+        old = QImage(APP_ICON_PX, APP_ICON_PX, QImage.Format.Format_ARGB32)
+        old.fill(0)
+        painter = QPainter(old)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillPath(smooth_round_rect_path(off, off, side, side, side * OLD_MAIN_WINDOW_CORNER_RADIUS),
+                         QColor(PLATE_HEX["light"]))
+        painter.end()
+        with self.assertRaises(AssertionError):
+            self._assert_corner_matches_system_mask(old, "旧形状")
 
     def test_light_plate_colour_is_the_approved_light_grey(self):
         """浅色外观的底色是定稿的浅灰 #e8ebf0：取色块左侧中段一点（避开图形与圆角）。"""

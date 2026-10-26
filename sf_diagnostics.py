@@ -134,10 +134,14 @@ def write_attachments(archive, paths, metadata, issues, helpers):
                     metadata["bundle_id"], metadata["running_bundle_id"],
                     "\n".join(crash_summary) or "(none)", "\n".join(issues) or "(none)"))
     archive.writestr("diagnostics.txt", public_text(overview))
-    json_entry("export.json", {
+    export = {
         "version": metadata["version"],
         "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "collection_ms": round((time.monotonic() - metadata["started"]) * 1000, 1),
         "issues": list(issues),
         "files": [{"name": info.filename, "size_bytes": info.file_size}
-                  for info in archive.infolist()]})
+                  for info in archive.infolist()],
+    }
+    if metadata.get("diagnostic_schema_version") is not None:
+        export["diagnostic_schema_version"] = metadata["diagnostic_schema_version"]
+    json_entry("export.json", export)

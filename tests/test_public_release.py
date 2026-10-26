@@ -131,6 +131,47 @@ class PublicReleaseCase(SFCase):
         guide.write_text(guide.read_text().replace("Skyrocket-%s-SHA256SUMS.txt" % docs.APP_VERSION, "old-checksums.txt"))
         self.assertTrue(any("missing current artifact" in item for item in self.document_problems()))
 
+    def test_over_limit_report_names_the_real_count_and_how_far_over(self):
+        # 期望字数在这里按构造独立算出（标题 + 编号 + 正文），不调用被测的计数函数：
+        # 否则计数口径错了，报错里的数字和断言会一起错、判据照样绿。
+        notes = self.root / "release_notes.txt"
+        title = "V%s release" % docs.APP_VERSION
+        extra = 7
+        title_chars = len(title.replace(" ", ""))
+        filler = "x" * (docs.NOTES_MAX_CHARS - title_chars - len("1.") + extra)
+        notes.write_text("%s\n1. %s\n" % (title, filler))
+        expected = title_chars + len("1.") + len(filler)
+        self.assertEqual(expected, docs.NOTES_MAX_CHARS + extra)
+        report = [item for item in self.document_problems() if "release_notes.txt:" in item and "limit" in item]
+        self.assertEqual(len(report), 1, report)
+        self.assertIn("%d characters" % expected, report[0])
+        self.assertIn("limit %d" % docs.NOTES_MAX_CHARS, report[0])
+        self.assertIn("over by %d" % extra, report[0])
+        self.assertIn("title line", report[0])
+        # 刚好在限的说明不报：证明上面那条红的是字数，而不是别的缺陷。
+        notes.write_text("%s\n1. %s\n" % (title, filler[:-extra]))
+        self.assertEqual([item for item in self.document_problems() if "limit" in item], [])
+
+    def test_notes_count_ignores_every_kind_of_whitespace_and_counts_the_rest(self):
+        self.assertEqual(release_identity.count_notes_chars("甲 乙\t丙\n丁\u3000戊\u00a0己"), 6)
+        self.assertEqual(release_identity.count_notes_chars(" \n\t\u3000 "), 0)
+        # V 1 . 4 . 9（6）+ 发布说明（4）+ 冒号（1）+ 编号“1.”（2）+ 甲（1）= 14
+        self.assertEqual(release_identity.count_notes_chars("V1.4.9 发布说明:\n1. 甲"), 14)
+
+    def test_asset_gate_message_carries_the_same_count_and_the_overshoot(self):
+        # 打包闸门（make_update_assets）与公开资料检查必须是同一个数：同一份说明不许一处过、一处红。
+        import make_update_assets as assets
+        extra = 3
+        title = "V1.4.46 发布说明:"
+        filler = "甲" * (release_identity.NOTES_MAX_CHARS - len(title.replace(" ", "")) - len("1.") + extra)
+        raw = "%s\n1. %s\n" % (title, filler)
+        with self.assertRaises(SystemExit) as caught:
+            assets.require_own_section(raw, "1.4.46")
+        message = str(caught.exception)
+        self.assertIn("%d 字，上限 %d 字，超出 %d 字" % (release_identity.NOTES_MAX_CHARS + extra,
+                                                  release_identity.NOTES_MAX_CHARS, extra), message)
+        self.assertIn("至少删掉 %d 字" % extra, message)
+
     def test_cli_fails_on_missing_license_and_unknown_arguments(self):
         (self.root / "LICENSE").unlink()
         self.assertEqual(docs.main(["--root", str(self.root)]), 1)

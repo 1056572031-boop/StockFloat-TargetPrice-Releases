@@ -5,6 +5,7 @@ import datetime as dt
 import io
 import json
 import os
+import plistlib
 import runpy
 import subprocess
 import tempfile
@@ -40,7 +41,10 @@ class ReleaseStateCase(SFCase):
         self.addCleanup(self.console.__exit__, None, None, None)
         release.init_state(self.root, self.state, self.version)
         self.app = self.root / "build/Skyrocket.app"
-        self.app.mkdir()
+        (self.app / "Contents").mkdir(parents=True)
+        (self.app / "Contents" / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": self.version,
+        }))
         (self.app / "payload").write_bytes(b"candidate")
         self.dmg = self.root / "build/candidate.dmg"
         self.dmg.write_bytes(b"dmg")
@@ -100,6 +104,58 @@ class ReleaseStateCase(SFCase):
         value["checks"]["public_source"]["observation"] = {"commit": "public-fixture"}
         value["checks"]["public_ci"]["observation"] = {"head_sha": "public-fixture"}
         return value
+
+    def walkthrough(self, state, *, passed=True, same_app=True):
+        walked = self.app if same_app else self.root / "build/other.app"
+        if not walked.exists():
+            walked.mkdir()
+            (walked / "payload").write_bytes(b"other")
+        path = self.root / "build/click-result.json"
+        path.write_text(json.dumps({
+            "app": str(walked), "version": self.version,
+            "summary": {"ok": passed, "ran": 6, "passed": 6 if passed else 5,
+                        "failed": 0 if passed else 1, "skipped": 0},
+            "user_data": {"ok": passed, "changed": [] if passed else ["config.json"]},
+        }))
+        return path
+
+    def test_walkthrough_rejects_wrong_version_incomplete_or_unisolated_evidence(self):
+        state = self.candidate()
+        evidence_path = self.walkthrough(state)
+        for mutate, message in (
+                (lambda value: value.update(version="wrong"), "版本"),
+                (lambda value: value.update(summary={"ok": False, "ran": 6, "passed": 5,
+                                                     "failed": 1, "skipped": 0}), "完整通过"),
+                (lambda value: value.update(user_data={"ok": False, "changed": ["config.json"]}), "隔离")):
+            self.walkthrough(state)
+            value = json.loads(evidence_path.read_text())
+            mutate(value)
+            evidence_path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, message):
+                release.check_walkthrough(state["artifacts"]["app"], evidence_path)
+        bad_app = self.root / "build/no-version.app"
+        contents = bad_app / "Contents"
+        contents.mkdir(parents=True)
+        (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "fixture"}))
+        value = json.loads(evidence_path.read_text())
+        value.update(app=str(bad_app), version=self.version,
+                     summary={"ok": True, "ran": 6, "passed": 6, "failed": 0, "skipped": 0},
+                     user_data={"ok": True, "changed": []})
+        evidence_path.write_text(json.dumps(value))
+        bad_item = {"path": str(bad_app), **release.evidence.artifact_token(bad_app)}
+        with self.assertRaisesRegex(ValueError, "版本不可读"):
+            release.check_walkthrough(bad_item, evidence_path)
+        malformed_app = self.root / "build/malformed-version.app"
+        malformed_contents = malformed_app / "Contents"
+        malformed_contents.mkdir(parents=True)
+        (malformed_contents / "Info.plist").write_bytes(b"not a plist")
+        malformed_value = json.loads(evidence_path.read_text())
+        malformed_value["app"] = str(malformed_app)
+        evidence_path.write_text(json.dumps(malformed_value))
+        malformed_item = {"path": str(malformed_app),
+                          **release.evidence.artifact_token(malformed_app)}
+        with self.assertRaisesRegex(ValueError, "版本不可读"):
+            release.check_walkthrough(malformed_item, evidence_path)
 
     def test_snapshot_and_duplicate_init(self):
         state = release.validate(self.root, self.state, "source_open")
@@ -245,8 +301,16 @@ class ReleaseStateCase(SFCase):
                 release.finish(self.root, self.state, complete_record, readback)
             value = self.acceptance_value(pending)
             readback.write_text(json.dumps(value))
-            result = release.finish(self.root, self.state, complete_record, readback)
+            with self.assertRaisesRegex(ValueError, "点击走查"):
+                release.finish(self.root, self.state, complete_record, readback)
+            for walkthrough in (self.walkthrough(pending, passed=False),
+                                self.walkthrough(pending, same_app=False)):
+                with self.assertRaises(ValueError):
+                    release.finish(self.root, self.state, complete_record, readback, walkthrough)
+            valid_walkthrough = self.walkthrough(pending)
+            result = release.finish(self.root, self.state, complete_record, readback, valid_walkthrough)
             self.assertEqual(result["stage"], "complete")
+            self.assertIn("click_walkthrough", result["observations"])
             self.assertEqual([item["to"] for item in result["history"]], list(release.STAGES[1:]))
             readback.write_text("{}")
             self.assertFalse(release.report(self.root, self.state)["complete"])
@@ -311,7 +375,9 @@ class ReleaseStateCase(SFCase):
 
     def test_cli_validates_required_arguments_and_errors(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            for args in (["stage"], ["init", "--state", str(self.state)], ["report", "--state", str(self.state)]):
+            for args in (['stage'], ['init', '--state', str(self.state)],
+                         ['report', '--state', str(self.state)],
+                         ['complete', '--state', str(self.state), '--quality', 'q', '--readback', 'r']):
                 with self.assertRaises(SystemExit) as raised:
                     release.main(args)
                 self.assertEqual(raised.exception.code, 2)
@@ -329,7 +395,8 @@ class ReleaseStateCase(SFCase):
                       ("candidate", "make_candidate", ["--version", self.version, "--app", str(self.app),
                         "--dmg", str(self.dmg), "--zip", str(self.archive), "--ota", str(self.ota)]),
                       ("begin-publish", "begin_publish", ["--quality", "quality.json"]),
-                      ("complete", "finish", ["--quality", "complete.json", "--readback", "readback.json"]),
+                      ("complete", "finish", ["--quality", "complete.json", "--readback", "readback.json",
+                        "--walkthrough", "click-result.json"]),
                       ("report", "write_report", ["--out", "report.json"])]
         for command, function, arguments in operations:
             with mock.patch.object(release, function, return_value={"blockers": []}) as runner:

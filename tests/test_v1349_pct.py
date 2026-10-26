@@ -46,21 +46,29 @@ def _quote(**over):
 
 
 class _WinBase(unittest.TestCase):
-    """公共夹具：与 tests/test_v134.py 同构的离屏主窗 + patch 模式。"""
+    """公共夹具：离屏主窗与业务状态，但不为本文件启动后台行情 worker。"""
 
     @classmethod
     def setUpClass(cls):
         cls._app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self._runtime_starts = []
+
+        def block_runtime_start(controller, quote_target, minute_target):
+            self.assertEqual(controller.threads(), (None, None),
+                             "夹具构造前不应已有行情或分时 worker")
+            self._runtime_starts.append((controller, quote_target, minute_target))
+
         self._patches = [
             patch.object(m, "load_config",
                          return_value=("sh600519", 100, 100, 200, "translucent")),
-            patch.object(m, "save_config", lambda *a, **k: None),
+            patch.object(m, "save_config", lambda *a, **k: True),
             patch.object(sf_quote, "http_get", lambda *a, **k: ""),
             patch.object(m, "start_icon_worker", lambda: None),
             patch.object(m.FloatWindow, "_force_top", lambda self: None),
             patch.object(m.FloatWindow, "_setup_reopen_handler", lambda self: None),
+            patch.object(m.QuoteRuntimeController, "start", block_runtime_start),
             patch("PyQt6.QtWidgets.QMenu.popup", lambda *a, **k: None),
             # 首屏快照会跨用例泄漏（A 用例写盘 → B 用例新建窗口时读回，
             # _disp_price 被上一只股票的值预置），使「丢弃」类断言失真。
@@ -69,7 +77,16 @@ class _WinBase(unittest.TestCase):
         ]
         for p in self._patches:
             p.start()
+            self.addCleanup(p.stop)
         self.win = m.FloatWindow()
+        self.assertEqual(len(self._runtime_starts), 1,
+                         "窗口构造必须登记两条常驻循环")
+        controller, quote_target, minute_target = self._runtime_starts[0]
+        self.assertIs(controller, self.win._quote_runtime)  # discipline-ok(R5): 接线断言必须取窗口持有的运行时控制器
+        self.assertEqual(quote_target.__name__, "_quote_loop_wrapper")
+        self.assertEqual(minute_target.__name__, "_minute_loop_wrapper")
+        self.assertEqual(controller.threads(), (None, None),
+                         "本文件不测后台抓取，不应真的创建 worker")
         self.win.running = False
         self.win._wake.set()
         for t in ("timer", "top_timer", "_anim_timer", "_flash_timer"):
@@ -77,14 +94,10 @@ class _WinBase(unittest.TestCase):
                 getattr(self.win, t).stop()
             except Exception:
                 pass
-        for _t in (getattr(self.win, "_quote_thread", None),
-                   getattr(self.win, "_minute_thread", None)):
-            if _t is not None:
-                _t.join(timeout=1.5)
 
     def tearDown(self):
-        for p in self._patches:
-            p.stop()
+        self.win._exit_persisted = True  # discipline-ok(R5): §6.11 规定关窗前必须阻止真实配置落盘
+        self.win.close()
 
 
 class TestPctMissingNotDroppingPrice(_WinBase):

@@ -81,19 +81,22 @@ class SFCase(unittest.TestCase):
         self._sf_patches = []
 
     def tearDown(self):
-        # 先停 patch（顺序很重要：patch 未停时关闭窗口可能触发被 mock 的路径）
+        # closeEvent may persist state, so close widgets while their isolation
+        # patches are still active.  The marker keeps delayed offscreen close
+        # events from saving a second time after this method returns.
+        for w in reversed(self._sf_widgets):
+            try:
+                w._exit_persisted = True  # discipline-ok(R5): closeEvent 幂等标记没有公开入口。
+                w.close()
+            except Exception:
+                pass
+        self._sf_widgets = []
         for p in reversed(self._sf_patches):
             try:
                 p.stop()
             except Exception:
                 pass
         self._sf_patches = []
-        for w in reversed(self._sf_widgets):
-            try:
-                w.close()
-            except Exception:
-                pass
-        self._sf_widgets = []
 
     # ---- 登记式辅助：只管自己创建的东西 ----
     def track_widget(self, w):

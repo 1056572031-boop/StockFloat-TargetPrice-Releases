@@ -30,6 +30,11 @@
     SF_RERUN_FAILED=0 tools/test_runner.py  # 不做失败重跑
     SF_TEST_TIMEOUT=120 tools/test_runner.py
     tools/test_runner.py --module test_daily_workflow --module test_code_governance
+    SF_TEST_DURATIONS_OUT=build/test-durations.json tools/test_runner.py  # 另存按模块的耗时明细
+
+每轮结尾都会打印"用例耗时"：按模块汇总主轮用例体耗时（不含失败重跑），并与主轮墙钟对照，
+差额即类/模块级准备与收尾和框架开销。这只是观测，不参与任何判定，也不改退出码；
+覆盖率采集下数字整体偏大，不能与未采集的数字直接比。
 
 指定模块仍走超时、桌面弹窗和用户数据保护；不代表完整回归、不检查覆盖率、不落关卡戳。
 未知参数或零用例拒绝通过。SF_RERUN_FAILED=0 可保留首次失败为本轮失败。
@@ -39,6 +44,7 @@
 import argparse
 import contextlib
 import faulthandler
+import json
 import os
 import random
 import re
@@ -61,16 +67,182 @@ _USER_DATA = ["config.json", "securities.json", "debug.log"]
 _GUI_APP: object | None = None
 
 
+# 红线归因：测试期间真实 debug.log 被追加了哪些"有人在用正式版"的行。
+# 只归因、不放宽 —— 判据仍是 exit 2，这里只是把"是谁改的"从零变成一句可读的数字。
+# 只打印每类命中条数，**不打印日志正文**：里面可能有路径、股票代码和本地片段。
+ACTIVITY_PHRASES = (
+    ("启动", "STARTUP"),
+    ("首帧", "first-frame painted"),
+    ("点击", "btn action queued"),
+    ("右键菜单", "ctx menu"),
+    ("失活恢复", "reopen ca"),
+)
+ACTIVITY_READ_CAP = 2_000_000   # 只看本轮新增部分的前 2MB；再长也只报"超过"
+WINDOW_HINT_SEC = 300           # 起跑前：真实日志 5 分钟内写过，就提示正式版可能刚用过
+
+
+def _user_data_path(name: str, support_dir: str | None = None) -> str:
+    """support_dir 只为用例而留：正式运行永远用 _support_dir()，解析不出真的用户目录。"""
+    return os.path.join(support_dir or _support_dir(), name)
+
+
+def user_log_state(name: str = "debug.log", support_dir: str | None = None):
+    """真实日志的"起点"：inode、大小、mtime；不存在返回 None。"""
+    try:
+        st = os.stat(_user_data_path(name, support_dir))
+    except OSError:
+        return None
+    return {"inode": st.st_ino, "size": st.st_size, "mtime": st.st_mtime}
+
+
+def _iter_lines(path: str, offset: int = 0):
+    """从 offset 逐行读，产出 (一行的正文, 读完后新的 offset)。
+
+    手写而不是 for line in f：那样要额外维护 tell()，且不同版本的缓冲行为不一。
+    只支持 '\n' 断行，这是本产品日志的写法（见 sf_logging）。
+    """
+    with open(path, "rb") as fh:
+        fh.seek(offset)
+        while True:
+            raw = fh.readline()
+            if not raw:
+                return
+            yield raw.rstrip(b"\r\n"), fh.tell()
+
+
+def count_activity(start, name: str = "debug.log", support_dir: str | None = None) -> dict:
+    """对比起点与现在，数出本轮真实日志新增了多少行"正式版在被人用"。
+
+    返回 {"status": ..., "counts": {类别: 条数}, "total": 新增行数}：
+      status="missing"  起点和现在都没有（没装过/从没跑过正式版）
+      status="created"  本轮期间被新建（多半是正式版刚启动）
+      status="rotated"  本轮期间被轮转或替换（inode 或大小回退），条数不可比
+      status="ok"       正常，counts 有效
+    读取失败一律记 "unreadable"，绝不让诊断把整轮回归弄崩。
+    """
+    end = user_log_state(name, support_dir)
+    counts = {label: 0 for label, _ in ACTIVITY_PHRASES}
+    if start is None and end is None:
+        return {"status": "missing", "counts": counts, "total": 0}
+    try:
+        if start is None:
+            lines = _iter_lines(_user_data_path(name, support_dir))
+        elif end is None:
+            return {"status": "rotated", "counts": counts, "total": 0}
+        elif end["inode"] != start["inode"] or end["size"] < start["size"]:
+            return {"status": "rotated", "counts": counts, "total": 0}
+        else:
+            lines = _iter_lines(_user_data_path(name, support_dir), start["size"])
+        total, consumed = 0, 0
+        for text, consumed in lines:
+            total += 1
+            for label, phrase in ACTIVITY_PHRASES:
+                if phrase.encode("utf-8") in text:
+                    counts[label] += 1
+            if consumed >= ACTIVITY_READ_CAP:
+                break
+    except OSError:
+        return {"status": "unreadable", "counts": counts, "total": 0}
+    if start is None:
+        status = "created"
+    else:
+        status = "ok"
+    return {"status": status, "counts": counts, "total": total}
+
+
+def activity_report(activity) -> str | None:
+    """把归因结果写成一句人话；没有可归因的活动时返回 None（不刷屏）。"""
+    if not activity:
+        return None
+    status, counts = activity.get("status"), activity.get("counts") or {}
+    if status in ("missing", "unreadable"):
+        return "归因：真实 debug.log %s，无法判断是谁写的" % (
+            "不存在" if status == "missing" else "读不了")
+    if status == "rotated":
+        return "归因：真实 debug.log 在本轮期间被轮转或替换，新增条数不可比"
+    hits = "、".join("%s %d 条" % (label, n) for label, n in counts.items() if n)
+    opened = "（本轮期间被新建）" if status == "created" else ""
+    if not hits:
+        return ("归因：真实 debug.log 在本轮期间%s没有新增启动或点击行 —— 改动不是正式版写出来的"
+                % ("被新建，但" if status == "created" else ""))
+    return ("归因：本轮真实 debug.log 新增 %s%s（共 %d 行）。测试日志走 SF_LOG_PATH，"
+            "真实日志只会由正式版写入 —— 多半是别的会话启动了正式版或点了它的按钮"
+            % (hits, opened, activity.get("total", 0)))
+
+
+def emit_activity_hint(out=print, support_dir: str | None = None) -> None:
+    """起跑前的提示。抽成函数是为了让用例能直接调它并换掉输出，而不是只在整档里跑一次。"""
+    hint = activity_hint(support_dir=support_dir)
+    if hint:
+        out(hint)
+
+
+def emit_dirty_detail(dirty, log_start, out=print, support_dir: str | None = None) -> None:
+    """红线触发时的说明：先列被改的文件，再给出归因。判据本身仍由 verdict 决定。"""
+    out("!! 用户数据在测试期间被改动 —— 这不是测试问题，是红线：")
+    for line in dirty:
+        out("   - %s" % line)
+    note = activity_report(count_activity(log_start, support_dir=support_dir))
+    if note:
+        out("   " + note)
+
+
+def _activity_checks() -> dict:
+    """自检用的判据表：{失败时的说明: 是否通过}。所有分支都会执行，便于改动行覆盖。"""
+    import tempfile
+    checks = {}
+    with tempfile.TemporaryDirectory(prefix="sf_activity_") as directory:
+        log = os.path.join(directory, "debug.log")
+        missing = count_activity(None, support_dir=directory)
+        checks["真实日志不存在时归因报告为空，会让人以为没有活动"] = activity_report(missing) is not None
+        checks["没装过正式版时归因状态不是 missing"] = missing["status"] == "missing"
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write("[old] INFO: STARTUP v1.0\n[old] INFO: btn action queued\n")
+        start = user_log_state("debug.log", directory)
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write("[new] INFO: STARTUP v1.4.103\n[new] INFO: first-frame painted\n"
+                     "[new] INFO: old line without activity\n")
+        counts = count_activity(start, support_dir=directory)
+        checks["归因把起点之前的旧行算进来了"] = counts["counts"] == {
+            "启动": 1, "首帧": 1, "点击": 0, "右键菜单": 0, "失活恢复": 0} and counts["status"] == "ok"
+        checks["归因报告没写出命中的类别与条数"] = "启动 1 条" in (activity_report(counts) or "")
+        fresh = count_activity(None, support_dir=directory)
+        checks["本轮期间新建的真实日志没按 created 统计"] = (
+            fresh["status"] == "created" and fresh["counts"]["启动"] == 2)
+        rotated = count_activity({"inode": start["inode"] + 1, "size": start["size"], "mtime": 0})
+        checks["日志被轮转却按普通追加统计"] = rotated["status"] == "rotated"
+        checks["轮转时没给出诚实说明"] = "轮转" in (activity_report(rotated) or "")
+        checks["新增行数不是从起点算的"] = count_activity(start, support_dir=directory)["total"] == 3
+        checks["日志很久没写却提示正式版刚用过"] = (
+            activity_hint("debug.log", now=time.time() + WINDOW_HINT_SEC + 60,
+                          support_dir=directory) is None)
+        checks["日志刚写过却没有起跑前的提示"] = activity_hint(
+            "debug.log", now=time.time(), support_dir=directory) is not None
+        reports = [activity_report(x) or "" for x in
+                   (counts, fresh, rotated, count_activity(start, support_dir=directory))]
+        checks["归因说明里混进了日志正文"] = all(
+            "STARTUP" not in r and "first-frame" not in r for r in reports)
+    return checks
+
+
+def activity_hint(name: str = "debug.log", now: float | None = None,
+                  support_dir: str | None = None) -> str | None:
+    """起跑前的便宜提示：真实日志最近有没有写过。只是提示，不拦跑。"""
+    state = user_log_state(name, support_dir)
+    if state is None:
+        return None
+    age = int((now if now is not None else time.time()) - state["mtime"])
+    if age < 0 or age > WINDOW_HINT_SEC:
+        return None
+    return ("!! 提示：真实 debug.log %d 秒前刚有写入，正式版可能刚被用过。"
+            "整档期间它再被启动或点击，会触发「用户数据被改动」红线（退出码 2）。" % age)
+
+
 def _snapshot_user_data():
     snap: dict[str, tuple[int, int] | None] = {}
     for name in _USER_DATA:
-        p = os.path.join(_support_dir(), name)
-        try:
-            st = os.stat(p)
-        except OSError:
-            snap[name] = None
-        else:
-            snap[name] = (st.st_size, int(st.st_mtime))
+        state = user_log_state(name)
+        snap[name] = None if state is None else (state["size"], int(state["mtime"]))
     def visit_feedback(path, name):
         try:
             st = os.lstat(path)
@@ -267,11 +439,107 @@ def _shuffle_top(suite, rnd):
     return out
 
 
+DURATIONS_SCHEMA = 1
+DURATIONS_TOP = 12
+
+
+def module_of(case_id):
+    """用例 id 归到模块：`tests.test_x.Class.test_y` 与 `test_x.Class.test_y` 都归 `test_x`。"""
+    parts = [p for p in str(case_id).split(".") if p]
+    if parts and parts[0] == "tests" and len(parts) > 1:
+        parts = parts[1:]
+    return parts[0] if parts else "<未知>"
+
+
+class DurationLedger:
+    """按模块累计用例体耗时。只观测，不参与任何判定。
+
+    时钟可注入，所以耗时数字能在测试里被精确构造，而不是靠真睡眠再断言。
+    类级/模块级的准备与收尾（setUpClass 等）不在任何一条用例体里，
+    所以这里的总和会小于主轮墙钟，差额由 render_durations 单独列出。
+    """
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._started = {}
+        self.seconds = {}
+        self.cases = {}
+
+    def start(self, case_id):
+        self._started[case_id] = self._clock()
+
+    def stop(self, case_id):
+        began = self._started.pop(case_id, None)
+        if began is None:
+            return
+        module = module_of(case_id)
+        self.seconds[module] = self.seconds.get(module, 0.0) + max(0.0, self._clock() - began)
+        self.cases[module] = self.cases.get(module, 0) + 1
+
+    def total(self):
+        return sum(self.seconds.values())
+
+    def ranked(self):
+        return sorted(self.seconds.items(), key=lambda item: (-item[1], item[0]))
+
+
+def coverage_active():
+    """当前进程是否在 coverage 采集下跑：采集会让耗时整体偏大，不能与未采集的数字直接比。"""
+    try:
+        import coverage
+    except ImportError:
+        return False
+    return coverage.Coverage.current() is not None
+
+
+def render_durations(ledger, wall, under_coverage, top=DURATIONS_TOP):
+    """人读的耗时摘要（只含主轮，不含失败重跑）。"""
+    body = ledger.total()
+    lines = ["== 用例耗时（主轮；%s）==" % ("覆盖率采集下，数字偏大" if under_coverage else "未采集覆盖率")]
+    lines.append("用例体合计 %.1fs｜主轮墙钟 %.1fs｜差额 %.1fs（类/模块级准备与收尾 + 框架开销）"
+                 % (body, wall, wall - body))
+    ranked = ledger.ranked()
+    for module, seconds in ranked[:top]:
+        share = (100.0 * seconds / body) if body > 0 else 0.0
+        lines.append("  %-44s %8.1fs  %5.1f%%  %d 条" % (module, seconds, share, ledger.cases.get(module, 0)))
+    if len(ranked) > top:
+        rest = sum(seconds for _, seconds in ranked[top:])
+        lines.append("  其余 %d 个模块合计 %.1fs" % (len(ranked) - top, rest))
+    return lines
+
+
+def durations_report(ledger, wall, under_coverage):
+    """落盘用的结构化明细，字段含义与上面的摘要一致。"""
+    return {"schema": DURATIONS_SCHEMA, "under_coverage": bool(under_coverage),
+            "wall_seconds": round(wall, 3), "case_seconds": round(ledger.total(), 3),
+            "modules": [{"module": module, "seconds": round(seconds, 3), "cases": ledger.cases.get(module, 0)}
+                        for module, seconds in ledger.ranked()]}
+
+
+def write_durations(path, report):
+    """先写同目录临时文件再整体替换。返回 ''，写失败返回原因：落盘失败不得改变测试结论。"""
+    temp = None
+    try:
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        handle, temp = tempfile.mkstemp(prefix=".durations-", suffix=".tmp", dir=directory)
+        with os.fdopen(handle, "w", encoding="utf-8") as sink:
+            sink.write(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        os.replace(temp, path)
+        return ""
+    except OSError as exc:
+        if temp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(temp)
+        return "%s: %s" % (type(exc).__name__, exc)
+
+
 class _Result(unittest.TextTestResult):
     """给每个用例挂超时：到点 dump 全线程栈并退出进程。"""
 
     def __init__(self, *a, **kw):
         self._timeout = kw.pop("sf_timeout", 60.0)
+        self._ledger = kw.pop("sf_ledger", None)
         super().__init__(*a, **kw)
 
     def startTest(self, test):
@@ -279,11 +547,15 @@ class _Result(unittest.TextTestResult):
         if self._timeout > 0:
             # exit=True：超时后打印栈并 os._exit，避免整轮无限挂起
             faulthandler.dump_traceback_later(self._timeout, exit=True)
+        if self._ledger is not None:
+            self._ledger.start(test.id())
         super().startTest(test)
 
     def stopTest(self, test):
         if self._timeout > 0:
             faulthandler.cancel_dump_traceback_later()
+        if self._ledger is not None:
+            self._ledger.stop(test.id())
         super().stopTest(test)
 
 
@@ -382,12 +654,16 @@ def self_test():
     except SystemExit as exc:
         if "SF_RANDOM_SEED" not in str(exc):
             bad.append("非法 seed 的提示没说清是哪个环境变量")
+    # ---- 红线归因：只数新增部分、只认固定类别，轮转/缺失不冒充 0 条 ----
+    # 每条判据只产出一个布尔值，汇总时用一条 bad.extend：改动行覆盖关卡要求每行被执行，
+    # 写成 12 个 "if …: bad.append(…)" 的话，失败分支在绿的那一轮里永远不执行，预判会如实报漏。
+    bad.extend(label for label, ok in _activity_checks().items() if not ok)
     for line in bad:
         print("FAIL", line)
     if bad:
         return 1
     print("self-test 通过：退出码 5 种优先级、用户数据 5 种形状（含大小不变 mtime 变）、"
-          "弹窗识别 6 种命令、seed 解析 4 种输入全部判对")
+          "弹窗识别 6 种命令、seed 解析 4 种输入、红线归因 9 种形状全部判对")
     return 0
 
 
@@ -446,7 +722,9 @@ def run_tests(modules=None):
     tests_dir = os.path.join(root, "tests")
     sys.path.insert(0, tests_dir)
 
+    emit_activity_hint()
     before = _snapshot_user_data()
+    log_start = user_log_state("debug.log")
     install_ui_dialog_guard()
     _preimport_project_modules()
 
@@ -485,9 +763,13 @@ def run_tests(modules=None):
         print("!! 没有加载到测试，拒绝将零用例记为通过")
         return 2
 
+    ledger = DurationLedger()
     runner = unittest.TextTestRunner(
-        verbosity=2, resultclass=lambda *a, **kw: _Result(*a, sf_timeout=timeout, **kw))
+        verbosity=2, resultclass=lambda *a, **kw: _Result(
+            *a, sf_timeout=timeout, sf_ledger=ledger, **kw))
+    main_began = time.monotonic()
     result = runner.run(unittest.TestSuite(cases))
+    main_wall = time.monotonic() - main_began
     failures = list(result.failures) + list(result.errors)
 
     flaky = []
@@ -516,11 +798,20 @@ def run_tests(modules=None):
     print("用例总数 %d｜失败/错误 %d｜flaky %d" % (total, len(failures), len(flaky)))
     popped = _report_ui_dialog_violations()
     if dirty:
-        print("!! 用户数据在测试期间被改动 —— 这不是测试问题，是红线：")
-        for line in dirty:
-            print("   - %s" % line)
+        emit_dirty_detail(dirty, log_start)
     else:
         print("用户数据未改动（config / securities / debug.log / feedback）")
+    # 耗时只是观测：放在判定之前打印，但不参与 verdict，写盘失败也不改变结论。
+    under_coverage = coverage_active()
+    for line in render_durations(ledger, main_wall, under_coverage):
+        print(line)
+    durations_out = os.environ.get("SF_TEST_DURATIONS_OUT", "").strip()
+    if durations_out:
+        problem = write_durations(durations_out, durations_report(ledger, main_wall, under_coverage))
+        if problem:
+            print("!! 耗时明细没写成（不影响本轮结论）：" + problem)
+        else:
+            print("耗时明细已写入 " + durations_out)
     # 退出码只有一个来源（verdict），这里不再自己判一遍：两处各写一份"什么算红"
     # 迟早会漂移，而这条判定决定 run_tests.sh 那句"可进行打包发布"能不能打印。
     # 结论字符串由 run_tests.sh 统一打印，此处不重复。

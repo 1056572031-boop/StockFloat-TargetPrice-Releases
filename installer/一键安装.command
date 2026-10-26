@@ -57,6 +57,7 @@ BASE=""
 DEST=""
 STAGE=""
 TRASHED=""
+OLD_MOVES=""
 LOG=""
 LOCK_DIR=""
 
@@ -106,7 +107,7 @@ acquire_install_lock() {
   trap 'exit 130' HUP INT TERM
 }
 
-# 旧版已经被移走、而后面某一步失败时：把坏的那一份挪开、把旧版放回原位。
+# 旧版已经被移走、而后面某一步失败时：把坏的那一份挪开、把每一代旧版放回原位。
 # 一律 mv、一律不删；放回原位之后用户至少还有上一次能用的程序。
 restore_old_app() {
   if [ -n "$STAGE" ] && [ -d "$STAGE" ]; then
@@ -116,21 +117,24 @@ restore_old_app() {
       || say "  ⚠ 未完成的暂存包没能移到废纸篓：${STAGE}（可以手动移走）"
     STAGE=""
   fi
-  [ -n "$TRASHED" ] || return 0
-  [ -d "$TRASHED" ] || return 0
+  [ -n "$OLD_MOVES" ] || return 0
   if [ -d "$DEST" ]; then
     BROKEN="$HOME/.Trash/${BASE}.${STAMP}.broken"
     /bin/mv "$DEST" "$BROKEN" 2>/dev/null \
       && say "  刚才拷进去的那一份已移到废纸篓：$(basename "$BROKEN")（没有删除）" \
       || say "  ⚠ 刚才拷进去的那一份没能移到废纸篓：${DEST}（可以手动拖进废纸篓）"
   fi
-  if /bin/mv "$TRASHED" "$DEST" 2>/dev/null; then
-    say "  旧版已放回原位：${DEST}（你原来那个版本还能照常打开）"
-    TRASHED=""
-    return 0
-  fi
-  say "  ⚠ 旧版没能自动放回原位，请手动把它从废纸篓拖回：$TRASHED"
-  return 1
+  while IFS="$(printf '\t')" read -r old_dest old_keep; do
+    [ -n "$old_dest" ] && [ -d "$old_keep" ] || continue
+    if /bin/mv "$old_keep" "$old_dest" 2>/dev/null; then
+      say "  旧版已放回原位：${old_dest}（你原来那个版本还能照常打开）"
+    else
+      say "  ⚠ 旧版没能自动放回原位，请手动把它从废纸篓拖回：${old_keep}"
+    fi
+  done <<EOF
+$OLD_MOVES
+EOF
+  OLD_MOVES=""
 }
 
 # BEGIN close_install_terminal
@@ -324,15 +328,21 @@ if ! /usr/bin/codesign --verify --deep --strict "$STAGE" 2>/dev/null; then
 fi
 say "  暂存包完整（标签与签名校验通过）"
 
-# 8) 校验完成后才移动旧版；后续失败统一回滚。
-if [ -d "$DEST" ]; then
-  OLD_KEEP="$HOME/.Trash/$BASE.$STAMP.old"
-  if ! /bin/mv "$DEST" "$OLD_KEEP" 2>/dev/null; then
-    die_next_step "旧版本来在 ${DEST}，但没能移到废纸篓（检查这个目录的权限，或手动把它拖进废纸篓后重试）"
+# 8) 校验完成后才移动旧版；两代名称都要迁移，后续失败统一回滚。
+# 新旧包可同时存在于 /Applications：这种升级不能只看 DEST（新版名），否则旧版
+# 会遗留成第二个可启动图标。每一代先各自移到废纸篓，完成后才放新版到 DEST。
+for old_name in $APP_NAMES; do
+  old_dest="$INSTALL_DIR/$old_name"
+  [ -d "$old_dest" ] || continue
+  old_keep="$HOME/.Trash/${old_name}.${STAMP}.old"
+  if ! /bin/mv "$old_dest" "$old_keep" 2>/dev/null; then
+    restore_old_app
+    die_next_step "旧版本来在 ${old_dest}，但没能移到废纸篓（检查这个目录的权限，或手动把它拖进废纸篓后重试）"
   fi
-  TRASHED="$OLD_KEEP"
-  say "  旧版已移到废纸篓：$(basename "$OLD_KEEP")（不是删除，随时能拖回来）"
-fi
+  OLD_MOVES="${OLD_MOVES}${old_dest}$(printf '\t')${old_keep}
+"
+  say "  旧版已移到废纸篓：$(basename "$old_keep")（不是删除，随时能拖回来）"
+done
 
 # 9) 原子地把已验证的暂存包放到正式路径。
 if ! /bin/mv "$STAGE" "$DEST"; then

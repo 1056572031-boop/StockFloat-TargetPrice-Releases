@@ -3,6 +3,7 @@ import json
 import tempfile
 import sqlite3
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -159,8 +160,9 @@ class UploadBindingTests(SFCase):
     def test_standalone_row_hash_and_receipt_metadata_cannot_fake_success(self):
         outbox = FeedbackOutbox(self.root / "hash.sqlite3", self.root / "hash-objects")
         row = outbox.enqueue(self.path, app_version="1.4.96", consent_policy_version=CONSENT_VERSION)
-        with sqlite3.connect(outbox.database_path) as db:
-            db.execute("UPDATE outbox SET archive_sha256=?", ("0" * 64,))
+        with closing(sqlite3.connect(outbox.database_path)) as db:
+            with db:
+                db.execute("UPDATE outbox SET archive_sha256=?", ("0" * 64,))
         sender = Mock()
         with self.assertRaises(FeedbackProtocolError):
             submit_pending(outbox, row["outbox_id"], "https://synthetic.invalid", sender=sender)

@@ -1,0 +1,15 @@
+{
+  "name": "skyrocket-downloads-cleanup",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-10-24",
+  "account_id": "45a8a4ed1f283f7449697c5958207c56",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "skyrocket-downloads",
+    "database_id": "088fcda4-015d-4116-a7ba-bafe50d0346f"
+  }],
+  "triggers": { "crons": ["17 3 * * *"] }
+}

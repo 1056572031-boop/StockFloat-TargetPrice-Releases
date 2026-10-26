@@ -52,7 +52,7 @@ class PostReleaseRecordTests(SFCase):
         self.log = self.root / "original.log"
         self.log.write_text("\n".join(("已安装: " + str(self.installed), "版本: " + APP_VERSION,
               "published_archive=Skyrocket-" + APP_VERSION + "-macos.zip",
-              "最终启动复验：" + str(self.installed), "结论: 冒烟通过", "发版完成 v" + APP_VERSION)))
+              "最终启动复验：" + str(self.installed), "结论: 冒烟通过", "发布动作完成 v" + APP_VERSION)))
         info = SimpleNamespace(version=APP_VERSION, archive_sha256=hashlib.sha256(b"zip").hexdigest())
         self.track_patch(mock.patch.object(sf_update, "fetch_manifest", return_value=self.raw))
         self.track_patch(mock.patch.object(sf_update, "verify_manifest", return_value=info))

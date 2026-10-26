@@ -13,7 +13,8 @@ from sf_constants import APP_VERSION, BUNDLE_ID
 from sf_diagnostics import DiagnosticArchive
 from sf_feedback import MAX_ARCHIVE_BYTES, FeedbackProtocolError, PrivacyRejected, build_archive, make_envelope, validate_archive
 from sf_feedback_analyzer import analyze_archive
-from sf_feedback_bundle import FULL_CONSENT_VERSION, REQUIRED_DIAGNOSTICS, read_diagnostics
+from sf_feedback_bundle import FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION, REQUIRED_DIAGNOSTICS, read_diagnostics
+from sf_feedback_versions import PAYLOAD_V3
 from sf_feedback_capture import CONSENT_VERSION, capture_snapshot, package_files, read_upload_archive, validate_upload_receipt
 from sf_feedback_outbox import FeedbackOutbox
 from tests._base import SFCase, wait_for
@@ -60,7 +61,57 @@ def full_packet(root, content=None):
     return path, envelope, files["diagnostics.zip"]
 
 
+def v3_diagnostic_bytes():
+    snapshots = {
+        "environment.json": {"schema": "environment.v1", "available": True, "data": {}},
+        "permissions.json": {"schema": "permissions.v1", "available": False, "reason": "no_bundle"},
+        "feedback_preferences.json": {"schema": "feedback_preferences.v1", "available": True, "data": {}},
+        "feedback_context.json": {"schema": "feedback_context.v1", "available": True, "data": {}},
+    }
+    return diagnostic_bytes(
+        {name: json.dumps(value, ensure_ascii=False).encode() for name, value in snapshots.items()},
+        change_export=lambda exported: exported.update(diagnostic_schema_version=3),
+    )
+
+
+def v3_packet(root, content=None):
+    state = snapshot()
+    state["app_version"] = APP_VERSION
+    state["omitted"] = ["camera", "screenshots"]
+    files = package_files(state, "SYNTHETIC V3 TEST ONLY. No real user data.")
+    files["diagnostics.zip"] = v3_diagnostic_bytes() if content is None else content
+    path = root / "v3-feedback.zip"
+    build_archive(path, files, app_version=APP_VERSION, bundle_id=BUNDLE_ID, run_id=state["run_id"],
+                  omitted=state["omitted"], truncated=state["truncated"],
+                  capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"],
+                  diagnostic_payload_version=PAYLOAD_V3)
+    envelope = make_envelope(archive_path=path, app_version=APP_VERSION, outbox_id="b" * 32,
+                             consent_policy_version=FULL_V3_CONSENT_VERSION)
+    return path, envelope
+
+
 class FullDiagnosticProtocolTests(SFCase):
+    def test_v3_full_bundle_is_accepted_with_explicit_unavailable_snapshots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, envelope = v3_packet(Path(directory))
+            packet = read_upload_archive(path, envelope)
+            self.assertEqual(packet["manifest"]["diagnostic_payload_version"], PAYLOAD_V3)
+            diagnostics = read_diagnostics(packet["files"]["diagnostics.zip"])
+            self.assertEqual(diagnostics["export.json"]["diagnostic_schema_version"], 3)
+            self.assertEqual(diagnostics["permissions.json"], {
+                "schema": "permissions.v1", "available": False, "reason": "no_bundle"})
+
+    def test_v3_policy_and_inner_schema_must_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, envelope = v3_packet(root)
+            with self.assertRaises(PrivacyRejected):
+                read_upload_archive(path, {**envelope, "consent_policy_version": FULL_CONSENT_VERSION})
+            v2_path, v2_envelope, _ = full_packet(root)
+            with self.assertRaises(PrivacyRejected):
+                read_upload_archive(v2_path, {**v2_envelope, "diagnostic_payload_version": PAYLOAD_V3,
+                                               "consent_policy_version": FULL_V3_CONSENT_VERSION})
+
     def test_legacy_declaration_disagreement_remains_readable_but_never_reaches_http(self):
         from sf_feedback_transport import submit_https
 
@@ -313,6 +364,8 @@ class FullDiagnosticProtocolTests(SFCase):
             receipt.pop("validation_scope")
             with self.assertRaises(PrivacyRejected):
                 validate_upload_receipt(receipt, envelope)
+            self.assertEqual(validate_upload_receipt(receipt, envelope, allow_legacy_v2=True)["case_id"],
+                             receipt["case_id"])
 
     def test_saved_copy_hash_mismatch_cannot_be_reported_as_persisted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -439,10 +492,15 @@ class FullDiagnosticDialogTests(_FeedbackCase):
     def setUpClass(cls):
         cls.app = cls.ensure_qapp()
 
-    def pending(self, root, received=False):
-        path, _envelope, _content = full_packet(root)
+    def pending(self, root, received=False, payload=2):
+        if payload == PAYLOAD_V3:
+            path, _envelope = v3_packet(root)
+            policy = FULL_V3_CONSENT_VERSION
+        else:
+            path, _envelope, _content = full_packet(root)
+            policy = FULL_CONSENT_VERSION
         store = FeedbackOutbox(root / "outbox.sqlite3", root / "objects")
-        row = store.enqueue(path, app_version=APP_VERSION, consent_policy_version=FULL_CONSENT_VERSION)
+        row = store.enqueue(path, app_version=APP_VERSION, consent_policy_version=policy)
         if received:
             receipt = GitHubInbox(MemoryGitHub()).accept(row["envelope"], Path(row["archive_path"]).read_bytes())
             store.transition(row["outbox_id"], "submitting")
@@ -487,20 +545,22 @@ class FullDiagnosticDialogTests(_FeedbackCase):
             self.assertEqual(dialog.outbox.pending(), [])
 
     def test_large_pending_packets_restore_in_background_without_recapturing(self):
-        with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None):
-            root = Path(directory)
-            row = self.pending(root)
-            inbox = GitHubInbox(MemoryGitHub())
-            dialog = self.track_widget(FeedbackDialog(snapshot=snapshot(), storage_dir=root,
-                endpoint="https://receiver.example", diagnostic_capture=lambda _: self.fail("pending data recaptured"),
-                sender=lambda _url, envelope, path: inbox.accept(envelope, Path(path).read_bytes())))
-            self.finish(dialog)
-            self.assertEqual(dialog.current_id, row["outbox_id"])
-            self.assertEqual(dialog.stage, "pending")
-            self.assertNotIn("diagnostics.zip", dialog.preview_files)
-            dialog.upload_button.click()
-            self.finish(dialog)
-            self.assertEqual(dialog.stage, "received")
+        for payload in (2, PAYLOAD_V3):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory, \
+                    patch("sf_system_alert.show_alert", return_value=None):
+                root = Path(directory)
+                row = self.pending(root, payload=payload)
+                inbox = GitHubInbox(MemoryGitHub())
+                dialog = self.track_widget(FeedbackDialog(snapshot=snapshot(), storage_dir=root,
+                    endpoint="https://receiver.example", diagnostic_capture=lambda _: self.fail("pending data recaptured"),
+                    sender=lambda _url, envelope, path: inbox.accept(envelope, Path(path).read_bytes())))
+                self.finish(dialog)
+                self.assertEqual(dialog.current_id, row["outbox_id"])
+                self.assertEqual(dialog.stage, "pending")
+                self.assertNotIn("diagnostics.zip", dialog.preview_files)
+                dialog.upload_button.click()
+                self.finish(dialog)
+                self.assertEqual(dialog.stage, "received")
 
     def test_completed_full_receipts_restore_as_received(self):
         with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None):
@@ -603,6 +663,48 @@ class FullDiagnosticDialogTests(_FeedbackCase):
             self.assertEqual(len(captures), 1)
             self.assertEqual(submitted[0], submitted[1])
             self.assertEqual(dialog.outbox.pending()[0]["envelope"]["consent_policy_version"], FULL_CONSENT_VERSION)
+
+    def test_feature_flag_enables_v3_capture_and_policy_together(self):
+        with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None), \
+                patch("sf_feedback_ui.feature_enabled", return_value=True):
+            contexts, packets = [], []
+            inbox = GitHubInbox(MemoryGitHub())
+            def capture(context):
+                contexts.append(context)
+                job = DiagnosticArchive(str(Path(directory) / "v3-diagnostics.zip"))
+                with zipfile.ZipFile(io.BytesIO(v3_diagnostic_bytes())) as package:
+                    for name in package.namelist():
+                        job.writestr(name, package.read(name))
+                return job
+            def sender(_url, envelope, path):
+                packets.append(read_upload_archive(path, envelope))
+                return inbox.accept(envelope, Path(path).read_bytes())
+            state = snapshot()
+            state["app_version"] = APP_VERSION
+            dialog = self.track_widget(FeedbackDialog(snapshot=state, storage_dir=directory,
+                endpoint="https://receiver.example", diagnostic_capture=capture, sender=sender))
+            self.assertIn("运行环境、权限状态、反馈偏好和本次反馈上下文", dialog.upload_button.toolTip())
+            self.assertIn("不采集摄像头画面或截图", dialog.upload_button.toolTip())
+            dialog.upload_button.click()
+            self.finish(dialog)
+            self.assertEqual(contexts, [{"trigger": "manual"}])
+            self.assertEqual(packets[0]["manifest"]["diagnostic_payload_version"], PAYLOAD_V3)
+            self.assertEqual(dialog.outbox.pending()[0]["envelope"]["consent_policy_version"], FULL_V3_CONSENT_VERSION)
+
+    def test_v3_pending_packet_restores_with_full_upload_disclosure(self):
+        with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None):
+            root = Path(directory)
+            path, envelope = v3_packet(root)
+            store = FeedbackOutbox(root / "outbox.sqlite3", root / "objects")
+            row = store.enqueue(path, app_version=APP_VERSION,
+                                consent_policy_version=envelope["consent_policy_version"])
+            dialog = self.track_widget(FeedbackDialog(snapshot=snapshot(), storage_dir=root,
+                endpoint="https://receiver.example", diagnostic_capture=lambda _: self.fail("pending v3 recaptured")))
+            self.finish(dialog)
+            self.assertEqual(dialog.current_id, row["outbox_id"])
+            self.assertEqual(dialog.payload_version, PAYLOAD_V3)
+            self.assertIn("运行环境、权限状态、反馈偏好和本次反馈上下文", dialog.upload_button.toolTip())
+            self.assertNotIn("旧版反馈", dialog.upload_button.toolTip())
 
     def test_failed_full_capture_does_not_fall_back_to_summary_upload(self):
         with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None):

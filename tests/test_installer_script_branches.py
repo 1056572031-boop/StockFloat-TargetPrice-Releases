@@ -66,11 +66,14 @@ class InstallerBranchCase(SFCase):
         self.vol = self.work / "vol"
         self.vol.mkdir()
         self._markers = []
-        # 收尾顺序：先卸 uchg（否则删不掉），再杀掉可能残留的替身进程。
+        self._standins = []
+        # 收尾顺序：先卸 uchg（否则删不掉），再结束夹具自己启动的替身进程。
         self.addCleanup(self._kill_standin)
         self.addCleanup(lambda: VIP.clear_immutable(self.work))
 
     def _kill_standin(self):
+        for app in self._standins:
+            VIP.kill_by_path(str(app / "Contents" / "MacOS" / app.stem))
         for marker in self._markers:
             VIP.kill_by_path("sleep " + marker)
 
@@ -96,9 +99,9 @@ class InstallerBranchCase(SFCase):
             plist.write_text(body.replace("APPL", "ZZZZ", 1), encoding="utf-8")
         return app
 
-    def place_old(self, version=OLD_GEN, immutable=False):
+    def place_old(self, version=OLD_GEN, immutable=False, name=None):
         """安装目录里已有的旧版。immutable = 连目录都移不动（标准用户 / 别的账户装的那一份）。"""
-        app = VIP.make_fake_app(self.target, VIP.CURRENT_APP_NAME, version=version,
+        app = VIP.make_fake_app(self.target, name or VIP.CURRENT_APP_NAME, version=version,
                                 bundle_id=VIP.BUNDLE_ID)
         if immutable:
             VIP.make_immutable(app)
@@ -164,6 +167,28 @@ class InstallerBranchCase(SFCase):
                          "废纸篓里那份不是原来的旧版（移错了对象）")
         self.assertIn("移到废纸篓", self.out(proc))
 
+    def test_旧名称应用也必须迁移_不许留下第二个可启动图标(self):
+        self.make_volume_app(version=NEW_GEN)
+        old = self.place_old(OLD_GEN, name=VIP.LEGACY_APP_NAMES[0])
+        proc = self.run_script(SF_INSTALL_ALLOW_RUNNING="1")
+        self.assertEqual(proc.returncode, 0, self.out(proc))
+        self.assertEqual(VIP.installed_version(self.target / VIP.CURRENT_APP_NAME), NEW_GEN)
+        self.assertFalse(old.exists(), "旧名称应用还留在应用程序目录，用户会看到两个图标")
+        trash = self.trash_names()
+        self.assertEqual(len(trash), 1, "旧名称应用必须被迁移到废纸篓：%s" % trash)
+        self.assertTrue(trash[0].startswith(VIP.LEGACY_APP_NAMES[0] + "."))
+        self.assertEqual(VIP.installed_version(self.home / ".Trash" / trash[0]), OLD_GEN)
+
+    def test_两代应用同时存在时都迁移且只留下新版(self):
+        self.make_volume_app(version=NEW_GEN)
+        self.place_old(OLD_GEN)
+        self.place_old(OLD_GEN, name=VIP.LEGACY_APP_NAMES[0])
+        proc = self.run_script(SF_INSTALL_ALLOW_RUNNING="1")
+        self.assertEqual(proc.returncode, 0, self.out(proc))
+        self.assertEqual(VIP.installed_version(self.target / VIP.CURRENT_APP_NAME), NEW_GEN)
+        self.assertFalse((self.target / VIP.LEGACY_APP_NAMES[0]).exists())
+        self.assertEqual(len(self.trash_names()), 2)
+
     # ---------- 3 旧版正在运行 ----------
 
     def test_旧版正在运行时必须停下且什么都没动(self):
@@ -173,6 +198,7 @@ class InstallerBranchCase(SFCase):
                                       marker, bundle_id=VIP.BUNDLE_ID)
         if old is None:
             self.skipTest("codesign 不可用，起不了替身进程")
+        self._standins.append(old)
         rc_open, msg_open = VIP.launch(old)
         if rc_open != 0:
             self.skipTest("LaunchServices 不可用（open 失败）：%s" % msg_open[-160:])
@@ -195,6 +221,7 @@ class InstallerBranchCase(SFCase):
                                       marker, bundle_id=VIP.BUNDLE_ID)
         if old is None:
             self.skipTest("codesign 不可用，起不了替身进程")
+        self._standins.append(old)
         rc_open, msg_open = VIP.launch(old)
         if rc_open != 0:
             self.skipTest("LaunchServices 不可用（open 失败）：%s" % msg_open[-160:])
@@ -216,6 +243,7 @@ class InstallerBranchCase(SFCase):
                                       marker, bundle_id=VIP.BUNDLE_ID)
         if old is None:
             self.skipTest("codesign 不可用，起不了替身进程")
+        self._standins.append(old)
         rc_open, _ = VIP.launch(old)
         if rc_open != 0:
             self.skipTest("LaunchServices 不可用（open 失败）")
@@ -257,8 +285,9 @@ class InstallerBranchCase(SFCase):
             subprocess.Popen(["/usr/bin/tail", "-f", "/dev/null", exe],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True),
-            # 两条命令：只有一条时 sh 会直接 exec 成 sleep，路径就从命令行里消失了
-            subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 25; echo " + exe],
+            # 在 shell 解释器之后加入带选项的命令，仍让 pgrep 命中包路径，
+            # 但让生产 is_app_process() 按“包路径前还有参数”排除它。
+            subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 25; /bin/echo -x " + exe],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True),
         ]
@@ -299,6 +328,7 @@ class InstallerBranchCase(SFCase):
                                       marker, bundle_id=VIP.BUNDLE_ID)
         if old is None:
             self.skipTest("codesign 不可用，起不了替身进程")
+        self._standins.append(old)
         rc_open, msg_open = VIP.launch(old)
         if rc_open != 0:
             self.skipTest("LaunchServices 不可用（open 失败）：%s" % msg_open[-160:])

@@ -18,6 +18,7 @@ AGENTS §3 记着一条实测事实：v1.4.55 改名漏改了助手里的包内�
 哈希、磁盘预检全过了；而缺陷输入必须停在更早的那一站。
 """
 import json
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -69,6 +70,14 @@ def _zip(app: pathlib.Path, out: pathlib.Path) -> pathlib.Path:
     return out
 
 
+def _sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 class _HelperCase(SFCase):
     """公共夹具：一个临时"应用程序"目录 + 一份旧版 + 一次助手调用。"""
 
@@ -97,8 +106,7 @@ class _HelperCase(SFCase):
         """
         target = target or self.old
         result = self.work / "result.json"
-        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
-                             capture_output=True, text=True).stdout.split()[0]
+        sha = _sha256(archive)
         proc = subprocess.run(["/bin/sh", str(HELPER),
                                "--pid", "2147483646", "--archive", str(archive),
                                "--sha256", sha, "--version", "9.9.9",
@@ -216,8 +224,7 @@ class TestHelperRejectsBadArchive(_HelperCase):
         keep = before.read_bytes()
         tail = archive.read_bytes()[-1:]
         archive.write_bytes(archive.read_bytes()[:-1] + (b"\n" if tail != b"\n" else b" "))
-        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
-                             capture_output=True, text=True).stdout.split()[0]
+        sha = _sha256(archive)
         result = self.work / "result.json"
         subprocess.run(["/bin/sh", str(HELPER), "--pid", "2147483646",
                         "--archive", str(archive), "--sha256", "0" * 64,
@@ -352,8 +359,8 @@ class TestRollbackPrune(_HelperCase):
         self.assertEqual(self._left(), [".Skyrocket.app.rollback-200"])
 
 
-class TestHelperPositiveRoute(_HelperCase):
-    """整条正向路线：真助手 → 装完 → 真把新版拉起来 → 真把陈旧回退包挪走。
+class _PositiveRouteSupport:
+    """正向安装路线夹具与断言辅助，不让普通路线测试被握手类继承。
 
     上面那个类把函数体抽出来单独跑，它能证明"剪枝算法本身对"，**证明不了"跑到剪枝
     那一刻，parent 还指着安装目录"**。v1.4.61 就是被这一层放过的真缺陷：
@@ -368,7 +375,7 @@ class TestHelperPositiveRoute(_HelperCase):
     签名或 LaunchServices 不可用时整体跳过并打印理由（跳过要说为什么，不假装通过）。
     """
 
-    def _stub_app(self, parent, version):
+    def _stub_app(self, parent, version, ack=None):
         app = parent / APP_NAME
         (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
         (app / "Contents" / "Info.plist").write_text(
@@ -384,12 +391,21 @@ class TestHelperPositiveRoute(_HelperCase):
             '<key>LSUIElement</key><true/>'
             '</dict></plist>\n' % (BUNDLE_ID, version), encoding="utf-8")
         # 不 exec：让 argv 一直是 <包路径>/Contents/MacOS/Skyrocket，pgrep -f 才认得
-        (app / "Contents" / "MacOS" / "Skyrocket").write_text(
-            "#!/bin/sh\n/bin/sleep 90\n", encoding="utf-8")
+        script = "#!/bin/sh\n"
+        if ack is not None:
+            # 替身扮演「新版程序自己确认了首帧与启动健康采样」：按产品同一形状写 ack。
+            ack_path, ack_body = ack
+            script += "printf '%%s' '%s' > '%s'\n" % (ack_body, ack_path)
+        script += "/bin/sleep 90\n"
+        (app / "Contents" / "MacOS" / "Skyrocket").write_text(script, encoding="utf-8")
         os.chmod(app / "Contents" / "MacOS" / "Skyrocket", 0o755)
         sign = subprocess.run(["/usr/bin/codesign", "-s", "-", "--force", "--deep", str(app)],
                               capture_output=True, text=True)
         return app, sign
+
+
+class TestHelperPositiveRoute(_PositiveRouteSupport, _HelperCase):
+    """整条正向路线：真助手 → 装完 → 真把新版拉起来 → 真把陈旧回退包挪走。"""
 
     def test_installed_route_launches_and_prunes_old_rollbacks(self):
         stub_dir = self.tmp / "probe"
@@ -425,8 +441,7 @@ class TestHelperPositiveRoute(_HelperCase):
         candidate, cs = self._stub_app(stage, "9.9.9")
         self.assertEqual(cs.returncode, 0, cs.stderr[-200:])
         archive = _zip(candidate, self.work / "ota.zip")
-        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
-                             capture_output=True, text=True).stdout.split()[0]
+        sha = _sha256(archive)
         target = self.applications / APP_NAME
         result = self.work / "result.json"          # 故意放在安装目录之外：与生产一致
         env = dict(os.environ, TMPDIR=str(self.tmp))
@@ -449,31 +464,6 @@ class TestHelperPositiveRoute(_HelperCase):
         self.assertEqual(sorted(seeded),
                          sorted(p.name for p in self.tmp.glob("sf_update_rollbacks/*")),
                          "被挪走的必须是那两份陈旧的，而且只许挪走不许删")
-
-    def test_installed_target_is_the_new_version_and_running(self):
-        """同一批判据里最容易漏的另一半：替换后的那份得真是新版、且真的活着。"""
-        target = self.applications / APP_NAME
-        stage = self.work / "stage"
-        stage.mkdir()
-        candidate, cs = self._stub_app(stage, "9.9.9")
-        if cs.returncode != 0:
-            self.skipTest("codesign 不可用，正向路线不判")
-        archive = _zip(candidate, self.work / "ota.zip")
-        sha = subprocess.run(["/usr/bin/shasum", "-a", "256", str(archive)],
-                             capture_output=True, text=True).stdout.split()[0]
-        result = self.work / "result.json"
-        env = dict(os.environ, TMPDIR=str(self.tmp))
-        subprocess.run(["/bin/sh", str(HELPER), "--pid", "2147483646",
-                        "--archive", str(archive), "--sha256", sha, "--version", "9.9.9",
-                        "--target", str(target), "--result", str(result)],
-                       capture_output=True, text=True, env=env, timeout=180)
-        self.addCleanup(subprocess.run, ["/usr/bin/pkill", "-f",
-                                         str(target / "Contents" / "MacOS" / "Skyrocket")],
-                        capture_output=True)
-        payload = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else {}
-        if payload.get("status") != "installed":
-            self.skipTest("本机起不了替身（status=%s），这条跟着正向路线一起跳过"
-                          % payload.get("status"))
         plist = (target / "Contents" / "Info.plist").read_text(encoding="utf-8")
         self.assertIn("<string>9.9.9</string>", plist, "装完的还是旧版")
         got = subprocess.run(["/usr/bin/pgrep", "-f", str(target / "Contents" / "MacOS" / "Skyrocket")],
@@ -577,6 +567,13 @@ class TestHelperVerificationHome(SFCase):
         proc, _ = self.invoke(self.home, extra=("--verification-home", str(self.home)))
         self.assertEqual(proc.returncode, 64)
 
+    def test_invalid_pid_is_rejected_before_touching_the_target(self):
+        before = (self.target / "Contents/Info.plist").read_bytes()
+        proc, payload = self.invoke(self.home, extra=("--pid", "not-a-pid"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(payload.get("message"), "invalid_arguments")
+        self.assertEqual((self.target / "Contents/Info.plist").read_bytes(), before)
+
     def instrument_helper(self, fail_first=False):
         """系统命令替身只存在于临时副本；生产脚本不留测试开关。"""
         import shlex
@@ -642,6 +639,139 @@ class TestHelperVerificationHome(SFCase):
         calls = log.read_bytes().split(b"\0\0")[:-1]
         self.assertEqual([c.decode().split("\0") for c in calls],
                          [[str(self.target)], [str(self.target)]])
+
+    def _write_ack(self, token, *, version="9.9.9", bundle_id=BUNDLE_ID):
+        (self.root / ("handoff-%s.ack.json" % token)).write_text(
+            json.dumps({"handoff_id": token, "version": version, "bundle_id": bundle_id},
+                       separators=(",", ":")), encoding="utf-8")
+
+    def test_handoff_requires_matching_ack_before_reporting_installed(self):
+        helper, _ = self.instrument_helper()
+        token = "a" * 32
+        self._write_ack(token)
+        _, payload = self.invoke(self.home, helper=helper, extra=("--handoff", token))
+        self.assertEqual(payload.get("status"), "installed")
+
+    def test_handoff_missing_or_mismatched_ack_rolls_back(self):
+        helper, _ = self.instrument_helper()
+        for label, token, version, bundle_id in (
+                ("missing", "b" * 32, None, None),
+                ("wrong-version", "c" * 32, "9.9.8", BUNDLE_ID),
+                ("wrong-bundle", "d" * 32, "9.9.9", "com.example.other")):
+            with self.subTest(label=label):
+                self.target = _make_app(self.apps, version="1.0.0")
+                if version is not None:
+                    self._write_ack(token, version=version, bundle_id=bundle_id)
+                _, payload = self.invoke(self.home, target=self.target, helper=helper,
+                                          extra=("--handoff", token))
+                self.assertEqual(payload.get("status"), "rolled_back")
+                self.assertEqual(payload.get("message"), "startup_confirmation_timeout")
+
+    def test_handoff_token_must_be_exactly_32_lower_hex_characters(self):
+        helper, _ = self.instrument_helper()
+        for token in ("A" * 32, "e" * 31, "f" * 33, "g" * 32):
+            with self.subTest(token=token):
+                self.target = _make_app(self.apps, version="1.0.0")
+                before = (self.target / "Contents" / "Info.plist").read_bytes()
+                _, payload = self.invoke(self.home, target=self.target, helper=helper,
+                                          extra=("--handoff", token))
+                self.assertEqual(payload.get("status"), "failed")
+                self.assertEqual(payload.get("message"), "handoff_invalid")
+                self.assertEqual((self.target / "Contents" / "Info.plist").read_bytes(), before)
+                self.assertEqual(list(self.apps.glob(".*.rollback-*")), [])
+
+
+class TestHandoffAcknowledgement(_PositiveRouteSupport, _HelperCase):
+    """握手确认的端到端：助手必须等**新版自己写下的 ack**，而不是"进程活着十秒"。
+
+    这条链先前从没被真替身跑过：`--handoff` 之后那段等待循环（含只认 handoff_id、
+    版本、bundle id 三个条件）在回归里是空白 —— 而它判断的是"这台机器上到底有没有
+    一次成功的更新"，写错方向就是把没起来的新版报成装好了。
+    """
+
+    HANDOFF = "0" * 32
+
+    def ack_body(self, handoff=None, version="9.9.9", bundle=BUNDLE_ID):
+        payload = {"acknowledged_at": 1.0, "bundle_id": bundle,
+                   "handoff_id": handoff or self.HANDOFF, "session_id": "", "version": version}
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    def run_with_handoff(self, handoff=None, ticks=None, ack=None, target=None, version="9.9.9"):
+        hid = handoff if handoff is not None else self.HANDOFF
+        self._runs = getattr(self, "_runs", 0) + 1
+        tag = "%d-%s" % (self._runs, (hid[:6] if hid else "none"))
+        stage = self.work / ("stage-%s" % tag)
+        stage.mkdir()
+        probe, sign = self._stub_app(stage, version, ack=ack)
+        if sign.returncode != 0:
+            self.skipTest("这台机器不能 ad-hoc 签名（codesign 不可用）：握手路线不判 —— %s"
+                          % (sign.stderr or "")[-120:])
+        archive = _zip(probe, self.work / ("ota-%s.zip" % tag))
+        sha = _sha256(archive)
+        target = target or self.applications / APP_NAME
+        self.old_plist = (target / "Contents" / "Info.plist").read_bytes()
+        new_plist = (probe / "Contents" / "Info.plist").read_bytes()
+        result = self.work / "result.json"
+        argv = ["/bin/sh", str(HELPER), "--pid", "2147483646", "--archive", str(archive),
+                "--sha256", sha, "--version", version, "--target", str(target),
+                "--result", str(result)]
+        if hid:
+            argv += ["--handoff", hid]
+        env = dict(os.environ, TMPDIR=str(self.tmp))
+        if ticks is not None:
+            env["SF_HANDOFF_ACK_TICKS"] = str(ticks)
+        proc = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=180,
+                              errors="replace")
+        self.addCleanup(subprocess.run, ["/usr/bin/pkill", "-f",
+                                         str(probe / "Contents" / "MacOS" / "Skyrocket")],
+                        capture_output=True)
+        self.addCleanup(subprocess.run, ["/usr/bin/pkill", "-f",
+                                         str(target / "Contents" / "MacOS" / "Skyrocket")],
+                        capture_output=True)
+        payload = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else {}
+        return payload, proc, new_plist
+
+    def test_a_matching_ack_completes_the_install(self):
+        path = self.work / ("handoff-%s.ack.json" % self.HANDOFF)
+        payload, _proc, new_plist = self.run_with_handoff(ack=(path, self.ack_body()))
+        self.assertEqual(payload.get("status"), "installed", payload)
+        self.assertTrue(path.is_file(), "ack 就是这次更新确认过的凭据，不许被顺手清掉")
+        installed = (self.applications / APP_NAME / "Contents" / "Info.plist").read_bytes()
+        self.assertEqual(installed, new_plist, "确认成功之后「应用程序」里必须是这次装上去的那一份")
+
+    def test_a_missing_ack_rolls_back_instead_of_claiming_success(self):
+        payload, _proc, _new = self.run_with_handoff(ticks=4)
+        self.assertEqual(payload.get("message"), "startup_confirmation_timeout", payload)
+        restored = (self.applications / APP_NAME / "Contents" / "Info.plist").read_bytes()
+        self.assertEqual(restored, self.old_plist,
+                         "确认超时之后必须回到原来那一份，用户手上还得有一个能用的程序")
+
+    def test_an_ack_for_another_version_does_not_count(self):
+        path = self.work / ("handoff-%s.ack.json" % self.HANDOFF)
+        payload, _proc, _new = self.run_with_handoff(ticks=4, ack=(path, self.ack_body(version="8.8.8")))
+        self.assertEqual(payload.get("message"), "startup_confirmation_timeout", payload)
+
+    def test_an_ack_from_another_bundle_does_not_count(self):
+        path = self.work / ("handoff-%s.ack.json" % self.HANDOFF)
+        payload, _proc, _new = self.run_with_handoff(ticks=4, ack=(path, self.ack_body(bundle="com.other.app")))
+        self.assertEqual(payload.get("message"), "startup_confirmation_timeout", payload)
+
+    def test_an_ack_for_another_handoff_does_not_count(self):
+        path = self.work / ("handoff-%s.ack.json" % self.HANDOFF)
+        payload, _proc, _new = self.run_with_handoff(ticks=4, ack=(path, self.ack_body(handoff="f" * 32)))
+        self.assertEqual(payload.get("message"), "startup_confirmation_timeout", payload)
+
+    def test_a_non_numeric_tick_count_falls_back_to_the_default(self):
+        """拍数只认正整数：写错成字母或 0 也必须按默认值跑，不能变成"永远等不到"或语法错误。"""
+        path = self.work / ("handoff-%s.ack.json" % self.HANDOFF)
+        for junk in ("abc", "0", ""):
+            payload, _proc, _new = self.run_with_handoff(ticks=junk, ack=(path, self.ack_body()))
+            self.assertEqual(payload.get("status"), "installed", "%r: %s" % (junk, payload))
+
+    def test_a_malformed_handoff_identifier_is_refused_before_anything_moves(self):
+        for bad in ("zz" * 16, "0" * 31, "0" * 33):
+            payload, _proc, _new = self.run_with_handoff(handoff=bad)
+            self.assertEqual(payload.get("message"), "handoff_invalid", "%s: %s" % (bad, payload))
 
 
 if __name__ == "__main__":

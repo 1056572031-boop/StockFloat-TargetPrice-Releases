@@ -82,6 +82,27 @@ class FakePool:
 
 
 class TestHttpMonitorSingleRecord(unittest.TestCase):
+    def test_controlled_walkthrough_hard_rejects_before_any_transport(self):
+        """走查子进程不能因为自建 opener 忽略环境代理而悄悄触网。"""
+        with patch.dict(os.environ, {"SF_REJECT_NETWORK": "1"}, clear=False), \
+             patch("sf_network._http_get_pooled") as pooled, \
+             patch("sf_network.safe_urlopen") as opened:
+            with self.assertRaises(OSError) as caught:
+                sf_network.http_get("https://example.com", retries=0)
+        self.assertIn("network disabled", str(caught.exception))
+        pooled.assert_not_called()
+        opened.assert_not_called()
+
+    def test_network_reject_flag_absent_keeps_existing_transport_path(self):
+        """普通产品不设走查变量，网络入口不能被这条测试隔离逻辑改变。"""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SF_REJECT_NETWORK", None)
+            with patch("sf_network.feature_enabled", return_value=False), \
+                 patch("sf_network.safe_urlopen", side_effect=OSError("transport reached")) as opened:
+                with self.assertRaisesRegex(OSError, "transport reached"):
+                    sf_network.http_get("https://example.com", retries=0)
+        opened.assert_called_once()
+
     def test_pool_failure_and_urllib_failure_record_once(self):
         mon = NetMonitor(capacity=10, window=3600)
         with patch("sf_network.feature_enabled", return_value=True), \

@@ -1,0 +1,1967 @@
+{
+  "schema_version": 1,
+  "change_id": "RELEASE-V1.4.100-20261021",
+  "generated_at": "2026-10-21T03:35:17.166769+00:00",
+  "source": {
+    "algorithm": "gate-stamp-sha256-128",
+    "fingerprint": "b823a618227e6b1e6262e079945c1dbd",
+    "head": "0a14092d5d8c293d2f3d9e0e6c60df1772782ec3",
+    "files": [
+      {
+        "path": ".coveragerc",
+        "token": "0644:0fc39949215816438149d3cea04e9697c8413f246c5765698bf8f5f6776f49a7"
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
+        "token": "0644:73ec5a6c16dfb21066dcead1a55f2e0da283ffebf30b4d550f8368232ac05fa7"
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/config.yml",
+        "token": "0644:24e485bb29b8bf48a084da862f785b53011d39181d44daf76a199930f33bfc28"
+      },
+      {
+        "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
+        "token": "0644:33da571b47113a49b09e1d301b49c26e5fa3569db73176ebfe96ccc9f300dee1"
+      },
+      {
+        "path": ".github/dependabot.yml",
+        "token": "0644:5160cdf21e5d08e9e3f4d9cd7231c6aa97484a57e9e1788e9a254482ff9123c1"
+      },
+      {
+        "path": ".github/workflows/python-ci.yml",
+        "token": "0644:d6da12cfea54807eb5ec519e40445c3447d71240985473e3952fcf23b4a3c395"
+      },
+      {
+        "path": "LICENSE",
+        "token": "0644:3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+      },
+      {
+        "path": "NOTICE.md",
+        "token": "0644:83d83dfbe31982776427aee2bf3d95c8a78b40cd63359176552253934f99387f"
+      },
+      {
+        "path": "README.md",
+        "token": "0644:38cbd27a02a2833f8149bdf0921473776d74aea34d5af7e4103c0f49f5df6dc6"
+      },
+      {
+        "path": "SECURITY.md",
+        "token": "0644:9373b0b7950c3786634a564543dd221a4f48186a89d40c28e8da8a707e3c17e3"
+      },
+      {
+        "path": "StockFloat.spec",
+        "token": "0644:aab2b10005f8374893718b15ed7172aa4c2bf620f2cd30ebcced8ff7f8a497eb"
+      },
+      {
+        "path": "backups/bak_StockFloat_spec_v1.2.47_20260829_105317.spec",
+        "token": "0644:bd9706e1cb5d33b0a6e1e2b91d7da9646007ff15e41306863e35a1d6a4474901"
+      },
+      {
+        "path": "backups/bak_sf_animator_v1.2.47_20260829_105317.py",
+        "token": "0644:33647ef4458c4c2edadd4d99c2a89453b3a3205b66d29800f1f054be8362eaf5"
+      },
+      {
+        "path": "backups/bak_sf_config_v1.3.41_20260912_120707.py",
+        "token": "0644:3e8988c0327e9e3e84e559987725af34b182483295cd98f61eab57430a61dd97"
+      },
+      {
+        "path": "backups/bak_sf_constants_v1.2.47_20260829_105317.py",
+        "token": "0644:08cd84febd57af8d2606a13a0ff940c64f0ec5b7a8be2c7a858f344a7c3e49b6"
+      },
+      {
+        "path": "backups/bak_sf_constants_v1.2.50_20260830_024214.py",
+        "token": "0644:9312cf8edcad709c38f814cd576bfc039f775a8806cc99858b47fdb999e24214"
+      },
+      {
+        "path": "backups/bak_sf_editor_v1.2.49_20260829_211024.py",
+        "token": "0644:efb6cce4f76b05412a9d1f57e77fa8a648c6d157d93bf124715ff83d441bceb1"
+      },
+      {
+        "path": "backups/bak_sf_editor_v1.2.50_20260830_024214.py",
+        "token": "0644:e18ffe2ab58c79ef52db7e4e77f8d90407d9efb991e90544f30401c345a58e4e"
+      },
+      {
+        "path": "backups/bak_sf_glass_v1.2.49_20260829_211024.py",
+        "token": "0644:1588257a8324774f0dc323d1b35fae7d7e0269c0ff6af25224ad7c5ff970a2ce"
+      },
+      {
+        "path": "backups/bak_sf_icons_v1.2.48_20260829_181042.py",
+        "token": "0644:907c035b1cd7b50d2f9d88f1098327105a233a49a39a08670912f99b6a185e03"
+      },
+      {
+        "path": "backups/bak_sf_icons_v1.2.49_20260829_211024.py",
+        "token": "0644:5ce66c34de65c360ffd95a453fdf117d7b1415dbbc9cad51f11f61bdb9638ea7"
+      },
+      {
+        "path": "backups/bak_sf_network_v1.2.48_20260829_181042.py",
+        "token": "0644:bd8547983f0320d1488de4f0e1ca46fac29de52d3258217a84c9992792e7ca96"
+      },
+      {
+        "path": "backups/bak_sf_quote_v1.2.48_20260829_181042.py",
+        "token": "0644:dd2e7d19d41dd672a81e5a64058ac08bd23b475d4c2755b057fc2b0fdaabdc7b"
+      },
+      {
+        "path": "backups/bak_sf_quote_v1.2.49_20260829_211024.py",
+        "token": "0644:08ac8e1d37becf5a5e77262a0af3cc322b655e8311c93e5fee4d676ceac1c858"
+      },
+      {
+        "path": "backups/bak_sf_runtime_v1.2.47_20260829_105317.py",
+        "token": "0644:f28318bdf8048e4af775cedce007748ea524887157e687d7af8e4ab48489211f"
+      },
+      {
+        "path": "backups/bak_sf_ui_render_v1.2.48_20260829_181042.py",
+        "token": "0644:29f2625f5b0bb3e8b04c48d90c9191a8a384b57c0d9f5c11bc079592120f0412"
+      },
+      {
+        "path": "backups/bak_sf_utils_v1.3.41_20260912_120707.py",
+        "token": "0644:1febb67af9f8b1307fa56c7ce35592032ea6f0dc4d2df5841612ae8676699fc9"
+      },
+      {
+        "path": "backups/bak_stock_float_window_v1.2.47_20260829_105317.py",
+        "token": "0644:38228a6295a6d54458b4503aae79fed3529b107de353a5956ef9076d9ef3fbc5"
+      },
+      {
+        "path": "backups/bak_stock_float_window_v1.2.48_20260829_181042.py",
+        "token": "0644:ead595aba29b4a840cf2d720b9d17d9d37ee22415214ac8bcb31e8144c6335e4"
+      },
+      {
+        "path": "backups/bak_stock_float_window_v1.2.49_20260829_211024.py",
+        "token": "0644:9edfb21fc98b55aa714c2de8de81379a5b6e43133db1e7affd24fd9a32b438a5"
+      },
+      {
+        "path": "build_release.sh",
+        "token": "0755:fd1beaa4e9ba41b3acbea246c69451ff30581af475d5b6c64ef5a7e834eae91d"
+      },
+      {
+        "path": "docs/INSTALL.md",
+        "token": "0644:a411c6368d31ac57bdce0d4a8e27fdfe4fbede9f3286bede8780be00127ff00a"
+      },
+      {
+        "path": "fonts/D-DIN-Bold.otf",
+        "token": "0644:b0f96a3730041605b139ca2d15e29a36c55e49058ba2b72ee4d09b5e4ca210c1"
+      },
+      {
+        "path": "fonts/D-DIN.otf",
+        "token": "0644:6d67834e2a76646c456c087ce42a6bd6b6b0c85c88dd9918618a8b4c563c2bdf"
+      },
+      {
+        "path": "git-hooks/README.md",
+        "token": "0644:5b1175ee3ec3dbe5b4b1fcb8612b11d3cf15a1056f2cf2151d3127e5994afa97"
+      },
+      {
+        "path": "git-hooks/install-hooks.sh",
+        "token": "0755:a88f8227963447b08d384798df83e2dbbb5e314fac1d4130d0ca9f53090688a5"
+      },
+      {
+        "path": "icon.icns",
+        "token": "0644:f0951b3b2128200e1730be2c3ecb1a8163e9defc71cfb4117349d5cfec2577ed"
+      },
+      {
+        "path": "installer/一键安装.command",
+        "token": "0755:a7c78b747481e3dd20c6547e23cf480e500fe8ca0104857cf875b6891fc9f1c0"
+      },
+      {
+        "path": "outputs/release-candidates/README.md",
+        "token": "0644:5b9b4f9d5c32fee834dd715f3e7c84ab140c1dec17f9921a0e7284d658972e02"
+      },
+      {
+        "path": "outputs/verify_stranger_download_v1485.py",
+        "token": "0644:1f6715873d2b0fabf653a20130cfdb1fd6f106607dec6acabd396dfafcad60c1"
+      },
+      {
+        "path": "renderer.py",
+        "token": "0644:8854dbc69a22d9d547db351ae06ba47ffd7b4c9ec6f053767d1952c09fa461e7"
+      },
+      {
+        "path": "requirements.lock",
+        "token": "0644:09963b2205305717e8b08c4273f5dd5d3e113d468fda943b952a0a28586d175d"
+      },
+      {
+        "path": "requirements.txt",
+        "token": "0644:9565a1cb8f34d1064ce3b8416df8a88567be24da63785bdd1f72e5d130495226"
+      },
+      {
+        "path": "run_tests.sh",
+        "token": "0755:cec92b28844be47083101cdf6f0aae61c943efcd8debd84445310ddcce728075"
+      },
+      {
+        "path": "sf_anim_driver.py",
+        "token": "0644:b4030061b5582d6eec5ee178c42ec67a4cc8c88a022f480f5c38804c845d09e5"
+      },
+      {
+        "path": "sf_animator.py",
+        "token": "0644:1ad59edc4aae4f9c6f4427036d041f00948972e17fe9987672a950798810b9e8"
+      },
+      {
+        "path": "sf_bootstrap.py",
+        "token": "0644:58720b1bff89e53622d36eff47569cbcb01c785ff7bbf09afa573a9a764ed7e2"
+      },
+      {
+        "path": "sf_calendar.py",
+        "token": "0644:e134cb8faaf7adc8af4c06c61e4ebd1e31b4bfe105e18c8c1619fec767bfde43"
+      },
+      {
+        "path": "sf_camera_check.py",
+        "token": "0644:a3537a02a1ba3a7162ef13f410f43d7d14384e19c90abe9a15542d607322fdd0"
+      },
+      {
+        "path": "sf_config.py",
+        "token": "0644:73c6a0cf0ea46cd613d85557794485f2e260f8f657232507c36540ed1b8ec765"
+      },
+      {
+        "path": "sf_constants.py",
+        "token": "0644:6189f50b4c1f4775facd0b2c25d1d75818d083458855eec222cbe130d5ad5ac3"
+      },
+      {
+        "path": "sf_crashreport.py",
+        "token": "0644:956bb86087851d57e687bf2222c66189e7b5b758d6d0dddaf74e353adeddda21"
+      },
+      {
+        "path": "sf_credentials.py",
+        "token": "0644:229b522eabfda9f085d85de37d3e48563e23d57003f10a21b670f81a2d66bfa0"
+      },
+      {
+        "path": "sf_diag.py",
+        "token": "0644:28d2f08aa072bfc17b194f5f93fffcf2adb56dd8f0e68b55f5d3d15541d76ed1"
+      },
+      {
+        "path": "sf_diagnostic_capture.py",
+        "token": "0644:4d0c710a6a408454c8374ae460ff1f510d211410830a1713a48353d331d28cf5"
+      },
+      {
+        "path": "sf_diagnostics.py",
+        "token": "0644:e0925421df83cec62981d885fe72cb639347f7bae7db4af02a0b598b517731be"
+      },
+      {
+        "path": "sf_diagnostics_controller.py",
+        "token": "0644:5f0b5e22f66b8ce9c99bb415f053e07fa76a0b90962cf84610427c606cd8ac67"
+      },
+      {
+        "path": "sf_editor.py",
+        "token": "0644:32b158f16c5ecc8668fdc92b7e96bf32e85983e657bd041323e92df9f72579c5"
+      },
+      {
+        "path": "sf_face_guard_controller.py",
+        "token": "0644:25e4115245fefa716ba2442c76b8d4c6087f43e492a23406da230c2a320e5d96"
+      },
+      {
+        "path": "sf_feedback.py",
+        "token": "0644:e6e89c5d845aa4191d7dc97192ce9a0f34a81db523653fc277f24ac006a286c5"
+      },
+      {
+        "path": "sf_feedback_admin.py",
+        "token": "0644:1ef6701bab2331787ee3d5b38360f4ab12531d8925965edb9a6c4cbdab80a44e"
+      },
+      {
+        "path": "sf_feedback_analyzer.py",
+        "token": "0644:03addceaf047995c019f1467edd880de878ab182b7429319855297e48649f314"
+      },
+      {
+        "path": "sf_feedback_bundle.py",
+        "token": "0644:8a518e2b277e9bf40d30b1c1868cfac85db9234a0d4cb7e32e11118dcf745fc2"
+      },
+      {
+        "path": "sf_feedback_capture.py",
+        "token": "0644:c84e949c56994c7b1e0fc49d153ce3d9321f948aecdc8c239a6204f2f0a5e49d"
+      },
+      {
+        "path": "sf_feedback_github.py",
+        "token": "0644:01e2f3f5eb33915cdbc30e8da091675005df14114efdad2eb20fdf0ab63c4bd1"
+      },
+      {
+        "path": "sf_feedback_notifications.py",
+        "token": "0644:321d837766fae8632b2270461402c5dbaac40a6cb10d150607b0c096b6022a60"
+      },
+      {
+        "path": "sf_feedback_outbox.py",
+        "token": "0644:156350c12199ec3b833b226a19ab1d95cbd2e08dd19477c59a8ac1f74d606ff2"
+      },
+      {
+        "path": "sf_feedback_receiver.py",
+        "token": "0644:331a1fef31e6ee7f50bb059f263c6a11228a0864340cd247c6d2eded1b8f01de"
+      },
+      {
+        "path": "sf_feedback_transport.py",
+        "token": "0644:84ee8411388b7c48566d7a19f381e74e001acc091b85659cd22901c0c7b78504"
+      },
+      {
+        "path": "sf_feedback_ui.py",
+        "token": "0644:b2de9f1d5d4f4cd73f596a4038c0df6bbab6ce85b6696ff8c3b8a9e2892d757b"
+      },
+      {
+        "path": "sf_glass.py",
+        "token": "0644:4f469683cde26a1947c3fb91f16a1f513cde68f5294161ae1f160bceb3ba4e83"
+      },
+      {
+        "path": "sf_http.py",
+        "token": "0644:89dfcf9caf3454c5538531b0bf2dbd2296a7dbec28df720e8c71fb994a964fd7"
+      },
+      {
+        "path": "sf_icons.py",
+        "token": "0644:0dd0c375c1e20bc8f6b0594a3778d23e56813ba8d22c1eb6dbfa24a56202ef04"
+      },
+      {
+        "path": "sf_instance.py",
+        "token": "0644:2ec154c44b3402a321f80869b86a66c50bd4d09904d0131c029bc34fd794cff7"
+      },
+      {
+        "path": "sf_logging.py",
+        "token": "0644:37b63934ba864dc7f9ef072e0c2c2954766a5c4a87e5fd9a26387f4c96885225"
+      },
+      {
+        "path": "sf_macos_menu.py",
+        "token": "0644:baaadd9e50d4c27d284c71ca57d03f1dec5c2fa87c531ff7bd6b4442f5b2c3fd"
+      },
+      {
+        "path": "sf_maintenance.py",
+        "token": "0644:9b0c45efff76def51ca87164afc2d11c0dbfcbc235973d1eb2514013cc9199ee"
+      },
+      {
+        "path": "sf_network.py",
+        "token": "0644:9b354d2541d51ebe37f855d52e00d23280d4e9ed1d19af5d429c3e6cb2c056ca"
+      },
+      {
+        "path": "sf_notify.py",
+        "token": "0644:083d3ad15517328dce9eedad3202211fab06b3ba211901e228df1609b89d99d3"
+      },
+      {
+        "path": "sf_presence.py",
+        "token": "0644:b9f6c665c855e610a12760f34b578155565e44bf489940fb371f2fae8405e237"
+      },
+      {
+        "path": "sf_privacy.py",
+        "token": "0644:51cca4c9be1b5143ba6a323a4e9bcc309e2aee38e9236d13a9a620aa60e9cff4"
+      },
+      {
+        "path": "sf_quote.py",
+        "token": "0644:2e2f7a424f3cfd0b829291e6e41a8300a266fb2343bee5c57fa26c40053600fa"
+      },
+      {
+        "path": "sf_quote_delivery.py",
+        "token": "0644:9a7ab229446f1df42d55734c262e47ce44a897762330a090c70c973746dce837"
+      },
+      {
+        "path": "sf_quote_loop.py",
+        "token": "0644:b3ec4876753d68caa8739ad96f58212051a46f6cad90859fafb88efa3d570f58"
+      },
+      {
+        "path": "sf_quote_presentation.py",
+        "token": "0644:e942c533402188e495d18db5c2a970c0f6dac76b8fc92142c5a9d5afde952a1b"
+      },
+      {
+        "path": "sf_quote_runtime.py",
+        "token": "0644:d9412569a3931d8bf9ec4ef91ea7db01aa22da4f3a2f284dde77b309e685ceee"
+      },
+      {
+        "path": "sf_runtime.py",
+        "token": "0644:9fb740b3b9dc7496582e512b3ecbfca2011311b8d685da436b2f96442cf7c3cf"
+      },
+      {
+        "path": "sf_scheduler.py",
+        "token": "0644:6d70657d28b78a20aa36b987702a8156e71b5b82b15177a76b427ae08c976a36"
+      },
+      {
+        "path": "sf_startup_health.py",
+        "token": "0644:bf82e55d58703ffb9b22c7fd9da576ecbab8019bf503e18c8c11189637fe539c"
+      },
+      {
+        "path": "sf_stock_transition.py",
+        "token": "0644:91340aa6bcd10855a5c4ce89dee949d2702670c5b32b19ca385084594dc21fca"
+      },
+      {
+        "path": "sf_storage_tasks.py",
+        "token": "0644:b26487ab34987d3413b2991079d4d87fc1e38b3bcf6522a49401de9faa1296d8"
+      },
+      {
+        "path": "sf_system_alert.py",
+        "token": "0644:68734715e5dc6376a2984a1d57598013493f941df6427da8d26602ce9f4fe19d"
+      },
+      {
+        "path": "sf_target_controller.py",
+        "token": "0644:01310886aa3c299475941e6939c85a6650cf46924c51c38a7a7865a07b395d57"
+      },
+      {
+        "path": "sf_target_lifecycle.py",
+        "token": "0644:179f89f11d7385464db7b08435f7596c9f637ae016208edc41513be962a7b373"
+      },
+      {
+        "path": "sf_temp_sweep.py",
+        "token": "0644:c809be28546c3bb354daa2387c55f1e25ff7d30122b193e3081348fec7d44cb7"
+      },
+      {
+        "path": "sf_ui_render.py",
+        "token": "0644:6f44cf4296bb2cd39253a62dad6638fead50dcb067d1d12a5134597e30261439"
+      },
+      {
+        "path": "sf_universe.py",
+        "token": "0644:f5bc759a2ca7b4a2a53247dca519f7b129edc1be18b92020bb9b1880b643fc6c"
+      },
+      {
+        "path": "sf_update.py",
+        "token": "0644:90629c794d463bfd433d0641014f4b8df31dc04e06e6ba191fad4cd9e76fbe3d"
+      },
+      {
+        "path": "sf_update_controller.py",
+        "token": "0644:19cce3d562df53b6522fa7b8d61755d518f0460e9abde2f732e66d0faa6a7d86"
+      },
+      {
+        "path": "sf_update_flow.py",
+        "token": "0644:b36731bc870e679b897b5c9e6358cb4c9ce7b9b9df34712a70e6f1aaf6c6992f"
+      },
+      {
+        "path": "sf_utils.py",
+        "token": "0644:734218cef74ebce08a83fd20fd06b2b52bb7f876ed9daa8661230641dd04a5af"
+      },
+      {
+        "path": "sf_window_geometry.py",
+        "token": "0644:098f4ff255d8da6ba6ac652d1b40b8c2e92c9364422810403f535db0f045c68e"
+      },
+      {
+        "path": "sf_window_lifecycle.py",
+        "token": "0644:b067907c2cb860c41dfca751f7a49aa79d122a506711c14d28822f927e7168f5"
+      },
+      {
+        "path": "sf_window_message_router.py",
+        "token": "0644:78aa07244fc91e3c2ad5bebdda95e743fb2bf51532a9b1f0b27efb41384a4714"
+      },
+      {
+        "path": "sf_window_state.py",
+        "token": "0644:271c8f98381bcc183a67b28fd61dee12698aef26836c368709475b6f8a68f08c"
+      },
+      {
+        "path": "stock_float_window.py",
+        "token": "0644:cecd612d32ac106adc0f79b5e40d55e5808c8d956a7401bd3d9f9bcdef1615cf"
+      },
+      {
+        "path": "target_panel.py",
+        "token": "0644:81e642db74d6d89e3b02b52c139493c77d80cff81fbafc98f771e6fedf6b9a26"
+      },
+      {
+        "path": "targets.py",
+        "token": "0644:60dc6f7eabe6556230e6513b4e735f0680552fc5c49877289dc9b9f845baf927"
+      },
+      {
+        "path": "tests/_alert_child.py",
+        "token": "0644:de42c6584240b808dec6fdedd60ee479cdf8cf4a64282505f8b099ab5f1105e0"
+      },
+      {
+        "path": "tests/_base.py",
+        "token": "0644:770484eebd47ab5418a5caca38d1a2cf9225c089b621d0e6007ddcc869bd89b4"
+      },
+      {
+        "path": "tests/_exit_child.py",
+        "token": "0644:51a8e8a28f5c1e90906df5a6e4eb520e3f5c1feb65dbed8fca58e1c576f7a068"
+      },
+      {
+        "path": "tests/_glass_capabilities.py",
+        "token": "0644:2b7793bfafd9b7508db4ec04ba57bd61145b94ddaec283d2c2a446ebe16135a7"
+      },
+      {
+        "path": "tests/_glass_child.py",
+        "token": "0644:59333611858a49a44530314eacb333be19802845853f195528f8fdfa9688683b"
+      },
+      {
+        "path": "tests/_maintenance_child.py",
+        "token": "0644:bc089252c6ebe0af635c1e0a5fba54193f5999603afbd59da05d37271e652be3"
+      },
+      {
+        "path": "tests/_reopen_child.py",
+        "token": "0644:84376888e9ab8a101b3cdebf8e2965d33b2821d26f9da9d184b22a84258f06b1"
+      },
+      {
+        "path": "tests/_smoke_lifecycle_child.py",
+        "token": "0644:0d1608818a401a635094e9347ef7d5114894b3ab017cc651fd597047dacfdc46"
+      },
+      {
+        "path": "tests/test_anim_driver.py",
+        "token": "0644:e7a22f2c2e4236fae3be92ba08427fc56530896424464ec7e65caf59bcb48cef"
+      },
+      {
+        "path": "tests/test_animator.py",
+        "token": "0644:f95fe2c4830ff01376676c6e620d0a1cc7170975b8cb32e3c8809546c7aec6b0"
+      },
+      {
+        "path": "tests/test_arch_constraints.py",
+        "token": "0644:626ab52f66a4f4994bee33f294da5210c48a2efde5a125e786448e92d485f162"
+      },
+      {
+        "path": "tests/test_auction.py",
+        "token": "0644:034c8010897d51861bd218bb6ad88c652291f96a8c5a01db26f59166e44ffd86"
+      },
+      {
+        "path": "tests/test_branch_merge_workflow.py",
+        "token": "0644:118a566d54e1967f0042f559eae875fad9c823d032fb9fc6f967e052f42a2d47"
+      },
+      {
+        "path": "tests/test_bugfix_148.py",
+        "token": "0644:4b4b7c944d8d1db405d19e3b4967938966ad227e8a4408bec45b221b4950feca"
+      },
+      {
+        "path": "tests/test_bugfix_151.py",
+        "token": "0644:d0b7542d9451e55def510ac634168747687f785ad7d8de92ccd9c1a6507ae08f"
+      },
+      {
+        "path": "tests/test_bugfix_152.py",
+        "token": "0644:a9b76bb710dad0661e8cdce438b9e3821ac27e51b06ed572f73b000dd5590a38"
+      },
+      {
+        "path": "tests/test_bugfix_155.py",
+        "token": "0644:0eb62ca8fcaf773f62f1a4054e7924ff0bc1fef01a363b2c4ec7ec20f0d5accf"
+      },
+      {
+        "path": "tests/test_bugfix_round1.py",
+        "token": "0644:9d03685b60d44e835be3164620be61b247ffa3cd9c405978d997f8ba618952e6"
+      },
+      {
+        "path": "tests/test_bugfix_top_button_pop.py",
+        "token": "0644:0ff9021d0e38a29d7412bafd2d89317dc7d862c47c86c77d768d45725d83f039"
+      },
+      {
+        "path": "tests/test_bundle_resources.py",
+        "token": "0644:00d960aa88589f92ec019e6863e387da3cab74806395372be38b8215275fb37e"
+      },
+      {
+        "path": "tests/test_calendar.py",
+        "token": "0644:16098d82a098d8c03a6ebee9f561a61360aa48b426bead13e316c6905e6fde93"
+      },
+      {
+        "path": "tests/test_camera_auth_upgrade.py",
+        "token": "0644:c88a75b02773d57657602aa4916077622f2245d248c98431313c2e2c291fc7a3"
+      },
+      {
+        "path": "tests/test_candidate_delivery.py",
+        "token": "0644:243f20ee849f0c9d9881549628ca3f7df70b2ffa4755d479dc736fd930069ec1"
+      },
+      {
+        "path": "tests/test_card_corner_gate.py",
+        "token": "0644:c6d21b23301185ceb028f92179a353318d56707ea9e44fa0505c8ac5681a59f0"
+      },
+      {
+        "path": "tests/test_chain_selftests_outside_in_suite.py",
+        "token": "0644:7e06a36d5cb159af9ce0a271f0d4061c3e2da77c4afdabf279cdcbeba458a4e3"
+      },
+      {
+        "path": "tests/test_chain_tool_cli_surfaces.py",
+        "token": "0644:e814a71423d4af75eebedb7bc2158b998bdf238a3101455d12e54cd7bd962bc1"
+      },
+      {
+        "path": "tests/test_change_coverage_gate.py",
+        "token": "0644:35d11cfa2830d3668704126d179971312e3da64899a6e590f34393f0bdf25033"
+      },
+      {
+        "path": "tests/test_code_governance.py",
+        "token": "0644:4a60eaa36f48977f481b02592c6ad2c03d9efcc8e7935e80fc8b91bd3f73d531"
+      },
+      {
+        "path": "tests/test_commit_preflight.py",
+        "token": "0644:3df36342903b0b6affce96888489bd73ae8679812f099c7195e13bd29873ac81"
+      },
+      {
+        "path": "tests/test_commit_preflight_edges.py",
+        "token": "0644:bc873ce863270717a80626ec5d6e6d26b1fd399d85c2e8caafd2ed65f621aa9f"
+      },
+      {
+        "path": "tests/test_commit_workflow.py",
+        "token": "0644:b851577b2df35d493486992ffa46a8cc636285d9797018a089b2b8b1c4c04162"
+      },
+      {
+        "path": "tests/test_config_bundle_readback.py",
+        "token": "0644:a2d1d5e6cc5105ae5d8e449ad4c507372aa33aa8865c30179d86f001e347a770"
+      },
+      {
+        "path": "tests/test_continuous_frames.py",
+        "token": "0644:620a6ea2ef7509df1ac71d34d724e9789bc57371e295a6772f7e23038eddb2e7"
+      },
+      {
+        "path": "tests/test_core.py",
+        "token": "0644:77de8c585367fb40f7d2cf3dcbb880918a06a315f2ee2436e7a9c4f4f58351ab"
+      },
+      {
+        "path": "tests/test_coverage_branch_report.py",
+        "token": "0644:e3eb9610e3b17a84d497ace4a3b688a1566d367c13f85af08da1d10273e6dd3a"
+      },
+      {
+        "path": "tests/test_coverage_chain_wiring.py",
+        "token": "0644:91986e1e12f7e04b9fe201e6b80f94a4fe9a997973201cf348df4f31843c1801"
+      },
+      {
+        "path": "tests/test_coverage_continuation.py",
+        "token": "0644:7cbd52214887bc82cb6fb6b496375248c8836898875603406e317e99ed5e7ebd"
+      },
+      {
+        "path": "tests/test_coverage_gate.py",
+        "token": "0644:52142e8622f40ba54ae112c1c5644455757ecc1ff82c1063d139f4f464a3fdba"
+      },
+      {
+        "path": "tests/test_coverage_glass_evidence.py",
+        "token": "0644:03e6be4dee8585bb7a92ec25c482cc9da894e51dcbad671442cb4cea4bd13d80"
+      },
+      {
+        "path": "tests/test_coverage_glass_failure_paths.py",
+        "token": "0644:80fdaec7edf35a7d650ab084bb3f5c7e213f110694b21afaf5ecd65c947bfadf"
+      },
+      {
+        "path": "tests/test_coverage_glass_layer.py",
+        "token": "0644:20bd240916968cbdd84d7f1164f1e65819e7b58b29d73f99b4aeabbb623c29f2"
+      },
+      {
+        "path": "tests/test_coverage_glass_setup_chain.py",
+        "token": "0644:b466fa60c2947d030ef140766960a7e82cc7cee6347c9f917ec4948d796f64c8"
+      },
+      {
+        "path": "tests/test_coverage_glass_surface.py",
+        "token": "0644:36a347ed17ece93c8d2be821960cbc0b84515eaa7e8ef2bde42bee5780dabd63"
+      },
+      {
+        "path": "tests/test_coverage_icons_editor.py",
+        "token": "0644:57f035bdcd71245b8a61e7dfd332660118760a77d973b84cee3aa6936aab51c0"
+      },
+      {
+        "path": "tests/test_coverage_logging.py",
+        "token": "0644:f37a03de1bd8e07d42886f28d6a9cc5034b26a6ec38932e919f466b28b07395a"
+      },
+      {
+        "path": "tests/test_coverage_native_alert_layout.py",
+        "token": "0644:1abed8f2fd0f83ade8d09ff42e8036da692feb70e994c3d525f170332ccfb810"
+      },
+      {
+        "path": "tests/test_coverage_network.py",
+        "token": "0644:f11fb58e46a92f7c7c92a01b3a2e927fc81149546e3b3c33f25b935eb0e09183"
+      },
+      {
+        "path": "tests/test_coverage_notification_installer_edges.py",
+        "token": "0644:539451ae9988fbb8e336f7c46c4a89cc4e73c70493195a05176d7c0dfba8a193"
+      },
+      {
+        "path": "tests/test_coverage_notify_update.py",
+        "token": "0644:e51581e897dc5767e611cd9a6f893fc0ef1f0ec4772b62238767e95dd313fc9a"
+      },
+      {
+        "path": "tests/test_coverage_paint_panel.py",
+        "token": "0644:47cf8276cec4e43dfb2a7b6270561afa1422cb004496864316ac80a8569cc654"
+      },
+      {
+        "path": "tests/test_coverage_presence_failure_paths.py",
+        "token": "0644:b187a06fb24a2c464526115b4269c1e8e2c64113925a09ab1604dddcda35dcae"
+      },
+      {
+        "path": "tests/test_coverage_provenance.py",
+        "token": "0644:87f5cef37a1b0985372bedaa13ee0677114cfddaca55901fb1537a5527cd0396"
+      },
+      {
+        "path": "tests/test_coverage_quote.py",
+        "token": "0644:7aa74648422879756c319baf7a40559113f0903bff9128bd517bc7db19abceae"
+      },
+      {
+        "path": "tests/test_coverage_release_and_edges.py",
+        "token": "0644:02d7e135d8ae81ebdf4a55527742fd0ac7c26321e441e45b2e9db8693d38f5a1"
+      },
+      {
+        "path": "tests/test_coverage_release_tools.py",
+        "token": "0644:fbb31db82d0b9f713404c24c17b5ef5a3dff2351b0274efa895281a1990d5bd9"
+      },
+      {
+        "path": "tests/test_coverage_render_logging_failures.py",
+        "token": "0644:5a5991bae3dcd0bc1a82a8a53f7651b0ce9c9125e3591ae776a075ed3b6869e7"
+      },
+      {
+        "path": "tests/test_coverage_runner_and_gate_failures.py",
+        "token": "0644:7c84f634043c0004437ebb55fc99eb00644febb90c787381bd12a3f8d791c2e9"
+      },
+      {
+        "path": "tests/test_coverage_targets_config.py",
+        "token": "0644:c90af25edd90b91b4d9c3e780e4015f88945e91de8b8a64d83482781b25085b2"
+      },
+      {
+        "path": "tests/test_coverage_universe.py",
+        "token": "0644:608c36b6984eb93b3c90044c95cf381f0101669b0834804f538655254c3e93a3"
+      },
+      {
+        "path": "tests/test_coverage_window_diagnostics.py",
+        "token": "0644:22c2c2e489af0ab1c56ce78b519eb8f222a4061944e6c278c0daae3d4b0aeb3c"
+      },
+      {
+        "path": "tests/test_coverage_window_failure_paths.py",
+        "token": "0644:459aa409481e579df20b5223eae6603dcb1a6d614359a88215782f60151027b6"
+      },
+      {
+        "path": "tests/test_coverage_window_flows.py",
+        "token": "0644:ce00ca26eaf26736e6b9aba28b3fd7ec40dda3936f3f5f30ce6912ef54d44e88"
+      },
+      {
+        "path": "tests/test_coverage_window_interactions.py",
+        "token": "0644:de1a2e31547af9c85521085f3f6c7b93056c667a255361d45ec504ad72127b28"
+      },
+      {
+        "path": "tests/test_coverage_window_state_edges.py",
+        "token": "0644:91b93d54468a6765743b7764b8ca85872b4ede9683748572d6d055888423b81f"
+      },
+      {
+        "path": "tests/test_crashreport.py",
+        "token": "0644:b85b68e1369c5dfb5ce65239e1f3050bfdb1c2fc9c07367c9385bd7282a5eeb5"
+      },
+      {
+        "path": "tests/test_daily_workflow.py",
+        "token": "0644:8a9aaa730f865be6baa3a33f10a7c7482acdb4b23d827a4625fe938e523e4d58"
+      },
+      {
+        "path": "tests/test_data_and_report_failure_paths.py",
+        "token": "0644:c2269123d7880b95eb5e16010385a43e5139ed5237b67989050683744e56bc5a"
+      },
+      {
+        "path": "tests/test_dependency_alias_gate.py",
+        "token": "0644:c24f8ae3d886433d73f85051225ba2c41dc8aaf6e584860c473e2d248169994a"
+      },
+      {
+        "path": "tests/test_diag_autocollect.py",
+        "token": "0644:addc7f80aa4ead9426460ab686d4456b587afbba45f4c6b13fe4fd01db5ea3bc"
+      },
+      {
+        "path": "tests/test_diag_coverage_check.py",
+        "token": "0644:07c3e469102110a1735dc64f0fa76707f51a52c3de350c76871ff3b716d43ef1"
+      },
+      {
+        "path": "tests/test_diagnostic_closure.py",
+        "token": "0644:2f8bbc81eed89736957f833f99bac7bb70559c08f6ed073ebc4f171f5b34e6cf"
+      },
+      {
+        "path": "tests/test_diagnostics_controller.py",
+        "token": "0644:7ef3df2d1f3710405f07e8fe4965c0bd7066f32f1668f690641ece2afae3f415"
+      },
+      {
+        "path": "tests/test_diagnostics_payload.py",
+        "token": "0644:f997ce2120c02dffbc7baa9a812b0f565234fba8fcaae80ea13b5475e7151d3f"
+      },
+      {
+        "path": "tests/test_digit_tabular.py",
+        "token": "0644:bd0a21d575b9234d8160cc92cc276949c2910eb976c2f933fb6ac5e6c6c24b1a"
+      },
+      {
+        "path": "tests/test_face_guard.py",
+        "token": "0644:46fa99835abeee7ef23b1700deddd247636bdf933116adb7b96556af431d80f3"
+      },
+      {
+        "path": "tests/test_face_probe_image_utilities.py",
+        "token": "0644:bb0bfe1e8de50f27246dbbdd9f1db56fa9ceecd36632bef78301f9d216c19e27"
+      },
+      {
+        "path": "tests/test_feature_controllers.py",
+        "token": "0644:813c24694e33c84dc475362d00189f041128ee4dcad4d6f307fc8150c70c98af"
+      },
+      {
+        "path": "tests/test_feedback_admin_tools.py",
+        "token": "0644:227376ec95f7640f67fd4856a55c564cb53addcd11f93cb01dc5811ccb600d32"
+      },
+      {
+        "path": "tests/test_feedback_agent_guards.py",
+        "token": "0644:f1d358821902398dbda0818e8a766fe65850604ed7512f74451ffad9ff51aa77"
+      },
+      {
+        "path": "tests/test_feedback_analyzer.py",
+        "token": "0644:94c7d79fbfd11cbd17ff66130bf68bd2b9f85855fa8bb13fd94abf6872ef2b48"
+      },
+      {
+        "path": "tests/test_feedback_desktop_reports.py",
+        "token": "0644:1158f52e49aefc344b9a292adb44b8e417ce9117a44d48a6d124f9ead54cb1ca"
+      },
+      {
+        "path": "tests/test_feedback_dialog.py",
+        "token": "0644:237f52c6f5c19da6b2a2261e07afd2d5cea94d0cdab94dc9f85c438fff3794b7"
+      },
+      {
+        "path": "tests/test_feedback_failure_paths.py",
+        "token": "0644:b4e47c509c34905c4c5e3d0a7e91319c85d201945f78063715f2b396b52de642"
+      },
+      {
+        "path": "tests/test_feedback_full_bundle.py",
+        "token": "0644:10456aae67f4e79a95e30049cf404d436e5a30103ca720356d3e21e61829f39f"
+      },
+      {
+        "path": "tests/test_feedback_materials.py",
+        "token": "0644:06277a43ec540013980091ca26b4cadf627f436baea8f8fdc22ed6c80ecbc9e4"
+      },
+      {
+        "path": "tests/test_feedback_notifications.py",
+        "token": "0644:96b48fce3cf00e1c109aff4b9cfeb9d8e9e17f1e51febf6ac24812e3b486d660"
+      },
+      {
+        "path": "tests/test_feedback_pipeline.py",
+        "token": "0644:3c7f2943aeb6de158c2280b3fa8f364914cc9ffed1f39fbf4095c2def3b22eaa"
+      },
+      {
+        "path": "tests/test_feedback_protocol.py",
+        "token": "0644:592581cb94ba79965c9dd193d3fba96c5fe3c2aed8e6fefb33e4acbf0d9567e2"
+      },
+      {
+        "path": "tests/test_feedback_protocol_edges.py",
+        "token": "0644:dff2f96813ba31368c7059f1e9ecc63b2c99a6525d1d759092ff756c6cd03ef5"
+      },
+      {
+        "path": "tests/test_feedback_receiver.py",
+        "token": "0644:057034442a048c58b907b559f61da51fb31412de4d35a31f979f43028890681f"
+      },
+      {
+        "path": "tests/test_feedback_service_edges.py",
+        "token": "0644:bf13fbd9aefebe413db3f89bef8d34163ca7a9e1d34e2671fe4780e59ff07a91"
+      },
+      {
+        "path": "tests/test_feedback_upload_binding.py",
+        "token": "0644:f748b6f9c1a4326769d695bf2823541adf010e2a30791a4ee023b8ea3ac99121"
+      },
+      {
+        "path": "tests/test_float_drag_top.py",
+        "token": "0644:758a795d865f4e8d0ea254417cea99711b1d3c675582f496adfbe409cd0adf96"
+      },
+      {
+        "path": "tests/test_frozen_smoke_lifecycle.py",
+        "token": "0644:b04939886798faeebd86407ef409a0fb7c99a858513f32c894c3b03f0506688e"
+      },
+      {
+        "path": "tests/test_frozen_startup_stream.py",
+        "token": "0644:fffb28d8ab5c650a4f23eb36670f5ebcd7473def9323956356cd264dfa7a6ec8"
+      },
+      {
+        "path": "tests/test_full_feedback_acceptance_tool.py",
+        "token": "0644:dfefce2dd46c5ec65ce51df9146698171d90f93523aaef02f62968e4dca3aaf5"
+      },
+      {
+        "path": "tests/test_gate_clean_machine.py",
+        "token": "0644:c9a76e7d89ad396f7cb0f0307f12519a19980e267bd59db9e331a302384b7969"
+      },
+      {
+        "path": "tests/test_gate_selftests_in_suite.py",
+        "token": "0644:71128fad894ed4775bbd1d3ce5b7164e0dc750348980d65cf296a03b430e1c34"
+      },
+      {
+        "path": "tests/test_gate_stamp.py",
+        "token": "0644:70fc7d8c799971ff98976b12b9a0d4505ccedfb63a1d077903324c551a6bd037"
+      },
+      {
+        "path": "tests/test_glass_capabilities.py",
+        "token": "0644:69d1f8297411659319bddaccf9a31f1163ac4f60e7141c1c5606d8ba900aa847"
+      },
+      {
+        "path": "tests/test_highrisk_paths.py",
+        "token": "0644:f6cc9e98aaedc095999be2164ae23ecfb938b71e70eca7d33762bcde60405b7e"
+      },
+      {
+        "path": "tests/test_identity_literals.py",
+        "token": "0644:f2663ca8c8255948d6c8a89e061d9f7bdba8a8448fbb42ef7a7115e565ce178a"
+      },
+      {
+        "path": "tests/test_install_guide_placeholders.py",
+        "token": "0644:65f5efcf07f38e5c92c7b3dbf446481e9e353c42b24af7c84b4bc60f7cdd7016"
+      },
+      {
+        "path": "tests/test_install_path_routes.py",
+        "token": "0644:2989622121abefd2b259b468682d507eb0bc4d773c63079d5fc4c092b4b81993"
+      },
+      {
+        "path": "tests/test_installer_script_branches.py",
+        "token": "0644:c962d5e6975c174729acf474301459c2d388ca0a777340e09f49759b7df131a4"
+      },
+      {
+        "path": "tests/test_installer_terminal_close.py",
+        "token": "0644:1f38062adf487410423d7af43f141ae660838fbb770474cfa7420447a776f096"
+      },
+      {
+        "path": "tests/test_keyboard_shortcut.py",
+        "token": "0644:222541957ffc01eeacf3f1a64b63e90a204f11dd5ecbe30c0a5e7abbd4676c5b"
+      },
+      {
+        "path": "tests/test_keychain_no_prompt.py",
+        "token": "0644:f3e8ae049d76c24989384e204c4b082736771aef429b61a6f5f6d1afa49773db"
+      },
+      {
+        "path": "tests/test_liquid_glass.py",
+        "token": "0644:479e483495be1df18cae854ae8316e48d3ef9a3d5b3d805d16ab806f5005e26c"
+      },
+      {
+        "path": "tests/test_macos_compat_gate.py",
+        "token": "0644:7335b4354b182198e6d173956b69464d00ea1ecb34ba06c95d8a9efc1cde04dd"
+      },
+      {
+        "path": "tests/test_macos_native_failures.py",
+        "token": "0644:0d7c4036d6168865b5761dc2d8067fc97ee494e580e19dcdb03c1b64e7d7ba52"
+      },
+      {
+        "path": "tests/test_manual_refresh.py",
+        "token": "0644:b2d5d99a0a732576035e4fda91641b53022fc5d8f2df5ce211e189c55924b6b1"
+      },
+      {
+        "path": "tests/test_menu_row_icons.py",
+        "token": "0644:52b8ceb071cce9fd556bdaad681ee080e0e78dcdeb5f54903ede3356cc757f10"
+      },
+      {
+        "path": "tests/test_migrate.py",
+        "token": "0644:b85fcfed061d7739ae691c075397e78713e36ca7d81a9bbe47aa6b62924551bc"
+      },
+      {
+        "path": "tests/test_minute_recovery_audit.py",
+        "token": "0644:28ed35df297a0b5933696c3704db801c5c30445dffe46923e862443f95d6ad5c"
+      },
+      {
+        "path": "tests/test_minute_recovery_latency.py",
+        "token": "0644:77ab9104a4384fac502bb60276b959e9b0ad96a5a8cc96331e806727be951b8c"
+      },
+      {
+        "path": "tests/test_minute_waf_recovery.py",
+        "token": "0644:cef27d3ebf046841dcde886f310fb4f6a5ee1cacdeae76e0806bac937c521e3f"
+      },
+      {
+        "path": "tests/test_native_glass_probe_coverage.py",
+        "token": "0644:c3c9323a8d0f33a75f7074e61fc4b22e531ea2e63e116ec8aee5221855ca8dfa"
+      },
+      {
+        "path": "tests/test_network_mock.py",
+        "token": "0644:b92aff4325d6f28e62b577c6db55e5d440c20f7aee2808a970ff205aa92d094a"
+      },
+      {
+        "path": "tests/test_notify.py",
+        "token": "0644:fc6aafc18574afb918197c13da6dabe43c9928570bc7b136fc02b748e3574410"
+      },
+      {
+        "path": "tests/test_opt_v127.py",
+        "token": "0644:0c6277e0b70457956270350f30e348a26ab34b70014de8ce2b6db02c9e07e661"
+      },
+      {
+        "path": "tests/test_panel_and_editor_gap_paths.py",
+        "token": "0644:62cb561906834cec2deab0e9290afbe008028654b2759d939f6f3a43563f2134"
+      },
+      {
+        "path": "tests/test_performance_audit.py",
+        "token": "0644:a107f777f0aa79b4adc14a70cea37f4ac954eb6c545e083ebd29caf4f6d99fcf"
+      },
+      {
+        "path": "tests/test_popup_close_paint.py",
+        "token": "0644:ac6c5a697b2d077457f5bb8473dc8f64cc8a4e7e1088e941e5cb4c00bba9584f"
+      },
+      {
+        "path": "tests/test_popup_fullscreen_space.py",
+        "token": "0644:b00b0173f0873e3d10860777ae47fe204a7de479f881523fb88a43102a2b6f99"
+      },
+      {
+        "path": "tests/test_popup_materials.py",
+        "token": "0644:e085340d301618aadb695b860b0c26a1ae44f83ff84b6508277c02056fa20f9a"
+      },
+      {
+        "path": "tests/test_post_release_record.py",
+        "token": "0644:1b96f57898afce95cc173ba14aca63e014741651ad565b3a4a31d2a9c3fb245b"
+      },
+      {
+        "path": "tests/test_power_v1410.py",
+        "token": "0644:890e56b8938db6e495855edc99b499530eb09aa700c68c95dd2f6f414ea433d1"
+      },
+      {
+        "path": "tests/test_public_release.py",
+        "token": "0644:d99d1b4ff9942ec2b9cf12c47c0864e6675d936bb52f07b495a1d69b88b339da"
+      },
+      {
+        "path": "tests/test_publish_end_to_end.py",
+        "token": "0644:35562f96b8d5255e1a180a4a4a6b6156f677ab8b7e56b151c9d13bef53334fb2"
+      },
+      {
+        "path": "tests/test_quality.py",
+        "token": "0644:758429bdf909670799a600da40bb2c453410ca8af2a593ea51d1c4ef6d3f1338"
+      },
+      {
+        "path": "tests/test_quality_async_diagnostics.py",
+        "token": "0644:66ee3cba1a3aa4d732a6d57c13fc2d33523192a018ebd821b076ea564d3797f5"
+      },
+      {
+        "path": "tests/test_quality_camera_check.py",
+        "token": "0644:fd7b9e74aa711dfffb5c012dfb8a7e5581762cf71df5ad8cb27709c5e41ba7cd"
+      },
+      {
+        "path": "tests/test_quality_credentials.py",
+        "token": "0644:d7016d3ef6baa85fac27666943da9bf2b4269c62e8ffc9bf558cb16e64ae62c1"
+      },
+      {
+        "path": "tests/test_quality_editor.py",
+        "token": "0644:816b4aea7a4e036aeb20a2d05bb9526eb36be93b29da245dcd04183cd5e07320"
+      },
+      {
+        "path": "tests/test_quality_evidence.py",
+        "token": "0644:d99464d873c061e37a16be4b72251131f7d723e4e2240f12fce3164a022cbba1"
+      },
+      {
+        "path": "tests/test_quality_http.py",
+        "token": "0644:9f5660850e8cb63c39f0406c1e6c5595962c5d60760dfb858333fdc3d600aebe"
+      },
+      {
+        "path": "tests/test_quality_instance.py",
+        "token": "0644:dc1a02df8d330861532602dd595428c4dd5ff0db32d38cf3f2f29521f0d79a37"
+      },
+      {
+        "path": "tests/test_quality_macos_actions.py",
+        "token": "0644:9a5089ad871decfb179a9b5a5f3cc1a0ebddeedf4a1341814acad23b8bcb6907"
+      },
+      {
+        "path": "tests/test_quality_maintenance.py",
+        "token": "0644:f4804185ab5209916d986e2b80ba06d9b55eb507933c09cfbf7b0b9a44e4e103"
+      },
+      {
+        "path": "tests/test_quality_measurement_guards.py",
+        "token": "0644:312d81dac725638f7215d78ce666f6a53a378da7f249e7429dd0d61f818fe50f"
+      },
+      {
+        "path": "tests/test_quality_presence_shutdown.py",
+        "token": "0644:d175f42d23dceafec96f06c28d26d8c52fcc3dfbeabe307c1625e7b301500c58"
+      },
+      {
+        "path": "tests/test_quality_quote_delivery.py",
+        "token": "0644:af4cd62bcd28830056ed079a6059830f30099dc7e3f695fa574ceb29ff3b1a1d"
+      },
+      {
+        "path": "tests/test_quality_runtime.py",
+        "token": "0644:2db8f638b2d9cb4aa04e71f1f6514c6f2e280f40e8ccadcb932dcafe3b480491"
+      },
+      {
+        "path": "tests/test_quality_security.py",
+        "token": "0644:96d7650b8e360bf72940e79ab9c0dc875608034f70041dcf599c87837273cce7"
+      },
+      {
+        "path": "tests/test_quality_storage_tasks.py",
+        "token": "0644:04165f276c8d58f62c3b19a12acdc78d32d0588c315dad044e7a576f255ef43c"
+      },
+      {
+        "path": "tests/test_quality_trend_reports.py",
+        "token": "0644:f142e9b9cc414773c9b2de6e51d1143d330e70db3d88670fd191a319a0eaa1a0"
+      },
+      {
+        "path": "tests/test_quality_update_cleanup.py",
+        "token": "0644:107c49b1de8a8a93592a57c3aa5b44f8cae2a6e05a28624e1776f2f5f89a130d"
+      },
+      {
+        "path": "tests/test_quit_lifecycle.py",
+        "token": "0644:0ef4d7d410b432233b7374f35ca4cbc84d9a5933d673fa543d3863fc14e9b662"
+      },
+      {
+        "path": "tests/test_quote_loop.py",
+        "token": "0644:50a8ed3552f072f8fc505c0836e05103852b2d5dd036c7cc9dbd3c66ab916d33"
+      },
+      {
+        "path": "tests/test_quote_request_lifecycle.py",
+        "token": "0644:694304a111c8b67084d346029dbe56580e2bcd3419fbd013c27ba541f662eef6"
+      },
+      {
+        "path": "tests/test_quote_runtime.py",
+        "token": "0644:fb1534e32978f7a9aadfa45874172e21470766cba21a25369e7944b128610603"
+      },
+      {
+        "path": "tests/test_reexport_contract.py",
+        "token": "0644:6ae3ff206ca81210460dca9a800515abb3b7897672d120d01ebf2f3f5aece0e3"
+      },
+      {
+        "path": "tests/test_release_desktop_staging.py",
+        "token": "0644:fee2259fdcc0539f5eb340353a6a6c57e92fb0baeb87340b004bba46a561b23d"
+      },
+      {
+        "path": "tests/test_release_gates.py",
+        "token": "0644:33eb850a40259e489055062edebcb9e1bb22e2dc800be02459f39a9f44c07534"
+      },
+      {
+        "path": "tests/test_release_lock_cleanup.py",
+        "token": "0644:468211c3eb1b86cac930178c400bc423bf34839f68fc32d20beb39c787f97a57"
+      },
+      {
+        "path": "tests/test_release_readback.py",
+        "token": "0644:c8f7b2dd2b9c557cfa8db066928ee633b4a13f0e827d3c3c5eea72f27dfa610a"
+      },
+      {
+        "path": "tests/test_release_state.py",
+        "token": "0644:2d97ce616b9395d919991e2c6660f1d1ee3ec5b0916b0e55d2bb7ce17dab453e"
+      },
+      {
+        "path": "tests/test_render.py",
+        "token": "0644:dfe0105478d9db0b54300803dc6d72991576c1305d8b22004c39bcf55dfbc769"
+      },
+      {
+        "path": "tests/test_reopen_signature.py",
+        "token": "0644:30ab90a8fbfaa79900f885a71d16f5f10f82f40acef795d8116d9813fcaf186d"
+      },
+      {
+        "path": "tests/test_resource_soak.py",
+        "token": "0644:f146a6a9b30771353c0b25747b50954e3a7d8c810033554b06bf612e27a04ddf"
+      },
+      {
+        "path": "tests/test_review_fixes_20261012.py",
+        "token": "0644:76e141ecfe6387ec6095a6fe5105a269de8a34ee14a417f6ea84cec0a27f6211"
+      },
+      {
+        "path": "tests/test_run_tests_guard.py",
+        "token": "0644:d6360acc4b8241dc6d798a05c0c3775317790ed62f13433595950dcfb23f2396"
+      },
+      {
+        "path": "tests/test_runtime.py",
+        "token": "0644:8cf38200018d88dc30b95a6be5e31d4e272d961e6a1f303f41157f8e08d3d91b"
+      },
+      {
+        "path": "tests/test_scheduler.py",
+        "token": "0644:9218800455f5f26d6ca76ec8d52b65d0a502cbfb9f573678f7e0e2e57edaa214"
+      },
+      {
+        "path": "tests/test_security_hardening.py",
+        "token": "0644:3789da8d58917d360c9120c01c59ee815f880ab234bfd22425ab7ca842252b51"
+      },
+      {
+        "path": "tests/test_shell_cjk_scan.py",
+        "token": "0644:6fa6458dace98368c73c546b0a336bc9bb1d1b5dc97536eee24b5acba999d654"
+      },
+      {
+        "path": "tests/test_smoke.py",
+        "token": "0644:be3863fb821b5f0640c3aa4d5c8a245a495c7ffb0b12809e9a5548c3a982afb5"
+      },
+      {
+        "path": "tests/test_stable_signing.py",
+        "token": "0644:5aa39fd81f18990bb1cba53bc6a528ca7b2aeb751645480bcee3e0f1a0763401"
+      },
+      {
+        "path": "tests/test_standalone_command_tools.py",
+        "token": "0644:695007844421132b43abd3a12835b5c0dc85b2937ff69540d39fb4e8075baacb"
+      },
+      {
+        "path": "tests/test_startup_health.py",
+        "token": "0644:4fcd235c3fe852e288cb872fded650ba92d4f4489dfacb1467328927be798d60"
+      },
+      {
+        "path": "tests/test_stock_search_icon.py",
+        "token": "0644:89f7ca3d8c6754230b6f3912076079f4f0c277552e3f30359c62aa4430dc3434"
+      },
+      {
+        "path": "tests/test_stock_transition.py",
+        "token": "0644:1146ac5c06cfa8f3f56a2e92d914655eef793d11b1a012d910ca513517da99d5"
+      },
+      {
+        "path": "tests/test_stretch.py",
+        "token": "0644:e84b39110e193bce93f2bf22712e241150bf778ce12c5bcb7da2d3e4b964e2e4"
+      },
+      {
+        "path": "tests/test_style_hex_tokens.py",
+        "token": "0644:4d16aae009587ae29685ae39fa9686c047d17ed69a875b399cd12a2bbff3903f"
+      },
+      {
+        "path": "tests/test_sweep_temp_apps.py",
+        "token": "0644:b279d370aff7611631ab9c37223efb3579100c286c37c1757fcbd2c17ee659ee"
+      },
+      {
+        "path": "tests/test_target_bubble_text.py",
+        "token": "0644:5d4e477bfc1c79490f654b65ecfd14cae3b044b900d74e8e40e8fa8bd7c39208"
+      },
+      {
+        "path": "tests/test_target_commit_retry.py",
+        "token": "0644:1688bd99be4c8731ac3675265a15f254e7b1ed0356c2c4396aea0248bed3e909"
+      },
+      {
+        "path": "tests/test_target_lifecycle.py",
+        "token": "0644:8d22320737ac681484d68c1e4175fd038afaef6dd2660a9b5b4bcfabcc4ecb60"
+      },
+      {
+        "path": "tests/test_target_panel.py",
+        "token": "0644:cea746d5ee7c49413cad65faad2055c4e1544b4db3dc9e8d784bc698a4d32a39"
+      },
+      {
+        "path": "tests/test_target_panel_design.py",
+        "token": "0644:cc89d0a0c56396692ab6e6a8d256b4781e658ee13eda17a063b258da3df42737"
+      },
+      {
+        "path": "tests/test_targets.py",
+        "token": "0644:e819a8d2afb7ff2ee31a9f7c99ee921af7e05c7934f116f09b9f5b3071cd422b"
+      },
+      {
+        "path": "tests/test_tool_window_manager.py",
+        "token": "0644:8d2d0b10f9748e0b201d4d9d1c605cf8fc0b289c144b9e8f0c2bd0023e228531"
+      },
+      {
+        "path": "tests/test_ui.py",
+        "token": "0644:d3cf0478a18c0e8c2b77036cd66698f446942a85e1106324eb2cf8d5eb160eec"
+      },
+      {
+        "path": "tests/test_ui_dialog_guard.py",
+        "token": "0644:ea9278b857f2bddbb7d46e44d23ae5043af499a136666c64993ee5f4c04f839a"
+      },
+      {
+        "path": "tests/test_update.py",
+        "token": "0644:70ad37788e51e0e9dea90f1f9a148c1a529ca7c3b4999c93f657899f976e2ea6"
+      },
+      {
+        "path": "tests/test_update_controller.py",
+        "token": "0644:b63f37fbda9546f1739d12ce79f045c00c3aad4312314e1326a3d334bb8e785f"
+      },
+      {
+        "path": "tests/test_update_dialog_visibility.py",
+        "token": "0644:168e1a3f095ba8933e2dad2c465f4da226c98f20bd5dc7aa69c77d1e2778367f"
+      },
+      {
+        "path": "tests/test_update_download_reuse.py",
+        "token": "0644:148b8c08d8b1f90db984efcac19c0a708e274e53332c7a15310a6c58c640d536"
+      },
+      {
+        "path": "tests/test_update_helper.py",
+        "token": "0644:10a9ea83992462f1607134f1169b6084d0daad957ca7e0749335547d57a1734e"
+      },
+      {
+        "path": "tests/test_v123.py",
+        "token": "0644:de2d9b44426b6545b6c76dfd222b8dfa2305210db0b8a5de844b8d84f63fea8e"
+      },
+      {
+        "path": "tests/test_v124.py",
+        "token": "0644:66f57b0de124ab134fe18c4f8c9f84f861502cbb2d70571947756ea02120ba21"
+      },
+      {
+        "path": "tests/test_v125.py",
+        "token": "0644:f5a31f6f237cf41b83c6e260660685912e8d19e31f10a53b36ee4d416a80df71"
+      },
+      {
+        "path": "tests/test_v126.py",
+        "token": "0644:1aa139de055c35be31d1e71856962fe3b1881f405268ff27d81855e1048d6511"
+      },
+      {
+        "path": "tests/test_v1295_autowidth.py",
+        "token": "0644:0428dfe4e07f1b378e42de9ed6bc80b70364fab9fb00113a6ee5209f445d6bbc"
+      },
+      {
+        "path": "tests/test_v1295_chart.py",
+        "token": "0644:642a4454728e7c831027992ccda58e4a6dcde18a6cd90dd015137b1f6c25679a"
+      },
+      {
+        "path": "tests/test_v1295_concurrency.py",
+        "token": "0644:1489ed51abc714ec1f78e06b7e3148d62763c07f8b822b85c5a99026e9963227"
+      },
+      {
+        "path": "tests/test_v1295_diagnostics.py",
+        "token": "0644:c9c9c5fdc4f23d372b68aa7430e52e7a27b4cab68b6ca5dbfe45f46bc28a05b9"
+      },
+      {
+        "path": "tests/test_v1295_logging.py",
+        "token": "0644:3d78f48de731548e8916857ec299541f5f51b0dcc7fc278f5b711f7ed172f44d"
+      },
+      {
+        "path": "tests/test_v1295_network.py",
+        "token": "0644:4ce74cd6fb32e6649bbbe2ce4d4f1b2570819b3e645f05cb286cd56f7e4fafba"
+      },
+      {
+        "path": "tests/test_v1295_targets_invariants.py",
+        "token": "0644:48aeb362ecf6bc6eb7680bebc1b508a29098ec32a0aa7b7ca69b5a55dea1dc00"
+      },
+      {
+        "path": "tests/test_v130.py",
+        "token": "0644:c3ab784aec0f1a17bddec7bfaf7d363c9ad9a501eba962d5bcfc3695276984b1"
+      },
+      {
+        "path": "tests/test_v132.py",
+        "token": "0644:9d4e6daffec0e2d5aa1d7aee9faaeda4152f5a610ef1d27faeecaaa0016ffd2e"
+      },
+      {
+        "path": "tests/test_v134.py",
+        "token": "0644:86d8cdfdff8df54a3e6c72efd9590e4c4d61aed89bb02cad5cfb4836bf43dfb9"
+      },
+      {
+        "path": "tests/test_v1342_round.py",
+        "token": "0644:8168bcf51fd564309c6d613a3e45c79cd0323f93b2e92bbe5b987ff260d290b4"
+      },
+      {
+        "path": "tests/test_v1345.py",
+        "token": "0644:e2cebe093ca70e3a601032b309612317ee3b48ef15e18f2cb7547cb05aaf00cf"
+      },
+      {
+        "path": "tests/test_v1349_pct.py",
+        "token": "0644:b7616fbe7b7a7c7a35964d0d0a3c2b83ff8498720b9b6c3b82ae949fcc68d746"
+      },
+      {
+        "path": "tests/test_v1349_quote.py",
+        "token": "0644:5ed6e12ca176064f6f17f779543e5fe385d55f604cf530514721247f50b3034a"
+      },
+      {
+        "path": "tests/test_v135.py",
+        "token": "0644:893b5fe0802f25b7e53d7e1a3af9aa1d2cefc18832bf89a1670e6fc49911c0ca"
+      },
+      {
+        "path": "tests/test_v1351_avg_cache.py",
+        "token": "0644:0d81a43654dd2d48443e41d494efc12f270fe944e87b778a3cca3244c5d52228"
+      },
+      {
+        "path": "tests/test_v1351_collapsed.py",
+        "token": "0644:727e6d3b06d9bf55a19bf3d5539ae40dc3f49577d787093d346a17a8fe1e7914"
+      },
+      {
+        "path": "tests/test_v1351_linever.py",
+        "token": "0644:77965956bc35211641926b4260eca3f969b2e9d375dc44843ff43dbf2ed00a6d"
+      },
+      {
+        "path": "tests/test_v1352_isolation.py",
+        "token": "0644:f9599efa3f429596bd5421e0eb5e60f6049948be614b8857de4e4b6d86e0180f"
+      },
+      {
+        "path": "tests/test_v1366_universe.py",
+        "token": "0644:2079e88d0008d1da2a9f2e42286793eddbb829815d1a76f106b8633bede22548"
+      },
+      {
+        "path": "tests/test_v137.py",
+        "token": "0644:d2d70b130348572819bfb4b4d28459fc4aee2ff7dc4ea08417b7f95f00770159"
+      },
+      {
+        "path": "tests/test_v1416_review_fixes.py",
+        "token": "0644:7b699bd714e13c8184bb77fb5664b5cb1d8dfe4eb0b0f8ac8ce43bcf20371b2d"
+      },
+      {
+        "path": "tests/test_v1417_alert_chain.py",
+        "token": "0644:6fe134dbbc670d057eed455e21d3164a44a16af07c9fbb484c24b3e5165d165d"
+      },
+      {
+        "path": "tests/test_v1417_progress_alert.py",
+        "token": "0644:e52832de8d503e2259b869fae036695a3373288b4007fb13e75f5472a912dd58"
+      },
+      {
+        "path": "tests/test_v1418_walkthrough.py",
+        "token": "0644:c9790b4f9d306ef5e1499219494007238a7ded5cbb2943ab1597d74baea7153c"
+      },
+      {
+        "path": "tests/test_v1420_exit_teardown.py",
+        "token": "0644:e4465da192c5dae259602925fb5cdb35306b2524999569707148513042ab7ad7"
+      },
+      {
+        "path": "tests/test_v1421_release_notes.py",
+        "token": "0644:89aa8b6fe63b49bd9657bde874c2c38b8fa04a361df851f82d927419464a0d89"
+      },
+      {
+        "path": "tests/test_v1422_update_speed.py",
+        "token": "0644:e153e37960e7b59b5f507acba46f6a0f3527df6cd4ca1459ac3ba481f996a284"
+      },
+      {
+        "path": "tests/test_v1423_temp_sweep.py",
+        "token": "0644:4e8bda2cbf3f97a35c0d24457de434a64c0a546f07bac3f2e266fbf70a56d66f"
+      },
+      {
+        "path": "tests/test_v1426_glass_zorder.py",
+        "token": "0644:462ba4f40699a02ec0ebf5c22dcd680849fc1ba745b0f8edf8f9fd6f4e64f2b8"
+      },
+      {
+        "path": "tests/test_v1428_responsiveness.py",
+        "token": "0644:0b58847c69258d3701f2ca7dc3262d64c748345fdf3c6cc6e1f128289fff8955"
+      },
+      {
+        "path": "tests/test_v143.py",
+        "token": "0644:221ac39ba480053245b85bf1280a8a020cced50051ce5c24f6e83956c0114ebb"
+      },
+      {
+        "path": "tests/test_v1434_hint_gap.py",
+        "token": "0644:7e063a96dc8b5f4f297e69520f271f6e4108d27e06c8d1f5fee6b690778bbfd6"
+      },
+      {
+        "path": "tests/test_v1434_stretch_floor.py",
+        "token": "0644:8c85317899821623a69ca74fec08ecb5b9e92b8d73c3ff49511500f141d0d5d9"
+      },
+      {
+        "path": "tests/test_v1438_alert_center.py",
+        "token": "0644:88b2c7749786e32a65fd80a0a17366945a5e6b9d0c9bbc92645e3cecf7d9c48c"
+      },
+      {
+        "path": "tests/test_v144.py",
+        "token": "0644:894ac8bdbcbb0535d2b3097c52f0bddf59f03a4099fe1706b243527ee6d3e3dc"
+      },
+      {
+        "path": "tests/test_v1443_update_feedback.py",
+        "token": "0644:a643bec933cc5b9052b8c6e87d55a9b919c9c35d594e1622106b2beb190b1304"
+      },
+      {
+        "path": "tests/test_v1444_face_guard_sink_reuse.py",
+        "token": "0644:e5d74d34bd6a6be05c6d988f81aa306d1167e74e495e11e5f044db164dcec207"
+      },
+      {
+        "path": "tests/test_v1444_update_stale_cancel.py",
+        "token": "0644:73e69f029ac1ad851437c6e4288721763f19e8df0f7e9017a13846d3e771de9c"
+      },
+      {
+        "path": "tests/test_v1445_screen_pick_evidence.py",
+        "token": "0644:852131f6b4a9ae07e80ffc9e6f37edb1b0252c0de5675a2ae092d7a6c8ca01c5"
+      },
+      {
+        "path": "tests/test_v1448_snap_edge.py",
+        "token": "0644:a07109d88dda60872da18e10bd4e327c3b969821ca9d29df3bb6c0ea97d2b6bc"
+      },
+      {
+        "path": "tests/test_v1449_face_session.py",
+        "token": "0644:5f10e37fa44ed3443f38f8e81f29e429b4d3a476e4f7c314b2e0721a8a7fb1d8"
+      },
+      {
+        "path": "tests/test_v145.py",
+        "token": "0644:e876cef513bc4f36e4ab852f0aaa2c363f5bdcde9f8aab60e7a05b31b97f17a3"
+      },
+      {
+        "path": "tests/test_v1450_etf_entry.py",
+        "token": "0644:c833884285846a6665a2c2334b062296985f86f169be0a2fa4e8aa43dee153d9"
+      },
+      {
+        "path": "tests/test_v1459_bottom_fit.py",
+        "token": "0644:7fa8c0ed54f5e3973f4a7e7975d4670eb64cd2ba67b8a396d41df152c2709848"
+      },
+      {
+        "path": "tests/test_v1459_button_icons.py",
+        "token": "0644:e9b3d9a0523541825662d2b6aae2d1c9e08efc760c8e37fe8e0d44f7b9829b95"
+      },
+      {
+        "path": "tests/test_v1459_color_tokens.py",
+        "token": "0644:2a4b383db3f66f907d101f41d6af0bf200dbc78106a0d86d69eabf677fb34f27"
+      },
+      {
+        "path": "tests/test_v1459_screen_clamp.py",
+        "token": "0644:ac4a76bccb2f4e34c58abaeed6f2aa04e272c02e1050735ac8758661b1f1f257"
+      },
+      {
+        "path": "tests/test_v1459_stale_quote.py",
+        "token": "0644:121f3118130f7b2267a36cbeda4518969cf2f70da30f020aa18245b4194016c4"
+      },
+      {
+        "path": "tests/test_v1459_targets_per_code.py",
+        "token": "0644:1ab1adf26480a455f01d7d1b0af0eeec70e67bfa39fc2cb8becb11a0fc5ac614"
+      },
+      {
+        "path": "tests/test_v145_tempguard.py",
+        "token": "0644:e88ad4af528e276b5fca666f8f96b957026ab1184dfc3b66bd7da8b871816635"
+      },
+      {
+        "path": "tests/test_v146.py",
+        "token": "0644:857c5887b705237c02f9fed00b03f17efca0a5fd3d0b5998b7345fed89499cd6"
+      },
+      {
+        "path": "tests/test_v1460_review_fixes.py",
+        "token": "0644:ddae4cc6201c5c09b4b57e9e1707715f50fffbcc6d7feeb1a4a1b07f0601e842"
+      },
+      {
+        "path": "tests/test_v1462_tail_cleanup.py",
+        "token": "0644:53d32c4269773e5d6a3e57fe70129b553dbed675bf5ae5ecf41579311152e84e"
+      },
+      {
+        "path": "tests/test_v146_systemalert.py",
+        "token": "0644:88e8c3c834b8f085b6465167457dc8d1b3e27ddb93464749b7cdf7c01f527f5a"
+      },
+      {
+        "path": "tests/test_v147.py",
+        "token": "0644:1e2bfbbd89f95a497dcb782c89aa6b668d8e2e5058d9603d60110a599b821728"
+      },
+      {
+        "path": "tests/test_v147_minute_stale.py",
+        "token": "0644:6e864a142adf0020eb47a02012baf828037fb2f1af2ab4139233b3693f5e0b38"
+      },
+      {
+        "path": "tests/test_v148_nativealert.py",
+        "token": "0644:3d706ed6df122bb3176fb87c19ed253043492d8228c857b92a672f882b2e11cf"
+      },
+      {
+        "path": "tests/test_v153.py",
+        "token": "0644:c678faeb3b91ca9576d3f70d6fb76092e187a6e5cc764650f5ad8ec84631b7fe"
+      },
+      {
+        "path": "tests/test_v154.py",
+        "token": "0644:47b2336796c357e7fb22f37e6f8fa0902146ca38713bdc7bb2bbd311d9ea6b1e"
+      },
+      {
+        "path": "tests/test_v163.py",
+        "token": "0644:e5700630f8c840494081218c9a98ba8a7890fa3cc676845b19effd252913d5ab"
+      },
+      {
+        "path": "tests/test_v164.py",
+        "token": "0644:4dc76d352617fcb9d3707874e80e9780700990b72d02de325b03725d54e229b9"
+      },
+      {
+        "path": "tests/test_v165.py",
+        "token": "0644:12092952e469c3b58d5889afb5d93568c21833da10bfd996b0ea285fedb0b1b2"
+      },
+      {
+        "path": "tests/test_v165_config.py",
+        "token": "0644:fb846353793fbe9ce0c7f74fe0876e0f025f9f1639897507d059bc5ce663b45d"
+      },
+      {
+        "path": "tests/test_v165_glass.py",
+        "token": "0644:f306b9f7cfe6f4aa3154abf0f6cce2acfc4ee69658e851c3bea070bed40aef66"
+      },
+      {
+        "path": "tests/test_v166_layout.py",
+        "token": "0644:e42b182aa8b5325755eba33b91056f16d68e10d12fe3da55ee2853da346cc9c5"
+      },
+      {
+        "path": "tests/test_v168_strategy.py",
+        "token": "0644:86cde244ad5728e1b763363f96666d80b74f18d9ca12d3aab7dc8cc57a218814"
+      },
+      {
+        "path": "tests/test_v171_infra.py",
+        "token": "0644:fd9aecbff6da865da6f9c6ece5fd2149247f894a568973422e7f759b1ceca452"
+      },
+      {
+        "path": "tests/test_v171_threads.py",
+        "token": "0644:af86cbcbe42002ddc077f68ad2eedb8e77efbff8d7d6c563ee0becc2dd30ce87"
+      },
+      {
+        "path": "tests/test_v172_audit.py",
+        "token": "0644:3ca5403b60f8f84c7c032f578eb9a7a1972fbd2d8b79bd96e6e1433975f27121"
+      },
+      {
+        "path": "tests/test_verify_bundle_tools.py",
+        "token": "0644:c909b936ecd6772c0b4d2d9c78383780cc6053ae28b58ad0c471fd49404821da"
+      },
+      {
+        "path": "tests/test_window_geometry.py",
+        "token": "0644:c1b638a813b414055f48ea3b94496a2c6198aec0d31ed39a4f50e8b6f802c368"
+      },
+      {
+        "path": "tests/test_window_lifecycle.py",
+        "token": "0644:4c3975af088b80f1eacdb71af24f7afa6ebc7268d7f2fdd1adaf56fe9ca5aed9"
+      },
+      {
+        "path": "tests/test_window_message_router.py",
+        "token": "0644:4d3c1cc64d5cc5a73d113d30bd4f7518fdb569e05417804ad5d630f84cbdd5e1"
+      },
+      {
+        "path": "tests/test_window_poll_message_routing.py",
+        "token": "0644:f8fcf9553cbd4eca5782f8e78a9dd99ed7128e1b1430bf6c3c2602af25de1618"
+      },
+      {
+        "path": "tests/test_window_responsibility_split.py",
+        "token": "0644:08228426ecb696482176db7961f0a3950cda5bcf5fb759cc6e75cbc5716b49c1"
+      },
+      {
+        "path": "tests/test_window_state.py",
+        "token": "0644:ccf791bf1036ce1123d2b3830f895d0acfd5960de5893b2606dc97cd8ee953a8"
+      },
+      {
+        "path": "tools/apply_installer_icon.py",
+        "token": "0644:2a17c337c3ef8f441515371b6a2eeb9ae848db8223606565d34a939893d584af"
+      },
+      {
+        "path": "tools/archive/diag_version_audit_20261013.py",
+        "token": "0644:2c87aebc5dee9d7b7a2e41bfc17372c3190964fe281b817511eea1bbaaed8432"
+      },
+      {
+        "path": "tools/archive/verify_v1287.py",
+        "token": "0644:1635d5d0254beeed474f797a4d6bfeb1f03fc3552c513159148f922856e2a703"
+      },
+      {
+        "path": "tools/archive/verify_v1310.py",
+        "token": "0644:bb405e629bbb9beedd77b8b42716fe9a875eea449c9a38a1692c2c8c59d09905"
+      },
+      {
+        "path": "tools/archive/verify_v1311.py",
+        "token": "0644:005c943551f180de82fe58dcaee1486b5c874c7c7795a69967bbf003db5d5719"
+      },
+      {
+        "path": "tools/archive/verify_v1313.py",
+        "token": "0644:898ccf01c88c6fe748294118187173147aa3259b032e7181a7c38de5db4048ef"
+      },
+      {
+        "path": "tools/archive/verify_v1314.py",
+        "token": "0644:e951dcd98f5d1b4ab0d87cf1e7d4e0d9afc2c66f572e09f27a2091174598c252"
+      },
+      {
+        "path": "tools/archive/verify_v1345.py",
+        "token": "0644:b725bf55e21c9e18ad2fc323d3541624ed3881b531b8adeacc0316a7f1585aec"
+      },
+      {
+        "path": "tools/archive/verify_v1346.py",
+        "token": "0644:d4c65c3e76ed889d7d1cf05dbe5c01cd806c3f752474d1020612b0a97230ae24"
+      },
+      {
+        "path": "tools/archive/verify_v1348.py",
+        "token": "0644:093628989c25b345bafef828a155f123331b7e1ecfe12bcca88666aadb72412e"
+      },
+      {
+        "path": "tools/archive/verify_v1350.py",
+        "token": "0644:4ded75138ea9de018149290f42c93b069a0e69711e7431d0bac210534bdbb427"
+      },
+      {
+        "path": "tools/archive/verify_v1352.py",
+        "token": "0644:f3ed416e637f07615865d40e222de1d7bd7db6b3e20af670e17b6d8d165c33d9"
+      },
+      {
+        "path": "tools/archive/verify_v139.py",
+        "token": "0644:5a5765f6a1a284189950d98f75b8cb9d86e466e612beabbd8da18945fc36cec2"
+      },
+      {
+        "path": "tools/branch_coverage_report.py",
+        "token": "0644:ec8701bc46fd3ede4b192ee4f5ca964a0bc878cdbeff57122d48082abbfc31c6"
+      },
+      {
+        "path": "tools/bundle_closure_check.py",
+        "token": "0644:61218ace4d468dcd8364129f409d447c5c536ed24408a465ee73d8e5b1e45e67"
+      },
+      {
+        "path": "tools/camera_auth_probe.swift",
+        "token": "0644:1aa66e3783b2fe020c41d83dec34c2d9ade99e52931fbe50bfea943364091aa6"
+      },
+      {
+        "path": "tools/change_coverage_base.txt",
+        "token": "0644:aacc834a0c48842042455a5a4323cfea3ddd44d25f5877f854e1b7d07d75ec5a"
+      },
+      {
+        "path": "tools/change_coverage_gate.py",
+        "token": "0644:80cc70122fd15064f4b2594fdaa4bde3f4802c294f051f52e7717b6c7a69d3a1"
+      },
+      {
+        "path": "tools/classify_backup.py",
+        "token": "0644:0fb3ba75718739bdb60c8aa880e096909d5c66ec7c6f9e56d3fdc51931f8a6bc"
+      },
+      {
+        "path": "tools/cleanup_temp_copies.command",
+        "token": "0755:f80c07cf34fda33f089053d916e4a2fca1a19587a76905383ec6ad922640eea9"
+      },
+      {
+        "path": "tools/coldstart_bench.py",
+        "token": "0644:5647cc02e18177e9ef42dcf3101287164080f8a9b8d84e92ed89e60607971b3e"
+      },
+      {
+        "path": "tools/commit_preflight.py",
+        "token": "0644:8c83639b9bd56f4a082ae64e5c9cb9fba65b53d1dd7ca305142b16785856d6ed"
+      },
+      {
+        "path": "tools/config_bundle_readback.py",
+        "token": "0644:7b92b4f68d9db1fbc74fc6235cb7154129e50cf82d6f28ebb624d8488d4563ed"
+      },
+      {
+        "path": "tools/continuous_frames.py",
+        "token": "0644:1f7e8c617b5950fb81c3a7b1baabc1c72b4120e9e9aec49733051d6ee664793e"
+      },
+      {
+        "path": "tools/coverage_gate.py",
+        "token": "0644:48f5b9149b5edb097bcb57042361efa945983d40624aaec0a0b3367ac9b092e2"
+      },
+      {
+        "path": "tools/coverage_gate_baseline.json",
+        "token": "0644:abebd497e83cf858bf77f14603b617418378434f81a67ca54e2a59f7bf589928"
+      },
+      {
+        "path": "tools/coverage_provenance.py",
+        "token": "0644:f0bc586b45da5500749ced9ef7f7fc8df892b4f9d986b45ef66d9781e2d8bd94"
+      },
+      {
+        "path": "tools/daily_workflow.py",
+        "token": "0644:fc05b5bde210b2a40ad017a7901d290e917c7ad9c49cdd03b1e63cbb589f6c89"
+      },
+      {
+        "path": "tools/deadcode_scan.py",
+        "token": "0644:08ea8dec73f1dd2d24b3fde4bebcd77dc03a05d5db9b02de9576228839168c7e"
+      },
+      {
+        "path": "tools/dependency_audit.py",
+        "token": "0644:19dbb0342dc8b0c77a25fcb312082b1a013851a95b051e9e71f8d2bdab3010a0"
+      },
+      {
+        "path": "tools/diag_coverage_check.py",
+        "token": "0644:93ec7bb05c018b417b947f8a7ab70769bc623df26428a54561fb19627f38f4c8"
+      },
+      {
+        "path": "tools/diagnostic_closure.py",
+        "token": "0644:d2ad80fd816592c7933344504c16f9b6a8c98e50981050b663e8d99fe1d18e25"
+      },
+      {
+        "path": "tools/dist_version_check.py",
+        "token": "0644:32badac770131498154faeabfbb8de3018ca386d622ccf0fdb979a34e304b0d7"
+      },
+      {
+        "path": "tools/escapes_ledger.json",
+        "token": "0644:efe5b07729778defea81c9bf63d72e2d3d6bba057d5427452469969d71638de4"
+      },
+      {
+        "path": "tools/feedback_agent.py",
+        "token": "0644:547bff756a709b194055ec2df1c6138e42d5d166981a44fb9773b8814f230ef8"
+      },
+      {
+        "path": "tools/feedback_desktop_reports.py",
+        "token": "0644:2f82fe41692c07ea8a2f5c902593703814fd24e9af1c8ce29f74114af9fa63aa"
+      },
+      {
+        "path": "tools/feedback_service.py",
+        "token": "0644:8f8bf582b4cd4cd09cb7ac5733f0248e11ca7ba73b65839100497956db759925"
+      },
+      {
+        "path": "tools/frame_rate_audit.py",
+        "token": "0644:91461bc6ebb92b730d0334b1c10988e8b05d7717cc1281cc9cfbdd7bcd9850b9"
+      },
+      {
+        "path": "tools/frozen_startup_stream.py",
+        "token": "0644:12291289d544f01dfee508ba2a7c29ccc5cc4317cabc1466b8141757cda520b6"
+      },
+      {
+        "path": "tools/fullscreen_state_probe.py",
+        "token": "0644:88e9ffd426c2e5eb132c9ff5e2f34241a7ea369182b63d723df9713dcbf4b35e"
+      },
+      {
+        "path": "tools/gate_stamp.py",
+        "token": "0644:4b318be2d8819d27d42b9b31609aa7e0302f6c12bb4714e2ef436e6b3760d3cd"
+      },
+      {
+        "path": "tools/glass_desync_audit.py",
+        "token": "0644:5f59199d70c53f1cc5690d3cc8902b07b3b4c2f86f5e0bbf8f1bfc874c148411"
+      },
+      {
+        "path": "tools/glass_follow_probe.py",
+        "token": "0644:876400573fbea686e42ab2d2e3f4acf1cac70884a855432e13085aec25da6260"
+      },
+      {
+        "path": "tools/glass_occlusion_probe.py",
+        "token": "0644:1c2279b13f9e70377d445b167b930beaf3d48c41f2bd4d5352f3acf8a83d0a85"
+      },
+      {
+        "path": "tools/input_latency_probe.py",
+        "token": "0644:03b4e6d40200646d12c8a358fc84c53852eb82d4c6ea4a936634f231b451b708"
+      },
+      {
+        "path": "tools/install_feedback_agent.py",
+        "token": "0644:df34c1974cd6334f106d6d324826a32f62ca05f5d231822ad14c128531c1b560"
+      },
+      {
+        "path": "tools/make_update_assets.py",
+        "token": "0644:9e622d2ddb280fdd999a5f29407283e3a80f4adad63c22470948ea8e441e6e0a"
+      },
+      {
+        "path": "tools/native_frame_stream.swift",
+        "token": "0644:9d18071c69ad7976a8b81a0167ba258616de41f2865c9c4d91650c64e9b10cfe"
+      },
+      {
+        "path": "tools/native_glass_probe.py",
+        "token": "0644:1a74f7ce818e005eb506bda294837baac22fbf487d16ef0b7ae3c0e85a31d4e1"
+      },
+      {
+        "path": "tools/performance_audit.py",
+        "token": "0644:922b4cd4b44e9e6487448dd39a520155453eaa2461fccd6bc2b53f8b8e6df738"
+      },
+      {
+        "path": "tools/popup_material_probe.py",
+        "token": "0644:2274015b857efac642da513745eae2016e164406249f8e465c2eadb7b45e2a57"
+      },
+      {
+        "path": "tools/power_profile.py",
+        "token": "0644:3f38d4f01848b637a5671ef90a6b7d9d47034dc8f872e2d5bba9e4cc6a0b4276"
+      },
+      {
+        "path": "tools/probe_update_click.py",
+        "token": "0644:56b7f8b694dfea480567e2e624f7a257334f6523615332d619fcc41c755a2a2a"
+      },
+      {
+        "path": "tools/public_docs_check.py",
+        "token": "0644:48f8c84c5c0a3f65b8e2654351f10d6b3f36cd7357fc7f43904265d12d249a92"
+      },
+      {
+        "path": "tools/public_release.py",
+        "token": "0644:a8dd63375d7e35c3b73d7f049efb6a769d4f3aeca212bad0e07806df96c25bee"
+      },
+      {
+        "path": "tools/publish_update_release.py",
+        "token": "0644:d27aa4c51ece9f1fd1db0000e42ccb14d548f2452f4f758b9ba41fa4501545e3"
+      },
+      {
+        "path": "tools/pyobjc_sig_check.py",
+        "token": "0644:701d9270aeb97141ecd8958e646803c29efd87bfad0541b7edb21337575e9d07"
+      },
+      {
+        "path": "tools/quality_evidence.py",
+        "token": "0644:e01b9c7b349f288d886d711b92418b3884e3999aa012671e27dbaa92a9521a9f"
+      },
+      {
+        "path": "tools/quality_trend.py",
+        "token": "0644:cd21f59ac52c1835f05d084d5f50ac3a31c80499bc1a6cfb716173feeffb1a78"
+      },
+      {
+        "path": "tools/record_stock_transition.py",
+        "token": "0644:920f71097f43185cb1e4cdf254f647ef1517d60571e752e48a5c41d75a6f152a"
+      },
+      {
+        "path": "tools/release_feature_check.py",
+        "token": "0644:5baffdaf1041dcd3357cc3ea1b4ab813e21784a1e07f408c60429f8e583c0b4c"
+      },
+      {
+        "path": "tools/release_identity.py",
+        "token": "0644:eb5b95d92636e16288ac9a6b77cae916d1160d593019c10b476dfdf5788f6a8b"
+      },
+      {
+        "path": "tools/release_readback.py",
+        "token": "0644:62bea680d1c7afe4f19ea44a8c23437f76e3afa561717f0427c743322af518c6"
+      },
+      {
+        "path": "tools/release_state.py",
+        "token": "0644:8313b8c4b8609a25790b8d012f5591aa9f6af426de4da636be7388a85f99afb1"
+      },
+      {
+        "path": "tools/render_install_guide.py",
+        "token": "0755:fcbed83d1e826f07c9b2701091dce1163b038e0785a067ee46e578901c95eb1d"
+      },
+      {
+        "path": "tools/resource_soak.py",
+        "token": "0644:85d4862fd4040236728fff594bacf0ddef17c863706951b630a17f2d5a1117b5"
+      },
+      {
+        "path": "tools/shell_cjk_scan.py",
+        "token": "0644:db29023ccce617a919b2fc84af06562f62ff699deebdbea9ceeffca08cd68f52"
+      },
+      {
+        "path": "tools/signing_policy.json",
+        "token": "0600:1f163afe4652802fc0157cdbfd1e29853b0726347132fa9c3028392445e2d827"
+      },
+      {
+        "path": "tools/smoke_frozen_app.py",
+        "token": "0644:74e049dfa85cec84b7d46f5a2ba487854af9337ab252715549c41b34a35d76ee"
+      },
+      {
+        "path": "tools/stable_signing.py",
+        "token": "0644:dd2c0e901bc8f6cf26b3cb833d393f4afa50cd5186275846ee0adce9fc2131d0"
+      },
+      {
+        "path": "tools/static_gate.py",
+        "token": "0644:bfed61f809ee93f3d470ec30a813638992b48988b475e8de9944bdfa487cb175"
+      },
+      {
+        "path": "tools/static_gate_baseline.json",
+        "token": "0644:0b9c00c75e1ab2906d42152721344d90a8b2792248b6a46e528e829aa67b77bb"
+      },
+      {
+        "path": "tools/sweep_temp_apps.py",
+        "token": "0755:476f8510260d28c9409e232782b21a3389f11f9623126c0bfe6145abca70382b"
+      },
+      {
+        "path": "tools/test_discipline_baseline.json",
+        "token": "0644:997acae77c70c84179e5395e8798806edc76a5662af63551d2fb7776c61e0fa1"
+      },
+      {
+        "path": "tools/test_discipline_scan.py",
+        "token": "0644:cbb7ae47c0fd5d8d891d3643db8cad7082973f1f42ee80395f314a5059140883"
+      },
+      {
+        "path": "tools/test_runner.py",
+        "token": "0644:3e9e0198ce9e40927c97884189f28e760068f85e07c1d82030a6966f4811c2e4"
+      },
+      {
+        "path": "tools/typing_latency_probe.py",
+        "token": "0644:d6ada81104b6b32b2a7a5142bf6e414a2c5507faf04336a4b445bece3c32f9d4"
+      },
+      {
+        "path": "tools/undefined_name_scan.py",
+        "token": "0644:a5ad98dbba915d483537ed43371d7e8e0007f8a4d7ffc6939abc76499aba330a"
+      },
+      {
+        "path": "tools/verify_bottom_gap_px.py",
+        "token": "0644:8678b909f805cfe89f80f1cc48f4ec6362b8a2825f7a8b9fefe3c542bf22c367"
+      },
+      {
+        "path": "tools/verify_bundle_consts.py",
+        "token": "0644:64687513fd229420d4e91f31d76fd1519f4f483f33e8d7bde55d9c81b7d944fb"
+      },
+      {
+        "path": "tools/verify_camera_auth_upgrade.py",
+        "token": "0644:b97c512c3c286f334bec2a9d4956614e7ba89e68221fbbd0c15577f265042e29"
+      },
+      {
+        "path": "tools/verify_candidate_delivery.py",
+        "token": "0644:12bbe8d070a99e38905e6882494cfa900096e4505cb9a3a7dc0ff220acf8ecbc"
+      },
+      {
+        "path": "tools/verify_card_corners.py",
+        "token": "0644:c530d7f6c9fee8824f9ed8dd02b25cf72fef6e1cba6e0d85dc7d6dcb335b4359"
+      },
+      {
+        "path": "tools/verify_dmg_pyz.py",
+        "token": "0644:356d7f1c98aa1d86d7fb9a13c269df3a4fd485547c5f7015acc6d59774d10aba"
+      },
+      {
+        "path": "tools/verify_face_presence.py",
+        "token": "0644:474345dbbea099680365719b3af7555fe84115389b49fe37307d628f6d723559"
+      },
+      {
+        "path": "tools/verify_feedback_github.py",
+        "token": "0644:707ec7b5b1ff88b071d648bfbcdf6de179e1c553244f45e77aa7abf191a53511"
+      },
+      {
+        "path": "tools/verify_full_feedback.py",
+        "token": "0644:74594d0c92be9b414c15c332eac0a732ec51ec4fd98e1d8ae052f9da39fca7f4"
+      },
+      {
+        "path": "tools/verify_install_paths.py",
+        "token": "0755:7a19e4dc394076b96348bdc3b59fd9203e42c8d90fa6ec6e3a8b1af16ce93aec"
+      },
+      {
+        "path": "tools/verify_macos_compat.py",
+        "token": "0644:918c68e7026df9ff88dc6890d15670348e5feda2328a1721b8c5c6060c436823"
+      },
+      {
+        "path": "tools/verify_responsiveness.command",
+        "token": "0755:88c338e74845d0e53e0294d3c1f0bba8b5e834fd9463da86a0f926737320d633"
+      },
+      {
+        "path": "tools/visual_sequence_guard.py",
+        "token": "0644:3f629100b6ef5968638207d6c4f702b0d1abfc7a21bcde62f1f288c316afd5f5"
+      },
+      {
+        "path": "updater/update_helper.sh",
+        "token": "0644:b9eacaa088e9bad67ac9b1aa014b8e85ce05d51a32e523441b2298c3e036348b"
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "dist/Skyrocket.app",
+      "sha256": "f3d59ece95413dfb6aec7c629bad9d58ca802c7cdf4386350fe0420c6ac8b33c",
+      "entries": 237,
+      "kind": "directory"
+    },
+    {
+      "path": "build/Skyrocket-V1.4.100.dmg",
+      "sha256": "dd2dacfdc75628677325971ca2b8b9a97d122c84b9774d935c81cfe6ae2e400b",
+      "entries": 1,
+      "kind": "file",
+      "content_sha256": "b199aae8e65ba5d58ce06b09940bbe434cafe7ce8dbb845622ae877be3b543cb"
+    },
+    {
+      "path": "build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip",
+      "sha256": "ef1f0486264432e759669b8853fa6d87c67b7d4d092a8da34e420b54aec60166",
+      "entries": 1,
+      "kind": "file",
+      "content_sha256": "7a5d61d8c8c57621ce3bf3ff58aa1458a7951d6bb9e4d6a5e0144a997c8fff80"
+    },
+    {
+      "path": "build/update_assets/V1.4.100/Skyrocket-update.json",
+      "sha256": "9226aa02fbdb616d86321aeaf1e4b47de6eef17810cd943c68a9790109464edc",
+      "entries": 1,
+      "kind": "file",
+      "content_sha256": "4d7404c0a2c6b41f6fdea24235e0458a42a5e087a3cf33d2bea4b653c77632aa"
+    }
+  ],
+  "record_sha256": "84dcbac8750719d277d33039a337df03790ddbcb086359947c06da6ca10ac58d",
+  "limitations": [
+    "现场唯一根因未稳定复现；本机源码按钮全屏探针通过，不等于用户机器安装版验收；四专项不适用及Intel不支持均不等于通过。"
+  ],
+  "boundary": "产物哈希只证明当前文件身份；不独自证明构建过程或线上资产同源",
+  "release_artifacts": {
+    "version": "1.4.100",
+    "source_fingerprint": "b823a618227e6b1e6262e079945c1dbd",
+    "roles": {
+      "app": {
+        "path": "dist/Skyrocket.app",
+        "sha256": "f3d59ece95413dfb6aec7c629bad9d58ca802c7cdf4386350fe0420c6ac8b33c",
+        "entries": 237,
+        "kind": "directory"
+      },
+      "dmg": {
+        "path": "build/Skyrocket-V1.4.100.dmg",
+        "sha256": "dd2dacfdc75628677325971ca2b8b9a97d122c84b9774d935c81cfe6ae2e400b",
+        "entries": 1,
+        "kind": "file",
+        "content_sha256": "b199aae8e65ba5d58ce06b09940bbe434cafe7ce8dbb845622ae877be3b543cb"
+      },
+      "zip": {
+        "path": "build/update_assets/V1.4.100/Skyrocket-1.4.100-macos.zip",
+        "sha256": "ef1f0486264432e759669b8853fa6d87c67b7d4d092a8da34e420b54aec60166",
+        "entries": 1,
+        "kind": "file",
+        "content_sha256": "7a5d61d8c8c57621ce3bf3ff58aa1458a7951d6bb9e4d6a5e0144a997c8fff80"
+      },
+      "ota_manifest": {
+        "path": "build/update_assets/V1.4.100/Skyrocket-update.json",
+        "sha256": "9226aa02fbdb616d86321aeaf1e4b47de6eef17810cd943c68a9790109464edc",
+        "entries": 1,
+        "kind": "file",
+        "content_sha256": "4d7404c0a2c6b41f6fdea24235e0458a42a5e087a3cf33d2bea4b653c77632aa"
+      }
+    },
+    "ota": {
+      "archive_role": "zip",
+      "manifest_role": "ota_manifest"
+    }
+  }
+}

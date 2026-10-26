@@ -924,6 +924,19 @@ def qualification_report(root: Path, record: dict[str, Any], base: Path,
     }
 
 
+def publish_log_markers(installed_app: Path, version: str) -> list[str]:
+    """发布日志里必须出现的六条证据行。
+
+    最后一条“发布动作完成 v…”是 build_release.sh 收尾时打印的：脚本措辞改了而这里没跟着改，
+    要到发布后验收才会被拒（v1.4.103 隔了约 14 小时、多出一笔要跑完整回归的提交）。
+    所以“脚本真实打印的收尾语满足这里”由 tests/test_arch_constraints.py 里真跑收尾段的判据守着。
+    """
+    return ["已安装: " + str(installed_app), "版本: " + version,
+            "published_archive=Skyrocket-" + version + "-macos.zip",
+            "最终启动复验：" + str(installed_app), "结论: 冒烟通过",
+            "发布动作完成 v" + version]
+
+
 def post_release_record(root: Path, candidate: Path, release_log: Path,
                         installed_app: Path) -> Path:
     """Retrospective readback, not a newly minted historical execution receipt."""
@@ -968,10 +981,7 @@ def post_release_record(root: Path, candidate: Path, release_log: Path,
     if signature.returncode:
         raise ValueError("装机签名无效: " + signature.stderr)
     log = release_log.read_text(encoding="utf-8")
-    markers = ["已安装: " + str(installed_app), "版本: " + version,
-               "published_archive=Skyrocket-" + version + "-macos.zip",
-               "最终启动复验：" + str(installed_app), "结论: 冒烟通过",
-               "发版完成 v" + version]
+    markers = publish_log_markers(installed_app, version)
     if any(marker not in log for marker in markers):
         raise ValueError("发布日志缺少安装、发布或最终启动证据")
     try:
