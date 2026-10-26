@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.103",
-  "published_at": "2026-10-23T07:31:44Z",
+  "version": "1.4.104",
+  "published_at": "2026-10-26T03:07:49Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 窗口收起到 Dock、从 Dock 恢复时，有了过渡动画。\n2. 鼠标经过或停在铃铛上时，提醒气泡不再一闪一闪。\n3. 程序图标加了圆角底色。\n4. 底部的涨幅、跌幅与最高价、最低价成对显示；当天没涨过或没跌过昨收时，显示 0。\n5. 提交反馈后弹出的提示文字改为居中。",
+  "notes": "1. 反馈窗口标题保持居中，不再被右侧记录按钮带偏。\n2. 下载页发布后会确认统计记录已可用，并核对下载跳转正常。\n3. 自动隐藏窗口的异常旧设置会安全保持关闭，不会误开启摄像头检测。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.103-macos.zip",
-    "size": 26277831,
-    "sha256": "d21436a78345565910baaef6b4802b774982c204ca959166fcf5df4c8d5f59b7"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.104-macos.zip",
+    "size": 26334213,
+    "sha256": "341d5af013bbd05d11f2520cfa75d4e730bda0d5c6c35dad0bc6e1c586f9bc32"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "0HBHOU0xdAGQZ8fOrJhz1t+eVQrnZE7NmAY1l7vc/58EqvfqdeGYWIXw9DNOrPHUbJrx/ys9zEXHyeOQqZN5Cw=="
+    "value": "y1o/5jRajBYCHs63N93gE+pDg2QWER71FJuQZuszieJ/gZgkWpwQsOiI5CVJjOHbOayZ82RZhUcZvPNwS3kNDg=="
   }
 }
