@@ -29,7 +29,7 @@ coverage==7.16.1
 ruff==0.16.8
 mypy==2.3.1
 # 打包仅需（构建机）
-pyinstaller==6.22.2
+pyinstaller==6.22.3
 macholib==1.16.4
 # 构建/安装工具链：84.1.0 修复 GHSA-xmj3-9gf7-h52w 的 Windows legacy wheel 路径越界写入。
 setuptools==84.1.0
