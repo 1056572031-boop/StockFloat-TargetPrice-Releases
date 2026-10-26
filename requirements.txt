@@ -22,7 +22,7 @@ pyobjc-framework-AVFoundation==12.2.2
 pyobjc-framework-CoreMedia==12.2.2
 pyobjc-framework-CoreAudio==12.2.2
 # 测试覆盖率门禁（本地与 CI 共用）
-coverage==7.16.1
+coverage==7.17.0
 # 第一道防线：静态检查闸门 tools/static_gate.py（本地钩子与 CI 共用，需精确锁定；
 # 版本一升，mypy 的推断结论可能变化并让 B 级基线整体漂移 —— 升版本时同步跑
 # `python tools/static_gate.py --update` 复核差值，不要盲目提交新基线）
