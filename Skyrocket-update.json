@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.106",
-  "published_at": "2026-10-27T07:09:32Z",
+  "version": "1.4.107",
+  "published_at": "2026-10-27T11:41:57Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 反馈记录窗口里，点一下“清理”就直接清理，清理后这条记录不再显示。\n2. 随反馈附带的日志里，紧跟句号的公网地址也会被自动隐去。",
+  "notes": "1. 修复更新安装完成后，重新打开又变回旧版、并再次提示更新的问题。\n2. 点关闭按钮正常退出后，下次启动不再误提示“没有正常退出”。\n3. 反馈窗口和反馈记录窗口的关闭按钮移到右上角。\n4. 从 1.4.106 及更早版本更新到本版时，如果装完又变回旧版，请到发行页下载安装包手动安装一次。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.106-macos.zip",
-    "size": 26353720,
-    "sha256": "0a384fba710ba9506a691c1c710b7f212015f119d09f8123298343e9be3f889c"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.107-macos.zip",
+    "size": 26354304,
+    "sha256": "7607d0fd9f7f5e0807dec847ac81bd07ea91b5ed1f93fa4a1ad0b65edb58c5da"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "Jmh4vkOXqCnoTYgTZ4VVFzGgWvp84rakr7wOYtLEkH3sQR1O2MzT/I8Vo3lAYdstagRw19Rj1sj+o9kipj29Cg=="
+    "value": "QqwA+nYRab/u3Sab/EvFPci3EGqfprib8X5FZoQuoZlA7TDlFmnjsVND+tRrqycerfojhy4LW+2WkCitgyvSCg=="
   }
 }
