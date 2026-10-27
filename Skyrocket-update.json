@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.105",
-  "published_at": "2026-10-26T11:10:28Z",
+  "version": "1.4.106",
+  "published_at": "2026-10-27T07:09:32Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 反馈上传失败时，会说明原因和下一步该怎么做。\n2. 反馈记录窗口改为与反馈窗一致的样式，可滚动，清理前需再点一次确认。\n3. 程序意外退出后，没发完的反馈会重新出现在待处理里。\n4. 随反馈附带的日志会自动隐去邮箱、手机号和公网地址。",
+  "notes": "1. 反馈记录窗口里，点一下“清理”就直接清理，清理后这条记录不再显示。\n2. 随反馈附带的日志里，紧跟句号的公网地址也会被自动隐去。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.105-macos.zip",
-    "size": 26349401,
-    "sha256": "5c7979cbfb13cef0fcc2213de1e7100bf849f082a30caa46734de62c742d9bfd"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.106-macos.zip",
+    "size": 26353720,
+    "sha256": "0a384fba710ba9506a691c1c710b7f212015f119d09f8123298343e9be3f889c"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "Z0LcPR/2wvZv9U24lndSl6LEn2ennRo2UQTQOtICd5TMvHjcJzAYo+G8KVsn5JcWDjyLdAKMr/mEboA5zJ7HAQ=="
+    "value": "Jmh4vkOXqCnoTYgTZ4VVFzGgWvp84rakr7wOYtLEkH3sQR1O2MzT/I8Vo3lAYdstagRw19Rj1sj+o9kipj29Cg=="
   }
 }
