@@ -30,6 +30,11 @@ from sf_constants import DOWNLOAD_REDIRECT_BASE  # noqa: E402
 
 CHECK_KEYCHAIN_SERVICE = "SkyrocketDownloadCheck"
 CHECK_HEADER = "x-skyrocket-check"
+# 公开下载入口（Cloudflare Pages）会拒绝 Python 默认的 User-Agent（urllib 的默认值），
+# 即使带着正确的检查标记也回 403；v1.4.105 读回因此 4 个资产全部走了回退直连。
+# 2026-10-26 实测同一标记下：默认 UA 403，任何明示的非默认 UA（本工具自报、curl、浏览器）302。
+# 这里自报工具身份，不伪装成浏览器：入口拒的是“没自报”的默认值，不是要我们冒充别人。
+READBACK_USER_AGENT = "Skyrocket-release-readback/1"
 
 
 class ReleaseRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -101,7 +106,8 @@ def download(url: str, target: Path, headers: dict[str, str] | None = None) -> b
     temporary = target.with_name("." + target.name + ".partial")
     if temporary.exists():
         raise ValueError("不覆盖未完成下载: " + str(temporary))
-    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache", **(headers or {})})
+    request = urllib.request.Request(
+        url, headers={"Cache-Control": "no-cache", "User-Agent": READBACK_USER_AGENT, **(headers or {})})
     # The marker only authenticates our Pages hop. Never forward it to GitHub's host.
     opener = urllib.request.build_opener(ReleaseRedirectHandler())
     try:

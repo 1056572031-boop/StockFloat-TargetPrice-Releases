@@ -87,14 +87,16 @@ class SearchThread(QThread):
         try:
             results = (verify_bare_code(self.keyword) if self.verify_code
                        else search_stocks(self.keyword))
-        except Exception:
+        except Exception as exc:
+            # 搜索失败按"无结果"回报，但必须留痕：否则"搜不到"与"搜索代码出错"在日志里长得一样。
+            log_swallow("sf_editor.SearchThread.run", exc)
             results = []
         # 第1轮走查修复：emit 也包在 try 内 —— 信号投递异常（如接收方已析构的极端
         # 时序）不应让 QThread 以未捕获异常终止且无日志。
         try:
             self.done.emit(results, self.seq)
-        except Exception:
-            pass
+        except Exception as exc:
+            log_swallow("sf_editor.SearchThread.emit", exc)
 
 
 class MainCloseButton(QPushButton):

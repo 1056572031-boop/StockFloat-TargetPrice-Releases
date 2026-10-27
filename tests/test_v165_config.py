@@ -8,9 +8,6 @@
    脏值回退安全默认值并记 WARNING。只保证「类型正确 + 数值在合理区间」，
    **不**做屏幕尺寸钳制（那份逻辑在 stock_float_window.py 的
    _clamp_to_screen / _keep_on_screen，此处不重复实现）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v165_config -v
 """
 import json
 import os

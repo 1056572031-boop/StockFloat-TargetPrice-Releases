@@ -1019,6 +1019,27 @@ class TestSearchThreadBody(SFCase):
             st.run()
         self.assertEqual(got, [[]])
 
+    def test_a_search_failure_leaves_a_swallowed_trace(self):
+        """搜索代码出错按"无结果"回报，但日志里必须留下 SWALLOWED 痕迹，否则和"真没搜到"分不开。"""
+        st = sf_editor.SearchThread("茅台", seq=1)
+        with mock.patch.object(sf_editor, "search_stocks",
+                               side_effect=OSError("network down")), \
+                mock.patch.object(sf_editor, "log_swallow") as swallow:
+            st.run()
+        self.assertEqual([c.args[0] for c in swallow.call_args_list],
+                         ["sf_editor.SearchThread.run"])
+
+    def test_a_failing_emit_is_traced_not_raised(self):
+        """信号投递失败不能让线程带着未捕获异常结束，也不能静默吞掉。"""
+        st = sf_editor.SearchThread("茅台", seq=2)
+        broken = mock.Mock()
+        broken.emit.side_effect = RuntimeError("receiver destroyed")
+        with mock.patch.object(sf_editor, "search_stocks", return_value=[]), \
+                mock.patch.object(sf_editor.SearchThread, "done", broken), \
+                mock.patch.object(sf_editor, "log_swallow") as swallow:
+            st.run()
+        self.assertEqual([c.args[0] for c in swallow.call_args_list],
+                         ["sf_editor.SearchThread.emit"])
 
 
 if __name__ == "__main__":

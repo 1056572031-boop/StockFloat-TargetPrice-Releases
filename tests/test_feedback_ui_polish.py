@@ -130,11 +130,14 @@ class _Outbox:
                           status="receipt_persisted" if index % 3 else "response_unknown")
                      for index in range(count)]
 
-    def history(self, limit=100):
-        return list(self.rows)
+    def history(self, limit=100, include_cleaned=True):
+        return [dict(row) for row in self.rows if include_cleaned or row["status"] != "cleaned"]
 
     def cleanup_local(self, outbox_id):
-        return None
+        # 与真实 FeedbackOutbox 一致：清理后记录还在库里，只是状态变成 cleaned。
+        for row in self.rows:
+            if row["outbox_id"] == outbox_id:
+                row["status"] = "cleaned"
 
 
 class HistoryLayout(_DialogCase):
@@ -187,7 +190,7 @@ class HistoryLayout(_DialogCase):
 
     def test_an_unreadable_history_says_so_and_leaves_a_trace(self):
         class Broken(_Outbox):
-            def history(self, limit=100):
+            def history(self, limit=100, include_cleaned=True):
                 raise RuntimeError("database disk image is malformed")
         with patch("sf_feedback_ui.log_swallow") as swallowed:
             history = self.track_widget(FeedbackHistoryDialog(Broken(0), self.dialog))
@@ -436,85 +439,74 @@ class OutboxOrphanCount(SFCase):
             self.assertEqual(read_diagnostics(root / "outbox.sqlite3", root / "objects")["orphan_objects"], 1)
 
 
-class CleanupConfirmation(_DialogCase):
+class CleanupIsImmediate(_DialogCase):
+    """用户 2026-10-27 要求：点“清理”直接清理，不再二次确认；清理后这条记录不再展示。"""
+
     def received_history(self):
         self.dialog.description.setPlainText("done")
         self.dialog.upload_button.click()
         self.finish()
         return self.open_history()
 
-    def test_one_click_arms_and_two_clicks_clean(self):
-        history = self.received_history()
-        outbox_id = self.dialog.current_id
-        button = history.findChild(QToolButton)
-        button.click()
-        self.assertEqual(self.dialog.outbox.get(outbox_id)["status"], "receipt_persisted")
-        button.click()
-        self.assertEqual(self.dialog.outbox.get(outbox_id)["status"], "cleaned")
-
-    def test_the_armed_state_expires_and_the_button_goes_back(self):
-        history = self.received_history()
-        button = history.findChild(QToolButton)
-        button.click()
-        self.assertEqual(button.text(), "确认清理")
-        history._disarm_cleanup()  # discipline-ok(R5): the single-shot timer's slot, driven directly instead of sleeping
-        self.assertIsNone(history._cleanup_armed)  # discipline-ok(R5): the armed marker is the only observable of the timeout
-        # refresh() 用 deleteLater 换掉旧行：先把延迟删除处理掉，才能取到重建后的那颗按钮。
+    def cards(self, history):
+        # refresh() 用 deleteLater 换掉旧行：先处理延迟删除，才数得到刷新后的真实卡片。
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         QApplication.processEvents()
-        buttons = history.findChildren(QToolButton)
-        self.assertEqual([b.text() for b in buttons], ["清理"])
-        self.assertEqual(self.dialog.outbox.get(self.dialog.current_id)["status"], "receipt_persisted")
+        return [w for w in history.findChildren(QWidget) if w.objectName() == "feedbackRow"]
 
-    def test_disarming_when_nothing_is_armed_does_nothing(self):
-        history = self.received_history()
-        history._disarm_cleanup()  # discipline-ok(R5): the timer can fire after a refresh already cleared the state
-        self.assertEqual(history.findChild(QToolButton).text(), "清理")
-
-    def test_the_real_timer_puts_the_button_back_without_anyone_calling_the_slot(self):
-        history = self.received_history()
-        with patch("sf_feedback_ui._CLEANUP_CONFIRM_MS", 40):
-            button = history.findChild(QToolButton)
-            button.click()
-            self.assertEqual(button.text(), "确认清理")
-            self.assertTrue(self.wait_for(lambda: (QApplication.processEvents(), button.text() == "清理")[1], timeout=2.0),
-                            "超时之后按钮必须自己变回去")
-        self.assertEqual(self.dialog.outbox.get(self.dialog.current_id)["status"], "receipt_persisted")
-
-    def test_closing_and_reopening_never_leaves_the_first_click_armed(self):
+    def test_one_click_cleans_and_the_record_disappears(self):
         history = self.received_history()
         outbox_id = self.dialog.current_id
+        archive = Path(self.dialog.outbox.get(outbox_id)["archive_path"])
+        self.assertEqual(len(self.cards(history)), 1)
+        self.assertEqual(history.findChild(QToolButton).text(), "清理")
+        history.findChild(QToolButton).click()
+        self.assertFalse(archive.exists(), "点一下就要清掉本机资料，不能还要再点一次")
+        self.assertEqual(self.dialog.outbox.get(outbox_id)["status"], "cleaned")
+        self.assertEqual(self.cards(history), [], "清理后这条记录不能再展示")
+        self.assertEqual(history.findChildren(QToolButton), [])
+        self.assertIn("还没有反馈记录", "\n".join(label.text() for label in history.findChildren(QLabel)))
+
+    def test_a_cleaned_record_stays_gone_after_reopening_the_window(self):
+        history = self.received_history()
         history.findChild(QToolButton).click()
         history.hide()
-        history.present(self.dialog)
+        self.dialog.history_button.click()
         QApplication.processEvents()
-        fresh = history.findChild(QToolButton)
-        self.assertEqual(fresh.text(), "清理", "重开后按钮必须是没上膛的样子")
-        fresh.click()
-        self.assertEqual(self.dialog.outbox.get(outbox_id)["status"], "receipt_persisted",
-                         "重开之后的第一下只能是上膛，不能直接删掉本机资料")
+        self.assertEqual(self.cards(history), [], "重新打开记录窗，已清理的记录不能回来")
 
-    def test_a_refresh_disarms_even_when_the_same_row_is_rebuilt(self):
+    def test_a_second_click_on_the_same_button_is_not_logged_as_a_failure(self):
+        # 快速连点：旧按钮在延迟删除之前仍可点，第二下打在已清理的记录上。界面结果是对的，
+        # 但不能留下带堆栈的警告——分析器会把警告行当作候选线索。
         history = self.received_history()
         outbox_id = self.dialog.current_id
-        history.findChild(QToolButton).click()
-        history.refresh()
-        QApplication.processEvents(); QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        history.findChildren(QToolButton)[-1].click()
-        self.assertEqual(self.dialog.outbox.get(outbox_id)["status"], "receipt_persisted")
+        button = history.findChild(QToolButton)
+        with self.assertNoLogs("sf_feedback_ui", level="WARNING"):
+            button.click()
+            button.click()
+        self.assertEqual(self.dialog.outbox.get(outbox_id)["status"], "cleaned")
+        self.assertEqual(self.cards(history), [])
 
-    def test_arming_another_row_puts_the_previous_rows_button_back(self):
+    def test_a_real_cleanup_failure_is_still_logged_as_a_warning(self):
+        # 对照：只有“已清理/被占用”这类状态变化才静默，真正的失败（磁盘、权限）仍要留痕。
         history = self.received_history()
-        real = history.findChild(QToolButton)
-        earlier = QToolButton()
-        self.track_widget(earlier)
-        # 只有一条已收件记录，第二个按钮只能自己造；这里验的是“换行上膛时旧按钮复位、计时器只有一个在跑”。
-        history._confirm_cleanup("other-row", earlier)  # discipline-ok(R5): a second armed row needs a second button; one received row exists here
-        self.assertEqual(earlier.text(), "确认清理")
-        history._confirm_cleanup(self.dialog.current_id, real)  # discipline-ok(R5): switching rows must reset the shared state
-        self.assertEqual(earlier.text(), "清理", "旧按钮必须变回原字，否则界面上同时有两颗“确认清理”")
-        self.assertEqual(real.text(), "确认清理")
-        self.assertEqual(self.dialog.outbox.get(self.dialog.current_id)["status"], "receipt_persisted")
+        button = history.findChild(QToolButton)
+        with patch.object(self.dialog.outbox, "cleanup_local", side_effect=OSError("disk full")):
+            with self.assertLogs("sf_feedback_ui", level="WARNING"):
+                button.click()
+        self.assertEqual(len(self.cards(history)), 1, "清理失败时这条记录要留在列表里，方便重试")
+
+    def test_cleaning_one_record_leaves_the_others_in_place(self):
+        history = self.track_widget(FeedbackHistoryDialog(_Outbox(3), self.dialog))
+        buttons = history.findChildren(QToolButton)
+        self.assertEqual(len(buttons), 2, "夹具里有两条已收件记录")
+        buttons[0].click()
+        remaining = self.cards(history)
+        text = "\n".join(label.text() for label in history.findChildren(QLabel))
+        self.assertEqual(len(remaining), 2)
+        self.assertNotIn("case-001", text, "被清理的那一条必须消失")
+        self.assertIn("case-000", text)
+        self.assertIn("case-002", text)
 
 
 class DialogRecoveryAndSweep(_FeedbackCase):

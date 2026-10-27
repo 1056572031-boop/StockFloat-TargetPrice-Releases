@@ -30,7 +30,7 @@ v1.2.81 优化（P1/P2）：
 
 实现约定（自查补充）：
   - 状态行（status_label）只承载一次性提示，高度恒定留白；
-    Esc/回车提示常驻在底部 hint_label，不会被状态覆盖。
+    Esc 与回车分别由窗口事件和输入框信号处理，不会覆盖状态提示。
   - 「清空」必须先落盘成功再动内存与界面，失败时保持原样并保留确认态可重试。
   - 落盘成功后同步 _saved_sig，避免关闭延迟内重开面板误报"有未生效修改"。
   - 删除/添加均只改内存，需点「立即生效」才落盘（统一暂存模型，避免误删即丢）。
@@ -200,7 +200,7 @@ class TargetPanel(GlassMixin, QWidget):
 
     def __init__(self, code, name, on_apply, on_clear,
                  current_code_fn=None, current_price_fn=None,
-                 parent=None, width=None, apply_blocked_fn=None,
+                 parent=None, width=None,
                  limits_fn=None):
         super().__init__(parent)
         self._init_glass_state()    # v1.2.87：复用毛玻璃（非 macOS 自动降级）
@@ -233,8 +233,6 @@ class TargetPanel(GlassMixin, QWidget):
         # 目标价输入须容纳完整的「价格或 ±5%」提示与价格数字；主窗现为窄版，
         # 因此只允许面板向更宽处扩展，绝不再随主窗被压至 184px。
         self._panel_w = max(PANEL_W, int(width) if width else PANEL_W)
-        self._apply_blocked_fn = apply_blocked_fn         # callable()->bool（铃铛已提醒时禁用"立即生效"）
-        self._apply_blocked = bool(apply_blocked_fn and apply_blocked_fn())
         self._limits_fn = limits_fn                      # callable()->(limit_up,limit_down) 或 None
         self._build()
         self._distance_timer = QTimer(self)
@@ -758,7 +756,6 @@ class TargetPanel(GlassMixin, QWidget):
         hit 状态负责，不能通过锁死整个保存入口实现。
         """
         enabled = bool(self._pending)
-        self._apply_blocked = False
         try:
             self.btn_clear.setEnabled(enabled)
             self.btn_apply.setEnabled(enabled)

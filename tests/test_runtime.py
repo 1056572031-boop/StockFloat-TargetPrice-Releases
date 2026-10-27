@@ -6,11 +6,8 @@
    令牌回收后可再激活、系统 API 失败静默降级、stop 收尾幂等）
 2. RuntimeState：缩 Dock / 恢复窗口的 _minimized 门控 + 按交易状态切换 App Nap；
    注入 fake 管理器验证状态转换，不触碰 Qt / Foundation
-3. restore_ui_interval：恢复窗口后 UI 轮询间隔决策（交易 50ms / 非交易 1000ms）
+3. restore_ui_interval：恢复窗口后 UI 看门狗间隔决策（交易与非交易一律使用同一常量）
 4. 模块导入不依赖 Qt（无任何 PyQt6 / Foundation import）
-
-运行方式（在 StockFloat 目录）：
-    python3 unittest discover -s tests 或 python3 -m unittest tests/test_runtime.py -v
 """
 import os
 import sys

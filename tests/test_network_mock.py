@@ -10,8 +10,7 @@
 6. sanitize_url_for_log 敏感参数脱敏（token 不落日志）
 7. 备源切换（fallback）保持不回归：主源失败回落备源
 
-纯逻辑测试，不依赖 PyQt6。运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests/test_network_mock.py -v
+纯逻辑测试，不依赖 PyQt6。
 """
 import os
 import sys

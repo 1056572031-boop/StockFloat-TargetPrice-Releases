@@ -1,16 +1,7 @@
 # -*- coding: utf-8 -*-
-"""sf_scheduler —— 上帝类 FloatWindow 拆分第一步（v1.2.39）。
+"""sf_scheduler —— 轮询调度的纯逻辑（v1.2.39 从主窗拆出）。
 
-背景：stock_float_window.py 的 FloatWindow 近 2000 行，事件/线程/轮询/动画/
-状态/UI 高度耦合，属"上帝类"倾向，改一处易牵扯别处。按三方向分版迁移：
-
- ① 动画状态机（价格滚动/闪烁/窗口动画）  → 目标模块 sf_anim.py
- ② 行情循环与轮询调度（熔断状态机/间隔决策/行情线程循环） → 本模块 sf_scheduler.py
- ③ 运行时调度（App Nap / 置顶 / 省电策略） → 目标模块 sf_runtime.py
-
-v1.2.39 完成第一步：把"轮询间隔决策"纯逻辑沉入本模块（含 熔断状态→间隔 映射
-唯一来源），主窗 _poll_interval 仅保留薄委托；后续版本按同模式逐步搬移
-_quote_loop / _minute_loop / 熔断状态机，期间保持单测全绿。
+只负责把行情状态映射为轮询间隔；行情线程、界面刷新和动画分别由调用方及其专用模块处理。
 """
 
 from sf_constants import (POLL_DEGRADED, POLL_INTERVAL_DEGRADED, POLL_INTERVAL_NORMAL,

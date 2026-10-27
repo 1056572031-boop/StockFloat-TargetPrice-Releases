@@ -12,9 +12,6 @@
 8. check_drop_flash：两档阈值穿越判定与独立冷却
 9. start_drop_flash / drop_flash_tick：下跌白闪相位计数与用尽复位
 10. reset_flash：切股复位（截止/相位/计数/冷却字典）
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests/test_anim_driver.py -v
 """
 import os
 import sys

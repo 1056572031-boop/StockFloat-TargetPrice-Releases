@@ -113,7 +113,7 @@ def window_ink(num):
     return round(ink / max(total, 1), 5)
 
 
-def main(argv=None):
+def main(argv=None):  # pragma: no cover - 需要真实窗口服务的人工探针，测试里无法执行
     ap = argparse.ArgumentParser(description="玻璃层压住内容窗：看门狗恢复计时")
     ap.add_argument("--observe", type=float, default=10.0, help="注入倒序后观察秒数")
     ap.add_argument("--interval", type=float, default=0.0,
@@ -158,10 +158,12 @@ def main(argv=None):
     nsw = objc.objc_object(c_void_p=int(win.winId())).window()
     main_num, glass_num = int(nsw.windowNumber()), int(win._glass_window.windowNumber())
     say("内容窗 %d / 玻璃窗 %d" % (main_num, glass_num))
+    import sf_glass
+    default_interval = sf_glass._Z_ORDER_CHECK_INTERVAL
     if a.interval > 0:
-        import sf_glass
         sf_glass._Z_ORDER_CHECK_INTERVAL = a.interval
-        say("已把合成顺序复核节流临时改为 %.2fs（产品默认 5.0s）" % a.interval)
+        say("已把合成顺序复核节流临时改为 %.2fs（产品默认 %.2fs）" % (a.interval, default_interval))
+    effective_interval = sf_glass._Z_ORDER_CHECK_INTERVAL
 
     pump(600)
     ok_before, _ = order_and_bounds(main_num, glass_num)
@@ -234,8 +236,9 @@ def main(argv=None):
     if recovered_after is None:
         res["verdict"] = ("注入倒序后 %.0fs 内没有恢复 → 看门狗没生效，这才是\"只剩背景\""
                           "复发的直接原因；顺带看 log_retop 里有没有抓到" % a.observe)
-    elif recovered_after > 5.5:
-        res["verdict"] = "%.2fs 才恢复（>5.5s ≈ 复核节流到期）→ 能用但慢，用户看得见" % recovered_after
+    elif recovered_after > effective_interval + 0.5:
+        res["verdict"] = ("%.2fs 才恢复（>%.1fs ≈ 复核节流 %.1fs 到期）→ 能用但慢，用户看得见"
+                          % (recovered_after, effective_interval + 0.5, effective_interval))
     else:
         res["verdict"] = "%.2fs 内恢复 → 看门狗有效，本次复发另有原因" % recovered_after
     print(json.dumps(res, ensure_ascii=False, indent=2))

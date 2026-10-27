@@ -9,8 +9,6 @@
   P3  置顶复核幂等：状态本来就对时，一个 WindowServer 写调用都不发。
   P4  图标队列门控：空队列不再每拍排一遍。
 
-运行：
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_power_v1410
 """
 import datetime
 import os

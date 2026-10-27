@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """build_release.sh 版本闸门：确认 dist/ 里的 .app 打包版本 == 期望版本。
 
-背景（v1.2.95 第8轮走查）：build_release.sh 支持 `--skip-build`，此时 dist/实时股价-目标价版.app
+背景（v1.2.95 第8轮走查）：build_release.sh 支持 `--skip-build`，此时 dist/Skyrocket.app
 是上一轮**残留产物**。若它来自旧版本却仍被 DMG 打包并安装到 /Applications，用户会拿到一个
 "版本号对（DMG 由 APP_VERSION 命名）、内容却是旧的"安装包，且脚本全程零报错 —— 没有任何
 闸门拦住这件事。在已发布的成品上这是危险的（旧代码、旧目标价逻辑可能被当新版发出去）。

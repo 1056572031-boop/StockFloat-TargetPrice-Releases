@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 8e2d67b8fb28f1b31d684e70e95208d3_13267e6da12411f1a413525400287e28
-    ReservedCode1: nTlPFSY2SZv3WevIr+g7y/FgW44MbiGod9S73bcRJxY4UVkiFYsI3h0T4OzKKYvuJbX65+qvwKO2IulxGAgaVjw0fJzq/4lpKtVtxrZiy5YTtghHX45SV/1JsiRqfk1WHc5weD1ysINwSUrKNwIplKl7B4aMsbYyUqpbCmRJC2Ik9fz4LBADm6h8vic=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 8e2d67b8fb28f1b31d684e70e95208d3_13267e6da12411f1a413525400287e28
-    ReservedCode2: nTlPFSY2SZv3WevIr+g7y/FgW44MbiGod9S73bcRJxY4UVkiFYsI3h0T4OzKKYvuJbX65+qvwKO2IulxGAgaVjw0fJzq/4lpKtVtxrZiy5YTtghHX45SV/1JsiRqfk1WHc5weD1ysINwSUrKNwIplKl7B4aMsbYyUqpbCmRJC2Ik9fz4LBADm6h8vic=
----
-
 # 本地强制检查关卡（v1.2.28 第3项）
 
 ## 发版强制关卡：./run_tests.sh
@@ -46,7 +35,7 @@ AIGC:
 
 之后每次 `git commit` 会先自动执行：
 
-1. `py_compile` 全量语法检查（排除 backups/.git）；
+1. 项目源码的 `py_compile` 语法检查（排除 backups、Git 元数据、虚拟环境、生成物和缓存目录）；
 2. `./run_tests.sh` 全量测试，**默认按核数开并行车道**（`SF_LANES`，本机 4 条，整档从约 10 至 14 分钟
    降到约 4 至 5 分钟）；提交时写 `SF_LANES=0 git commit ...` 可强制串行，写 `SF_LANES=3` 指定三条；
 3. 任一失败 → 非零退出，**阻止提交**并打印失败原因。
@@ -57,4 +46,3 @@ AIGC:
 该命令不修改 Git 配置，不绕过已有 hook，也不主动执行完整回归。最终是否实际执行以正常提交日志为准。
 遇到 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_COMMON_DIR` 或 `GIT_INDEX_FILE` 路由环境会停止；
 请在普通终端核对仓库后执行，不在另一次 Git 操作或 hook 内安装。
-*（内容由AI生成，仅供参考）*

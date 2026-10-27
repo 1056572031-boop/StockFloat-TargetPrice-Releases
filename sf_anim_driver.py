@@ -64,7 +64,7 @@ class AnimDriver(object):
 
     # ---- 布局动画启动（原 _toggle_chart 尾部字段赋值） ----------------------
     def begin_layout(self, from_h, to_h, now):
-        """登记一次收展布局动画（180ms ease-out，复用 _anim_timer 驱动）。"""
+        """登记一次收展布局动画；时长与缓动由 `tick(..., layout_dur)` 决定。"""
         self.layout_anim_from = from_h
         self.layout_anim_to = to_h
         self.layout_anim_start = now

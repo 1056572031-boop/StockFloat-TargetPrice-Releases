@@ -316,6 +316,18 @@ class LogScrubbing(SFCase):
         out = self.scrub("邮箱a.b@example.com请回复，或联系%s。" % SYNTHETIC_PHONE)
         self.assertEqual(out, "邮箱<email>请回复，或联系<phone>。")
 
+    def test_public_ipv4_followed_by_sentence_punctuation_is_masked(self):
+        for suffix in (".", "...", "。", "，"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.scrub("peer 203.0.113.77" + suffix),
+                                 "peer 203.0.x.x" + suffix)
+
+    def test_ipv4_like_version_chain_is_not_masked(self):
+        # 第二条前面没有字母，单靠“前面不是字母数字”拦不住，只有“后面不能再接 .数字”这条边界能拦。
+        for text in ("build v1.2.3.4.5", "ver 1.2.3.4.5 ok"):
+            with self.subTest(text=text):
+                self.assertEqual(self.scrub(text), text)
+
     def test_phone_numbers_with_a_country_code_or_separators_are_masked(self):
         grouped = "%s-%s-%s" % (SYNTHETIC_PHONE[:3], SYNTHETIC_PHONE[3:7], SYNTHETIC_PHONE[7:])
         for text in ("+86 " + grouped, "86-" + grouped, grouped, "+86" + SYNTHETIC_PHONE):

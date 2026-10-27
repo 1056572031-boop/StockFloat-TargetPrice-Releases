@@ -4,9 +4,6 @@
 覆盖：QApplication + FloatWindow 创建 → 注入合法行情 → 渲染一轮（show/update/grab）
 全程无异常即通过。用于 `python3 -m unittest discover -s tests` 一条命令
 快速回归"主程序能不能正常启动并渲染"，防止加新功能把主流程搞挂。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

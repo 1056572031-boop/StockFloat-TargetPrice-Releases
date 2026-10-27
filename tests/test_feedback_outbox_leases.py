@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import tempfile
 from unittest import mock
@@ -93,6 +94,27 @@ class OutboxLeaseTests(SFCase):
         record = self.store.history()[0]
         self.assertEqual(record["case_id"], "feedback-test")
         self.assertEqual(record["status"], "cleaned")
+        # 界面用 include_cleaned=False：已清理的记录不再返回，但库里的回执元数据仍在（对账、去重要用）。
+        self.assertEqual(self.store.history(include_cleaned=False), [])
+        self.assertEqual(self.store.get(row["outbox_id"])["receipt"]["case_id"], "feedback-test")
+
+    def test_hidden_cleaned_records_do_not_use_up_the_history_limit(self):
+        keep = self.store.transition(self.row["outbox_id"], "submitting")
+        # 再造一条会被清理的记录：清理会刷新 updated_at，排到最前面；若过滤放在界面里，limit=1 就只剩它。
+        second_src = Path(keep["archive_path"]).parent / "second-source.zip"
+        shutil.copy(keep["archive_path"], second_src)
+        second = self.store.enqueue(second_src, app_version="fixture", consent_policy_version="fixture")
+        for item in (keep, second):
+            current = item if item["status"] == "submitting" else self.store.transition(item["outbox_id"], "submitting")
+            receipt = {"case_id": "case-" + current["outbox_id"][:4], "archive_sha256": current["archive_sha256"],
+                       "size_bytes": current["archive_size"], "received_at": "2026-10-24T00:00:00Z",
+                       "storage_status": "stored", "validation_status": "validated",
+                       "retention_until": None, "retention_policy": "manual_deletion"}
+            self.store.persist_receipt(current["outbox_id"], receipt)
+        self.store.cleanup_local(second["outbox_id"])
+        shown = self.store.history(limit=1, include_cleaned=False)
+        self.assertEqual([r["outbox_id"] for r in shown], [keep["outbox_id"]],
+                         "已清理的记录占了名额，较早的未清理记录被挤出")
 
     def test_recovery_does_not_release_a_live_lease(self):
         self.claim(seconds=30)

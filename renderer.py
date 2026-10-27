@@ -4,7 +4,7 @@
 
 只包含【不依赖 FloatWindow 实例状态】的纯计算/构造函数，从主窗口类下沉：
 - smooth_round_rect_path     : 超椭圆圆角 QPainterPath（主窗背景路径）
-- _glass_squircle_cgpath     : 与 Qt 侧完全一致的 CGPath（玻璃层 mask）
+- _glass_squircle_cgpath     : 供 Qt/CGPath 几何对拍的超椭圆路径辅助（当前玻璃层使用原生圆角 mask）
 - _bottom_layout             : 底部四段布局唯一实现（paintEvent 与宽度计算共用，
                                从根上消除双份布局漂移，见 20.2）
 - price_pct_layout           : 价格行布局唯一实现（价格大字 + 右侧涨跌幅 + 状态徽标，
@@ -89,9 +89,9 @@ def smooth_round_rect_path(x, y, w, h, r):
 
 
 def _glass_squircle_cgpath(x, y, w, h, r):
-    """构建与 Qt 侧 smooth_round_rect_path 完全一致的超椭圆圆角 CGPath。
-    玻璃层 mask 若用标准圆角矩形(CGPathCreateWithRoundedRect)，其弧线与主窗
-    超椭圆弧线不重合，四角视觉上出现"大圆角套小圆角"的双层圆角重叠。"""
+    """构建与 Qt 侧 `smooth_round_rect_path` 对拍的超椭圆圆角 CGPath。
+
+    当前运行时玻璃层使用原生圆角 mask；该辅助保留给几何一致性测试。"""
     # Quartz 仅 macOS 存在：延迟到调用时导入，让本模块在非 macOS / 无 PyObjC
     # 环境下仍可 import（单测只走 Qt 侧路径时不会因缺库直接崩）。
     from Quartz import (CGPathCreateMutable, CGPathMoveToPoint,
@@ -222,7 +222,7 @@ def price_pct_layout(width, measure, pct_w,
       size      : 价格大字最终字号
       price_x / price_w : 价格大字起点 x 与该字号下的文本宽
       budget    : 价格字号自适应预算（仅扣除涨跌幅；徽标不占水平空间）
-      badge_x   : 徽标左上角 x（居中于涨跌幅区域；无徽标时 None）
+      badge_x   : 徽标左上角 x（左对齐涨跌幅区域；无徽标或放不下时 None）
       pct_x / pct_w / pct_avail : 涨跌幅起点 x、宽度、到右侧安全边的可用宽
       on_right  : 涨跌幅是否落在价格行右侧（恒 True；极端兜底夹紧后仍保持）
       right_limit : 价格行可绘制的右边界

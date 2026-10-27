@@ -9,11 +9,14 @@ Release 资产。V1.3.96 起的客户端从 releases 仓库 main 分支固定文
 import argparse
 import base64
 import hashlib
+import http.client
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -201,6 +204,21 @@ def verified_asset(release, archive, expected_size=None):
     raise SystemExit("上传后未验证到版本 ZIP，未更新线上清单")
 
 
+# 读回是只读 GET，重读不会改变线上任何东西；中途断线（v1.4.105 实测 IncompleteRead，
+# 27MB 的包读到 5.6MB 与 0.3MB 就断）不该让一次已经上传成功的发布停在半路，
+# 而重新运行本工具会因同名资产被拒。重读之后仍要逐字节比对，不放宽任何判据。
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_RETRY_PAUSE = 5.0
+_TRANSIENT_DOWNLOAD_ERRORS = (OSError, http.client.HTTPException)
+
+
+def _download_retryable(exc):
+    """服务端明确说“你错了”的状态码（401/403/404 等）重读没有意义，直接停。"""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (408, 429) or exc.code >= 500
+    return True
+
+
 def download_asset(token, asset):
     """读回资产原始字节；名称和大小都相同也不能替代内容核对。"""
     url = asset.get("url") or asset.get("browser_download_url")
@@ -213,16 +231,52 @@ def download_asset(token, asset):
         "X-GitHub-Api-Version": "2022-11-28",
     }
     req = urllib.request.Request(url, headers=headers, method="GET")
+    last = None
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=resolve_timeouts()[0]) as response:
+                return response.read()
+        except _TRANSIENT_DOWNLOAD_ERRORS as exc:
+            last = exc
+            if not _download_retryable(exc) or attempt == DOWNLOAD_ATTEMPTS:
+                break
+            print("   资产读回第 %d 次中断（%r），%.0f 秒后重读" % (attempt, exc, DOWNLOAD_RETRY_PAUSE))
+            time.sleep(DOWNLOAD_RETRY_PAUSE)
+        except Exception as exc:
+            raise SystemExit("上传后资产原始字节读回失败：%r" % (exc,)) from exc
+    raise SystemExit("上传后资产原始字节读回失败（读了 %d 次）：%r" % (attempt, last)) from last
+
+
+def reuse_uploaded_archive(token, release, archive, archive_bytes):
+    """续做用：同名资产已在线上，且读回的字节与本地固定快照逐字节相同，才复用它；否则照旧拒绝。
+
+    场景（v1.4.104、v1.4.105 连续两次）：ZIP 已上传成功，读回中途断线，发布工具停在清单切换之前；
+    重新运行会因“同名资产”被拒，此前只能手写脚本接着做。这里不放宽“绝不覆盖”：字节不同、大小不同
+    一律仍然拒绝，复用的资产照样要过读回比对。"""
+    existing = [a for a in release.get("assets", []) if a.get("name") == archive.name]
+    if len(existing) != 1:
+        raise SystemExit("固定 Release 里有 %d 个同名版本 ZIP，无法确定复用哪一个，拒绝复用，也拒绝覆盖" % len(existing))
+    if existing[0].get("size") != len(archive_bytes):
+        raise SystemExit("固定 Release 里的同名版本 ZIP 大小与本地快照不同（线上 %s 字节，本地 %d 字节），"
+                         "拒绝复用，也拒绝覆盖" % (existing[0].get("size"), len(archive_bytes)))
     try:
-        with urllib.request.urlopen(req, timeout=resolve_timeouts()[0]) as response:
-            return response.read()
-    except Exception as exc:
-        raise SystemExit("上传后资产原始字节读回失败：%r" % (exc,)) from exc
+        remote = download_asset(token, existing[0])
+    except SystemExit as exc:
+        # download_asset 的措辞是给“刚上传完的读回”写的；续做读的是线上已有的资产，原因要说准。
+        raise SystemExit("续做：读回线上已有的同名版本 ZIP 失败，无法确认它与本地快照一致，拒绝复用，"
+                         "也拒绝覆盖。原因：%s" % (exc,)) from exc
+    if remote != archive_bytes:
+        raise SystemExit("固定 Release 里的同名版本 ZIP 与本地快照字节不同（读回 %d 字节，本地 %d 字节），"
+                         "拒绝复用，也拒绝覆盖" % (len(remote), len(archive_bytes)))
+    print("   续做：线上已有同名版本 ZIP，大小与字节都与本地快照一致，复用，不重新上传")
+    return existing[0]
 
 
-def upload_archive(token, release, archive, archive_bytes):
+def upload_archive(token, release, archive, archive_bytes, resume=False):
     if any(asset.get("name") == archive.name for asset in release.get("assets", [])):
-        raise SystemExit("固定 Release 已有同名版本 ZIP，拒绝覆盖")
+        if not resume:
+            raise SystemExit("固定 Release 已有同名版本 ZIP，拒绝覆盖")
+        return reuse_uploaded_archive(token, release, archive, archive_bytes)
     request(upload_url(release["id"], archive.name), token, method="POST",
             data=archive_bytes, content_type="application/zip",
             timeout=resolve_timeouts()[0])
@@ -518,6 +572,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--assets", type=Path, required=True)
     parser.add_argument("--notes", type=Path, required=True)
+    parser.add_argument("--resume", action="store_true",
+                        help="线上已有同名版本 ZIP 且字节与本地快照一致时复用它接着做；不一致仍拒绝覆盖")
     args = parser.parse_args()
     up, api = resolve_timeouts()
     print("   超时：版本 ZIP 上传 %.0f 秒（%s，默认 %.0f）/ 元数据与读回 %.0f 秒（%s）"
@@ -536,7 +592,7 @@ def main():
     notes = metadata["notes"]
     token = github_token()
     release = load_release(token)
-    asset = upload_archive(token, release, archive, archive_bytes)
+    asset = upload_archive(token, release, archive, archive_bytes, resume=args.resume)
     # Bind the public release page before exposing the new manifest to clients.
     release = update_release_body(token, release, notes)
     # 新客户端的 raw 清单先切换：一旦它可见，ZIP 与公开说明已存在且已验证。

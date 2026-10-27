@@ -9,10 +9,6 @@
   4) v1.2.20 玻璃层圆角 mask 节流：60ms 内不重复重建，force_mask 强制重建一次；
   5) v1.2.21 盘后分时点过滤：收盘后 15:00~15:30 腾讯盘后点不再保留为折线
      （修复右端 20+ 点重叠竖线导致的"乱七八糟"）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_stretch -v
-    # 或全量：python3 -m unittest discover -s tests -v
 """
 import json
 import math

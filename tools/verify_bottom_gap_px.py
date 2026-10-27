@@ -173,7 +173,9 @@ def main():
     patches = [
         patch.object(m, "load_config",
                      return_value=("sh600519", 100, 100, 200, "translucent")),
-        patch.object(m, "save_config", lambda *a, **k: None),
+        # 这个工具只关心绘制结果；退出时仍会走真实的保存结果判定，测试桩必须明确表示成功，
+        # 否则像素核验通过后会凭空留下一条“保存失败”警告，污染检查结论。
+        patch.object(m, "save_config", lambda *a, **k: True),
         patch.object(sf_quote, "http_get", _fake_http_get),
         patch.object(m, "start_icon_worker", lambda: None),
         patch.object(m.FloatWindow, "_force_top", lambda self: None),

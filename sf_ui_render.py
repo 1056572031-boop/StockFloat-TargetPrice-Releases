@@ -608,11 +608,12 @@ def hint_line_gap_px(y, hint_h, line_y, pad=LABEL_OUTSET_Y):
 
 def stale_hint_y(rect_top, rect_bottom, hint_h, line_y,
                  min_gap=CHART_HINT_MIN_GAP_PX, pad=LABEL_OUTSET_Y):
-    """滞后提示矩形该放在哪个 y —— 离 0% 基准白色虚线更远的一侧。纯函数便于单测。
+    """历史图内滞后提示的选位纯函数，供测试与诊断使用。
 
-    规则：默认贴顶（rect_top + 2，即历史行为）；只有当顶部这一档的净空不足 `min_gap`
-    时才翻到图带底部；若底部更近（极矮图带、虚线落在中间偏下）则仍留顶部。取不到虚线
-    （`line_y is None`）时一律贴顶，与旧行为一致。
+    当前界面在名称行右侧绘制滞后标签，不调用本函数。以下规则保留为可复现的历史选位口径：
+    默认贴顶（rect_top + 2）；只有顶部这一档的净空不足 `min_gap` 时才翻到图带底部；
+    若底部更近（极矮图带、虚线落在中间偏下）则仍留顶部。取不到虚线（`line_y is None`）
+    时一律贴顶。
 
     净空按**底板外沿**算：文字矩形再上下各外扩 `pad`（= 画底板用的 LABEL_OUTSET_Y），
     穿过底板记 0 —— 判"贴不贴近"要判用户真看见的那块深色底，而不是字身。
@@ -1368,10 +1369,11 @@ class RenderMixin:
                                        Qt.AlignmentFlag.AlignCenter, badge)
 
         def _paint_market_status(self, p, w, elided):
-            """20.1 v1.2.27：休市状态提示（非交易时段）：顶部栏水平居中。
-            v1.2.53：由「名称→按钮空白区内居中」改为「顶部栏全宽居中」
-            （仅左右校准，垂直位置不变）；重叠防护/退化规则下沉纯函数
-            market_status_rect，行为可单测。"""
+            """历史保留的非交易时段状态绘制辅助。
+
+            当前主卡绘制路径不调用本方法；水平位置由 `market_status_rect` 定义，
+            左边缘与股票名称左边缘对齐。
+            """
             mst = self._market_status()
             if mst:
                 lab, col = mst

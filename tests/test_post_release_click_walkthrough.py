@@ -19,6 +19,7 @@ import io
 import json
 import os
 import pathlib
+import plistlib
 import sys
 import tempfile
 import time
@@ -986,6 +987,20 @@ class ReadingAndCli(WalkthroughStage):
     def test_bundle_version_读不到plist时给空串不抛错(self):
         self.assertEqual(W.bundle_version(ROOT / "sf_constants.py"), "")
 
+    def test_bundle_version_读到plist时给出短版本号且不依赖本机装机版(self):
+        # 此前这条成功路径只是被"不带参数跑 main"顺带读了本机 /Applications 的真包才算覆盖，
+        # 空机器（公开 CI）上并没有；这里用临时包造一份 Info.plist，判据与本机装了什么无关。
+        with tempfile.TemporaryDirectory(prefix="sf_click_bundle_") as temp:
+            contents = pathlib.Path(temp) / "Fake.app" / "Contents"
+            contents.mkdir(parents=True)
+            with (contents / "Info.plist").open("wb") as fh:
+                plistlib.dump({"CFBundleShortVersionString": "test-build"}, fh)
+            self.assertEqual(W.bundle_version(pathlib.Path(temp) / "Fake.app"), "test-build")
+            with (contents / "Info.plist").open("wb") as fh:
+                plistlib.dump({}, fh)
+            self.assertEqual(W.bundle_version(pathlib.Path(temp) / "Fake.app"), "",
+                             "缺少版本字段时给空串，不能抛错也不能编出版本")
+
     def test_self_test_分支确实分发到自检并返回成功(self):
         out = io.StringIO()
         with redirect_stdout(out):
@@ -1206,7 +1221,8 @@ class ReadingAndCli(WalkthroughStage):
     def test_正式版正在运行必须阻断前置(self):
         reasons = W.preflight_reasons(pathlib.Path("/tmp/app"),
                                       {"locked": False, "display_asleep": False},
-                                      True, True, ["menu"], installed_running=True)
+                                      True, ["menu"], installed_running=True,
+                                      idle_seconds=W.USER_INPUT_IDLE_MIN_SEC)
         self.assertIn("installed_app_running", reasons)
 
     def test_screen_state_读接口异常时明确返回未知(self):
@@ -1229,7 +1245,7 @@ class ReadingAndCli(WalkthroughStage):
                  mock.patch.object(W, "bundle_version", return_value="test"), \
                  mock.patch.object(W, "run_walkthrough", return_value=evidence), \
                  redirect_stdout(out):
-                rc = W.main(["--i-am-at-the-machine", "--out", str(out_dir)])
+                rc = W.main(["--out", str(out_dir)])
             self.assertEqual(rc, 1, out.getvalue())
             self.assertIn("隔离缺陷", out.getvalue())
             self.assertTrue(out_dir.exists(), "CLI 仍应建好证据目录，方便保留失败现场")
@@ -1245,7 +1261,7 @@ class ReadingAndCli(WalkthroughStage):
                  mock.patch.object(W, "preflight_reasons", return_value=[]), \
                  mock.patch.object(W, "bundle_version", return_value="test"), \
                  mock.patch.object(W, "run_walkthrough", return_value=evidence):
-                self.assertEqual(W.main(["--i-am-at-the-machine", "--out", temp]), 0)
+                self.assertEqual(W.main(["--out", temp]), 0)
 
     def test_report_只打字不发事件且点名缺产物(self):
         out = io.StringIO()
@@ -1256,12 +1272,97 @@ class ReadingAndCli(WalkthroughStage):
         self.assertIn("app_missing", text)
         self.assertNotIn("接管鼠标", text, "报告档不许宣布要接管鼠标")
 
-    def test_没点头允许占屏_拒跑退2(self):
-        out = io.StringIO()
-        with redirect_stdout(out):
-            rc = W.main([])                       # 不带 --i-am-at-the-machine
-        self.assertEqual(rc, 2, out.getvalue())
-        self.assertIn("不判通过也不判失败", out.getvalue())
+    def test_默认无人工确认也会进入自动走查(self):
+        passed = {"ran": 1, "passed": 1, "failed": 0, "skipped": 0,
+                  "not_evaluated": False, "ok": True}
+        evidence = {"summary": dict(passed), "user_data": {"ok": True, "changed": []}}
+        with tempfile.TemporaryDirectory(prefix="sf_click_auto_") as temp:
+            out = io.StringIO()
+            with mock.patch.object(W, "_screen_state", return_value={"locked": False,
+                                                                         "display_asleep": False}), \
+                 mock.patch.object(W, "accessibility_trusted", return_value=True), \
+                 mock.patch.object(W, "input_idle_seconds", return_value=W.USER_INPUT_IDLE_MIN_SEC), \
+                 mock.patch.object(W.FSS, "installed_app_running", return_value=False), \
+                 mock.patch.object(W, "bundle_version", return_value="test"), \
+                 mock.patch.object(W, "run_walkthrough", return_value=evidence) as run, \
+                 redirect_stdout(out):
+                rc = W.main(["--app", temp, "--out", temp])
+            self.assertEqual(rc, 0, out.getvalue())
+            run.assert_called_once()
+            self.assertNotIn("need_flag:--i-am-at-the-machine", out.getvalue())
+
+    def test_旧人工参数仅兼容且不影响自动走查(self):
+        with tempfile.TemporaryDirectory(prefix="sf_click_compat_") as temp:
+            with mock.patch.object(W, "_screen_state", return_value={"locked": False,
+                                                                         "display_asleep": False}), \
+                 mock.patch.object(W, "accessibility_trusted", return_value=True), \
+                 mock.patch.object(W, "input_idle_seconds", return_value=W.USER_INPUT_IDLE_MIN_SEC), \
+                 mock.patch.object(W.FSS, "installed_app_running", return_value=False), \
+                 mock.patch.object(W, "bundle_version", return_value="test"), \
+                 mock.patch.object(W, "run_walkthrough", return_value={
+                     "summary": {"ran": 1, "passed": 1, "failed": 0, "skipped": 0,
+                                 "not_evaluated": False, "ok": True},
+                     "user_data": {"ok": True, "changed": []}}):
+                self.assertEqual(W.main(["--i-am-at-the-machine", "--app", temp,
+                                         "--out", temp]), 0)
+
+    def test_自动运行时每个客观前提不成立都拒跑退2且不发事件(self):
+        awake = {"locked": False, "display_asleep": False}
+        cases = [
+            ("屏幕锁定", {"locked": True, "display_asleep": False}, True, False, True,
+             "screen_locked_or_unknown:True"),
+            ("屏幕状态读不出", {"locked": None, "display_asleep": False}, True, False, True,
+             "screen_locked_or_unknown:None"),
+            ("显示器休眠", {"locked": False, "display_asleep": True}, True, False, True,
+             "display_asleep_or_unknown:True"),
+            ("显示器状态读不出", {"locked": False, "display_asleep": None}, True, False, True,
+             "display_asleep_or_unknown:None"),
+            ("辅助功能未授权", awake, False, False, True, "accessibility_not_granted:False"),
+            ("辅助功能读不出", awake, None, False, True, "accessibility_not_granted:None"),
+            ("正式版正在运行", awake, True, True, True, "installed_app_running"),
+            ("产物不存在", awake, True, False, False, "app_missing:"),
+            ("用户刚刚还在操作", awake, True, False, True, "user_input_active_or_unknown:0.5", 0.5),
+            ("输入状态读不出", awake, True, False, True, "user_input_active_or_unknown:None", None),
+        ]
+        for case in cases:
+            label, screen, trusted, running, app_exists, expected = case[:6]
+            idle = case[6] if len(case) > 6 else W.USER_INPUT_IDLE_MIN_SEC
+            with self.subTest(case=label), \
+                    tempfile.TemporaryDirectory(prefix="sf_click_blocked_") as temp:
+                app = temp if app_exists else str(pathlib.Path(temp) / "missing.app")
+                out = io.StringIO()
+                with mock.patch.object(W, "_screen_state", return_value=screen), \
+                     mock.patch.object(W, "accessibility_trusted", return_value=trusted), \
+                     mock.patch.object(W, "input_idle_seconds", return_value=idle), \
+                     mock.patch.object(W.FSS, "installed_app_running", return_value=running), \
+                     mock.patch.object(W, "bundle_version", return_value="test"), \
+                     mock.patch.object(W, "run_walkthrough") as run, \
+                     redirect_stdout(out):
+                    rc = W.main(["--app", app, "--out", temp])
+                self.assertEqual(rc, 2, out.getvalue())
+                run.assert_not_called()
+                self.assertIn(expected, out.getvalue())
+                self.assertIn("不判通过也不判失败", out.getvalue())
+                self.assertNotIn("need_flag:--i-am-at-the-machine", out.getvalue())
+                self.assertNotIn("再加 --i-am-at-the-machine", out.getvalue())
+
+    def test_没有选中动作时即使环境可用也拒跑(self):
+        reasons = W.preflight_reasons(pathlib.Path("/tmp"),
+                                      {"locked": False, "display_asleep": False},
+                                      True, [], idle_seconds=W.USER_INPUT_IDLE_MIN_SEC)
+        self.assertEqual(reasons, ["no_action_selected"])
+
+    def test_输入空闲刚好达到门槛才放行_差一点就拒(self):
+        screen = {"locked": False, "display_asleep": False}
+        args = (pathlib.Path("/tmp"), screen, True, ["menu"])
+        floor = W.USER_INPUT_IDLE_MIN_SEC
+        self.assertEqual(W.preflight_reasons(*args, idle_seconds=floor), [])
+        self.assertEqual(W.preflight_reasons(*args, idle_seconds=floor + 100.0), [])
+        just_under = W.preflight_reasons(*args, idle_seconds=floor - 0.1)
+        self.assertEqual(len(just_under), 1)
+        self.assertTrue(just_under[0].startswith("user_input_active_or_unknown:"), just_under)
+        self.assertEqual(W.preflight_reasons(*args, idle_seconds=None),
+                         ["user_input_active_or_unknown:None"])
 
     def test_未知参数退2(self):
         with self.assertRaises(SystemExit) as caught:
@@ -1393,7 +1494,7 @@ class NetworkGuardDisclosure(SFCase):
                 # 开头那行只在装机包路径存在时才打印；默认路径是 /Applications/Skyrocket.app，
                 # 装了正式版的开发机上存在、公开 CI 的空机器上不存在，于是本机绿而公开 CI 红。
                 # 所以显式指向一个一定存在的目录（取包版本等都已替身）。
-                rc = W.main(["--i-am-at-the-machine", "--app", temp, "--out", temp])
+                rc = W.main(["--app", temp, "--out", temp])
             self.assertEqual(rc, 0)
             text = out.getvalue()
             self.assertIn("网络隔离: 开头哨兵-来自探测", text)

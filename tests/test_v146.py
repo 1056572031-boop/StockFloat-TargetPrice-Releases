@@ -13,9 +13,6 @@
       交由下一次 Qt 主窗 paintEvent 同帧 _glass_mask_flush 重建），
      mask 与主窗圆角同一几何进入合成帧，消除错位变形/闪烁，同时保留 v1.2.43
      中间帧降频收益。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v146 -v
 """
 import os
 import sys

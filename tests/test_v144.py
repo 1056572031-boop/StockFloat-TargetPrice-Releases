@@ -10,9 +10,6 @@
     15:00，导致 9:30 之后的分时点被全量过滤成空 → 未开盘期间分时图空白。
     修复：非交易时段固定 close_min（15:00）为上界，完整保留最近交易日走势；
     交易时段维持 min(cur_min, close_min) 裁剪，行为不回归。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests/test_v144.py -v
 """
 import datetime
 import json

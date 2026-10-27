@@ -7,9 +7,6 @@
 布局决策已下沉纯函数 sf_ui_render.market_status_rect（可脱离 Qt 单测）：
 - v1.2.74 起：无论窗口宽度/名称长短，提示左边缘恒等于 PAD_X（名称左边缘）
 - 仅输出水平布局 (rx, rw)，垂直位置由绘制侧 text_cy 决定，本函数不参与
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v153 -v
 """
 import os
 import sys

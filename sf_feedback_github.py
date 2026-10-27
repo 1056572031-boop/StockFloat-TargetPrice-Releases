@@ -15,7 +15,7 @@ from urllib.request import Request, build_opener
 
 from sf_feedback import FeedbackProtocolError
 from sf_feedback_capture import FEEDBACK_REPOSITORY, read_upload_archive, validate_capture_context, validate_upload_receipt
-from sf_feedback_transport import MAX_UPLOAD_BYTES, NoRedirect
+from sf_feedback_transport import MAX_UPLOAD_BYTES, NoRedirect, RejectRealConnectionUnderTest
 
 REPOSITORY = FEEDBACK_REPOSITORY
 INBOX_TAG = "feedback-inbox-v1"
@@ -51,7 +51,7 @@ class GitHubAPI:
                    "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "Skyrocket-Feedback/1",
                    "Content-Type": "application/octet-stream" if upload else "application/json"}
         request = Request(url, data=body, headers=headers, method=method)
-        opener = build_opener(NoRedirect())
+        opener = build_opener(NoRedirect(), RejectRealConnectionUnderTest())
         timeout = 120 if binary and limit > 256 * 1024 else 30
         try:
             response = opener.open(request, timeout=timeout)

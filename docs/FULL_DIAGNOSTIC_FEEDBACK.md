@@ -16,7 +16,7 @@
 ## 版本与隐私
 
 - 旧格式：payload 1，策略 `github-private-feedback-v1`，仍保留原 256 KiB 上限与旧包恢复。
-- 完整格式：payload 2，策略 `github-private-feedback-full-v2`，外层最多 32 MiB。
+- 完整格式默认使用 payload 2，策略 `github-private-feedback-full-v2`，外层最多 32 MiB；启用 `feedback_v3` 后使用 payload 3，策略 `github-private-feedback-full-v3`，同样受该上限约束。
 - 内层仅接受已批准的诊断 JSON、日志、概览和崩溃关键片段，不接受任意路径、链接、加密附件或可执行文件。
 - 单份日志最多 5 MiB，最多当前日志及3份轮转；内层解压总量最多32 MiB，不通过删除资料降级为简化上传。
 - 诊断类别缺少时必须有对应采集说明；缺失、截断、无记录不自动判为产品故障或正常。

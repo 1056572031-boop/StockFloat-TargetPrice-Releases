@@ -27,6 +27,19 @@
 
 # "这个模块坏了用户会说什么" 的答案必须落到具体通路；纯函数/维护端模块才可申报 skip。
 
+version 1.4.106
+# 本版区间是 e2f13bf..HEAD（v1.4.105 发布源码以来，26 笔非合并提交）。下列模块要么只改了说明（语法树与基线逐项相同），要么没有常驻状态，逐条交代通路。
+skip renderer 本版只改说明文字，语法树与基线相同；纯几何与绘制函数，无模块级可变状态。
+skip sf_animator 本版只改说明文字，语法树与基线相同；动画由主窗持有，其开关由 state.json 的 features 输出。
+skip sf_camera_check 本版只把装机身份名单改为读取 sf_constants，不再另存一份字面量；它是显式硬件核验命令，只写自己的有界 JSON 结果，不持有常规运行状态。
+skip sf_editor 本版只让搜索线程出错和信号投递失败各留一条 SWALLOWED 日志（经 log_swallow 写入 debug.log 与 last_failures.json）；编辑器自身无常驻状态，搜索被拒的原因仍由 universe 诊断输出。
+skip sf_feedback_github 本版只在请求通道上挂一个测试专用拒绝处理器，仅当测试运行器设置 SF_TEST_REJECT_NETWORK=1 时才起作用，装机版不设该变量；无模块级可变状态，失败经队列 last_error 与 feedback.json 输出。
+skip sf_feedback_receiver 本版只改说明文字，语法树与基线相同；只由维护者本机的反馈代理使用，客户端不加载。
+skip sf_feedback_transport 本版只新增测试专用拒绝处理器（同上，装机版不设开关），发送函数与失败标签不变；失败仍经队列 last_error 与 feedback.json 的 queue.last_errors 输出。
+skip sf_temp_sweep 本版只改说明文字，语法树与基线相同；清扫结果仍由原有日志与诊断字段输出。
+skip sf_window_geometry 纯函数，无模块级状态；本版只改右沿贴齐时左侧下限的取值，只有主窗 _keep_on_screen 一处调用，窗口位置本身仍随 config 与 glass.json 输出。
+skip target_panel 本版只删除一个没有任何调用方的构造参数，无模块级可变状态；目标价条目与存储裁剪仍由 targets.json 输出。
+
 version 1.4.105
 # 本版区间是 a8d42e1..HEAD（v1.4.104 发布源码以来，11 笔提交）。反馈队列与反馈窗的运行态本来就由 feedback.json、feedback_ui.json 带走，下面四个模块没有自己的常驻状态，逐条交代通路。
 skip sf_feedback_admin 只由维护者本机的反馈代理加载，客户端不启动它；本版新增的是运行结果里“只有包、没有回执”的数量，写入代理自己的运行报告，不属于用户诊断附件。

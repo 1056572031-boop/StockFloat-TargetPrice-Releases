@@ -16,9 +16,6 @@
 5. 下跌红闪少闪一次 / 破位白闪首帧被吞 —— 「先翻转再返回」把起始相位吃掉。
    （断言见 tests/test_anim_driver.py）
 6. NSLog 把日志原文当格式串 —— 日志含 '%' 时读栈垃圾/乱码/崩溃。
-
-运行方式（在 StockFloat 目录）：
-    QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_v165 -v
 """
 import ast
 import os

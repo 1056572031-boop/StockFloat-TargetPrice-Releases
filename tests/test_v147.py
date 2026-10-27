@@ -7,9 +7,6 @@
   BTN_ICON_X 各 +1（edit 77→78 / min 52→53 / close 27→28）、BTN_ICON_Y 12→11，
   使放大后图标仍以按钮中心（w-BTN_X[name], BTN_CY=17）为几何中心对称扩展。
 零回归：按钮热区（BTN_X/BTN_CY/HIT_DX/HIT_DY）、容器布局、间距、展开/收起逻辑均未触碰。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v147 -v
 """
 import os
 import sys

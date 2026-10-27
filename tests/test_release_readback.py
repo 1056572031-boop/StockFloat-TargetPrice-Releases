@@ -127,6 +127,32 @@ class ReleaseReadbackCase(SFCase):
         with self.assertRaisesRegex(ValueError, "不覆盖"):
             readback.download("https://example.test/file", target)
 
+    def _sent_headers(self, extra=None, name="ua.zip"):
+        """跑一次下载，返回真正交给 opener 的请求头（键统一小写）。"""
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = [b"x", b""]
+        opener = mock.MagicMock()
+        opener.open.return_value = response
+        with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener):
+            readback.download("https://example.test/file", self.root / name, extra)
+        request = opener.open.call_args.args[0]
+        return {key.lower(): value for key, value in request.header_items()}
+
+    def test_download_introduces_itself_instead_of_sending_the_python_default_agent(self):
+        # 公开下载入口拒绝 urllib 的默认 User-Agent（带正确标记也回 403，实测），
+        # v1.4.105 读回因此 4 个资产全走了回退直连。要求：自报身份，且不是默认值。
+        sent = self._sent_headers()
+        self.assertEqual(sent.get("user-agent"), readback.READBACK_USER_AGENT)
+        self.assertNotIn("python-urllib", sent["user-agent"].lower())
+
+    def test_download_keeps_caller_headers_and_lets_them_override_the_agent(self):
+        sent = self._sent_headers({readback.CHECK_HEADER: "m" * 64}, "keep.zip")
+        self.assertEqual(sent.get(readback.CHECK_HEADER), "m" * 64)
+        self.assertEqual(sent.get("cache-control"), "no-cache")
+        self.assertEqual(sent.get("user-agent"), readback.READBACK_USER_AGENT)
+        overridden = self._sent_headers({"User-Agent": "custom/1"}, "override.zip")
+        self.assertEqual(overridden.get("user-agent"), "custom/1")
+
     def test_api_clears_git_routing_and_download_size_is_bounded(self):
         with mock.patch.dict(os.environ, {"GIT_DIR": "bad-route"}), \
                 mock.patch.object(subprocess, "run", return_value=mock.Mock(stdout='{"fixture": true}')) as runner:

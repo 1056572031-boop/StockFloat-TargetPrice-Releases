@@ -12,8 +12,6 @@ moveTo/lineTo），实测 0.49ms/帧、占整块重绘 28%。坐标数组 xs/na 
   3) 只改 rect 高度 → 缓存失效（path 存的是绝对 y = top + na*h）；
   4) 均价全 None / 首尾均为 None 的脏数据 → 不崩、不产生错误命中。
 
-运行方式（工程根目录）：
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests -p "test_v1351_avg_cache.py" -v
 """
 import math
 import os

@@ -3,7 +3,7 @@
 """第二道防线：真产物冒烟 —— 把打出来的 .app 真的起一次、画一帧、再退出去。
 
 用法：
-    ./.venv/bin/python tools/smoke_frozen_app.py dist/实时股价-目标价版.app
+    ./.venv/bin/python tools/smoke_frozen_app.py dist/Skyrocket.app
     ./.venv/bin/python tools/smoke_frozen_app.py <app> --platform cocoa --timeout 30   # 旧产物用这个
     ./.venv/bin/python tools/smoke_frozen_app.py <app> --self-test
 
@@ -21,7 +21,7 @@
     ① 出现 `STARTUP v<版本> run=...`  → 进程真的进了 Python 主流程；
     ② 出现 `first-frame painted WxH`  → 首帧真的画完了（区分"进程活着"与"界面是空的"）；
     ③ 全程不出现 `UNCAUGHT`           → 没有未捕获异常；
-    ④ 退出码 0 或 143(SIGTERM 直杀)   → 退出链没炸（139/137 这类就是 v1.4.18 的形态）。
+    ④ 退出码 0、-15（SIGTERM）或 -2（SIGINT） → 收尾干净；143 是 shell 显示值，不是 Popen.returncode。
 
 安全边界（这条工具会**真的启动一次应用**，所以约束写死）：
     · 所有落盘路径（config/securities/last_quote/log/single sock）重定向到临时目录，

@@ -6,9 +6,6 @@
    QFontDatabase.addApplicationFont 启动加载），任意 Mac 数字等宽效果一致
 2. 价格/涨跌幅逐位滚动：在现有插值动画基础上，位值变化时旧字滑出/新字滑入
    （老虎机式逐位翻滚），红涨绿跌/等宽对齐/fmt_pct/字号自适应不回归
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

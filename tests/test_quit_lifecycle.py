@@ -14,7 +14,7 @@
    Cmd+Q（QApplication.quit）/ Dock 退出（app.exit(0)）都不经过 quit()，
    此前三条 daemon 循环与编辑器 SearchThread 完全无人停止。
 
-运行方式（在 StockFloat 目录）：
+运行方式（在仓库根目录）：
     QT_QPA_PLATFORM=offscreen ./.venv/bin/python3 -m pytest tests/test_quit_lifecycle.py -q
 """
 import os

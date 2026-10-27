@@ -14,14 +14,15 @@
 #
 # 流程：
 #   1) 从 sf_constants.APP_VERSION 读取版本号（唯一来源，不硬编码）
-#   2) 上一轮 build/ dist/ 产物改名移走 → PyInstaller 打包 dist/实时股价.app
+#   2) 上一轮 build/ dist/ 产物改名移走 → PyInstaller 打包 dist/Skyrocket.app
 #   3) 组装 DMG 根（.app + /Applications 替身符号链接）→ hdiutil UDZO 压缩镜像
 #   4) 安装到 /Applications：旧包先 mv 到工程内 build/ 作回退副本，再 cp 新包
 #
 # 为什么全用 mv 而不是 rm：
 #   打包过程会批量删除旧产物（一次约 50 个文件），会触发安全删除的批量确认
 #   拦截导致打包中断。把所有"清理"改成改名移走（旧产物送 /tmp 交给系统回收），
-#   让 PyInstaller 每次都从空目录开始 —— 全程零删除，脚本可无人值守跑完。
+#   让 PyInstaller 每次都从空目录开始 —— 产品产物与回退包的清理一律不删除（锁记录等脚本私有控制文件除外），
+#   脚本可无人值守跑完。
 #
 # 依赖：工程内 .venv（Python 3.14.7 + PyQt6 + PyInstaller），脚本自动使用。
 set -euo pipefail
@@ -177,9 +178,11 @@ fi
 # 区间必须由真实发布基线给定，不许按版本号推断。实测（v1.4.101 之后一轮）：同一条命令
 # 不给基线退 1、点名一个本轮根本没碰的模块；给上一版发布头退 0 —— 红的是尺子量错了
 # 目标，不是代码。只靠人在文档里记得 export，等于这道关迟早自己说谎（同 S7-② 那一族）。
+# 2026-10-27 起闸门工具自己也不再推断：不给 --range 或 --baseline 就退 2 拒答，所以这里的
+# 检查只是把同一件事提前到昂贵核验之前，提示文字要与工具的说法一致。
 if [ -z "${SF_RELEASE_BASELINE:-}" ]; then
-  echo "!! 3.9 拒绝下结论：没有 SF_RELEASE_BASELINE，只能按版本号推断区间，那个区间会把" >&2
-  echo "   上一版已经发出去的改动也算进「本轮」。请先 export SF_RELEASE_BASELINE=<上一版发布头>," >&2
+  echo "!! 3.9 拒绝下结论：没有 SF_RELEASE_BASELINE。诊断覆盖闸门不给发布基线就拒答（退出码 2）," >&2
+  echo "   版本号不能替代真实区间，否则上一版已经发出去的改动会被算进「本轮」。请先 export SF_RELEASE_BASELINE=<上一版发布头>," >&2
   echo "   取法：outputs/release-candidates/v<上一版>/post_release.json 里的 release_source.head" >&2
   exit 1
 fi
@@ -206,23 +209,18 @@ else
   printf '%s\n' 'local-only: no public history/network preflight requested' >"$PRECHECK_DIR/history.log"
   PRECHECK_HISTORY=0
 fi
-if [ "$PREPARE_ONLY" -eq 1 ]; then
-  printf '%s\n' 'prepare-only: skip public_release export; no commit/push/public tree is requested' \
-    >"$PRECHECK_DIR/public.log"
-  PRECHECK_PUBLIC=0
-else
-  "$VENV_PY" tools/public_release.py >"$PRECHECK_DIR/public.log" 2>&1 &
-  PRECHECK_PUBLIC=$!
-fi
+# 公开导出审计只读：不带 --publish 时只把已提交的树导进 build/ 并扫一遍，不提交、不推送、不上传。
+# 所以 --prepare-only 也要跑：v1.4.105 的公开源码审计到发布阶段才拒绝（示例邮箱写进了一条注释），
+# 那时候候选已经冻结，只能退役整个候选再重做，白白多花一轮完整回归与打包。
+"$VENV_PY" tools/public_release.py >"$PRECHECK_DIR/public.log" 2>&1 &
+PRECHECK_PUBLIC=$!
 PRECHECK_FAILED=0
 wait "$PRECHECK_SIGNING" || PRECHECK_FAILED=1
 wait "$PRECHECK_DOCS" || PRECHECK_FAILED=1
 if [ "$PRECHECK_HISTORY" -ne 0 ]; then
   wait "$PRECHECK_HISTORY" || PRECHECK_FAILED=1
 fi
-if [ "$PRECHECK_PUBLIC" -ne 0 ]; then
-  wait "$PRECHECK_PUBLIC" || PRECHECK_FAILED=1
-fi
+wait "$PRECHECK_PUBLIC" || PRECHECK_FAILED=1
 for precheck_log in "$PRECHECK_DIR"/*.log; do
   cat "$precheck_log"
 done
@@ -441,7 +439,7 @@ step_begin "3.8 首装与更新路线"
 echo "== 3.8 首装路线：curl 零放行 / DMG 双击 / 助手认两代包名 =="
 "$VENV_PY" tools/verify_install_paths.py \
   || { echo "!! 安装路线核验未过：照指引装完仍会被拦，或助手认不出本轮包名" >&2; exit 1; }
-# ⚠ 安装说明的渲染**不在这里**，在第 6.1 步（OTA 发布之后）。原因见那里的注释。
+# ⚠ 安装说明的渲染**不在这里**，在第 6.2 步（OTA 发布之后）。原因见那里的注释。
 
 # ---- 3.9) 诊断覆盖闸门（2026-10-13 起，负责人口径："每次发版都必须检查"）----
 # 为什么要进链而不是写文档：40 版逐版对账（outputs/诊断导出逐版核查-v1.4.27至v1.4.66-2026-10-12.md）
@@ -679,9 +677,21 @@ EOF
   # 现在的形状：① 排在安装与版本回显之后，撤不回的动作都已完成；② 整条管道 `|| true`，
   # 清理是尽力而为，不许把发版打死；③ 每挪走一份都打印一行，不再静默。
   # 注意 macOS(BSD) 的 head 不支持 `head -n -2` 负行数，用 awk 输出"除最后 2 个以外"。
-  stale_rollbacks="$( { ls -1d "$PROJ"/build/_rollback_Skyrocket_*.app \
-                          "$PROJ"/build/_rollback_实时股价_*.app 2>/dev/null; } | sort \
-      | awk '{a[NR]=$0} END{for(i=1;i<=NR-2;i++) print a[i]}' || true)"
+  # 回退副本名是 `_rollback_<产品名>_<时间戳>.app`。上面的备份循环会按「应用程序」里实际
+  # 存在的那一代名字生成它（当前是 Skyrocket，改名前是 实时股价-目标价版），而旧写法的第二个
+  # 通配 `实时股价_*` 对不上后者的真实文件名，改名前那一代的备份于是永远清不掉；另外按整个
+  # 文件名排序时，不同产品名的前缀会压过时间戳。现在统一匹配 `_rollback_*.app`，
+  # 只按末尾的时间戳（`date +%Y%m%d_%H%M%S`，15 个字符）排序。
+  stale_rollbacks="$( { rb_stamp_re='_[0-9]{8}_[0-9]{6}$'
+                        for rb in "$PROJ"/build/_rollback_*.app; do
+                          [ -e "$rb" ] || continue
+                          rb_name="$(basename "$rb" .app)"
+                          # 名字不以 `_YYYYMMDD_HHMMSS` 结尾的（手工放进来的）不碰也不参与排序
+                          # （不用 case：bash 3.2 在 $( ) 里会把 case 模式的右括号当成替换结尾）
+                          [[ "$rb_name" =~ $rb_stamp_re ]] || continue
+                          printf '%s\t%s\n' "${rb_name: -15}" "$rb"
+                        done; } | sort \
+      | awk -F'\t' '{a[NR]=$2} END{for(i=1;i<=NR-2;i++) print a[i]}' || true)"
   if [ -n "$stale_rollbacks" ]; then
     printf '%s\n' "$stale_rollbacks" | while IFS= read -r old; do
       [ -n "$old" ] || continue

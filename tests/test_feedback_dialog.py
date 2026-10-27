@@ -17,7 +17,7 @@ from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6 import sip
 from PyQt6.QtGui import QContextMenuEvent, QGuiApplication
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QToolButton, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QToolButton, QWidget
 
 import stock_float_window as window
 from sf_feedback import FeedbackProtocolError, build_archive
@@ -142,20 +142,20 @@ class DialogTests(_FeedbackCase):
         self.track_widget(history_dialog)
         clean = history_dialog.findChild(QToolButton)
         self.assertIsNotNone(clean)
+        self.assertTrue(archive.exists())
         clean.click()
-        QApplication.processEvents()
-        self.assertTrue(archive.exists(), "第一下只是确认，不能就把本机资料删了")
-        self.assertEqual(clean.text(), "确认清理")
-        clean.click()
+        # refresh() 用 deleteLater 换掉旧行：先处理延迟删除，才读得到刷新后的真实界面文字。
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         QApplication.processEvents()
 
+        # 2026-10-27 用户要求：点一下就清理，不再二次确认；清理后这条记录不再展示。
         self.assertFalse(archive.exists())
         cleaned = self.dialog.outbox.get(outbox_id)
         self.assertEqual(cleaned["status"], "cleaned")
-        self.assertEqual(cleaned["receipt"]["case_id"], case_id)
-        self.assertIn(case_id, "\n".join(label.text() for label in history_dialog.findChildren(QLabel)))
-        self.assertIn("已收件，本机资料已清理",
-                      "\n".join(label.text() for label in history_dialog.findChildren(QLabel)))
+        self.assertEqual(cleaned["receipt"]["case_id"], case_id, "远端回执元数据要留在库里，只是不再展示")
+        texts = "\n".join(label.text() for label in history_dialog.findChildren(QLabel))
+        self.assertNotIn(case_id, texts, "已清理的记录不能再出现在记录页")
+        self.assertNotIn("已收件，本机资料已清理", texts)
 
         # 2026-10-22 用户要求：输入框宽、高各为原来的一半。原值取自改动前实测：
         # 输入框 500x383（窗口 540x500，四周留白与标题、按钮行共 117pt 不变）。

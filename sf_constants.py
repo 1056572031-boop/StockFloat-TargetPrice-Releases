@@ -7,7 +7,7 @@ import tempfile
 from PyQt6.QtGui import QColor
 
 # ---------------------------------------------------------------- 测试隔离
-# v1.3.52：只要检测到"正在跑 unittest"，就把所有**落盘路径**自动重定向到临时目录。
+# v1.3.52：检测到 unittest 时，自动重定向配置、行情快照、证券字典、日志和单实例 socket 的测试落盘路径。
 # 为什么必须做成自动的：v1.3.50 只在 run_tests.sh 里设了环境变量，工程师直接敲
 # `python -m unittest tests.test_x` 就绕过去了 —— 结果一次单测又把用户真实配置的
 # bg 写成 translucent（毛玻璃消失），而症状看起来像渲染问题，排查成本极高。
@@ -40,12 +40,12 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.105'
+APP_VERSION = '1.4.106'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
 #   现改为在常量层检测 "unittest" in sys.modules（且非 sys.frozen）即自动把
-#   config.json / last_quote.json 重定向到临时目录，任何调用方式都躲不掉。
+#   config.json / last_quote.json 等测试覆盖的落盘路径重定向到临时目录；
 # v1.3.51：三项内部技术债清理（纯性能/健壮性，界面语义不变）
 #   1. 分时均价线每帧重建 QPainterPath（240 次 moveTo/lineTo）→ 加路径缓存，
 #      实测省 0.226ms/帧（-64%）；折线缓存键同步补 lo/hi（昨收变了也要重算）
@@ -213,7 +213,7 @@ FACE_GUARD_EXPEDITE_SEC = 0.08
 FACE_GUARD_EXPEDITE_BUDGET = 3
 # v1.4.56 省电：屏幕锁定或主显示器休眠时，屏幕上没有任何可暴露的内容，
 # 摄像头可以先停；唤醒后自动继续看守。探测节流 2 秒一次（CoreGraphics 查询
-# 本身很便宜，但守卫那张表是采样的二分之一一拍（现 125ms），没必要每拍都问系统）。
+# 本身很便宜，而守卫表按采样节拍运行，没必要每拍都问系统）。
 # ⚠ 这条只在「明确读到锁了/睡了」时才停；查询抛错或读不到键一律当作没锁 ——
 #   保护静默消失比多耗电严重得多（与 features.ini 的 fail-open 同一个方向）。
 FACE_GUARD_SCREEN_PROBE_SEC = 2.0
@@ -444,7 +444,7 @@ UPDATE_MANIFEST_URL = ('https://raw.githubusercontent.com/' + RELEASE_REPO
 # DELIVERY_CHECKLIST 的 v1.4.55 交付记录，删掉常量、把指向留在这行注释里。
 UPDATE_PUBLIC_KEY_B64 = '3heAx8bOzfbvlJegpzuhf3uOut/cwwk3fNVvXIBM3x4='
 # 取得正式 Developer ID 证书后，必须同时填写 Team ID 与叶证书 SHA-1（大写、无冒号）。
-# 留空仅适用于当前 ad-hoc 内测签名；正式发版构建脚本将拒绝仅填一项的配置。
+# 留空仅适用于当前固定自签名构建；正式发版构建脚本将拒绝仅填一项的配置。
 UPDATE_SIGNING_TEAM_ID = ''
 UPDATE_SIGNING_CERT_SHA1 = ''
 UPDATE_MANIFEST_MAX_BYTES = 65536
@@ -624,8 +624,9 @@ SEARCH_RETRIES = 1              # 腾讯主搜索重试次数（原 HTTP_RETRIES
 SEARCH_BJ_TIMEOUT = 3.0         # 东财北交所兜底超时（秒，原 6）
 SEARCH_CACHE_TTL = 300.0        # 搜索结果缓存有效期（秒）
 SEARCH_CACHE_MAX = 64           # 缓存条目上限（LRU）
-# 2026 A 股休市日期（非周末的法定节假日；来源：沪深北交易所 2025-12-22 公告）。
-# 仅覆盖当年，跨年需补充下一年度。周末已由 _is_trading_time 自动排除，此处只列非周末休市日。
+# 2026 A 股休市日期（来源：沪深北交易所 2025-12-22 公告）。按公告的连续休市区间逐日列出，
+# 其中有 14 天本身落在周末（周末另由交易时段判断排除，重复列出不影响结果）。
+# 内置表只覆盖 2026 年；其他年份由 sf_calendar 另行查询，见该模块说明。
 TRADING_HOLIDAYS_2026 = {
     "2026-01-01", "2026-01-02", "2026-01-03",
     "2026-02-15", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19",

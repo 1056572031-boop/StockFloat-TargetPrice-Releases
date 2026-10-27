@@ -14,9 +14,6 @@
 1. 微小变动直赋分支同时清除 _roll_pending / _roll_prev / _roll_anim
 2. 首帧分支（_disp_price is None）同步清除三态
 3. 渲染层安全网：定时器已停但滚动条目残留时就地清除
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_bugfix_155 -v
 """
 import os
 import sys

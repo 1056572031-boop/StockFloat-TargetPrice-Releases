@@ -9,7 +9,7 @@
     NULL bundle → __CFCheckCFInfoPACSignature 读 0x8），**早于本程序任何 Python 代码**。
     v1.4.5 的 sf_bootstrap 守卫只存在于新产物内，对 ≤1.4.4 的残留副本无效，
     旧副本自身也无法再打补丁，所以唯一手段是让那些目录不再被 LaunchServices
-    识别为应用：改名去掉 .app 后缀即可，不删任何文件。
+    识别为应用：追加 .stale 使目录不再以 .app 结尾，不删除任何文件；移除 .stale 即可还原。
 
 安全边界（改动本模块时不要放宽）
     1. 只扫系统临时目录（/tmp、/var/tmp、$TMPDIR、/private/var/folders），
@@ -18,9 +18,9 @@
        而读不到时，退化为按本程序产物名识别，且要求 Contents/MacOS 确有可执行文件
        （测试夹具造的空壳 .app 因此不会被误伤）；
     3. 正在运行的副本、以及本进程自己所在的 bundle 一律跳过；
-    4. 一律 os.rename 加 .stale 后缀，不删除任何文件 —— 去掉后缀即可还原。
+    4. 一律 os.rename 追加 .stale 后缀，不删除任何文件 —— 移除 .stale 即可还原。
 
-依赖：只用标准库。调用方（stock_float_window）在后台线程里跑，失败静默降级。
+依赖：扫描逻辑只用标准库，产品身份常量从 `sf_constants` 读取。调用方（stock_float_window）在后台线程里跑，失败静默降级。
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ def version_of(app_dir: str) -> str:
 
 
 def is_launchable(app_dir: str) -> bool:
-    """Contents/MacOS 下有真实可执行文件才算"还能被启动"。"""
+    """Contents/MacOS 下存在普通文件才视为候选可启动副本。"""
     macos = os.path.join(app_dir, "Contents", "MacOS")
     try:
         with os.scandir(macos) as entries:

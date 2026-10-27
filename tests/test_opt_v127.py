@@ -3,9 +3,6 @@
 - 3.1 北交所 30% / 主板 ST 5% / 科创创业 20% / 主板 10% 涨跌停阈值本地兜底（quote_status）
 - 3.2 4 位北交所老代码归一化（normalize_code）
 覆盖：行情源无涨跌停字段时按板块兜底、官方字段优先、停牌判定不被本地估算污染。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import datetime
 import os

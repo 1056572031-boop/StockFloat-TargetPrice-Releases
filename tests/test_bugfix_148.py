@@ -10,9 +10,6 @@
     H2  v1.2.57 呼吸灯改造：确认 _dot_flash_until 已移除，minimized 分支分时数据仍正常更新；
     H3  _icon_worker 区分超时与真实失败，超时跳过应用图标生成；
     S8  hi/lo 文本统一走 _fmt_hl 格式化归一；_anim_decimals 对 "123." 回落 2 位。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys
@@ -115,13 +112,19 @@ class TestB1S4StatusGetter(_WinBase):
         self.assertFalse(hasattr(sf_quote, "_LAST_HTTP_STATUS"),
                          "sf_quote 不应再绑定模块级 _LAST_HTTP_STATUS")
 
-    def test_eastmoney_branch_uses_getter_src(self):
-        """源码级防回归：eastmoney_search_bj 4xx 判别必须走 getter 而非快照变量。"""
-        import inspect
-        src = inspect.getsource(sf_quote.eastmoney_search_bj)
-        self.assertIn("get_last_http_status()", src)
-        # 旧实现"isinstance(_LAST_HTTP_STATUS, int) 恒 False"的判别必须已移除
-        self.assertNotIn("isinstance(_LAST_HTTP_STATUS", src)
+    def test_eastmoney_branch_reads_the_live_status_getter(self):
+        """调用级防回归：搜索失败后必须向 getter 实时取一次最新状态，而不是用导入时的快照。
+
+        旧实现拿导入时复制的 _LAST_HTTP_STATUS（恒为 None），4xx 判别永远不生效。
+        注意：现在 4xx 与其它失败都返回空列表，结果上分不出来，所以这条只能锁
+        「失败后确实问了一次实时 getter」，不能证明 4xx 被单独处理。
+        """
+        from unittest.mock import Mock
+        getter = Mock(return_value=429)
+        with patch.object(sf_quote, "http_get", side_effect=RuntimeError("net down")), \
+             patch.object(sf_quote, "get_last_http_status", getter):
+            self.assertEqual(sf_quote.eastmoney_search_bj("8307"), [])
+        getter.assert_called_once_with()
 
     def test_eastmoney_4xx_returns_empty(self):
         """功能级：http_get 抛异常且最新状态为 4xx 时返回空列表且不崩溃。"""
@@ -192,24 +195,36 @@ class TestB2NormalizeCode(_WinBase):
 # H1：_toggle_chart 展开分支异常恢复 MIN_H（min 不残留 0）
 # =====================================================================
 class TestH1ToggleChart(_WinBase):
-    def test_source_lowered_flag_and_recovery(self):
-        """源码级防回归：展开分支先算 target 再下探 min，except 恢复 MIN_H/MAX_H。"""
-        import inspect
-        src = inspect.getsource(m.FloatWindow._toggle_chart)
-        self.assertIn("lowered_min = True", src)
-        self.assertIn("setMinimumHeight(0)", src)
-        self.assertIn("if self._chart_expanded and lowered_min:", src)
-        self.assertIn("setMinimumHeight(MIN_H)", src)
+    def _toggle_with_failing_layout(self, expanded_before, height_method, height_value):
+        """在「动画登记抛异常」的条件下切换一次分时图。
+
+        目标高度必须与当前高度不同，否则 _toggle_chart 走"高度相同，立即收口"的早退分支，
+        根本不会调用 begin_layout，异常恢复分支就测不到（旧版本的用例正是这样空转的）。
+        """
+        from unittest.mock import Mock
+        begin_layout = Mock(side_effect=RuntimeError("boom"))
+        self.win._chart_expanded = expanded_before  # discipline-ok(R5): 展开态没有公开设置口，只能直接摆起点
+        with patch.object(m, "feature_enabled", return_value=True), \
+             patch.object(m.FloatWindow, height_method, lambda self: height_value), \
+             patch.object(self.win._anim_driver, "begin_layout", begin_layout):  # discipline-ok(R5): 要让动画登记抛异常，只能替换驱动器这一步
+            self.win._toggle_chart()  # discipline-ok(R5): 被测对象本身；真实鼠标入口（见 test_chart_click_toggle）要凑热区与拖动阈值，这里要精确控制起止高度
+        self.assertEqual(begin_layout.call_count, 1, "没走到动画登记，异常恢复分支没被测到")
 
     def test_expand_layout_error_restores_min(self):
         """功能级：begin_layout 抛异常后 min 必须恢复为 MIN_H（不残留 0）。"""
-        self.win._chart_expanded = False
-        with patch.object(m, "feature_enabled", return_value=True), \
-             patch.object(self.win._anim_driver, "begin_layout",
-                          side_effect=RuntimeError("boom")):
-            self.win._toggle_chart()
+        self._toggle_with_failing_layout(False, "_height_expanded", self.win.height() + 80)
+        # 只断言 min：展开分支在登记动画之前就已把 max 放回 MAX_H，异常发生在它之后，
+        # 所以 max 断言删掉恢复语句也不会红，写上只会让人误以为 max 的恢复也被锁住了。
         self.assertEqual(self.win.minimumHeight(), m.MIN_H,
                          "展开动画异常后 min 必须恢复 MIN_H，不得残留 0")
+
+    def test_collapse_layout_error_locks_max_back_to_collapsed_height(self):
+        """收起分支：动画期间 max 被放开到 MAX_H，异常时必须重新锁回收起高度，
+        否则系统缩放把手复活，收起态能被拉高。"""
+        collapsed = self.win.height() - 60
+        self._toggle_with_failing_layout(True, "_height_collapsed", collapsed)
+        self.assertEqual(self.win.maximumHeight(), collapsed,
+                         "收起动画异常后 max 必须锁回收起高度，不得残留 MAX_H")
 
 
 # =====================================================================
@@ -240,13 +255,42 @@ class TestH2BreathingDot(_WinBase):
 # H3：_icon_worker 区分超时与真实失败（超时跳过应用图标生成）
 # =====================================================================
 class TestH3IconWorker(_WinBase):
-    def test_worker_checks_app_ready(self):
-        """源码级防回归：_app_ready.wait 结果必须被判断，超时不无条件 make_app_icon。"""
-        import inspect
-        src = inspect.getsource(sf_icons._icon_worker)
-        self.assertIn("if _app_ready.wait(timeout=10):", src,
-                      "超时必须跳过应用图标生成，不得无条件 make_app_icon")
-        self.assertNotIn("_app_ready.wait(timeout=10)\n", src.replace("    if ", "    "))
+    def _run_icon_worker(self, gui_ready):
+        """真跑一遍图标线程体：就绪事件与队列换成假的，返回 (等待用的超时值, 入队内容, 生成次数)。"""
+        import queue
+        from unittest.mock import Mock
+        waited = []
+
+        def fake_wait(timeout=None):
+            waited.append(timeout)
+            return gui_ready
+
+        app_ready = Mock()
+        app_ready.wait.side_effect = fake_wait
+        out = queue.Queue()
+        maker = Mock(side_effect=lambda mode="light": "icon-" + mode)
+        with patch.object(sf_icons, "_app_ready", app_ready), \
+             patch.object(sf_icons, "_appkit_ready", Mock()), \
+             patch.object(sf_icons, "_ICON_QUEUE", out), \
+             patch.object(sf_icons, "make_app_icon", maker):
+            sf_icons._icon_worker()  # discipline-ok(R5): 线程体本身就是被测对象，公开入口 start_icon_worker 会真起线程并等 10 秒
+        queued = []
+        while not out.empty():
+            queued.append(out.get_nowait())
+        return waited, queued, maker.call_count
+
+    def test_worker_skips_app_icon_when_gui_never_becomes_ready(self):
+        """GUI 10 秒内没就绪（等待返回 False）：不生成应用图标，也不把 None 入队伪装成"生成失败"。"""
+        waited, queued, made = self._run_icon_worker(gui_ready=False)
+        self.assertEqual(waited, [10], "应只等一次，上限 10 秒")
+        self.assertEqual(queued, [], "超时必须跳过应用图标生成")
+        self.assertEqual(made, 0, "超时不得无条件 make_app_icon")
+
+    def test_worker_builds_both_app_icons_once_gui_is_ready(self):
+        waited, queued, made = self._run_icon_worker(gui_ready=True)
+        self.assertEqual(waited, [10])
+        self.assertEqual(queued, [("app_icon", "icon-light"), ("app_icon_dark", "icon-dark")])
+        self.assertEqual(made, 2)
 
 
 # =====================================================================

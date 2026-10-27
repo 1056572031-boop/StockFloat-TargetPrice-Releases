@@ -18,9 +18,6 @@ True、高度还停在 155 附近，于是会画出一帧 1~2px 的怪线：既�
   4) 边界：图带高 == CHART_MIN_DRAW_H 画、== CHART_MIN_DRAW_H - 1 不画；
   5) 离屏抓帧冒烟不崩。
 
-运行方式（工程根目录，务必带三个隔离环境变量避免首屏快照跨进程污染）：
-    SF_LAST_QUOTE_PATH=/tmp/x.json SF_CONFIG_PATH=/tmp/y.json SF_SEED_FIRST_SCREEN=0 \
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests -p "test_v1351_collapsed.py" -v
 """
 import math
 import os

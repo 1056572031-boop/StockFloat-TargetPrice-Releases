@@ -98,6 +98,78 @@ class BothGenerationsAreRecognized(SFCase):
                               "%s 又出现了单数的 APP_NAME" % rel)
 
 
+class RunningProcessPatternFollowsTheLists(SFCase):
+    """找「正在运行的程序」的 pgrep 模式必须由两张名单拼出来，不能另写一份字面量。
+
+    复验工具里名单和 pgrep 模式原先各写一遍：将来名单多一代，模式漏跟，
+    工具就会在那一代的机器上说「未在运行」而去让人先启动程序。
+    """
+
+    TOOL = "tools/verify_responsiveness.command"
+
+    def _built_pattern(self):
+        text = (ROOT / self.TOOL).read_text(encoding="utf-8")
+        start = text.index('PGREP_PATTERN=""')
+        end = text.index('PID="$(pgrep', start)
+        script = "\n".join([
+            'BUNDLE_IDS="%s"' % " ".join(shell_words(text, "BUNDLE_IDS")),
+            'APP_NAMES="%s"' % " ".join(shell_words(text, "APP_NAMES")),
+            text[start:end],
+            'printf "%s" "$PGREP_PATTERN"',
+        ])
+        cp = subprocess.run(["/bin/sh", "-c", script], capture_output=True,
+                            text=True, timeout=30)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        return cp.stdout
+
+    def test_pattern_contains_every_wanted_identity(self):
+        parts = self._built_pattern().split("|")
+        for name in wanted_bundle_ids() + wanted_app_names():
+            self.assertIn(name, parts, "pgrep 模式漏了 %s —— 那一代的程序会被说成「未在运行」" % name)
+
+    def test_pattern_has_no_empty_alternative(self):
+        """空的备选项会让 pgrep -f 匹配到任何进程。"""
+        self.assertNotIn("", self._built_pattern().split("|"))
+
+    def _run_with_fake_pgrep(self, bundle_ids, app_names, files=()):
+        """真跑「拼模式 + 调 pgrep」那一段；pgrep 换成只记参数的桩，返回它收到的参数。"""
+        import os
+        import tempfile
+        text = (ROOT / self.TOOL).read_text(encoding="utf-8")
+        start = text.index('PGREP_PATTERN=""')
+        end = text.index('\n[ -n "$PID" ]', start)
+        with tempfile.TemporaryDirectory(prefix="sf_pgrep_stub_") as directory:
+            work = pathlib.Path(directory)
+            for name in files:
+                (work / name).write_text("", encoding="utf-8")
+            fake_bin = work / "bin"
+            fake_bin.mkdir()
+            record = work / "pgrep.args"
+            stub = fake_bin / "pgrep"
+            stub.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$PGREP_RECORD"\n', encoding="utf-8")
+            stub.chmod(0o755)
+            script = "BUNDLE_IDS='%s'\nAPP_NAMES='%s'\n%s\n" % (bundle_ids, app_names, text[start:end])
+            env = dict(os.environ, PGREP_RECORD=str(record),
+                       PATH=str(fake_bin) + ":" + os.environ.get("PATH", ""))
+            cp = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                                timeout=30, cwd=str(work), env=env)
+            self.assertEqual(cp.returncode, 0, cp.stderr)
+            return record.read_text(encoding="utf-8").splitlines()
+
+    def test_pgrep_really_receives_the_built_pattern(self):
+        """拼出来的模式必须真的交给 pgrep -f，而不是只拼不用。"""
+        text = (ROOT / self.TOOL).read_text(encoding="utf-8")
+        ids, names = shell_words(text, "BUNDLE_IDS"), shell_words(text, "APP_NAMES")
+        got = self._run_with_fake_pgrep(" ".join(ids), " ".join(names))
+        self.assertEqual(got, ["-f", "|".join(ids + names)])
+
+    def test_wildcards_in_the_lists_are_not_expanded_into_file_names(self):
+        """名单项里的 * 不许被展开成当前目录的文件名（否则会拼出一串无关备选项）。"""
+        got = self._run_with_fake_pgrep("com.example.app", "My*.app",
+                                        files=("MyFile.app", "Other.txt"))
+        self.assertEqual(got, ["-f", "com.example.app|My*.app"])
+
+
 class CriteriaCanFail(SFCase):
     """判据本身要能红：把"只认旧名"这处真实漏法种回去，必须被抓到。"""
 

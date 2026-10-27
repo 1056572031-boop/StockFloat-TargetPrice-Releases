@@ -276,7 +276,7 @@ class TestNoNewSilentSwallowAnywhere(unittest.TestCase):
     # 在 target_panel 新加一处静默兜异常，总数上完全看不出来。
     BASELINE = {
         "sf_bootstrap.py": 2, "sf_calendar.py": 2, "sf_config.py": 2,
-        "sf_editor.py": 8, "sf_glass.py": 8, "sf_icons.py": 3,
+        "sf_editor.py": 7, "sf_glass.py": 8, "sf_icons.py": 3,
         "sf_logging.py": 17, "sf_network.py": 7, "sf_notify.py": 3,
         "sf_quote.py": 7, "sf_runtime.py": 0, "sf_system_alert.py": 4,
         "sf_temp_sweep.py": 1, "sf_ui_render.py": 5, "sf_universe.py": 3,
@@ -704,6 +704,76 @@ class TestLocalReleaseBoundaries(SFCase):
             rollbacks = list((root / "build").glob("_rollback_*.app"))
             self.assertEqual(len(rollbacks), 2, "两代旧包都应作为可手动恢复的回退副本保留")
 
+    def run_rollback_pruning(self, names):
+        """真跑「回退副本回收」那一段：build/ 里放一批同名目录，mv 换成只记参数的桩。
+
+        返回被点名要挪走的目录名（按挪走顺序）。桩不动文件，所以不会碰 /tmp，
+        也不会真的回收谁。
+        """
+        import os
+        import subprocess
+        import tempfile
+        source = self.source()
+        start = source.index('stale_rollbacks="$(')
+        end = source.index('else\n  echo "== 跳过 /Applications 安装', start)
+        block = source[start:end]
+        with tempfile.TemporaryDirectory(prefix="sf_release_prune_") as directory:
+            root = pathlib.Path(directory)
+            (root / "build").mkdir()
+            for name in names:
+                (root / "build" / name).mkdir()
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            moved_log = root / "moved.log"
+            (fake_bin / "mv").write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$MOVED_LOG\"\n", encoding="utf-8")
+            (fake_bin / "mv").chmod(0o755)
+            env = dict(os.environ, PROJ=str(root), STAMP="fixture", MOVED_LOG=str(moved_log),
+                       PATH=str(fake_bin) + ":" + os.environ.get("PATH", ""))
+            result = subprocess.run(["/bin/bash", "-c", "set -euo pipefail\n" + block],
+                                    capture_output=True, text=False, env=env, timeout=20)
+            output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+            self.assertEqual(result.returncode, 0, output)
+            if not moved_log.exists():
+                return []
+            return [pathlib.Path(line).name for line in
+                    moved_log.read_text(encoding="utf-8").splitlines() if line]
+
+    def test_rollback_pruning_keeps_two_newest_across_product_names(self):
+        """两代产品名的回退副本一起按时间戳排：只留最新 2 份，其余都被点名回收。
+
+        旧写法的第二个通配对不上改名前那一代的真实文件名（实时股价-目标价版），
+        那一代的备份永远清不掉；且按整个文件名排序时产品名前缀会压过时间戳。
+        """
+        names = ["_rollback_Skyrocket_20261001_100000.app",
+                 "_rollback_Skyrocket_20261003_100000.app",
+                 "_rollback_Skyrocket_20261005_100000.app",
+                 "_rollback_实时股价-目标价版_20260901_100000.app",
+                 "_rollback_实时股价-目标价版_20261002_100000.app"]
+        moved = self.run_rollback_pruning(names)
+        self.assertEqual(moved, ["_rollback_实时股价-目标价版_20260901_100000.app",
+                                 "_rollback_Skyrocket_20261001_100000.app",
+                                 "_rollback_实时股价-目标价版_20261002_100000.app"])
+
+    def test_rollback_pruning_ignores_directories_without_a_timestamp_suffix(self):
+        """手工放进 build/ 的同前缀目录（名字不带时间戳）既不被回收，也不能扰乱真副本的排序。
+
+        没有 15 位时间戳时，排序键会变成名字的末尾几个字母：有的排在最前被先挪走，
+        有的排在数字之后被当成"最新"保留，反而把真正的旧副本挤出保留名额。
+        """
+        names = ["_rollback_manualcopy.app", "_rollback_foo.app",
+                 "_rollback_Skyrocket_20261001_100000.app",
+                 "_rollback_Skyrocket_20261002_100000.app",
+                 "_rollback_Skyrocket_20261003_100000.app"]
+        moved = self.run_rollback_pruning(names)
+        self.assertEqual(moved, ["_rollback_Skyrocket_20261001_100000.app"])
+
+    def test_rollback_pruning_with_nothing_to_prune_does_not_abort_the_release(self):
+        """没有回退副本、或不超过 2 份时整段安静通过（脚本头部是 set -euo pipefail）。"""
+        self.assertEqual(self.run_rollback_pruning([]), [])
+        self.assertEqual(self.run_rollback_pruning(["_rollback_Skyrocket_20261001_100000.app",
+                                                    "_rollback_Skyrocket_20261002_100000.app"]), [])
+
     def test_local_mode_has_no_publication_side_effects_and_default_still_enters_publish(self):
         import tempfile
         source = self.source()
@@ -733,6 +803,52 @@ class TestLocalReleaseBoundaries(SFCase):
             passed = self.run_block(block, root, 1, "/usr/bin/true")
             self.assertEqual(passed.returncode, 0, passed.stderr)
             self.assertIn("本机覆盖完成", passed.stdout)
+
+    def precheck_block(self):
+        source = self.source()
+        start = source.index('PRECHECK_DIR="$(mktemp')
+        end = source.index('if [ "$LOCAL_ONLY" -eq 1 ]; then\n  "$VENV_PY" tools/render_install_guide.py --local-only', start)
+        return "release_lock() { :; }\n" + source[start:end]
+
+    def run_precheck(self, prepare_only, fail_export=False):
+        """真跑前置核验那一段；解释器换成只记参数的桩，看它到底调用了哪些工具。"""
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="sf_precheck_") as directory:
+            root = pathlib.Path(directory)
+            log = root / "calls.log"
+            stub = root / "stub.sh"
+            stub.write_text(
+                '#!/bin/bash\n'
+                'echo "$*" >> "$STUB_LOG"\n'
+                'if [ "${FAIL_EXPORT:-0}" = 1 ] && [ "$*" = "tools/public_release.py" ]; then\n'
+                '  echo "stub: export refused"; exit 1\n'
+                'fi\n'
+                'exit 0\n')
+            stub.chmod(0o755)
+            done = self.run_block(self.precheck_block(), root, 0, str(stub), {
+                "PREPARE_ONLY": str(prepare_only), "STUB_LOG": str(log), "TMPDIR": str(root),
+                "FAIL_EXPORT": "1" if fail_export else "0"})
+            calls = log.read_text().splitlines() if log.exists() else []
+        return done, calls
+
+    def test_prepare_only_also_runs_the_read_only_public_export_audit(self):
+        # v1.4.105：公开源码审计到发布阶段才拒绝（注释里的示例邮箱），那时候选已冻结，
+        # 只能退役整个候选重做。导出审计只读，所以 --prepare-only 与正式发布都要在这里跑。
+        for prepare_only in (0, 1):
+            with self.subTest(prepare_only=prepare_only):
+                done, calls = self.run_precheck(prepare_only)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("tools/public_release.py", calls)
+                self.assertFalse([c for c in calls if "--publish" in c],
+                                 "前置核验只许只读导出，不许带 --publish")
+
+    def test_prepare_only_stops_when_the_public_export_audit_fails(self):
+        for prepare_only in (0, 1):
+            with self.subTest(prepare_only=prepare_only):
+                done, calls = self.run_precheck(prepare_only, fail_export=True)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("发版前置核验未通过", done.stderr)
+                self.assertIn("stub: export refused", done.stdout)
 
     def test_final_output_keeps_publication_and_acceptance_separate(self):
         source = self.source()

@@ -231,6 +231,21 @@ class SecondPassRedactionTests(SFCase):
             with self.assertRaisesRegex(RuntimeError, "redacted report exceeds"):
                 desktop.redacted_body(self.source, body)
 
+    def test_redacted_report_is_checked_by_the_full_feedback_privacy_guard(self):
+        body = json.dumps({"note": "fixture"}).encode()
+        self.write(body)
+        with patch.object(desktop, "check_privacy", side_effect=desktop.PrivacyRejected("late secret")):
+            with self.assertRaisesRegex(RuntimeError, "failed privacy validation"):
+                desktop.redacted_body(self.source, body)
+
+    def test_markdown_copy_is_checked_by_the_full_feedback_privacy_guard(self):
+        body = b"fixture"
+        self.source = self.root / "report.md"
+        self.write(body)
+        with patch.object(desktop, "check_privacy", side_effect=desktop.PrivacyRejected("late secret")):
+            with self.assertRaisesRegex(RuntimeError, "failed privacy validation"):
+                desktop.redacted_body(self.source, body)
+
     def test_markdown_formatting_limit_is_enforced(self):
         body = b"markdown body"
         self.source = self.root / "report.md"

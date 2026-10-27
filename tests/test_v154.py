@@ -4,9 +4,6 @@
 需求：首次安装（无 config.json）打开程序，悬浮窗默认高度即为窗口最低高度
 （MIN_H，紧凑态）；旧默认 H(192) 低于窗口最小高度限制，靠 Qt 钳制碰巧垫到
 MIN_H，默认值本身失真。同步：配置存在但高度字段缺失/非法时的降级值一致。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v154 -v
 """
 import json
 import os

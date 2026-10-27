@@ -23,8 +23,8 @@
 四条诚实边界（不许放宽）
 ----------------------
 1. **前提不成立就退 2，绝不退 0。** 屏幕锁定、显示器睡着、驱动进程没有"辅助功能"授权、
-   产物不存在、没给 `--i-am-at-the-machine`（这条会接管你屏幕上的光标）—— 任一条都是
-   "这里答不了"，不是"这里通过了"。
+   产物不存在——任一条都是"这里答不了"，不是"这里通过了"。自动化调度不需要人工点头；
+   屏幕和权限的客观状态仍由工具实时核验。
 2. **一条都没真跑成就不给总结论**：全部 skip → `not_evaluated` + 退 1，与
    `test_discipline_scan.min_files`、`diag_coverage_check` 的"空输入不算通过"同口径。
 3. **只动自己拉的进程、自己写的文件。** 全隔离环境（config / 日志 / 单实例 socket / 字典缓存
@@ -47,7 +47,7 @@
 ----
     ./.venv/bin/python tools/post_release_click_walkthrough.py --report
     ./.venv/bin/python tools/post_release_click_walkthrough.py --self-test
-    ./.venv/bin/python tools/post_release_click_walkthrough.py --i-am-at-the-machine
+    ./.venv/bin/python tools/post_release_click_walkthrough.py
     ./.venv/bin/python tools/post_release_click_walkthrough.py --action menu --action drag
 
 退出码：0=被执行的用例全过且至少执行了一条｜1=有用例判红、隔离被破坏或一条都没跑成｜
@@ -408,10 +408,27 @@ def judge_user_data_untouched(before: dict, after: dict) -> dict:
     return {"ok": not changed, "changed": changed}
 
 
+# 走查会接管真实鼠标和键盘；没有人工确认后，只有“用户最近没有输入”才能避免误触。
+USER_INPUT_IDLE_MIN_SEC = 2.0
+
+
+def input_idle_seconds() -> float | None:  # pragma: no cover - 真查系统输入状态
+    """返回当前会话距最近键鼠输入的秒数；读不到时返回 None，禁止占屏。"""
+    try:
+        import Quartz
+        return float(Quartz.CGEventSourceSecondsSinceLastEventType(
+            Quartz.kCGEventSourceStateCombinedSessionState, Quartz.kCGAnyInputEventType))
+    except Exception:
+        return None
+
+
 def preflight_reasons(app: pathlib.Path, screen: dict, trusted: Any,
-                      human_present: bool, actions: list[str],
-                      installed_running: bool = False) -> list[str]:
-    """前提条件 → 阻塞原因列表。空列表才允许真发事件。"""
+                      actions: list[str], installed_running: bool = False,
+                      idle_seconds: float | None = USER_INPUT_IDLE_MIN_SEC) -> list[str]:
+    """前提条件 → 阻塞原因列表。空列表才允许真发事件。
+
+    自动化运行不要求人工点头；屏幕、权限和正式版运行状态仍必须由本函数逐项核验。
+    """
     reasons = []
     if not app.exists():
         reasons.append("app_missing:%s" % app)
@@ -423,8 +440,8 @@ def preflight_reasons(app: pathlib.Path, screen: dict, trusted: Any,
         reasons.append("display_asleep_or_unknown:%s" % screen.get("display_asleep"))
     if trusted is not True:
         reasons.append("accessibility_not_granted:%s" % trusted)
-    if not human_present:
-        reasons.append("need_flag:--i-am-at-the-machine")
+    if idle_seconds is None or idle_seconds < USER_INPUT_IDLE_MIN_SEC:
+        reasons.append("user_input_active_or_unknown:%s" % idle_seconds)
     if not actions:
         reasons.append("no_action_selected")
     return reasons
@@ -1403,22 +1420,24 @@ def self_test() -> int:
           judge_user_data_untouched({"config.json": [10, 1]}, {"config.json": [10, 1]})["ok"])
 
     ok_screen = {"locked": False, "display_asleep": False}
+    idle = USER_INPUT_IDLE_MIN_SEC
     here = ROOT / "sf_constants.py"
     check("产物不存在必须拦住", bool(preflight_reasons(pathlib.Path("/definitely/not/here"),
-                                                    ok_screen, True, True, ["menu"])))
+                                                    ok_screen, True, ["menu"], idle_seconds=idle)))
     check("屏幕锁定必须拦住", bool(preflight_reasons(here, {"locked": True,
                                                        "display_asleep": False},
-                                                      True, True, ["menu"])))
+                                                      True, ["menu"], idle_seconds=idle)))
     check("屏幕状态读不出（None）也当不成立", bool(preflight_reasons(
-        here, {"locked": None, "display_asleep": None}, True, True, ["menu"])))
-    check("没有辅助功能授权必须拦住", bool(preflight_reasons(here, ok_screen, False,
-                                                          True, ["menu"])))
-    check("授权读不出来（None）必须拦住", bool(preflight_reasons(here, ok_screen, None,
-                                                             True, ["menu"])))
-    check("没允许占屏必须拦住", bool(preflight_reasons(here, ok_screen, True, False, ["menu"])))
-    check("一条动作都没选必须拦住", bool(preflight_reasons(here, ok_screen, True, True, [])))
-    check("前提齐备时不该编出阻塞项",
-          preflight_reasons(here, ok_screen, True, True, ["menu"]) == [])
+        here, {"locked": None, "display_asleep": None}, True, ["menu"], idle_seconds=idle)))
+    check("没有辅助功能授权必须拦住", bool(preflight_reasons(here, ok_screen, False, ["menu"], idle_seconds=idle)))
+    check("授权读不出来（None）必须拦住", bool(preflight_reasons(here, ok_screen, None, ["menu"], idle_seconds=idle)))
+    check("正式版正在运行必须拦住", bool(preflight_reasons(here, ok_screen, True, ["menu"],
+                                                        installed_running=True, idle_seconds=idle)))
+    check("用户正在操作必须拦住", bool(preflight_reasons(here, ok_screen, True, ["menu"], idle_seconds=0.0)))
+    check("无法读取输入状态必须拦住", bool(preflight_reasons(here, ok_screen, True, ["menu"], idle_seconds=None)))
+    check("一条动作都没选必须拦住", bool(preflight_reasons(here, ok_screen, True, [], idle_seconds=idle)))
+    check("前提齐备时不该编出阻塞项（无人工点头且输入已空闲）",
+          preflight_reasons(here, ok_screen, True, ["menu"], idle_seconds=idle) == [])
 
     check("全部 skip 时应给 not_evaluated",
           summarize([{"status": "skip"}])["not_evaluated"] is True)
@@ -1508,7 +1527,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--report", action="store_true", help="只打印清单与前提，不发事件")
     ap.add_argument("--self-test", action="store_true", help="离线种错核验")
     ap.add_argument("--i-am-at-the-machine", action="store_true", dest="human_present",
-                    help="确认此刻屏幕解锁，且允许本工具接管鼠标")
+                    help="已弃用且不再需要：保留只为兼容旧调度命令，不影响任何判定")
     return ap
 
 
@@ -1532,17 +1551,19 @@ def main(argv=None) -> int:
         print("网络隔离: %s" % network_guard_state(app)["note"])
     screen = _screen_state()
     trusted = accessibility_trusted()
-    reasons = preflight_reasons(app, screen, trusted, args.human_present, names,
-                                FSS.installed_app_running())
+    idle_seconds = input_idle_seconds()
+    reasons = preflight_reasons(app, screen, trusted, names, FSS.installed_app_running(), idle_seconds)
     if args.report:
-        print("前提: 屏幕=%s 显示器=%s 辅助功能=%s"
-              % (screen.get("locked"), screen.get("display_asleep"), trusted))
+        print("前提: 屏幕=%s 显示器=%s 辅助功能=%s 最近输入=%s秒"
+              % (screen.get("locked"), screen.get("display_asleep"), trusted, idle_seconds))
         print("阻塞项: %s" % ("、".join(reasons) if reasons else "无"))
         return EXIT_OK
     if reasons:
         print("!! 前提不成立，本轮**不判通过也不判失败**：%s" % "、".join(reasons))
-        print("   先解决上面每一条，再加 --i-am-at-the-machine 重跑")
+        print("   待上面每一条客观前提恢复后重跑；本工具不需要人工点头")
         return EXIT_PRECONDITION
+    if args.human_present:
+        print("提示: --i-am-at-the-machine 已弃用，当前版本不需要它")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = (pathlib.Path(args.out) if args.out
                else ROOT / "build" / ("click-%s-%s" % (bundle_version(app) or "unknown", stamp)))

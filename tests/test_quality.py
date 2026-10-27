@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
 """实时股价 v1.2.22 质量改进回归测试（20.2 圆角抽公共 / 20.3 分时横坐标抽公共 / 一般问题-停牌 0 值误判修复）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import datetime
 import os

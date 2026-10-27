@@ -1,6 +1,7 @@
 """HTTPS-only redirects and bounded response reads without global opener changes."""
 import http.client
 import io
+import os
 import ssl
 import time
 import urllib.parse
@@ -9,9 +10,32 @@ from typing import cast
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
+# 测试运行器设为 "1" 时，本模块的真实 HTTPS 建连一律拒绝（见 BudgetHTTPSHandler.https_open）。
+# 它与 sf_network 里走查专用的 SF_REJECT_NETWORK 是两件事：那个在行情入口 http_get 最前面拒绝，
+# 会让“替换了 safe_urlopen 的用例”拿不到自己的替身；这个只拦最底层真正要开 socket 的一步，
+# 所以打了替身的用例照常走替身，只有漏了替身、会真正联网的路径被拦下。
+TEST_REJECT_NETWORK_ENV = "SF_TEST_REJECT_NETWORK"
+
 
 class ResponsePolicyError(OSError):
     pass
+
+
+class NetworkRejectedForTest(OSError):
+    """连接池路径被测试守卫拒绝。不是策略类错误：`http_get` 仍会照旧回退到 urllib 那条路，
+    于是只替换了 `safe_urlopen` 的老用例照常走到自己的替身；真正要开 socket 的 urllib 路径随后被拒。"""
+
+
+def reject_real_connection_under_test(error=ResponsePolicyError):
+    """测试运行器设了 SF_TEST_REJECT_NETWORK=1 时，真正要开 socket 的一步在这里失败。
+
+    默认抛策略类错误（OSError 的子类）：`sf_network` 的重试与回退遇到它会直接上抛，不会为一次必然
+    失败的请求睡 0.5 秒重试、再换条路重发。连接池路径传 `NetworkRejectedForTest`：同样不重试，
+    但允许回退（理由见该类）。两处真实建连入口都调它：urllib 路径的 `BudgetHTTPSHandler.https_open`，
+    和连接池路径的 `sf_network._http_get_pooled`（后者只对真连接对象调用，测试替身不受影响）。
+    """
+    if os.environ.get(TEST_REJECT_NETWORK_ENV) == "1":
+        raise error("network disabled for the test run")
 
 
 class ResponseDeadlineError(TimeoutError):
@@ -77,6 +101,7 @@ class BudgetHTTPSHandler(urllib.request.HTTPSHandler):
     _context: ssl.SSLContext
 
     def https_open(self, req):
+        reject_real_connection_under_test()
         deadline = getattr(req, "deadline", None)
         if deadline is None:
             return super().https_open(req)

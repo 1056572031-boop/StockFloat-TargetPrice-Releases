@@ -18,9 +18,6 @@ BUG（stock_float_window.FloatWindow._apply_quote）：
     4. 渲染层 _paint_price：_pct_unknown 为真时涨跌幅显示 "--" 并用中性灰
        FG_DIM，不得渲染成带涨跌色的 "0.00%"。
 
-运行方式（在 StockFloat 目录）：
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest \
-        discover -s tests -p "test_v1349_pct.py" -v
 """
 import os
 import sys

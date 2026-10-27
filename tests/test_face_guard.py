@@ -228,12 +228,12 @@ class TestMonitorDegradation(SFCase):
                          "权限被拒必须原样成为状态，界面才有东西可显示")
 
     def test_starting_never_opens_a_permission_dialog(self):
-        """v1.4.47 用户要求：程序自己**永远不许**弹系统授权框。
+        """被动 `start()` 路径不请求摄像头权限。
 
-        旧行为在产物是 ad-hoc 签名时有个真实后果：每次更新重装后 TCC 把程序当新的，
+        旧版在产物是 ad-hoc 签名时有个真实后果：每次更新重装后 TCC 把程序当新的，
         状态回到 undetermined，于是开机第一次启动就弹一个框 —— 用户什么都没做
-        就被要求当场决定。现在请求只挂在菜单点击那一步（见下面两条），
-        这一条锁住"被动路径不请求"。
+        就被要求当场决定。现在只有用户从菜单主动开启后，`request_access_once()`
+        才能请求权限；这一条锁住被动启动不请求。
         """
         self._patched(device=object(), status="undetermined")
         asked = []
@@ -607,7 +607,7 @@ class TestExpeditedRecheck(SFCase):
         mon._on_frame(None, object(), None)                # discipline-ok(R5): 同上
 
     # 加急之后允许的调度抖动余量：帧到达时刻与 monotonic() 取值之间总有毫秒级差，
-    # 不留这一点就会在机器忙时假红；它也远小于一个节拍（0.5s），不会把"没加急"放过去。
+    # 不留这一点就会在机器忙时假红；它也远小于一个采样节拍，不会把"没加急"放过去。
     JITTER_SEC = 0.05
 
     def test_count_change_arms_expedited_recheck(self):
@@ -623,7 +623,7 @@ class TestExpeditedRecheck(SFCase):
         self.assertTrue(mon.expedited, "计数变化必须记下一次加急（否则这条判据从没生效过）")
 
     def test_steady_count_never_expedites(self):
-        """稳态必须还是半秒一拍 —— 否则"稳态功耗没涨"这句话就是假的。"""
+        """稳态必须仍按 `tick_sec` 一拍 —— 否则"稳态功耗没涨"这句话就是假的。"""
         mon = FacePresenceMonitor()
         for _ in range(6):
             self._feed(mon, [0.9])
@@ -915,7 +915,7 @@ class TestSessionPlumbing(SFCase):
         self.assertGreater(ts, 0.0)
 
     def test_tick_throttles_detection(self):
-        """一秒节拍：连续两拍只检一次，省下的就是 CPU 和电。"""
+        """采样节拍：同一节拍内连续两帧只检一次，省下的就是 CPU 和电。"""
         mon, session, output, _ = self._start_with_fakes()
         delegate = output.delegate
         mon._last_detect = 0.0                               # discipline-ok(R5): 节拍开关

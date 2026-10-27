@@ -15,9 +15,6 @@ BUG 复现与根因（量化，见 commit 说明）：
     2. 布局收敛到 renderer.price_pct_layout 唯一实现，**先扣除涨跌幅预算再自适应
        价格字号** —— 价格主动让位，右侧空间恒定充足，位置由数据唯一确定。
     3. 删除「回落到 Y_PCT 下方」的分支，涨跌幅恒在价格行右侧。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v163 -v
 """
 import os
 import sys

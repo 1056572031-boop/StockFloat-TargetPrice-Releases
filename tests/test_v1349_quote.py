@@ -11,8 +11,6 @@
     资深股民会误判成"平盘"。修：pre <= 0 时 change/pct 置空串（下游显示 "--"），
     记 WARNING 日志，但现价/名称/高低照旧返回（整条行情不丢）。
 
-运行方式（在【实时股价】目标价版 目录）：
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests -p "test_v1349_quote.py" -v
 """
 import os
 import sys

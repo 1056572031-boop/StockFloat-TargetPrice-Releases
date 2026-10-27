@@ -18,7 +18,7 @@ tools/verify_dmg_pyz.py 做（单一实现，不在这里复制一遍）。
     本工具把这一步变成**必须有内容**：
       · release_checks.txt 里没有 `version` 行，或版本号不是本轮
         `sf_constants.APP_VERSION` → 拒绝出包（防止"上一轮的特征被当成本轮验收"）；
-      · 一条 check/forbid 都没有 → 拒绝出包；
+      · 一条 check/forbid/checkfile/forbidfile 都没有 → 拒绝出包；
       · 特征没命中 → 非零退出（打包失败）。
     于是"发版前把本轮特征填进去"从人的记性变成了脚本的强制。
 
@@ -28,7 +28,7 @@ tools/verify_dmg_pyz.py 做（单一实现，不在这里复制一遍）。
       （`feature_enabled("system_drag")` 里的开关名查不到，要查它的
       使用点符号如 `_sys_drag`）。
     · `forbid 模块::符号` —— 本轮删掉的东西，用来证明"旧实现确实不在了"。
-    · 至少一条要落在**本轮改动所在的那个文件**上：只填一个到处都有的通用符号，
+    · 至少一条 check/forbid/checkfile/forbidfile 要落在**本轮改动所在的那个文件**上：只填一个到处都有的通用符号，
       等于把闸门又变回永远通过。
     · `testref tests/文件.py::用例名`（或 `::类名::用例名`）—— 登记"覆盖这处改动的测试"。
       用在包内拿不出新名字的模块（只改了函数体或字面量）：以前只能写成清单里的注释，

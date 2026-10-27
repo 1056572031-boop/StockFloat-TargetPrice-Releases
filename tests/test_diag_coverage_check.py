@@ -251,6 +251,14 @@ class GateSelfCheck(SFCase):
         self.assertEqual(proc.returncode, 2, "未知参数必须退 2，绝不落到默认动作")
         self.assertIn("未知参数", proc.stdout + proc.stderr)
 
+    def test_cli_refuses_to_guess_a_release_range(self):
+        proc = subprocess.run([sys.executable, str(ROOT / "tools" / "diag_coverage_check.py"),
+                               "--version", "9.9.9"], capture_output=True, text=True, cwd=str(ROOT),
+                              env={key: value for key, value in os.environ.items()
+                                   if key != "SF_RELEASE_BASELINE"})
+        self.assertEqual(proc.returncode, 2, "手动检查不应按版本号猜区间")
+        self.assertIn("没有明确的发布基线", proc.stdout + proc.stderr)
+
 
 class GateOnTheReleaseChain(SFCase):
     """3.9 关的位置：核验必须排在不可逆动作之前（同 TestReleaseChainCallsTheGate 的理由）。"""
@@ -327,18 +335,20 @@ class GateRangeBaseline(SFCase):
         self.git("commit", "-qm", "add %s" % name)
         return self.git("rev-parse", "HEAD")
 
-    def test_explicit_baseline_wins_over_the_version_guess(self):
-        guessed, _ = gate.resolve_range(self.repo, "", "1.0.1")
-        self.assertEqual(guessed, "%s..HEAD" % self.v100, "推断落在更早的版本位：这正是它不可靠的地方")
+    def test_explicit_baseline_is_required_instead_of_guessing(self):
+        guessed, note = gate.resolve_range(self.repo, "", "1.0.1")
+        self.assertEqual(guessed, "", "没有真实基线不许按版本号猜区间")
+        self.assertIn("没有明确的发布基线", note)
+        self.assertIn("--baseline", note)
         explicit, note = gate.resolve_range(self.repo, "", "1.0.1", baseline=self.published)
         self.assertEqual(explicit, "%s..HEAD" % self.published)
         self.assertIn(self.published[:9], note)
         self.assertEqual(self.git("rev-list", "--count", explicit), "3", "基线之后应当是 3 笔")
 
-    def test_guess_names_itself_an_estimate_with_the_commit_count(self):
+    def test_missing_baseline_explains_how_to_provide_one(self):
         _, note = gate.resolve_range(self.repo, "", "1.0.1")
-        self.assertIn("估计", note)
-        self.assertIn("共 4 笔", note, "推断必须把区间里有多少笔说出来，读的人才看得出偏大还是偏小")
+        self.assertIn("没有明确的发布基线", note)
+        self.assertIn("--range", note)
         self.assertIn("--baseline", note)
 
     def test_range_override_beats_baseline(self):
@@ -388,7 +398,7 @@ class GateRangeBaseline(SFCase):
                 gate.main(["--dir", str(self.repo)])
             with patch.dict(os.environ, {"SF_RELEASE_BASELINE": ""}):
                 gate.main(["--dir", str(self.repo)])
-        self.assertEqual(seen, ["from-flag", "from-env", ""], "旗标 > 环境变量 > 空（才按版本号推断）")
+        self.assertEqual(seen, ["from-flag", "from-env", ""], "旗标 > 环境变量 > 空（空则 resolve_range 拒答）")
 
     def test_product_modules_cover_every_root_module_not_just_the_named_ones(self):
         """点名清单回答不了「还有第几个没进来」：v1.4.101 的 target_panel 就是这样一直不在视野里。"""

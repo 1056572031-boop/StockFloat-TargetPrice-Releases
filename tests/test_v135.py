@@ -5,9 +5,6 @@
 - contextMenuEvent 生成的菜单不再含「替换股票」「目标价」「最小化到 Dock」「退出」项
   （底层功能保留，仅 UI 层不可见），保留「刷新行情」「导出诊断包」与版本行；
 - 毛玻璃暗化 alpha 加深：暗色系统 >100、浅色系统 >=170（修复用户"太透光"反馈）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import re

@@ -15,7 +15,6 @@
 的参数与返回的位置**（§6 第 5 条：看内部状态的理由是"要证明量宽侧与绘制侧同口径"，
 而这两侧的合流点就在这个调用上）。
 
-运行：QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_digit_tabular -v
 """
 import itertools
 import os

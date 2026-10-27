@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""首装与更新四条路线的实测核验（v1.4.58 起）。
+"""首装与更新九条路线的实测核验（v1.4.58 起）。
 
 它守的是一句此前只靠嘴说的承诺：**"用户照指引装完，第一次就能打开"**。
 macOS 拦不拦一个 app，取决于文件上有没有 `com.apple.quarantine`（下称"来历标签"），
@@ -299,7 +299,7 @@ def light_signed_app(work: Path, tag: str) -> Path:
     判据本身不需要 71MB：这里种错要验的是**图标、显示名、可执行位、标签递归读回、
     codesign 有没有牙、locale**，替身全都覆盖到（替身签名过 → codesign 判"完整"，
     改掉它 → 判"被修改"，两向都在 tests/test_installer_script_branches.py 实测过）。
-    默认档（发版链 3.8 跑的那五条）继续用真产物 —— 那一条宣称的是"用户拿到的那一份"。
+    默认档（发版链 3.8 跑的全部路线）继续用真产物 —— 那一条宣称的是"用户拿到的那一份"。
     """
     d = work / ("light-" + tag)
     d.mkdir(parents=True, exist_ok=True)

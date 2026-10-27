@@ -86,6 +86,19 @@ class ReleaseDesktopStaging(SFCase):
         self.assertLess(self.source.index(build), self.source.index(CALL))
         self.assertIn('if [ "$LOCAL_ONLY" -eq 0 ]; then', self.source[:self.source.index(audit)])
 
+    def test_public_export_audit_runs_and_is_waited_before_prepare_only_can_build(self):
+        # 公开树审计此前只在发布阶段才发现私密内容；候选已经冻结才失败，必须在所有模式的前置并行组里。
+        audit = '"$VENV_PY" tools/public_release.py >"$PRECHECK_DIR/public.log" 2>&1 &'
+        pid = 'PRECHECK_PUBLIC=$!'
+        wait = 'wait "$PRECHECK_PUBLIC" || PRECHECK_FAILED=1'
+        stop = 'if [ "$PRECHECK_FAILED" -ne 0 ]; then'
+        build = '# ---- 0) 回归关卡'
+        self.assertLess(self.source.index(audit), self.source.index(pid))
+        self.assertLess(self.source.index(pid), self.source.index(wait))
+        self.assertLess(self.source.index(wait), self.source.index(stop))
+        self.assertLess(self.source.index(stop), self.source.index(build))
+        self.assertLess(self.source.index(build), self.source.index('== 仅制作候选产物'))
+
     def test_copies_exact_bytes_then_retires_only_own_old_dmg_names(self):
         old = self.desktop / "Skyrocket-V0.0.1.dmg"
         legacy = self.desktop / "实时股价-目标价版-V0.0.1.dmg"

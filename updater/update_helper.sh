@@ -11,8 +11,8 @@ RESULT=""
 HANDOFF=""
 VERIFICATION_HOME=""
 
-# 正式 Developer ID 签名启用后，须同时填写两项并随发布证书轮换更新。
-# 当前开发构建是 ad-hoc 签名，留空时只允许基础 codesign 校验，绝不伪造身份锚定。
+# 当前使用固定自签名、未使用 Developer ID 公证。若未来启用 Developer ID 签名，
+# 须同时填写两项并随发布证书轮换更新；当前留空仍执行基础 codesign 校验，绝不伪造身份锚定。
 EXPECTED_TEAM_ID=""
 EXPECTED_CERT_SHA1=""
 MAX_UNPACK_BYTES=$((2 * 1024 * 1024 * 1024))

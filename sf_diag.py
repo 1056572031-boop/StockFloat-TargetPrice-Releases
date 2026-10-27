@@ -296,7 +296,7 @@ def encode(value: Any, needles: tuple[Needle, ...], depth: int,
         if isinstance(value, float) and not math.isfinite(value):
             # NaN/Infinity 是 Python 的 json 扩展，不是 JSON：写出去以后浏览器与
             # 严格解析器直接报错，等于这一份现场对外不可用。产品里确有 nan 的来源
-            # （sf_ui_render.py:1663/1689 的坐标净化），所以这条不是假想敌。
+            # （sf_ui_render.py 分时图坐标计算里的净化分支），所以这条不是假想敌。
             truncated.append("%s: %r 不是有限数，写成 null" % (path, value))
             return True, None
         return True, value

@@ -20,7 +20,40 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.105
+version 1.4.106
+# ---- v1.4.106：反馈记录一键清理、日志脱敏句号边界、崩溃报告镜像与若干修正（基线 e2f13bf，26 笔非合并提交） ----
+# 清理按钮不再二次确认：旧的上膛/超时/复位三件套整套删除，包内必须不再出现：
+forbid sf_feedback_ui::_confirm_cleanup
+forbid sf_feedback_ui::_reset_arm
+forbid sf_feedback_ui::_disarm_cleanup
+forbid sf_feedback_ui::_CLEANUP_CONFIRM_MS
+# 崩溃报告关键镜像：程序自己的名字只比对去掉路径后的列，其他关键库名整行匹配：
+check sf_crashreport::_plain_line_is_key_image
+check sf_crashreport::_OWN_BINARY_NAMES
+check sf_crashreport::_LIBRARY_KEY_NAMES
+# 摄像头核验的装机身份判断取自 sf_constants，不再另存字面量：
+check sf_camera_check::is_installed_app_identity
+# 测试联网守卫（装机版不设 SF_TEST_REJECT_NETWORK，仅测试运行器设置；入口在包内，故随包可查）：
+check sf_http::reject_real_connection_under_test
+check sf_http::NetworkRejectedForTest
+check sf_http::TEST_REJECT_NETWORK_ENV
+check sf_feedback_transport::RejectRealConnectionUnderTest
+# 以下改动没有新的顶层名字或只改了函数体，证据是测试；testref 只证明用例仍在、以 test 开头、没被无条件跳过，
+# 不证明通过（通过由同轮完整回归证明），也不算本轮特征（这几行是机器检查“用例仍在”，不是包内特征）：
+#   sf_feedback_outbox.history(include_cleaned=...)：已清理记录在查询里过滤，不占 limit 名额，库里回执元数据保留；
+#   sf_privacy：公网 IPv4/IPv6 紧跟句号时也被抹，版本链 1.2.3.4.5 不受影响；
+#   sf_window_geometry.keep_on_screen_position：右沿贴齐容差不再把放不下的窗口推出可用区右沿；
+#   sf_editor.SearchThread：搜索出错与信号投递失败各留 SWALLOWED 日志。
+testref tests/test_feedback_outbox_leases.py::OutboxLeaseTests::test_hidden_cleaned_records_do_not_use_up_the_history_limit
+testref tests/test_feedback_ui_polish.py::CleanupIsImmediate::test_one_click_cleans_and_the_record_disappears
+testref tests/test_feedback_ui_polish.py::CleanupIsImmediate::test_a_cleaned_record_stays_gone_after_reopening_the_window
+testref tests/test_feedback_hardening.py::LogScrubbing::test_public_ipv4_followed_by_sentence_punctuation_is_masked
+testref tests/test_window_geometry.py::TestWindowGeometry::test_padding_never_pushes_a_wide_window_past_the_right_edge
+testref tests/test_window_geometry.py::TestWindowGeometry::test_window_wider_than_the_area_keeps_its_left_edge
+testref tests/test_coverage_icons_editor.py::TestSearchThreadBody::test_a_search_failure_leaves_a_swallowed_trace
+testref tests/test_crashreport.py::TestKeyImagesKeepCurrentExecutable::test_plain_key_images_include_current_executable
+testref tests/test_quality_camera_check.py::CameraCheckIdentityTests::test_current_and_legacy_bundle_ids_are_accepted
+
 # ---- v1.4.105：反馈上传可靠性、记录窗口、日志脱敏（基线 a8d42e1，11 笔提交） ----
 # 失败原因：服务端回复只收固定形状的错误码，队列里的失败标签带状态码和错误码，界面按类别给下一步：
 check sf_feedback_transport::server_reply
@@ -272,9 +305,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.105 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.106 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.105
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.106
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

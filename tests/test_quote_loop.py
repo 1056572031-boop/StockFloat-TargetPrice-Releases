@@ -6,9 +6,6 @@
 2. ui_poll_interval_ms / ui_top_poll_interval_ms：_poll 头部间隔决策
 3. minute_retry_state：分时快速重试窗口状态转移（成功/窗口内/首次失败/窗口耗尽）
 4. QuoteLoopSchedule：行情/分时线程"到期拉取/长暂停退避/基础节拍"调度骨架
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests/test_quote_loop.py -v
 """
 import os
 import sys

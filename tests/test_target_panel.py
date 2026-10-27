@@ -812,13 +812,12 @@ class TestV1287Features(unittest.TestCase):
     def setUpClass(cls):
         cls._app = QApplication.instance() or QApplication([])
 
-    def _make(self, saved=(), price=None, apply_blocked=False, limits=None):
+    def _make(self, saved=(), price=None, limits=None):
         with patch.object(target_panel, "load_alerts", return_value=list(saved)):
             return target_panel.TargetPanel(
                 "600519", "贵州茅台", lambda a: True, lambda: True,
                 current_code_fn=lambda: "600519",
                 current_price_fn=(lambda: price) if price is not None else None,
-                apply_blocked_fn=(lambda: apply_blocked) if apply_blocked else None,
                 limits_fn=(lambda: limits) if limits is not None else None)
 
     def test_above_cannot_exceed_limit_up(self):
@@ -843,7 +842,7 @@ class TestV1287Features(unittest.TestCase):
 
     def test_fired_target_still_allows_apply_button(self):
         """已触发只是状态提示，不能阻止用户继续新增或修改目标价。"""
-        p = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600)], apply_blocked=True)
+        p = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600, state="hit")])
         p._update_buttons()
         self.assertTrue(p.btn_apply.isEnabled())
         self.assertTrue(p.btn_clear.isEnabled())
@@ -953,15 +952,16 @@ class TestV1287Features(unittest.TestCase):
 
     def test_fired_state_never_locks_apply(self):
         """已触发后仍可保存新的目标价，不再把状态提示误当成编辑权限。"""
-        p = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600)])
-        state = {"fired": False}
-        p._apply_blocked_fn = lambda: state["fired"]
-        p._update_buttons()
-        self.assertTrue(p.btn_apply.isEnabled())
-        state["fired"] = True
-        p._update_buttons()
-        self.assertTrue(p.btn_apply.isEnabled(),
+        before = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600)])
+        before._update_buttons()
+        self.assertTrue(before.btn_apply.isEnabled())
+        after = self._make(saved=[_saved(TARGET_DIR_ABOVE, 1600, state="hit"),
+                                  _saved(TARGET_DIR_BELOW, 1400)])
+        after._update_buttons()
+        self.assertTrue(after.btn_apply.isEnabled(),
                         "目标到达后必须仍可新增或修改目标价")
+        before.close()
+        after.close()
 
     def test_successful_apply_closes_without_delayed_lock(self):
         """保存成功即关闭，不再进入延迟停留或锁定态。"""

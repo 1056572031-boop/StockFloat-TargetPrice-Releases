@@ -8,9 +8,6 @@
 需求2：分钟分时拉取失败短期快速重试 —— _fetch_minute 返回显式成败信号；
        _minute_loop 失败后以 MINUTE_RETRY_INTERVAL 快速重试，成功恢复常规周期，
        持续失败超过 MINUTE_RETRY_MAX 次回落到常规周期（不空转刷屏）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

@@ -18,6 +18,7 @@ from contextlib import closing
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sf_diag import identity_needles, scrub_text
 from sf_feedback import MAX_FULL_ARCHIVE_BYTES
+from sf_feedback_bundle import PrivacyRejected, check_privacy
 from sf_privacy import scrub_secrets
 
 MAX_REPORT_BYTES = 4 * 1024 * 1024
@@ -102,12 +103,19 @@ def redacted_body(source, body):
         try:
             data = _scrub(json.loads(text))
             output = (json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            check_privacy(output.decode("utf-8"))
             if len(output) > MAX_REPORT_BYTES:
                 raise RuntimeError("redacted report exceeds its limit")
             return output
+        except PrivacyRejected as exc:
+            raise RuntimeError("redacted report failed privacy validation") from exc
         except (ValueError, UnicodeDecodeError) as exc:
             raise RuntimeError("report json is unreadable") from exc
     output = redact(text).encode("utf-8")
+    try:
+        check_privacy(output.decode("utf-8"))
+    except PrivacyRejected as exc:
+        raise RuntimeError("redacted report failed privacy validation") from exc
     if len(output) > MAX_REPORT_BYTES:
         raise RuntimeError("redacted report exceeds its limit")
     return output

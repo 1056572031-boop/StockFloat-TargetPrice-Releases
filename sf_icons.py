@@ -368,7 +368,7 @@ def show_dock():
         log_line("show_dock ERROR: %r" % e)
 
 def sf_symbol_pixmap(name, size, color, scale=2, weight=None):
-    """从 macOS SF Symbols（苹果图标库）获取图标并转为带颜色的 QPixmap。
+    """从 macOS SF Symbols（苹果图标库）获取图标并转为着色 QImage。
 
     用 NSGraphicsContext 渲染 scale 倍分辨率，保证缩放到 size 时依然清晰。
     weight 传入 NSFontWeight* 常量可控制图标粗细（如 NSFontWeightBold 加粗）。

@@ -4,9 +4,6 @@
 覆盖：顶部按钮命中（编辑/关闭）、窗口拖拽、底部高度缩放、右键菜单。
 方法：QTest 在应用内注入 mousePress/MouseMove/MouseRelease/右键事件，
 替代系统级鼠标模拟，确定性验证 PyQt6 下坐标命中与交互逻辑。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

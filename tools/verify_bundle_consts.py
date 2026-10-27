@@ -6,7 +6,7 @@
 
 用法:
     ./.venv/bin/python tools/verify_bundle_consts.py <app路径> <模块名> <常量名>...
-    ./.venv/bin/python tools/verify_bundle_consts.py /Applications/实时股价-目标价版.app \
+    ./.venv/bin/python tools/verify_bundle_consts.py /Applications/Skyrocket.app \
         sf_ui_render BOTTOM_ROW_GAP BOTTOM_SECTION_HIDDEN
 
 输出每个常量是**字面量**（直接赋值，给出值）还是**推导值**（由表达式算出，

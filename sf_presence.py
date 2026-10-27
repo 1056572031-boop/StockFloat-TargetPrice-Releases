@@ -26,7 +26,8 @@
     （细节写在 `_request_access` 的注释里，别再看一眼就把它当冗余依赖删了）。
     类本身仍用 `objc.lookUpClass` 动态取：本机实测 7 个必需类全部解析成功。
   · 单帧实测 18.0ms（本机 1024x768 两人照，冷启动首帧 76.1ms 含框架预热），
-    按 1 次/秒 的节拍跑，占空比约 1.8%，比"每帧都检"低两个数量级；
+    按 `FACE_GUARD_TICK_SEC` 节拍检测；计数变化时可按
+    `FACE_GUARD_EXPEDITE_SEC` 加急复检，避免固化过时的频率或占空比；
   · OpenCV 的 Haar 级联在同样两张脸上没有这么稳，还要多带 ~40MB 依赖。
 """
 
@@ -729,7 +730,7 @@ class FacePresenceMonitor:
             return self.state
         if status == "undetermined":
             # **不再在启动时向系统请求权限**（2026-10-09 用户明确要求"去掉这个弹窗提示"）。
-            # 旧行为的事实：产物是 ad-hoc 签名，每次重装/更新后 TCC 把它当成新程序，
+            # 旧行为的事实（当时产物是 ad-hoc 签名，现为固定自签名）：每次重装/更新后 TCC 把它当成新程序，
             # 授权状态回到 undetermined，于是每次更新后第一次启动都弹一次系统框 ——
             # 用户什么都没做却被要求当场做个决定。v1.4.45 把"只问一次"收成进程级，
             # 只解决了"同一进程里反复弹"，没解决"每次更新都弹"。
@@ -1150,7 +1151,7 @@ class FacePresenceMonitor:
     def _arm_expedite(self, now: float, count: int) -> bool:
         """计数变了就把下一次检测提前（v1.4.56，见常量旁注释）。
 
-        只在**变化**时提前，稳态仍是 0.5 秒一拍；每秒最多
+        只在**变化**时提前，稳态仍按 `tick_sec` 节拍；每秒最多
         `FACE_GUARD_EXPEDITE_BUDGET` 次，防止两个人来回走动时把占空比顶满。
         """
         prev = self._prev_count

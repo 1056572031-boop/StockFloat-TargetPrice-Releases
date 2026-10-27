@@ -8,9 +8,6 @@
 
 （v1.2.26 原「悬停版本号果冻抖动」回归测试已随悬停版本号功能移除而删除，
   版本号现为右键菜单灰色禁用项，从 Info.plist 读取。）
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v126 -v
 """
 import os
 import sys

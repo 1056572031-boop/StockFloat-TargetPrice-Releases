@@ -5,15 +5,36 @@ from __future__ import annotations
 import contextlib
 import json
 import hashlib
+import os
 import re
 import struct
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import BaseHandler, HTTPRedirectHandler, Request, build_opener
 
 from sf_feedback import FeedbackProtocolError
 from sf_feedback_capture import read_upload_archive, validate_capture_context, validate_upload_receipt
+
+# 与 sf_http.TEST_REJECT_NETWORK_ENV 同名。这里不 import sf_http：反馈代理按 install_feedback_agent.MODULES
+# 的固定清单装机，清单里没有 sf_http，多一个导入会让装机后的代理在启动时就 ModuleNotFoundError。
+# 两处同名由 tests/test_sf_http_network_guard.py 钉住。
+TEST_REJECT_NETWORK_ENV = "SF_TEST_REJECT_NETWORK"
+
+
+class RejectRealConnectionUnderTest(BaseHandler):
+    """作为处理器传给 `build_opener`：测试运行器设了 SF_TEST_REJECT_NETWORK=1 时，真正打开连接前先失败。
+
+    优先级比默认的 HTTPSHandler 高；没设环境变量时返回 None，请求照常交给后面的处理器。
+    放在处理器里而不是 `build_opener` 之前判断，是因为用例会把 `build_opener` 整个换成替身，
+    替身不会走到这里，“打了替身的用例照常走替身”仍成立。
+    """
+    handler_order = 100
+
+    def https_open(self, req):
+        if os.environ.get(TEST_REJECT_NETWORK_ENV) == "1":
+            raise OSError("network disabled for the test run")
+        return None
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -104,7 +125,7 @@ def submit_https(url, envelope, archive_path, *, allow_loopback=False):
                       headers={"Content-Type": "application/vnd.skyrocket.feedback-v1",
                                "User-Agent": "Skyrocket-Feedback/1", "Accept": "application/json"}, method="POST")
     timeout = 120 if envelope["diagnostic_payload_version"] >= 2 else 30
-    with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+    with build_opener(NoRedirect(), RejectRealConnectionUnderTest()).open(request, timeout=timeout) as response:
         if response.status != 200:
             raise FeedbackProtocolError("反馈服务没有返回已收件回执")
         payload = response.read(MAX_RESPONSE_BYTES + 1)

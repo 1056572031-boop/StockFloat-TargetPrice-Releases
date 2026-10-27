@@ -3,9 +3,14 @@ import argparse
 import time
 from typing import Any
 
-from sf_constants import APP_DISPLAY_NAME, APP_VERSION
+from sf_constants import APP_DISPLAY_NAME, APP_VERSION, BUNDLE_ID, LEGACY_BUNDLE_IDS
 from sf_config import _atomic_write_json
 import sf_presence
+
+
+def is_installed_app_identity(bundle_id):
+    """进程的包标识是否是本程序（当前一代或旧一代）；名单取自 sf_constants，不再各存一份字面量。"""
+    return bundle_id in (BUNDLE_ID, *LEGACY_BUNDLE_IDS)
 
 
 def judge_camera_result(authorization, frames, errors, stopped):
@@ -28,7 +33,7 @@ def main(argv=None):
     result: dict[str, Any] = {"version": APP_VERSION, "bundle_id": str(bundle_id or ""),
               "status": "waiting", "authorization": sf_presence.camera_access_status(),
               "frames": 0, "detect_errors": 0, "samples": [], "camera_stopped": False}
-    if bundle_id not in ("com.skyrocket.app", "com.stockfloat.targetprice"):
+    if not is_installed_app_identity(bundle_id):
         result.update(status="blocked", reason="requires-installed-app-identity")
         _atomic_write_json(args.output, result)
         return 2

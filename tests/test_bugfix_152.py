@@ -15,9 +15,6 @@
 3. 渲染层兜底：动画定时器已停而 pending 残留 → 绘制时就地清除，显示跟随 _disp_*
 4. 兜底清除后滚动动画恢复正常触发（不残留死状态）
 5. 正常动画期间（定时器运行中）兜底不误伤 pending
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_bugfix_152 -v
 """
 import os
 import sys

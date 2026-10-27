@@ -34,6 +34,10 @@ class TargetTickBuffer:
                 del self._pending[next(iter(self._pending))]
 
     def take(self, code):
+        """取出当前股票的本轮低高价，并丢弃其他股票的滞后缓冲。
+
+        主窗一次只消费当前股票；切股时会主动清空缓冲，因此这里不是多标的消息队列。
+        """
         with self._lock:
             pending = self._pending.pop(code, None)
             self._pending.clear()

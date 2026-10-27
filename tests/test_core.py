@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """实时股价 v1.1.1 核心逻辑单元测试（16.1 随 PyQt6 迁移）。
 
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 依赖：本机需能 import PyQt6（源码模块顶层 import PyQt6）。
 """
 import json

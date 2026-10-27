@@ -3,7 +3,8 @@
 
 投递主路线：UserNotifications 框架（横幅 + 点击回调恢复窗口）。
 降级路线：osascript display notification（无点击回调，已知损失）。
-授权状态：每次触发前查询 authorizationStatus；denied 则只走彩虹、不弹窗不打扰。
+授权状态：每次触发读取 authorizationStatus 的缓存快照（带有效期，过期后异步刷新，见
+        authorization_status）；denied 则只走彩虹、不弹窗不打扰。
 跨线程：UN 的 didReceive 回调不在 Qt 主线程，经 dispatch_async(main_queue) 回主线程
         后再调恢复窗口回调；delegate 必须模块级单例持久持有，否则回调丢失。
         （v1.4.57 起这两个名字由本模块用 NSOperationQueue.mainQueue() 实现 ——

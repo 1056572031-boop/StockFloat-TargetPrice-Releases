@@ -5,9 +5,6 @@
 1. compute_poll_interval：熔断正常/降级/放量放开 三态映射正确
 2. 未知状态兜底 NORMAL（与拆分前 FloatWindow._poll_interval 行为一致）
 3. instant_poll_interval：熔断关闭时固定高频 0.1s
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests/test_scheduler.py -v
 """
 import os
 import sys

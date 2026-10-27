@@ -36,7 +36,7 @@ GitHub App 只安装到批准的一个私有反馈仓库，具有内容读写及
 
 - 仅批准的私有仓库可用；每次提交/拉取先检查仓库仍为私有。
 - 使用专用私有 draft Release `feedback-inbox-v1`，不属于 Skyrocket 应用发行。
-- 旧格式ZIP最多256 KiB，保留 `manifest.json`、`state.json`、`problem.txt`；完整格式payload 2最多32 MiB，额外包含原字节 `diagnostics.zip`，使用独立隐私策略版本。完整协议与验收边界见 [FULL_DIAGNOSTIC_FEEDBACK.md](FULL_DIAGNOSTIC_FEEDBACK.md)。
+- 旧格式ZIP最多256 KiB，保留 `manifest.json`、`state.json`、`problem.txt`；完整格式 payload 2（默认）与 payload 3（启用 `feedback_v3` 后）最多32 MiB，额外包含原字节 `diagnostics.zip`。两者使用各自的完整隐私策略版本；完整协议与验收边界见 [FULL_DIAGNOSTIC_FEEDBACK.md](FULL_DIAGNOSTIC_FEEDBACK.md)。
 - 本机发送前深度验证完整包和凭据残留，云端轻量核对容器、目录、SHA-256和容量，完整回执明确 `validation_scope=container_sha256_and_member_catalog`；维护者电脑在隔离进程内再次完整解析。收件成功不代表完整内容分析或故障定位完成。
 - 生产每日100次提交尝试保护不变；增加每日256 MiB请求体预算和单实例在途内存保护，不增加可绕过额度的测试标记。常规与大包验收在本地执行；正式完整样本工具默认不联网，显式live最多一次POST，结果未知先读回原编号而不自动重复提交。
 - 客户端在启用旧包重试、调用任何发送器和发出 HTTPS 前也执行独立上传白名单校验，拒绝额外附件/清单字段、身份不一致、过大的成员和错误信封。读取实际待发字节后再次核对整体哈希，不能把“远端最终拒收”当作“数据没有离开本机”。客户端与 Python 收件适配器共用不含管理凭据的上传协议校验函数。

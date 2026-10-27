@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-26",
+  "updated": "2026-10-27",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4575,6 +4575,83 @@
           "result": "找不到能证明首次现象的秒级证据，退回未知，不借会话、提交或文件时刻替代"
         }
       ]
+    },
+    {
+      "id": "N24",
+      "symptom": "v1.4.104 随包更新助手校验交接令牌（--handoff，应为 32 位小写十六进制）时，字符检查写成 a-f 区间，在 UTF-8 区域设置下会把大写字母 A-F 一并放行；令牌由程序自己生成，实际被利用的路径很窄，但这是校验失效",
+      "component": "更新助手",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.104",
+      "introduced_note": null,
+      "found_version": "1.4.104",
+      "fixed_version": "1.4.105",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "助手测试只在开发机默认环境（没设区域，走 C 分支）下跑，坏令牌用例里的大写字母恰好被 C 分支拒掉；UTF-8 区域设置下 /bin/sh（bash 3.2）按排序规则展开区间，要到公开快照 CI 的 UTF-8 环境才红。",
+      "defense_added": [
+        "更新助手的十六进制校验改成逐字符列出，不写区间；release_checks 用 forbidfile 钉住旧写法必须消失（随 1.4.105 包内生效）",
+        "更新助手测试在 C 与 en_US.UTF-8 两种区域设置下各跑一遍"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "locate_unknown_reason": "仓库记录只能证明 1.4.104 源码带着这处写法、公开 CI 在 UTF-8 环境把它跑红；没有独立日志锚点证明谁在什么时候第一次看到失败。开条、盖根因戳与收口在同一会话里连续执行，只是记账时刻，不计定位时长。",
+      "source": "公开快照 CI 对 v1.4.104 源码的 4 条红之一；引入提交 c1f1dd0（2026-10-24），修复提交 a36f667（updater/update_helper.sh 改为逐字符列出，测试在 C 与 en_US.UTF-8 下各跑）",
+      "evidence": "verified",
+      "rootcause_origin": "unknown",
+      "timestamp_audit": [
+        {
+          "audited_on": "2026-10-26",
+          "classification": "bookkeeping_not_duration",
+          "original_observed_at": "2026-10-26 21:12:53+08:00",
+          "original_rootcause_at": "2026-10-26 21:12:53+08:00",
+          "reason": "开条与盖根因戳在同一会话里连续执行，该时刻是敲命令的时刻，不是现象首次可观测的时刻。",
+          "evidence_checked": [
+            "提交 a36f667 的说明与测试改动（UTF-8 区域设置下大写字母被区间放行，公开 CI 实测）",
+            "引入提交 c1f1dd0 的日期早于 1.4.104 的发布提交 a8d42e1，且 a8d42e1 包含它；1.4.102、1.4.103 的发布头不包含它"
+          ],
+          "result": "找不到能证明首次现象的秒级证据，退回未知，不借会话、提交或文件时刻替代"
+        }
+      ]
+    },
+    {
+      "id": "N25",
+      "symptom": "反馈代理旧运行时拒绝 feedback_ui.json，导致已收件反馈未自动生成分析报告",
+      "component": "未归类",
+      "channel": "shipped_unnoticed",
+      "introduced_version": "1.4.104",
+      "introduced_note": "1.4.104 客户端起固定带 feedback_ui.json；本机反馈代理的运行时快照停在 10-22，诊断白名单不认它，整包被判『包含未批准附件』",
+      "found_version": "1.4.104",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "代理运行时快照与客户端诊断字段新增没有同批升级；既有验证只覆盖源码分析器，未用最新已收件包验证已安装代理可分析。",
+      "defense_added": [
+        "代理运行时升级为 f6869505cd1c93bb（14 个文件与提交 17ca4fe 逐字相同，识别 feedback_ui.json），17 条案件全部 ready 并生成桌面报告；后续客户端新增诊断字段时，需同批升级代理运行时并用最新已收件包复验"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "locate_unknown_reason": "反馈代理 agent.stdout.log 里没有带时刻的失败行，唯一线索是文件修改时间，不是日志内容里的时刻，不能当作首次可观测的证据；开条与盖根因戳在同一会话里相隔 18 秒，只是记账时刻，不计定位时长。",
+      "source": "feedback-fb88c842202641f88b271b6c6792fe92",
+      "evidence": "verified",
+      "rootcause_origin": "unknown",
+      "timestamp_audit": [
+        {
+          "audited_on": "2026-10-27",
+          "classification": "bookkeeping_not_duration",
+          "original_observed_at": "2026-10-27 10:01:47+08:00",
+          "original_rootcause_at": "2026-10-27 10:02:05+08:00",
+          "reason": "开条与盖根因戳在同一会话里连续执行，该时刻是敲命令的时刻，不是现象首次可观测的时刻。",
+          "evidence_checked": [
+            "反馈代理 agent.stdout.log 只有 JSON 结果行，没有时刻字段；文件修改时间不算日志内容证据",
+            "反馈包 manifest 的采集时刻（2026-10-26 14:26）是用户提交材料的时刻，不是代理拒收的时刻"
+          ],
+          "result": "找不到能证明首次现象的秒级证据，退回未知，不借文件时刻或会话时刻替代"
+        }
+      ]
     }
   ],
   "rounds": [
@@ -5272,7 +5349,20 @@
         "反馈客户端与接收端诊断成员清单对拍、真实接收器错误码与错误分级回归",
         "反馈记录窗口、崩溃后待处理恢复、迟到回执保存、采集临时文件移走和日志附件隐私脱敏的定向回归"
       ],
-      "zero_reason": "本轮已登记 N23：1.4.104 的反馈包带有接收端当时不认识的 feedback_ui.json，上传被 422 拒收，已在 1.4.105 随客户端与接收端清单对拍收口。仓库记录无法证明谁通过哪个渠道发现它，所以 N23 登记为 shipped_unnoticed，不计入 online_user/second_machine/installed_field 的严格逃逸数，本轮严格口径下写 0；0 不等于上线后无故障，装机版真实上传到接收端的端到端结果发布后才能读回，仍未验证。"
+      "zero_reason": "本轮已登记 N23：1.4.104 的反馈包带有接收端当时不认识的 feedback_ui.json，上传被 422 拒收，已在 1.4.105 随客户端与接收端清单对拍收口。仓库记录无法证明谁通过哪个渠道发现它，所以 N23 登记为 shipped_unnoticed，不计入 online_user/second_machine/installed_field 的严格逃逸数，本轮严格口径下写 0；0 不等于上线后无故障，装机版真实上传到接收端的端到端结果发布后才能读回，仍未验证。另登记 N24：随包更新助手的交接令牌校验在 UTF-8 区域设置下放行大写字母，1.4.104 引入、1.4.105 修复，由公开快照 CI 发现，同样登记为 shipped_unnoticed、不计入严格逃逸数；该修复在包内的 update_helper.sh，已装 1.4.104 的机器要装到 1.4.105 之后才生效。"
+    },
+    {
+      "version": "1.4.106",
+      "date": "2026-10-27",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "完整回归、构建输入关卡戳和覆盖率来源凭据同源核验",
+        "反馈记录窗口一键清理、已清理记录不占列表名额、清理后重开不再出现的定向回归",
+        "日志附件脱敏对句号紧邻的公网地址的回归，版本链形状不被误抹的对照用例",
+        "发版链诊断覆盖基线必须显式给出、回退副本按末尾时间戳回收、发布续跑信号处理的回归"
+      ],
+      "zero_reason": "本轮发布前复核线上台账与反馈记录，未发现新的用户报回线上逃逸。台账 N25 是维护者本机反馈代理的运行时问题，已通过升级代理运行时收口，不在客户端安装包内，本版也没有带它的修复，所以不计入本版。本版客户端侧的改动是反馈记录窗口的清理行为、日志脱敏的边界、窗口右沿贴齐、崩溃报告镜像选择和搜索出错留痕，均在发布前完整回归中验证；0 不等于上线后无故障，装机版上这些改动的实际观感发布后才能读回。"
     }
   ],
   "comparison_policy": {

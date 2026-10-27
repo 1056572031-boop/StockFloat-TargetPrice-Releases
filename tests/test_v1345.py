@@ -18,9 +18,6 @@
 3. 字体度量预热 warm_font_metrics：存在且可在无窗口时安全调用。
 
 4. 启动关键路径减负：pyobjc 延迟导入、UI 首拍间隔 16ms、崩溃检查后移。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import ast
 import inspect

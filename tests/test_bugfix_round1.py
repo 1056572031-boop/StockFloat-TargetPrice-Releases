@@ -12,9 +12,6 @@
           同样断开 done 信号并把运行中搜索线程登记进模块级 zombie 表，
           杜绝 QThread 运行中析构/迟到信号投递已删除对象导致的 abort；
     R1-6  公开窗口行为为基础，私有 CGS 作为第三方系统全屏兼容补充。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import inspect
 import json

@@ -1,4 +1,8 @@
-"""One read-only post-frame sample; no repair, activation, transport or prompts."""
+"""One read-only post-frame sample; no repair, activation, transport or prompts.
+
+``capture`` and ``evaluate`` only read.  ``schedule`` writes state once the sample
+passes: it marks the run session healthy and acknowledges a pending update handoff.
+"""
 
 from __future__ import annotations
 

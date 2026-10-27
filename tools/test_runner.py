@@ -737,6 +737,30 @@ def list_modules(out_path, tests_dir=None):
     return 0
 
 
+#: 与 sf_http.TEST_REJECT_NETWORK_ENV 同名；这里写死字符串是为了不让运行器在发现用例之前就导入产品模块，
+#: 两处一致由 tests/test_sf_http_network_guard.py 钉住。
+NETWORK_GUARD_ENV = "SF_TEST_REJECT_NETWORK"
+
+
+@contextlib.contextmanager
+def network_guard_environment():
+    """跑用例期间让产品里真实的 HTTPS 建连一律失败（见 sf_http.BudgetHTTPSHandler.https_open）。
+
+    起因：会真建主窗的测试文件有 55 个，窗口首次变活跃时“切回补查更新”会起后台线程去连线上清单，
+    夹具只替换了行情请求，于是每个测试进程都悄悄出一次网。环境变量会被子进程继承，所以
+    用例自己起的子进程、车道里的各个运行器进程也一并被拦。退出时还原原值，进程内被多次调用也不留痕。
+    """
+    previous = os.environ.get(NETWORK_GUARD_ENV)
+    os.environ[NETWORK_GUARD_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(NETWORK_GUARD_ENV, None)
+        else:
+            os.environ[NETWORK_GUARD_ENV] = previous
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group()
@@ -753,9 +777,10 @@ def main(argv=None):
         with focused_environment():
             return list_modules(args.list_json)
     if args.module:
-        with focused_environment():
+        with focused_environment(), network_guard_environment():
             return run_tests(args.module)
-    return run_tests()
+    with network_guard_environment():
+        return run_tests()
 
 
 def run_tests(modules=None):

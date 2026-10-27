@@ -106,6 +106,6 @@ def is_tiny_move(delta_price, delta_pct, tiny_price):
 
 
 def anim_duration_ms(delta_pct, large_pct, large_ms, normal_ms):
-    """动画时长决策（毫秒）：涨跌幅变动 ≥ large_pct（3%）视为大幅保留 large_ms（200ms），
-    常规变动用 normal_ms（130ms）。原 _apply_quote v1.2.5 anim_tune 分支搬移。"""
+    """动画时长决策（毫秒）：涨跌幅变动达到 `large_pct` 时用 `large_ms`，
+    其余变动用 `normal_ms`。时长由调用方的常量传入，避免在此固化数值。"""
     return large_ms if delta_pct >= large_pct else normal_ms

@@ -13,9 +13,6 @@ B. sf_ui_render 名称垂直层次（v1.2.66）
    NAME_TOP_PAD=4 把名称绘制矩形下移 4px、高度同步减 4px（矩形底不动，不侵入代码区）；
    BOTTOM_INNER_GAP 由 1 增到 3（标签-数字间距增大）。其余坐标（Y_CODE/Y_PRICE/
    Y_PCT/BTN_* 等）零改动；本版单独缩短图表与价格区间距。
-
-运行方式（在 StockFloat 目录）：
-    QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_v166_layout -v
 """
 import os
 import sys

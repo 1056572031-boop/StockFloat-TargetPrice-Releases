@@ -15,9 +15,6 @@ BUG（切换股票时悬浮窗右侧宽度闪动一下）：
 测试验证：
     - 切股过渡期（quote=None 且当前宽度 > W）：_auto_width 不改变窗口宽度；
     - 行情到位后（quote 有值且内容需要更宽）：_auto_width 正常放宽生效（守卫不误伤）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

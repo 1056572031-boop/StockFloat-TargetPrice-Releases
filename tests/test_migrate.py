@@ -4,9 +4,6 @@
 覆盖：
 - _migrate_legacy_config：旧路径配置迁移到规范目录（成功/已存在跳过/坏 JSON 保留旧文件）
 - fetch_quote / fetch_minute 备用源切换与格式错误告警（4.1 / 4.2）
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

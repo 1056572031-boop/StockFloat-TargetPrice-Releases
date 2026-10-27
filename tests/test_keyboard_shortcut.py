@@ -5,8 +5,6 @@
 1. 主窗聚焦时按 Cmd+W → 走缩小入口（与顶栏缩小按钮同一路径）；
 2. 无修饰符的普通 W 不触发缩小（不误伤输入）。
 
-运行方式（在仓库根目录）：
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_keyboard_shortcut -v
 """
 import os
 import sys

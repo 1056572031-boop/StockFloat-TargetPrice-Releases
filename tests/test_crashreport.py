@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""实时股价 v1.2.42 崩溃报告关键段抽取纯逻辑单测（sf_crashreport 侧）。
+"""崩溃报告关键段抽取纯逻辑单测（sf_crashreport 侧）。
 
 覆盖 sf_crashreport（无 Qt 依赖纯函数）：
-1. is_crash_report_name：StockFloatTargetPrice 前缀 + .ips/.crash 后缀识别（含非法名/大小写）
+1. is_crash_report_name：Skyrocket 与历史 StockFloatTargetPrice 前缀的 .ips/.crash 识别（含非法名/大小写）
 2. select_crash_reports：空目录兜底、过滤非崩溃/非法 mtime、7 天内优先、
    7 天无则回退取最新、max_reports 上限、按 mtime 新→旧排序
 3. extract_crash_key_sections：
@@ -12,9 +12,6 @@
    - limit_bytes 体积上限：超限截断 + [truncated] 标记
    - bytes 输入解码
 4. 模块导入不依赖 Qt（无 PyQt6 / Foundation import）
-
-运行方式（在 StockFloatTargetPrice 目录）：
-    python3 -m unittest tests.test_crashreport -v
 """
 import json
 import os
@@ -26,6 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sf_crashreport import (MAX_SEGMENT_BYTES, extract_crash_key_sections,
                             is_crash_report_name, select_crash_reports)
+
+try:
+    from _base import SFCase                     # noqa: E402
+except ImportError:                              # 以包形式被 discover 导入时
+    from tests._base import SFCase               # noqa: E402
 
 # 固定"now"便于测试 7 天窗口
 _NOW = 1785000000.0          # 2026-08-26 附近
@@ -275,6 +277,94 @@ class TestExtractLimit(unittest.TestCase):
              "Termination Reason: Namespace SIGNAL, Code 6\n").encode("utf-8"))
         self.assertIn("Exception Type", out)
         self.assertIn("SIGABRT", out)
+
+
+class TestKeyImagesKeepCurrentExecutable(SFCase):
+    """改名后可执行文件叫 Skyrocket：Key Images 里必须仍能看到主程序那一行。
+
+    关键镜像名单原先只有旧名前缀 StockFloat。只要报告里还有别的关键库（libcrypto 之类），
+    主程序自己的镜像就被挑选逻辑挤掉 —— 崩溃报告里看不到「崩在哪个程序的哪个地址」。
+    """
+
+    def test_json_key_images_include_current_executable(self):
+        report = json.dumps({
+            "exception": {"type": "EXC_BAD_ACCESS", "signal": "SIGSEGV"},
+            "termination": {"indicator": "SIGNAL"},
+            "triggeredByCThread": 0,
+            "threads": [{"frames": [{"symbol": "EVP_CIPHER_CTX_free", "imageIndex": 1}]}],
+            "usedImages": [
+                {"name": "Skyrocket", "base": 4300000000, "arch": "arm64e"},
+                {"name": "libcrypto.3.dylib", "base": 4290000000, "arch": "arm64"},
+                {"name": "libsystem_kernel.dylib", "base": 4280000000, "arch": "arm64"},
+            ],
+        })
+        out = extract_crash_key_sections(report)
+        self.assertIn("Key Images", out)
+        self.assertIn("libcrypto.3.dylib", out)
+        self.assertIn("Skyrocket", out, "当前一代可执行文件的镜像被关键镜像挑选漏掉了")
+
+    def test_plain_key_images_include_current_executable(self):
+        report = (
+            "Exception Type:  EXC_BAD_ACCESS (SIGSEGV)\n"
+            "Termination Reason: Namespace SIGNAL, Code 11\n"
+            "\n"
+            "Thread 0 Crashed:\n"
+            "0   libcrypto.3.dylib          0x0000000103a00000 EVP_CIPHER_CTX_free + 32\n"
+            "\n"
+            "Binary Images:\n"
+            "0x0000000102c00000 Skyrocket\n"
+            "0x0000000103a00000 libcrypto.3.dylib\n"
+            "0x00007ff700000000 libsystem_kernel.dylib\n")
+        out = extract_crash_key_sections(report)
+        self.assertIn("Key Images", out)
+        self.assertIn("libcrypto.3.dylib", out)
+        self.assertIn("0x0000000102c00000 Skyrocket", out,
+                      "当前一代可执行文件的镜像被关键镜像挑选漏掉了")
+
+    def test_plain_bundled_libraries_do_not_crowd_out_system_libraries(self):
+        """.crash 里每行都带完整路径：包内几十个库的路径里都有 Skyrocket，不能因此全被当成关键镜像。
+
+        只有可执行文件本身（名字列）才算主程序；路径里出现程序名的包内库不算，
+        否则 60 行上限被占满，libSystem 之类真正的关键库反而看不到。
+        """
+        head = ("Exception Type:  EXC_BAD_ACCESS (SIGSEGV)\n"
+                "Termination Reason: Namespace SIGNAL, Code 11\n\n"
+                "Thread 0 Crashed:\n"
+                "0   libsystem_kernel.dylib  0x00007ff700000000 mach_msg_trap + 8\n\n"
+                "Binary Images:\n")
+        main_line = ("0x102c00000 - 0x103bfffff Skyrocket arm64e <aaaa> "
+                     "/Applications/Skyrocket.app/Contents/MacOS/Skyrocket\n")
+        bundled = "".join(
+            "0x1%08x - 0x1%08x ext%d.so arm64e <bbbb> "
+            "/Applications/Skyrocket.app/Contents/Frameworks/ext%d.so\n"
+            % (i * 4096, i * 4096 + 4095, i, i) for i in range(80))
+        system = ("0x7ff700000000 - 0x7ff700ffffff libsystem_kernel.dylib arm64e <cccc> "
+                  "/usr/lib/system/libsystem_kernel.dylib\n"
+                  "0x7ff710000000 - 0x7ff710ffffff libSystem.B.dylib arm64e <dddd> "
+                  "/usr/lib/libSystem.B.dylib\n")
+        out = extract_crash_key_sections(head + main_line + bundled + system)
+        key_images = out.split("--- Key Images ---", 1)[1]
+        self.assertIn("MacOS/Skyrocket", key_images, "主程序那一行必须在 Key Images 里")
+        self.assertIn("libSystem.B.dylib", key_images, "系统关键库被包内库的路径挤掉了")
+        self.assertNotIn("ext0.so", key_images, "仅路径里带程序名的包内库不应算关键镜像")
+
+    def test_legacy_executable_name_is_still_picked(self):
+        """旧一代名字也要继续认：诊断包要翻得到改名前的崩溃记录。"""
+        from sf_constants import LEGACY_EXECUTABLE_NAMES
+        for legacy in LEGACY_EXECUTABLE_NAMES:
+            report = json.dumps({
+                "exception": {"type": "EXC_BAD_ACCESS", "signal": "SIGSEGV"},
+                "termination": {"indicator": "SIGNAL"},
+                "triggeredByCThread": 0,
+                "threads": [{"frames": [{"symbol": "ssl_read", "imageIndex": 1}]}],
+                "usedImages": [
+                    {"name": legacy, "base": 4300000000, "arch": "arm64e"},
+                    {"name": "libcrypto.3.dylib", "base": 4290000000, "arch": "arm64"},
+                    {"name": "libsystem_kernel.dylib", "base": 4280000000, "arch": "arm64"},
+                ],
+            })
+            out = extract_crash_key_sections(report)
+            self.assertIn(legacy, out, "旧一代可执行文件的镜像没有出现在 Key Images 里：%s" % legacy)
 
 
 class TestModulePurity(unittest.TestCase):

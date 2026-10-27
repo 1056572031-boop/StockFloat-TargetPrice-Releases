@@ -12,9 +12,10 @@ receiver so a quota or deployment problem in one service cannot take down the ot
   page establishes it before any download; only its SHA-256 hash is stored.
 - No IP address, account, device information, raw User-Agent or browsing history.
 
-Rows expire after 30 days. Cleanup runs opportunistically on writes; deployment also installs
-`skyrocket-downloads-cleanup`, a route-less daily cron Worker bound to the same D1 database.
-The deploy script reads the registered cron schedule back before it can report success.
+Rows have a 30-day retention target. Cleanup runs opportunistically on writes; deployment also installs
+`skyrocket-downloads-cleanup`, a route-less daily cron Worker bound to the same D1 database. Expired
+rows are deleted in bounded batches, so a backlog or failed task can delay deletion. The deploy script
+reads the registered cron schedule back before it can report success.
 
 ## Routes
 
@@ -29,7 +30,8 @@ The deploy script reads the registered cron schedule back before it can report s
 
 The release-check marker is generated once and stored in the macOS keychain under
 service `SkyrocketDownloadCheck`. Tools read it through the keychain or the
-`SF_DOWNLOAD_CHECK_TOKEN` environment variable. The public site never receives it.
+`SF_DOWNLOAD_CHECK_TOKEN` environment variable. It is installed as a Cloudflare Pages server-side
+Secret and is never returned to the public page, browser client, or download redirect target.
 
 Browsing the landing page in a browser cannot send a custom header, so the owner opens
 `https://skyrocket-downloads.pages.dev/owner` once (user `owner`, keychain password) and
@@ -75,7 +77,8 @@ never waits for GitHub and a missed redeploy does not leave the buttons on an ol
 
 The release-check marker is generated once and stored in the macOS keychain under
 service `SkyrocketDownloadCheck`. Tools read it through the keychain or the
-`SF_DOWNLOAD_CHECK_TOKEN` environment variable. The public site never receives it.
+`SF_DOWNLOAD_CHECK_TOKEN` environment variable. It is installed as a Cloudflare Pages server-side
+Secret and is never returned to the public page, browser client, or download redirect target.
 
 ## Boundaries
 

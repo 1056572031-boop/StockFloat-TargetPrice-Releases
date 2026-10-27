@@ -10,9 +10,6 @@ max 停留在 MAX_H，macOS 系统级垂直缩放把手（绕过 Qt 事件门控
 - 启动即收起态：min == max == _height_collapsed()（恢复既有 v1.2.36 行为）；
 - 展开后收起（_toggle_chart）：min == max == _height_collapsed()，系统缩放把手锁死；
 - 再展开：max 恢复 MAX_H、min 恢复 MIN_H（拉伸能力不丢失）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

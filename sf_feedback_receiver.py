@@ -1,10 +1,12 @@
-"""Local-only diagnostic feedback receiver used for the stage 2 gate.
+"""Local-only diagnostic feedback receiver, kept for protocol verification.
+
+This is not the product's upload path: the app uploads through
+``sf_feedback_transport`` to the hosted receiver.  This module is started only by
+tests and tools, never by the app itself.
 
 The wire protocol is intentionally private and small: a length-prefixed JSON
 envelope followed by a length-prefixed ZIP body, returned as one length-
-prefixed JSON receipt.  Binding a Unix socket keeps this receiver out of the
-public network path until the cloud decisions in the implementation plan are
-approved.
+prefixed JSON receipt.  Binding a Unix socket keeps it off the network.
 """
 
 from __future__ import annotations

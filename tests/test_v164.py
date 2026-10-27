@@ -15,9 +15,6 @@
     行2 字形顶 = y_row2 - BOTTOM_ROW_ASCENT
     → 视觉净间距 = BOTTOM_ROW_H + BOTTOM_ROW_GAP - DESCENT - ASCENT
                  = 13 + 2 - 3 - 10 = 2 == BOTTOM_ROW_GAP（常量值本身）
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v164 -v
 """
 import os
 import re

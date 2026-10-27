@@ -61,7 +61,13 @@ case "$VER" in
     ;;
 esac
 # 两代包标识与两代可执行名一起找：改名后的进程叫 Skyrocket，改名前叫 StockFloatTargetPrice
-PID="$(pgrep -f "com.skyrocket.app|com.stockfloat.targetprice|Skyrocket.app|实时股价-目标价版.app" | head -1)"
+PGREP_PATTERN=""
+set -f    # 名单项按空格拆开，不许把其中的 * ? 展开成当前目录的文件名
+for ITEM in $BUNDLE_IDS $APP_NAMES; do
+  PGREP_PATTERN="${PGREP_PATTERN:+${PGREP_PATTERN}|}${ITEM}"
+done
+set +f
+PID="$(pgrep -f "$PGREP_PATTERN" | head -1)"
 [ -n "$PID" ] && echo "运行中：PID $PID" || echo "未在运行（下面的手感三问需要先启动程序）"
 
 {

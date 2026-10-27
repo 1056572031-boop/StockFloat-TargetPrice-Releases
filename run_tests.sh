@@ -302,7 +302,7 @@ else
     "$PY" tools/change_coverage_gate.py --base "$CHANGE_BASE" --data-file "${COVERAGE_FILE:-.coverage}" --report-json build/change-coverage.json || exit 1
   fi
   # 分档断言在 tools/coverage_gate.py + tools/coverage_gate_baseline.json：
-  # 产品档下限记在基线里（2026-10-13 起 89）；SF_COVER_MIN 只能临时**加严**，
+  # 产品档下限由 tools/coverage_gate_baseline.json 的 product_floor 定义；SF_COVER_MIN 只能临时**加严**，
   # 往基线以下压一律退 2 —— 一枚环境变量不该是降档通道（同下面那条"不落戳"的口径）。
   # 只许升；链上 tools/ 一档只降不升。
   # 为什么不再用一条全仓合并线：2026-10-10 实测全仓 83.63% 判红，而拆开是

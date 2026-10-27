@@ -17,9 +17,6 @@ BUG2（非交易时段股价显示 0 元、涨跌幅显示 0%）：
       b) _apply_quote 在 new_price<=0 且无分时兜底时不更新 _disp_price/_disp_pct
          （保持 None 或上一有效值）；_quote_zero_fallback 非交易时段用分时最后一笔兜底；
       c) _paint_bottom 直绘 raw quote["high"]/["low"] 的 0 值是隐藏画 0 路径，已过滤为 "--"。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import os
 import sys

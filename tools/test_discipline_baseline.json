@@ -13,7 +13,7 @@
   "R1:test_v1418_walkthrough.py": 2,
   "R1:test_v1421_release_notes.py": 7,
   "R1:test_verify_bundle_tools.py": 1,
-  "R2:test_bugfix_148.py": 3,
+  "R2:test_bugfix_148.py": 0,
   "R2:test_bugfix_151.py": 1,
   "R2:test_bugfix_round1.py": 4,
   "R2:test_notify.py": 1,
@@ -37,7 +37,7 @@
   "R5:_maintenance_child.py": 0,
   "R5:test_app_icon_appearance.py": 0,
   "R5:test_auction.py": 0,
-  "R5:test_bugfix_148.py": 47,
+  "R5:test_bugfix_148.py": 42,
   "R5:test_bugfix_151.py": 18,
   "R5:test_bugfix_152.py": 36,
   "R5:test_bugfix_155.py": 57,
@@ -109,7 +109,7 @@
   "R5:test_stock_transition.py": 0,
   "R5:test_stretch.py": 16,
   "R5:test_target_commit_retry.py": 0,
-  "R5:test_target_panel.py": 176,
+  "R5:test_target_panel.py": 175,
   "R5:test_target_panel_design.py": 0,
   "R5:test_targets.py": 21,
   "R5:test_ui.py": 136,
@@ -288,5 +288,5 @@
   "R7:test_v172_audit.py": 3,
   "R7:test_verify_bundle_tools.py": 2
  },
- "total": 2862
+ "total": 2853
 }

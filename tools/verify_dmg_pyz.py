@@ -5,7 +5,7 @@
     ./.venv/bin/python tools/verify_dmg_pyz.py <app路径> \\
         [--check 模块::符号]... [--forbid 模块::符号]... [--version X.Y.Z]
 
-    ./.venv/bin/python tools/verify_dmg_pyz.py /Applications/实时股价-目标价版.app \\
+    ./.venv/bin/python tools/verify_dmg_pyz.py /Applications/Skyrocket.app \\
         --check sf_ui_render::BOTTOM_INNER_PATH --check stock_float_window::_repaint_now \\
         --forbid sf_ui_render::BOTTOM_GROUP_GAP
 

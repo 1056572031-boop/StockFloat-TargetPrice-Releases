@@ -3,7 +3,7 @@
 """第二道防线：打包闭包核验 —— 产品代码 import 的每个模块，必须真的在 .app 里。
 
 用法：
-    ./.venv/bin/python tools/bundle_closure_check.py dist/实时股价-目标价版.app
+    ./.venv/bin/python tools/bundle_closure_check.py dist/Skyrocket.app
     ./.venv/bin/python tools/bundle_closure_check.py --self-test      # 任何机器都能跑
     ./.venv/bin/python tools/bundle_closure_check.py <app> --self-test  # 再加验真产物层
     ./.venv/bin/python tools/bundle_closure_check.py <app> --json

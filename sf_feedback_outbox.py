@@ -1,7 +1,9 @@
 """Crash-safe local outbox for diagnostic feedback packages.
 
-The store has no transport implementation.  A future explicit user action may
-read a pending row and submit the same archive with the same envelope.
+The store has no transport implementation.  It keeps each package and its state
+on disk so that an explicit user upload (``sf_feedback_transport.submit_pending``)
+can read a pending row and submit the same archive with the same envelope,
+including after a crash or a lost response.
 """
 
 from __future__ import annotations
@@ -425,14 +427,20 @@ class FeedbackOutbox:
                 self._refusal(db, outbox_id, stamp, "receipt_persisted", expected_status=current["status"])
         return self.get(outbox_id)
 
-    def history(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """Return safe record metadata without opening diagnostic archives."""
+    def history(self, *, limit: int = 100, include_cleaned: bool = True) -> list[dict[str, Any]]:
+        """Return safe record metadata without opening diagnostic archives.
+
+        include_cleaned=False 不返回已清理的记录：它们的回执元数据仍留在库里（对账、去重要用），
+        只是不再给界面展示。过滤放在查询里而不是界面上，是为了让已清理的记录不占 limit 名额，
+        否则清得越多，较早的未清理记录越容易被挤出前 limit 条。
+        """
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise FeedbackProtocolError("invalid outbox history limit")
+        where = "" if include_cleaned else "WHERE status != 'cleaned' "
         with self._db() as db:
             rows = db.execute(
                 "SELECT outbox_id, app_version, status, receipt_json, last_error, created_at, updated_at, "
-                "archive_size, archive_sha256 FROM outbox ORDER BY updated_at DESC LIMIT ?", (limit,)
+                "archive_size, archive_sha256 FROM outbox " + where + "ORDER BY updated_at DESC LIMIT ?", (limit,)
             ).fetchall()
         result = []
         for row in rows:

@@ -6,9 +6,6 @@
 2. layout_anim_height：完成帧 / smoothstep 中间值高度
 3. crossed_key_level：跌破 50 倍关卡触发、普通整数不触发、上涨不触发
 4. quote_changed / is_tiny_move / anim_duration_ms：_apply_quote 分支守卫与参数决策
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests/test_animator.py -v
 """
 import os
 import sys

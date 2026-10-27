@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""A股实时股价悬浮窗（PyQt6：横向三段式、圆角透明、分时图、0.1秒刷新、工作日15点自动关闭）"""
+"""A股实时股价悬浮窗（PyQt6：竖向卡片、圆角透明、分时图与按市场状态调度的行情刷新）。"""
 
 import os
 import json
@@ -165,7 +165,8 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
 # 下面这批符号在本文件正文里**零使用**，看起来像导入冗余，实际是刻意保留的再导出：
 #   RED、GREEN（上文 sf_ui_render 导入行）、FG_DIM、POLL_DEGRADED、
 #   POLL_INTERVAL_DEGRADED、POLL_INTERVAL_NORMAL（以上三个在紧邻的 sf_constants 导入里）、
-#   _migrate_legacy_config（sf_config 导入行）、_drop_flash_due（sf_utils 导入行）。
+#   _migrate_legacy_config（sf_config 导入行）、_drop_flash_due（sf_utils 导入行）、
+#   fmt_pct（sf_utils 导入行）。
 # 保留理由有两条，任一条都足以让删除立刻出事：
 #   1. 测试以 m.符号 的形式直接访问（test_render.py / test_core.py / test_migrate.py /
 #      test_v165.py / test_v123.py），删了就是一片 AttributeError；
@@ -193,7 +194,7 @@ from sf_quote_delivery import TargetTickBuffer
 from sf_storage_tasks import SnapshotWriter
 from sf_macos_menu import install_window_actions
 
-# ---- v1.2.42 崩溃报告关键段抽取（纯函数，供单测，无 Qt 依赖） ----
+# 崩溃报告关键段抽取（纯函数，供单测，无 Qt 依赖）
 from sf_crashreport import (extract_crash_key_sections, is_crash_report_name,
                             select_crash_reports)
 
@@ -204,14 +205,13 @@ from sf_crashreport import (extract_crash_key_sections, is_crash_report_name,
 
 # ---- 8.1 v1.2.5 Feature Flag（方案第八章）----
 # 每项新功能独立开关。开启来源优先级：环境变量 STOCKFLOAT_FEATURES（逗号分隔）
-# > 同目录 features.ini > 缺省全部开启。
-# 开关名：conn_pool / net_monitor / poll_backoff / anim_params / toggle_chart / drop_flash
+# > 同目录 features.ini > sf_constants._FEATURE_DEFAULTS 中的各项默认值。
 
 # v1.2.6：主视图底部居中显示的版本号样式（10pt 加粗浅灰）
 
 # 5.2 v1.2.5：价格滚动动画参数（V2.0 细化版，常规 120~150ms，大幅 200ms，微小直接赋值）
 
-# 5.5 v1.2.5：轮询熔断状态机（交易时段生效；非交易时段维持低频 60s）
+# 5.5 v1.2.5：轮询熔断状态机（交易时段生效；非交易时段间隔见 sf_constants）
 
 # 6.4 v1.2.5：网络连接复用（连接池）参数
 
@@ -269,7 +269,7 @@ def _menu_icon_evidence():
       · `built=false` —— 这一轮还没人打开过菜单（什么都还没发生，不是故障）；
       · `missing=[...]` —— 出过图但某几行取不到（QtSvg 缺失/渲染失败），界面上那一行
         **不放图标**、退回"无图标 + 勾号"；
-      · `missing=[] 且 built=true` —— 四行都出图了，看不见就另有原因，这条至少把范围
+      · `missing=[] 且 built=true` —— 菜单行图标都出图了，看不见就另有原因，这条至少把范围
         从"出图"挪到"合成"。
     """
     import sf_constants
@@ -1792,8 +1792,10 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
             log_line("set_minute_interval: invalid interval %r: %r" % (interval, exc), "WARNING")
 
     def _toggle_chart(self):
-        """5.4：折叠/展开分时图 —— 改窗口总高度而非图区高度；状态持久化跨启动记忆；
-        收起时把分时拉取间隔放宽到 30s（仅兜底刷新），展开恢复 1s；行情拉取不受影响。"""
+        """折叠/展开分时图：改窗口总高度而非图区高度。
+
+        收起时放宽分时拉取间隔作为兜底刷新，展开时恢复较短间隔；展开状态不跨启动保存。
+        行情拉取不受影响。"""
         try:
             if not feature_enabled("toggle_chart"):
                 return
@@ -1818,10 +1820,8 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
             from_h = self.height()
             if self._chart_expanded:
                 # 展开：目标高度 = 记忆展开高度（或默认 无图+CHART_H）
-                # v1.2.35：动画期间必须放低下限 —— 若保留 MIN_H(206)，则收起态
-                # (145) 起展时会被 min 同步垫高到 206，几何被强制改大；v1.2.65
-                # 起起点已在分支前捕获（不受垫高影响），下限仍要下探到 0，否则
-                # 动画中间帧（145< h <target）会被 min 钳住、过渡卡住不连续。
+                # v1.2.35：动画期间必须放低下限；起点已在分支前捕获，
+                # 下限仍要下探到 0，否则中间帧会被 min 钳住、过渡卡住不连续。
                 # 待 _anim_tick 完成帧的 layout_minmax 再恢复 MIN_H/MAX_H。
                 # v1.2.48(H1)：先算 target 再下探 min —— _height_expanded() 若抛异常，
                 # min 尚未被改为 0，异常态不残留（配合下方 except 恢复双保险）。
@@ -2368,7 +2368,7 @@ QMenu::separator {
         # （底层功能保留：编辑仍走标题栏编辑按钮、退出仍走关闭按钮/Dock，仅 UI 层不可见）
         # v1.4.54：菜单顺序按用户看图指定的来 —— 刷新行情、自动隐藏窗口、
         # 检查更新、导出诊断包、版本号。分隔线只留版本行前那一条。
-        # v1.4.69（用户看图要求）：四行各加一枚行首图标，版本行不加（它是禁用项）。
+        # 历史菜单配置见下：菜单行图标由各行实际需要决定，版本行不加（它是禁用项）。
         # ⚠ 一条 Qt 机制记在这里，别当 bug 查：**同一行有图标时 Qt 不画勾选框**。
         #   本机离屏实测：无图标 + checked 的勾画在 x12..23，给同一行加图标后那一列
         #   整列空白、文字位置不动 —— 图标与勾号抢的是同一格。所以「自动隐藏窗口」的
@@ -2380,7 +2380,7 @@ QMenu::separator {
         # ---- v1.4.40 人脸在场守卫 ----
         # 用 triggered 而非 toggled：toggled 在 setChecked（初始化菜单）时也会发，
         # 于是"每次打开菜单"都会被当成一次用户操作，反过来又写一遍配置。
-        # 目标状态取"上一次确认的偏好取反"，不读 act.isChecked() —— 那取决于
+        # 目标状态取当前显示口径的反值，不读 act.isChecked() —— 后者取决于
         # Qt 先发 triggered 还是先翻勾选，顺序一变就是"菜单动了但功能没动"。
         if feature_enabled("face_guard"):
             _g = m.addAction(FACE_GUARD_MENU_TEXT)
@@ -3118,7 +3118,7 @@ QMenu::separator {
         便于反馈问题时快速定位原因（可观测性）。
 
         v1.2.42：修复可观测性缺口 —— 崩溃报告不再只列"文件名+时间"，
-        把 ~/Library/Logs/DiagnosticReports 下本应用（StockFloat* .ips/.crash）
+        把 ~/Library/Logs/DiagnosticReports 下本应用（Skyrocket*，兼容旧版 StockFloatTargetPrice*）
         最近 7 天内优先的 1~2 份报告的关键段（异常类型/终止原因/崩溃线程与主线程
         堆栈/二进制镜像关键行，每份 ≤200KB）写入 zip 的 crash_reports/ 目录，
         原"文件名+时间"清单保留在 diagnostics.txt 作索引。诊断包直接写入桌面，不创建外层文件夹。"""
@@ -3241,7 +3241,7 @@ QMenu::separator {
             if self._editor is not None:
                 try:
                     if self._editor.isVisible():
-                        # vX：弹窗已打开时再次点击编辑 → 原地关闭（开关行为）
+                        # 弹窗已打开时再次点击编辑：原地关闭（开关行为）
                         self._editor.close()
                         return
                 except RuntimeError:
@@ -4002,8 +4002,9 @@ QMenu::separator {
         self._on_screen_changed(screen)
 
     def _on_screen_changed(self, *args):
-        """屏幕热插拔/分辨率/系统外观变化后：窗口若被甩出可见区域则移回，并重新置顶；
-        同时复位玻璃暗化外观缓存，使浅色/深色系统切换后对比度即时生效"""
+        """屏幕热插拔或分辨率变化后，窗口若被甩出可见区域则移回，并重新置顶。
+
+        同时清空玻璃外观缓存；当前玻璃状态会在下一次探测中重新计算。"""
         try:
             self._glass_mode = None
             if not self.isVisible() or self._minimized:
@@ -4141,8 +4142,8 @@ QMenu::separator {
                     self._evaluate_received_quote(quote)
                 except Exception as exc:
                     log_swallow("stock_float_window._poll.target_tick", exc)
-        # v1.2.39：缩小到 Dock 期间整体低频 —— UI 轮询 50ms→5s、置顶 10s、
-        # 停止持续禁止 App Nap（允许系统省电）；仍消费行情队列保证恢复即最新。
+        # 缩小到 Dock 期间整体低频；具体间隔由 sf_quote_loop 的决策函数提供。
+        # 仍消费行情队列，保证恢复即最新。
         # v1.2.40：间隔决策下沉 sf_quote_loop.ui_poll_interval_ms/ui_top_poll_interval_ms
         if self._minimized:
             iv = ui_poll_interval_ms(True, False)
@@ -4285,8 +4286,8 @@ QMenu::separator {
             except Exception as exc:
                 log_line("poll apply error: %r" % (exc,), "WARNING")
         if processed and not trading:
-            # 非交易时段 UI 轮询为 1s，保留零延迟消化以保证首条行情立即上屏；
-            # 交易时段由既有 50ms 定时器处理，避免每条消息额外投递一次空轮询。
+            # 非交易时段的 UI 轮询间隔由定时器决策提供；零延迟消化保证首条行情立即上屏。
+            # 交易时段同理由既有定时器处理，避免每条消息额外投递一次空轮询。
             QTimer.singleShot(0, self._poll)
         # 数据未变化时不重绘：静止状态零绘制开销（动画/悬停/拖动各自驱动重绘）
         if self._need_redraw:
@@ -4301,15 +4302,14 @@ QMenu::separator {
         # 翻转、图表收展完成等都会改变"此刻有没有可见动画"，靠这一处兜住即可；
         # 缩 Dock / 恢复窗口另外显式调用，不等下一拍。
         self._sync_dot_timer()
-        # 宽度随内容自适应：底部四项（涨/跌/高/低）必须完整显示，不省略。
-        # 内容未变时跳过文本构建、字体度量和布局计算。
+        # 固定宽度兼容路径：底部文本变化仍更新测量状态，但窗口宽度保持 W。
         if self._width_dirty:
             self._width_dirty = False
             self._auto_width()
 
-    # ---------- 宽度自适应：底部双行两段全部显示，不允许省略号 ----------
+    # ---------- 固定宽度兼容路径 ----------
     def _bottom_texts(self):
-        """v1.2.62：计算底部双行实际文本（与 paintEvent 保持一致）。
+        """返回底部双行文本，供绘制与兼容测量路径共用。
 
         返回 (row1, row2)，每项为 (标签, 数字, 颜色)：
           row1：上行 —— 最大涨幅（相对昨收，下限零）+ 最高点
@@ -4326,7 +4326,7 @@ QMenu::separator {
         return bottom_rows(self.quote)
 
     def _update_width_dirty(self):
-        """仅在底部可见文本变化时请求重新测量窗口宽度。"""
+        """记录底部文本变化，供固定宽度兼容路径保持内部状态一致。"""
         try:
             rows = self._bottom_texts()
             key = tuple(
@@ -4596,9 +4596,8 @@ QMenu::separator {
             old_price = self._anim_to_price if self._anim_to_price > 0 else self._disp_price
             if new_price < old_price and self._crossed_key_level(old_price, new_price):
                 self._start_price_flash()
-            # 5.2 v1.2.5：动画参数调整 —— 微小变动直接赋值不动画；
-            # 涨跌幅变动 ≥ ANIM_LARGE_PCT(3%) 视为大幅变动保留 ANIM_LARGE_MS(200ms)，
-            # 常规变动用 ANIM_NORMAL_MS(130ms)，使数字跳动更实时紧凑。
+            # 动画参数调整：微小变动直接赋值不动画；时长与阈值由 sf_constants 的
+            # ANIM_* 常量决定，避免在这里复制会漂移的数值。
             # 第1轮走查修复：开关名纠正 anim_tune → anim_params —— anim_tune 不在
             # _FEATURE_DEFAULTS，feature_enabled 恒返回 False，导致微小变动直赋/130ms
             # 常规/200ms 大幅的动画调优（v1.2.5）从未生效，一直回退固定 0.2s。
@@ -5343,7 +5342,7 @@ QMenu::separator {
         v1.2.77 自审修复：
           D16 合并（merge_alerts）保证面板打开期间已触发（hit）的目标价不被回退成
               pending —— 否则下一个 tick 会重复弹提醒；
-          D7  若合并结果与当前完全一致，跳过落盘与授权请求，避免无谓写入；
+          D7  合并结果未变时跳过落盘；定时器、授权复核与刷新仍照常执行；
           D14 清空改由独立的 _clear_targets 处理，不再复用本函数。
         """
         if not self._targets_enabled():
@@ -5369,7 +5368,7 @@ QMenu::separator {
 
     def _clear_targets(self):
         """清空目标价（面板「清空」，与 _set_targets 解耦）：落盘 + 清内存 +
-        停定时器 + 复位彩虹，**不请求通知授权**（D14/D20）。返回是否成功。
+        停定时器，**不请求通知授权**（D14/D20）。返回是否成功。
 
         R42-2：先落盘成功再动内存与界面，失败时保持原样可重试。
         """
@@ -5624,9 +5623,9 @@ QMenu::separator {
                 pass
 
     def _close_target_panel(self):
-        """关闭并丢弃缓存的「目标价」面板（切股 / 退出时调用）。
+        """关闭并丢弃缓存的「目标价」面板（切股或退出时调用）。
 
-        R34-17：切股会清空目标价，面板留着只会显示为上一只股票的死面板。
+        切股后会按新股票重新载入目标价；关闭旧面板只为避免展示上一只股票的编辑状态。
         """
         panel = getattr(self, "_target_panel", None)
         self._target_panel = None
@@ -5700,7 +5699,7 @@ QMenu::separator {
                                 # 于是午休/集合竞价/收盘后全被判成非交易时段。
                                 # S2 已让焦点固定落在输入框，该参数再无消费方；
                                 # 保留只会留下一个语义错误的诱饵，故整体移除。
-                                # 注：_is_trading_time 在本文件其余 7 处（轮询频率、
+                                # 注：_is_trading_time 在本文件其余调用处（轮询频率、
                                 # 分时抓取、休市提示、nap 策略）语义均正确，未改动。
                                 # 输入限制只使用行情源明确给出的涨跌停价。无官方字段时
                                 # 仍可设置目标价，避免新股等特殊规则被本地估算误拦截。
@@ -5815,7 +5814,7 @@ QMenu::separator {
     def _face_guard_protecting(self):
         """诊断包里"保护在不在跑"的口径：**摄像头此刻真的开着**，不是"配置里开没开"（v1.4.50）。
 
-        为什么必须换掉口径（实机日志实证，台账 E02 复发）：产物是 ad-hoc 签名，
+        为什么必须换掉口径（实机日志实证，台账 E02 复发；当时的产物是 ad-hoc 签名，现行为固定自签名）：
         每次更新后 TCC 把它当新程序，授权回到 undetermined。v1.4.47 按用户要求
         "授权框只在点开启时出现"，于是这一种现场成了死循环 ——
         配置说开着 → 勾选显示 ✓ → 用户以为在保护 → 点一下变成"关" → 再点一次才
@@ -6458,7 +6457,7 @@ QMenu::separator {
         # ignoresMouseEvents，点击穿透到下面的主窗，所以按原位置盲点关闭按钮
         # 仍然能退出程序。浏览器全屏期间恢复窗口同样命中这条路径（2026-09-23 现场）。
         # v1.4.27：走不带形参的 _reassert_top()。它跳过稳态体检、重做一次完整置顶，
-        # 但**不给 _force_top 传参** —— 全仓 38 处 `lambda self: None` 的替身/打桩
+        # 但**不给 _force_top 传参** —— 测试里大量 `lambda self: None` 的替身/打桩
         # （含公共夹具与功耗底座）会撞上 TypeError，而这一段没有异常兜底，恢复流程
         # 会当场断在这里。
         self._reassert_top()
@@ -6493,7 +6492,9 @@ QMenu::separator {
                  % (self.isVisible(), self.x(), self.y()))
 
     def _on_app_state(self, state):
-        """应用激活仅作状态观察；Dock 恢复唯一由 AppKit reopen 回调驱动。
+        """应用激活仅作状态观察；Dock 点击恢复由 AppKit reopen 回调驱动。
+
+        其他恢复入口会直接调用 `_restore_window`。
 
         show_dock()/activateWindow() 本身就会触发 ApplicationActive，若这里再次尝试
         恢复，会制造无效回调风暴并与缩小、退出争夺窗口生命周期。

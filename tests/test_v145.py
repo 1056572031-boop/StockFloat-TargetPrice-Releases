@@ -14,9 +14,6 @@ v1.2.44 用户现场：价格动画局部重绘触发 NameError: name 'QRect' is
      setClipRect），不再向 Qt 事件循环逃逸（首个回归直接复现 v1.2.44 崩溃路径）；
   4) 绘制路径任意异常均被 paintEvent 外层 try/except 兜底吞掉（写 ERROR 日志后
      走完帧），不再有任何异常逃逸导致整 app 崩溃。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v145 -v
 """
 import os
 import sys

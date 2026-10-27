@@ -37,8 +37,8 @@
     ./.venv/bin/python tools/diag_coverage_check.py [--report|--self-test]
                                     [--range <A..B>] [--baseline <SHA>] [--version <X.Y.Z>]
                                     [--dir <仓库>]
-区间优先级：`--range` > `--baseline`（或环境变量 `SF_RELEASE_BASELINE`）> 按版本号推断。
-推断只是估计（见 `resolve_range`），发版前应显式给出上一版发布记录里的 `source.head`。
+区间优先级：`--range` > `--baseline`（或 `SF_RELEASE_BASELINE`）。手动判定必须明确给出其中一个；
+版本号只能用于显示，不能自行猜区间。发版前应显式给出上一版发布记录里的 `source.head`。
 未知参数一律退 2（§3.1「链上工具的参数形状规矩」：这工具在发版链上，会被逐个自证）。
 """
 
@@ -357,12 +357,9 @@ def resolve_range(root: pathlib.Path, override: str, version: str,
                   baseline: str = "") -> tuple[str, str]:
     """返回 (rev_range, 说明)。取不到锚点时 rev_range 为空串 —— 调用方必须拒答。
 
-    优先级：`--range` > 显式基线（`--baseline` / `SF_RELEASE_BASELINE`）> 按版本号推断。
+    优先级：`--range` > 显式基线（`--baseline` / `SF_RELEASE_BASELINE`）。两者都没有就拒答，
+    不再按版本号推断区间（2026-10-27 起）：版本号不能替代真实发布基线。
     显式基线应取自上一版发布记录里的 `source.head`，必须是 HEAD 的祖先，否则拒答。
-    推断不可靠：它找「上一个把 APP_VERSION 改成别的值的提交」，而发布后主线上的修复提交
-    不改版本号。v1.4.101 实测两次都不准：并线前取到更早的版本位（区间偏大，14 笔 17 个模块），
-    并线后取到旁支上的 `bf48875`（区间偏小，漏掉它自己带来的 `sf_glass` 改动）。
-    所以推断结果必须把提交数说出来，并明确它只是估计。
     """
     if override:
         return override, "命令行指定 --range"
@@ -374,15 +371,7 @@ def resolve_range(root: pathlib.Path, override: str, version: str,
                           capture_output=True).returncode != 0:
             return "", "基线 %s 不是 HEAD 的祖先，拒绝下结论" % sha[:9]
         return "%s..HEAD" % sha, "显式基线 %s 到 HEAD" % sha[:9]
-    prev = previous_bump(root)
-    if not prev:
-        return "", "找不到上一个版本变动的提交（历史被压平/浅克隆？）"
-    short = run_git(["log", "--format=%h", "-1", prev], root).strip() or prev[:7]
-    count = run_git(["rev-list", "--count", "%s..HEAD" % prev], root).strip() or "?"
-    return "%s..HEAD" % prev, (
-        "按版本号推断的上一个版本位 %s（当前 %s）到 HEAD，共 %s 笔；这只是估计，可能偏大也可能偏小，"
-        "发版前用 --baseline <上一版发布记录的 source.head> 或环境变量 SF_RELEASE_BASELINE 指定"
-        % (short, version, count))
+    return "", "没有明确的发布基线：请使用 --range A..B、--baseline <上一版发布头> 或 SF_RELEASE_BASELINE；版本号不能替代真实区间"
 
 
 def parse_declarations(root: pathlib.Path, version: str) -> tuple[dict[str, str], list[str]]:
@@ -711,7 +700,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--range", dest="rev_range", default="", help="覆盖本轮区间 A..B")
     parser.add_argument("--baseline", dest="baseline", default="",
                         help="上一版已发布的源码提交（取自发布记录的 source.head），区间=它..HEAD；"
-                             "未给时读环境变量 SF_RELEASE_BASELINE，仍无才按版本号推断")
+                             "未给时读环境变量 SF_RELEASE_BASELINE；手动判定不再按版本号猜区间")
     parser.add_argument("--version", dest="version", default="", help="覆盖版本（判据用）")
     parser.add_argument("--dir", dest="root", default="", help="仓库根（默认按脚本位置解析）")
     known, unknown = parser.parse_known_args(argv)

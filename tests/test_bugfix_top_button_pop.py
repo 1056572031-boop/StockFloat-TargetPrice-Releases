@@ -20,8 +20,6 @@
 用例口径（遵循 AGENTS.md 第 6 节）：只断言抓帧像素这类公开输出 ——
 不断言版本号、不读源码做字符串断言、不用 sleep 猜时长、不依赖现在几点。
 
-运行方式（在 StockFloat 目录）：
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest tests.test_bugfix_top_button_pop -v
 """
 import os
 import sys

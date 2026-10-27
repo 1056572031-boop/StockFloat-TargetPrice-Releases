@@ -27,9 +27,12 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.parse
+import urllib.request
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from unittest.mock import patch
 
 # 首次发布时清单 GET 必然 404，urllib 造的 HTTPError 内部挂着临时文件，回收时
@@ -72,6 +75,9 @@ class _State:
         self.corrupt_contents_readback = False
         self.corrupt_release_body_readback = False
         self.fail_asset_download = False
+        self.asset_download_status = 503        # fail_asset_download 时回的状态码
+        self.truncate_downloads = 0             # 前 N 次读回只发一半就断线（IncompleteRead）
+        self.download_attempts = 0
         self.manifest_name = "Skyrocket-update.json"
         self.base = ""
 
@@ -152,9 +158,24 @@ class _Handler(BaseHTTPRequestHandler):
                           if item.get("id") == asset_id), None)
             if asset is None:
                 return self._reply(404, b'{"message":"Not Found"}')
+            # 清单资产（旧客户端那份）读回走同一个端点；故障注入与计数只针对版本 ZIP，
+            # 否则正常流程里清单那一次读回也会被算进"重读次数"。
+            is_archive = asset["name"].endswith("-macos.zip")
+            if is_archive:
+                self.st.download_attempts += 1
             if self.st.fail_asset_download:
-                return self._reply(503, b'{"message":"temporary failure"}')
-            return self._reply(200, self.st.blobs[asset["name"]])
+                return self._reply(self.st.asset_download_status, b'{"message":"temporary failure"}')
+            blob = self.st.blobs[asset["name"]]
+            if is_archive and self.st.download_attempts <= self.st.truncate_downloads:
+                # 声明完整长度、只发一半就关连接：客户端读到的正是 IncompleteRead。
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(blob)))
+                self.end_headers()
+                self.wfile.write(blob[:len(blob) // 2])
+                self.wfile.flush()
+                self.close_connection = True
+                return None
+            return self._reply(200, blob)
         return self._reply(404, b'{"message":"Not Found"}')
 
     def do_POST(self):
@@ -229,6 +250,8 @@ class PublishEndToEndTest(unittest.TestCase):
         self.state.manifest_name = self.tool.MANIFEST_PATH
         roots = (self.tool.API_ROOT, self.tool.UPLOAD_ROOT)
         self.addCleanup(setattr_chain, self.tool, roots)
+        self.addCleanup(setattr, self.tool, "DOWNLOAD_RETRY_PAUSE", self.tool.DOWNLOAD_RETRY_PAUSE)
+        self.tool.DOWNLOAD_RETRY_PAUSE = 0.0     # 重读之间的等待在测试里不真睡
         self.tool.API_ROOT = base + "/repos/" + self.tool.REPO
         self.tool.UPLOAD_ROOT = base + "/repos/" + self.tool.REPO
 
@@ -339,12 +362,12 @@ class PublishEndToEndTest(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, {"SF_QUALITY_RECORD": str(record_path)}))
         return assets, notes_file
 
-    def _publish(self, assets, notes_file, token="local-test-token"):
+    def _publish(self, assets, notes_file, token="local-test-token", extra=()):
         out = io.StringIO()
         with patch.object(self.tool, "github_token", return_value=token), \
              patch.object(sys, "argv", ["publish_update_release.py",
                                         "--assets", str(assets),
-                                        "--notes", str(notes_file)]), \
+                                        "--notes", str(notes_file), *extra]), \
              patch.object(self.tool, "RAW_MANIFEST_URL",
                           self.raw_root + "/manifest"), \
              contextlib.redirect_stdout(out), _quiet_http_error_warnings():
@@ -401,6 +424,152 @@ class PublishEndToEndTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as got:
             self._publish(assets, notes)
         self.assertIn("资产原始字节读回失败", str(got.exception))
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+        self.assertEqual(self.state.download_attempts, self.tool.DOWNLOAD_ATTEMPTS,
+                         "服务端一直 503：应读满重试次数后才放弃")
+
+    def test_readback_interrupted_midway_is_read_again_and_still_compared(self):
+        # v1.4.105 实测：27MB 的包读回读到 5.6MB 就断，发布停在上传之后。读回是只读 GET，
+        # 断线应当重读；重读成功后仍要逐字节比对，所以这里发布能走完，且上传只发生一次。
+        assets, notes = self._workspace()
+        self.state.truncate_downloads = 2
+        text = self._publish(assets, notes)
+        self.assertEqual(self.state.download_attempts, 3)
+        # 与正常发版同一条路由序列：版本 ZIP 与旧客户端清单各上传一次，重读不许多出任何请求。
+        self.assertEqual(self.state.routes(),
+                         ["release", "upload", "release", "release_body", "release",
+                          "contents", "contents", "contents",
+                          "release", "upload", "release", "contents"],
+                         "重读不许引发第二次上传，也不许改变发布顺序")
+        self.assertIn("资产读回第 1 次中断", text)
+        self.assertIn(("PUT", "contents"), self.state.log)
+
+    def test_readback_that_keeps_breaking_stops_before_the_manifest_pointer(self):
+        assets, notes = self._workspace()
+        self.state.truncate_downloads = 99
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes)
+        self.assertIn("读了 %d 次" % self.tool.DOWNLOAD_ATTEMPTS, str(got.exception))
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_readback_refused_by_the_server_is_not_retried(self):
+        # 404 之类是服务端明确的答复，重读只会白等；只有断线、5xx、408、429 才重读。
+        assets, notes = self._workspace()
+        self.state.fail_asset_download = True
+        self.state.asset_download_status = 404
+        with self.assertRaises(SystemExit):
+            self._publish(assets, notes)
+        self.assertEqual(self.state.download_attempts, 1)
+
+    # ---- --resume：读回中途断线后接着做，不重传、不覆盖 ----
+    def _already_uploaded(self, blob, size=None):
+        """造“ZIP 已上传、之后的步骤没做完”的线上状态。"""
+        asset = {"id": 777, "name": ARCHIVE_NAME, "size": len(blob) if size is None else size,
+                 "url": self.state.base + "/repos/test/releases/assets/777"}
+        self.state.release["assets"].append(asset)
+        self.state.blobs[ARCHIVE_NAME] = blob
+
+    def test_same_name_asset_is_still_refused_without_resume(self):
+        assets, notes = self._workspace()
+        self._already_uploaded(ARCHIVE_BYTES)
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes)
+        self.assertIn("拒绝覆盖", str(got.exception))
+        self.assertEqual(self.state.routes().count("upload"), 0)
+
+    def test_resume_reuses_an_identical_uploaded_archive_and_finishes_the_release(self):
+        assets, notes = self._workspace()
+        self._already_uploaded(ARCHIVE_BYTES)
+        text = self._publish(assets, notes, extra=("--resume",))
+        self.assertIn("续做", text)
+        self.assertIn("published_archive=%s" % ARCHIVE_NAME, text)
+        self.assertEqual(self.state.routes().count("upload"), 1, "只剩旧客户端那份清单的上传，版本 ZIP 不重传")
+        self.assertEqual(self.state.blobs[ARCHIVE_NAME], ARCHIVE_BYTES)
+        self.assertIn(("PUT", "contents"), self.state.log)
+
+    def test_resume_never_overwrites_an_asset_whose_bytes_differ(self):
+        assets, notes = self._workspace()
+        self._already_uploaded(b"zip-BYTES")                 # 同样 9 字节，内容不同
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes, extra=("--resume",))
+        self.assertIn("字节不同", str(got.exception))
+        self.assertEqual((self.state.routes().count("upload"), self.state.blobs[ARCHIVE_NAME]), (0, b"zip-BYTES"))
+        self.assertNotIn(("DELETE", "asset"), self.state.log, "拒绝复用时也不许删线上资产")
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_resume_never_overwrites_an_asset_whose_size_differs(self):
+        assets, notes = self._workspace()
+        self._already_uploaded(ARCHIVE_BYTES + b"!")
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes, extra=("--resume",))
+        self.assertIn("大小", str(got.exception))
+        self.assertEqual(self.state.routes().count("upload"), 0)
+        self.assertNotIn(("DELETE", "asset"), self.state.log)
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_resume_says_so_when_the_existing_asset_cannot_be_read_back(self):
+        assets, notes = self._workspace()
+        self._already_uploaded(ARCHIVE_BYTES)
+        self.state.fail_asset_download = True
+        self.state.asset_download_status = 404
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes, extra=("--resume",))
+        message = str(got.exception)
+        self.assertIn("续做", message)
+        self.assertIn("无法确认", message, "读不回来时要说清是没法确认一致，而不是笼统的“上传后读回失败”")
+        self.assertIn("拒绝覆盖", message)
+        self.assertEqual(self.state.routes().count("upload"), 0)
+        self.assertNotIn(("DELETE", "asset"), self.state.log)
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_resume_mismatch_messages_carry_the_numbers_needed_to_diagnose(self):
+        assets, notes = self._workspace()
+        self._already_uploaded(ARCHIVE_BYTES + b"!")
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes, extra=("--resume",))
+        self.assertIn("线上 %d 字节，本地 %d 字节" % (len(ARCHIVE_BYTES) + 1, len(ARCHIVE_BYTES)),
+                      str(got.exception))
+
+    def test_resume_refuses_when_two_assets_share_the_name(self):
+        assets, notes = self._workspace()
+        self._already_uploaded(ARCHIVE_BYTES)
+        self.state.release["assets"].append(dict(self.state.release["assets"][0], id=778))
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes, extra=("--resume",))
+        self.assertIn("2 个同名", str(got.exception))
+        self.assertEqual(self.state.routes().count("upload"), 0)
+        self.assertNotIn(("DELETE", "asset"), self.state.log)
+
+    def test_resume_with_nothing_uploaded_yet_is_a_normal_publish(self):
+        assets, notes = self._workspace()
+        text = self._publish(assets, notes, extra=("--resume",))
+        self.assertNotIn("续做", text)
+        self.assertEqual(self.state.routes().count("upload"), 2)
+        self.assertEqual(self.state.blobs[ARCHIVE_NAME], ARCHIVE_BYTES)
+
+    def test_an_unexpected_error_is_not_retried_and_is_reported_as_it_is(self):
+        # 不是断线也不是 HTTP 状态（例如程序自己的 ValueError）：重读没有意义，当场停并带上原因。
+        calls = []
+
+        def broken(request, timeout=None):
+            calls.append(request.full_url)
+            raise ValueError("unexpected shape")
+
+        proxy = SimpleNamespace(request=SimpleNamespace(Request=urllib.request.Request, urlopen=broken),
+                                error=urllib.error)
+        with patch.object(self.tool, "urllib", proxy), self.assertRaises(SystemExit) as got:
+            self.tool.download_asset("local-test-token", {"url": "http://127.0.0.1:1/asset"})
+        self.assertIn("unexpected shape", str(got.exception))
+        self.assertEqual(len(calls), 1, "非断线类错误不许重读")
+
+    def test_retry_reads_the_bytes_again_and_wrong_bytes_still_stop_the_release(self):
+        # 重读不是放宽：第三次读到的若是别的字节，照样停在清单指针之前。
+        assets, notes = self._workspace()
+        self.state.truncate_downloads = 1
+        self.state.corrupt_archive_after_upload = True
+        with self.assertRaises(SystemExit) as got:
+            self._publish(assets, notes)
+        self.assertIn("原始字节与本地固定快照不一致", str(got.exception))
         self.assertNotIn(("PUT", "contents"), self.state.log)
 
     # ---- 超时不许写死（2026-10-12 用户指定："工具里超时写死 60 秒，不要写死"）----

@@ -28,7 +28,7 @@ from sf_feedback import FeedbackProtocolError, build_archive
 from sf_feedback_capture import (
     CONSENT_VERSION, MAX_DESCRIPTION, package_files, read_upload_archive, validate_capture_context, validate_upload_receipt,
 )
-from sf_feedback_outbox import FeedbackOutbox
+from sf_feedback_outbox import FeedbackOutbox, OutboxBusy
 from sf_feedback_bundle import FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION, read_diagnostics
 from sf_feedback import utc_now
 from sf_feedback_versions import PAYLOAD_V3, is_full_payload
@@ -47,7 +47,6 @@ _MIN_SIZE = (270, 290)
 _TITLE_BUTTON_H = 24    # 标题行右侧“记录”按钮的高度（样式表加内边距之前的实测值）
 # 本进程已经“第一次看过”的反馈存储目录；见 FeedbackDialog.__init__ 里的恢复说明。
 _RECOVERED_STORES: set[str] = set()
-_CLEANUP_CONFIRM_MS = 3000    # “清理”按钮第一下后，多久之内再点才算确认
 # 描述写到多少字开始显示字数（上限的 90%）。
 _COUNTER_SHOW_AT = int(MAX_DESCRIPTION * 0.9)
 _FULL_UPLOAD_HINT = "发送完整脱敏诊断资料，包含运行日志、设置和功能状态；会去除已识别的凭据与身份字段，不采集摄像头画面。"
@@ -173,7 +172,7 @@ _HISTORY_STATUS = {
     "response_unknown": ("等待确认，可重试", True),
     "receipt_persisted": ("已收件，本机资料待清理", False),
     "cleanup_pending": ("已收件，等待本机清理", False),
-    "cleaned": ("已收件，本机资料已清理", False),
+    # 已清理的记录不在记录页展示（history(include_cleaned=False)），所以这里没有 cleaned。
 }
 _HISTORY_STYLE = (
     "QLabel{font-size:12px;} QLabel#feedbackTitle{font-size:14px;font-weight:bold;}"
@@ -292,10 +291,6 @@ class FeedbackHistoryDialog(_TitleDragDialog):
         buttons.addWidget(close_button)
         buttons.addStretch()
         layout.addLayout(buttons)
-        # 清理确认的超时表归对话框所有：窗口关掉它就跟着没了，不会在窗口重开后误解除新的上膛。
-        self._cleanup_timer = QTimer(self)
-        self._cleanup_timer.setSingleShot(True)
-        self._cleanup_timer.timeout.connect(self._disarm_cleanup)
         self.refresh()
         prepare_popup_surface(self)
 
@@ -323,7 +318,6 @@ class FeedbackHistoryDialog(_TitleDragDialog):
 
     def hideEvent(self, event):
         self._drag_origin = None
-        self._reset_arm()
         self._close_glass()
         super().hideEvent(event)
 
@@ -345,14 +339,13 @@ class FeedbackHistoryDialog(_TitleDragDialog):
             painter.end()
 
     def refresh(self):
-        self._reset_arm()
         while self.rows.count():
             item = self.rows.takeAt(0)
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.deleteLater()
         try:
-            rows = self.outbox.history()
+            rows = self.outbox.history(include_cleaned=False)
         except Exception as exc:
             log_swallow("sf_feedback_ui.FeedbackHistoryDialog.refresh", exc)
             self._add_empty_note("本机反馈记录暂时不可用。")
@@ -376,39 +369,11 @@ class FeedbackHistoryDialog(_TitleDragDialog):
             if row["status"] == "receipt_persisted":
                 clean = QToolButton(box)
                 clean.setText("清理")
-                clean.setToolTip("清理本机诊断资料；不会删除已收件的远端反馈。")
-                clean.clicked.connect(lambda _=False, ident=row["outbox_id"], button=clean:
-                                      self._confirm_cleanup(ident, button))
+                clean.setToolTip("清理本机诊断资料，清理后这条记录不再显示；不会删除已收件的远端反馈。")
+                # 用户 2026-10-27 要求：点“清理”就直接清理，不再二次确认。
+                clean.clicked.connect(lambda _=False, ident=row["outbox_id"]: self._cleanup(ident))
                 line.addWidget(clean)
             self.rows.addWidget(box)
-
-    # 清理会删掉本机那份诊断资料（远端回执不受影响），但删了就没了：第一下只改按钮文字，
-    # 3 秒内再点一下才真执行；超时或刷新列表后自动恢复，不留“上膛”状态。
-    _cleanup_armed = None
-    _cleanup_button = None
-
-    def _confirm_cleanup(self, outbox_id, button):
-        if self._cleanup_armed == outbox_id:
-            self._reset_arm()
-            self._cleanup(outbox_id)
-            return
-        # 先复位上一次的“上膛”（可能是另一行）：计时器只有一个，别让旧计时器提前把新的一行解除。
-        self._reset_arm()
-        self._cleanup_armed = outbox_id
-        self._cleanup_button = button
-        button.setText("确认清理")
-        self._cleanup_timer.start(_CLEANUP_CONFIRM_MS)
-
-    def _reset_arm(self):
-        """停表、清标记、把上膛的那颗按钮改回原字。刷新、隐藏、超时、换行时都走这里。"""
-        self._cleanup_timer.stop()
-        button, self._cleanup_button = self._cleanup_button, None
-        self._cleanup_armed = None
-        if button is not None:
-            button.setText("清理")
-
-    def _disarm_cleanup(self):
-        self._reset_arm()
 
     def _add_empty_note(self, text):
         note = QLabel(text, self)
@@ -419,6 +384,10 @@ class FeedbackHistoryDialog(_TitleDragDialog):
     def _cleanup(self, outbox_id):
         try:
             self.outbox.cleanup_local(outbox_id)
+        except OutboxBusy:
+            # 快速连点时，第二下会打在刚被清理（或正被别处清理）的记录上：行状态已经变了，
+            # 不是故障。只刷新让界面回到真实状态；记成带堆栈的警告会把正常连点算进日志线索。
+            log_line("feedback local cleanup skipped: record already cleaned or busy", "INFO")
         except Exception:
             logging.getLogger(__name__).warning("feedback local cleanup failed", exc_info=True)
         self.refresh()

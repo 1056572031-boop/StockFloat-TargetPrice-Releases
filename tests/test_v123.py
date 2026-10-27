@@ -6,9 +6,6 @@
 2. 配置保存自动留最近 1 份备份快照（.bak）+ 主配置损坏时自动从快照恢复
 3. 添加/替换重复股票时明确提示（不再静默替换）
 4. 全局异常钩子增强：崩溃信息（时间戳/线程/堆栈/上下文）写入日志
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest discover -s tests -v
 """
 import json
 import os

@@ -10,9 +10,6 @@
   3) 玻璃遮罩缓存键：should_rebuild_glass_mask 目标尺寸缓存复用 + 节流合并判定；
   4) 动画期图表是否需重画判定：should_draw_chart（动画期数据/几何未变→不重画图表，
      数据/几何有变或动画结束→重画图表）。
-
-运行方式（在 StockFloat 目录）：
-    python3 -m unittest tests.test_v143 -v
 """
 import os
 import sys

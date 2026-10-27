@@ -11,7 +11,8 @@ import urllib.request, urllib.parse
 import uuid
 from sf_constants import CONN_POOL_IDLE_TIMEOUT, CONN_POOL_MAX, HTTP_RETRIES, HTTP_TIMEOUT, MONITOR_RING_CAPACITY, MONITOR_WINDOW_SECONDS
 from sf_logging import feature_enabled, log_line
-from sf_http import ResponsePolicyError, check_https, read_limited, safe_urlopen
+from sf_http import (NetworkRejectedForTest, ResponsePolicyError, check_https, read_limited,
+                     reject_real_connection_under_test, safe_urlopen)
 
 _LAST_HTTP_STATUS = None      # 兼容既有诊断/测试的进程级快照（不可用于业务判定）
 _STATUS_LOCAL = threading.local()   # 业务判定读**线程本地**值：并发请求互不覆盖（见 getter）
@@ -323,6 +324,9 @@ def _http_get_pooled(url, gbk=True, timeout=HTTP_TIMEOUT, retries=HTTP_RETRIES, 
             if remaining <= 0 or _abort_event.is_set():
                 raise TimeoutError("HTTP request cancelled or deadline exceeded")
             conn = _NET_POOL.get_connection(host, min(timeout, remaining))
+            if isinstance(conn, http.client.HTTPConnection):
+                # 只拦真连接：用例里的替身连接不是 HTTPConnection，照常走替身。
+                reject_real_connection_under_test(NetworkRejectedForTest)
             conn.request("GET", path, headers=hdrs)
             resp = conn.getresponse()
             body = read_limited(resp, deadline)
@@ -347,7 +351,7 @@ def _http_get_pooled(url, gbk=True, timeout=HTTP_TIMEOUT, retries=HTTP_RETRIES, 
             if conn is not None:
                 _NET_POOL.discard(host, conn)
                 conn = None
-            if isinstance(exc, ResponsePolicyError):
+            if isinstance(exc, (ResponsePolicyError, NetworkRejectedForTest)):
                 raise
             if attempt < retries:
                 _interruptible_sleep(0.5, _abort_event)
@@ -362,9 +366,8 @@ def http_get(url, gbk=True, timeout=HTTP_TIMEOUT, retries=HTTP_RETRIES, headers=
     使六码换股票、后台行情/分时线程都不能偷偷出网。普通产品和发布流程不设该变量，行为不变；
     拒绝抛 OSError，让产品既有“主备都失败”的兜底路线如实呈现，而不是伪造行情数据。
 
-    v1.3.65：新增 pooled 参数。连接池 _NET_POOL 无锁，并发取/还连接会竞态，
-    故**与行情线程并发**的请求（搜索的东财兜底）必须 pooled=False 走 urllib
-    独立连接，不碰共享连接池。"""
+    v1.3.65：新增 pooled 参数。`pooled=False` 明确跳过共享连接池，改用独立 urllib
+    请求；搜索的东财兜底采用该策略，避免占用行情请求的可复用连接。"""
     if os.environ.get("SF_REJECT_NETWORK") == "1":
         raise OSError("network disabled for controlled walkthrough")
     global _LAST_HTTP_STATUS

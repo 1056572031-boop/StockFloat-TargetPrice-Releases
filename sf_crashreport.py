@@ -7,7 +7,7 @@ macOS 原生崩溃报告（.ips/.crash，如 OpenSSL 线程 SIGSEGV）无法定�
 本模块把"从崩溃报告抽取关键段"的逻辑提炼为纯函数（输入输出均为 str / list，
 无 Qt / 无磁盘副作用），供单测覆盖；主窗 _export_diagnostics 仅做薄委托：
 
-1. is_crash_report_name(fn)      —— 判断是否为本应用崩溃报告名（StockFloat 前缀 + .ips/.crash 后缀）
+1. is_crash_report_name(fn)      —— 判断是否为本应用崩溃报告名（当前名与旧可执行名两代前缀 + .ips/.crash 后缀）
 2. select_crash_reports(entries) —— 从 (文件名, mtime) 列表选出待打包报告：7 天内优先，
    最多 max_reports 个；7 天内不足则回退取最新 max_reports 个
 3. extract_crash_key_sections(text, limit_bytes)
@@ -42,14 +42,21 @@ _SUMMARY_RE = re.compile(
     r"SIGBUS|SIGILL|SIGFPE)")
 _THREAD_HEADER_RE = re.compile(r"^Thread (\d+) Crashed")
 _MAIN_THREAD_RE = re.compile(r"^Thread 0\b")
-_BINARY_KEY_NAMES = ("StockFloat", "libcrypto", "libssl", "OpenSSL", "Python",
-                     "QtCore", "QtGui", "QtWidgets", "PyQt6", "libSystem", "libffi")
+# 关键镜像名分两类，匹配方式不同：
+# · 本程序自己的可执行名（当前一代 + 旧一代，取自 sf_constants；"StockFloat" 作旧名前缀保留）。
+#   .crash 的 Binary Images 每行都带完整路径，包内几十个库的路径里都有程序名，
+#   所以纯文本只比对「去掉路径之后」的那几列，不能整行子串匹配。
+# · 其他关键库名：整行子串匹配即可（库名本身就是文件名的一部分）。
+_OWN_BINARY_NAMES = (APP_DISPLAY_NAME, *LEGACY_EXECUTABLE_NAMES, "StockFloat")
+_LIBRARY_KEY_NAMES = ("libcrypto", "libssl", "OpenSSL", "Python",
+                      "QtCore", "QtGui", "QtWidgets", "PyQt6", "libSystem", "libffi")
+_BINARY_KEY_NAMES = _OWN_BINARY_NAMES + _LIBRARY_KEY_NAMES
 _MAX_JSON_FRAMES = 60            # JSON 渲染每线程最多帧数
 _MAX_JSON_IMAGES = 24            # usedImages 渲染最多镜像数
 
 
 def is_crash_report_name(fn):
-    """判断文件名是否为本应用崩溃报告（StockFloat 前缀 + .ips/.crash 后缀）。"""
+    """判断文件名是否为本应用崩溃报告（CRASH_NAME_PREFIXES 两代前缀 + .ips/.crash 后缀）。"""
     if not isinstance(fn, str):
         return False
     if not fn.startswith(CRASH_NAME_PREFIXES):
@@ -394,6 +401,14 @@ def _plain_stack_blocks(lines):
     return "\n".join(blocks)
 
 
+def _plain_line_is_key_image(line):
+    """.crash 镜像行是否关键镜像：关键库名整行匹配，程序自己的名字只看不含 / 的列（即去掉路径）。"""
+    if any(kn in line for kn in _LIBRARY_KEY_NAMES):
+        return True
+    columns = [tok for tok in line.split() if "/" not in tok]
+    return any(own in tok for tok in columns for own in _OWN_BINARY_NAMES)
+
+
 def _plain_key_images(lines):
     """.crash Binary Images 段：优先含已知关键库名的行，否则取段首若干行。"""
     capture = False
@@ -408,7 +423,7 @@ def _plain_key_images(lines):
             in_section.append(ln)
     if not in_section:
         return []
-    keyed = [ln for ln in in_section if any(kn in ln for kn in _BINARY_KEY_NAMES)]
+    keyed = [ln for ln in in_section if _plain_line_is_key_image(ln)]
     # 整段都没有已知关键库时退回段首若干行，保证至少能看到加载了什么
     picked = keyed if keyed else in_section[:8]
     return picked[:60]

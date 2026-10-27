@@ -1,4 +1,4 @@
-"""Private API URLs in the system Keychain; JSON contains only opaque references."""
+"""Private API URLs use the system Keychain; built-in public URL templates remain in JSON."""
 import hashlib
 import re
 import threading

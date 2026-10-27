@@ -16,9 +16,6 @@ __init__ 里（缓存此时还是空的）。但均价线路径缓存（键含 _
    干扰），手工把 _line_ver 归零并写入同代码快照，调用 _seed_first_screen
    后版本号必须递增、且分时点确实被填进去了。
 
-运行方式（在 StockFloat 目录）：
-    QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests \
-        -p "test_v1351_linever.py" -v
 """
 import inspect
 import os
