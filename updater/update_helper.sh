@@ -122,6 +122,14 @@ validate_verification_home() {
 
 launch_app() {
   if [ -z "$VERIFICATION_HOME" ]; then
+    # 带 --handoff 时，助手要等新版自己写下的启动确认；新版只能从环境变量
+    # SF_UPDATE_HANDOFF 拿到令牌。这里原先只写 open "$1"，令牌到不了新版，
+    # 于是每次装好的新版都在确认超时后被回退（用户反馈：更新后重开又变回旧版）。
+    # --env 要求新起进程，所以带 -n；旧实例此刻已退出（上面等过主程序 PID）。
+    if [ -n "$HANDOFF" ]; then
+      /usr/bin/open -n --env "SF_UPDATE_HANDOFF=$HANDOFF" "$1"
+      return $?
+    fi
     /usr/bin/open "$1"
     return $?
   fi

@@ -59,9 +59,12 @@ def main():
         if args.desktop_dir is not None:
             phase = "desktop_export"
             result["desktop_export"] = export_reports(args.data_dir, args.desktop_dir)
-    except Exception:
+    except Exception as exc:
         notice = notifications.sync({}, "backend:" + phase)
+        # 只留异常类名：异常正文可能带令牌、请求路径或用户反馈内容。
+        # 此前整段吞掉，日志里只剩 phase，出了问题无法判断是鉴权、拉取还是分析失败。
         print(json.dumps({"error": "feedback_backend_unavailable", "phase": phase,
+                          "error_type": type(exc).__name__,
                           "notifications": notice}, ensure_ascii=False))
         return 1
     export_failures = result.get("desktop_export", {}).get("failed", [])

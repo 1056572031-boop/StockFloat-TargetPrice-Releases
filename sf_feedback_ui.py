@@ -35,6 +35,7 @@ from sf_feedback_versions import PAYLOAD_V3, is_full_payload
 from sf_logging import feature_enabled, log_line, log_swallow
 from sf_feedback_transport import endpoint_url, server_reply, submit_pending
 from sf_glass import GlassMixin, paint_popup_surface, popup_stylesheet, prepare_popup_surface
+from sf_editor import MainCloseButton
 from sf_constants import FG_BRIGHT_HEX, FG_DISABLED_HEX, FG_HINT_HEX, FG_TEXT_HEX
 
 _BLOCKING_ERRORS = {"configuration_or_storage_unavailable", "configuration_unavailable",
@@ -44,7 +45,9 @@ _BLOCKING_ERRORS = {"configuration_or_storage_unavailable", "configuration_unava
 # 所以输入框 250x192 对应窗口 290x309。最小尺寸同理：原 440x410 → 保住按钮行放得下。
 _DEFAULT_SIZE = (290, 309)
 _MIN_SIZE = (270, 290)
-_TITLE_BUTTON_H = 24    # 标题行右侧“记录”按钮的高度（样式表加内边距之前的实测值）
+_TITLE_BUTTON_H = 24    # 标题行「记录」按钮的高度（样式表加内边距之前的实测值）
+# 标题行里控件与标题之间的水平间隙（整窗用 12，这一行刻意紧一档）。
+_TITLE_ROW_GAP = 8
 # 本进程已经“第一次看过”的反馈存储目录；见 FeedbackDialog.__init__ 里的恢复说明。
 _RECOVERED_STORES: set[str] = set()
 # 描述写到多少字开始显示字数（上限的 90%）。
@@ -267,7 +270,21 @@ class FeedbackHistoryDialog(_TitleDragDialog):
         self.title.setObjectName("feedbackTitle")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(self.title)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(0)
+        self.close_button = MainCloseButton(self)
+        self.close_button.setFixedSize(20, 20)
+        self.close_button.setAccessibleName("关闭反馈记录窗口")
+        self.close_button.setToolTip("关闭反馈记录")
+        self.close_button.setAutoDefault(False)
+        self.close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.close_button.clicked.connect(self.close)
+        # 关闭键在右上角；左侧用同宽的纯布局间距镜像它，标题仍落在整窗中线。
+        title_row.addSpacing(self.close_button.width())
+        title_row.addWidget(self.title, 1)
+        title_row.addWidget(self.close_button)
+        layout.addLayout(title_row)
         # 记录最多 100 条，必须能滚动；行容器与视口都保持透明，让毛玻璃露出来。
         body = QWidget(self)
         self.rows = QVBoxLayout(body)
@@ -283,14 +300,7 @@ class FeedbackHistoryDialog(_TitleDragDialog):
         if viewport is not None:
             viewport.setAutoFillBackground(False)
         layout.addWidget(self.scroll_area, 1)
-        buttons = QHBoxLayout()
-        close_button = QPushButton("关闭", self)
-        close_button.setObjectName("cancel")
-        close_button.setAutoDefault(False)
-        close_button.clicked.connect(self.close)
-        buttons.addWidget(close_button)
-        buttons.addStretch()
-        layout.addLayout(buttons)
+        # 关闭入口统一放在标题行右上角；底部不再保留第二枚文字关闭按钮。
         self.refresh()
         prepare_popup_surface(self)
 
@@ -454,6 +464,9 @@ class FeedbackDialog(_TitleDragDialog):
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
+        # 这一行的间隙全部走显式 addSpacing，布局自身 spacing 置 0：左右各"占了多少"
+        # 就能用同一份数字算出来，标题居中的等式不依赖 Qt 对占位项补不补间隙的隐含行为。
+        title_row.setSpacing(0)
         self.history_button = QToolButton(self)
         self.history_button.setText("记录")
         self.history_button.setAccessibleName("查看反馈记录")
@@ -463,13 +476,30 @@ class FeedbackDialog(_TitleDragDialog):
         # 输入框尺寸是用户 2026-10-22 明确要求的（见 _DEFAULT_SIZE），不能被顺带改掉。
         self.history_button.setFixedHeight(_TITLE_BUTTON_H)
         self.history_button.clicked.connect(self._open_history)
-        # 与右侧按钮镜像的不可压缩占位，连同布局间距保持标题在整窗中线。
-        title_placeholder = QWidget(self)
-        title_placeholder.setFixedWidth(self.history_button.width())
-        title_placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        title_row.addWidget(title_placeholder)
-        title_row.addWidget(self.title, 1)
+        # 用户 2026-10-27 要求：关闭入口改成与主窗右上角那枚一致的图标按钮，不再在
+        # 底部占一格「关闭」文字按钮。复用 sf_editor.MainCloseButton —— 它就是主窗
+        # 那枚细线叉号（同一份 close SVG + 同一组悬停底板令牌），目标价面板与替换股票
+        # 窗已经用它两年，这里不再画第四种关闭键。
+        self.close_button = MainCloseButton(self)
+        self.close_button.setFixedSize(20, 20)
+        self.close_button.setAccessibleName("关闭反馈窗口")
+        self.close_button.setToolTip("关闭窗口不会取消正在进行的上传。")
+        # 焦点绝不能落到这枚 ✕（同目标价面板 S2 的口径）：它是 QPushButton，一旦
+        # Tab 到它，用户在写反馈时敲空格/回车就直接把窗口关掉。键盘退出走 Esc
+        # （QDialog 自带 reject → closeEvent → 隐藏），不需要它参与焦点链。
+        self.close_button.setAutoDefault(False)
+        self.close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.close_button.clicked.connect(self.close)
+        # 用户 2026-10-27：「记录」挪到左上角，✕ 留在右上角，标题仍按整窗中线居中。
+        # 两侧控件不等宽（记录 55 vs ✕ 20），所以标题右侧要补一段
+        # （记录宽 - ✕宽），左右占位才真的相等；不补的话标题只是"在两枚按钮之间"，
+        # 不在窗口的中线上。用 addSpacing 而不是占位控件：那一格里没有任何控件，
+        # 就不存在被画成一块实心底的机会。
         title_row.addWidget(self.history_button)
+        title_row.addSpacing(_TITLE_ROW_GAP)
+        title_row.addWidget(self.title, 1)
+        title_row.addSpacing(_TITLE_ROW_GAP + self.history_button.width() - self.close_button.width())
+        title_row.addWidget(self.close_button)
         layout.addLayout(title_row)
         self.description = QPlainTextEdit(self)
         document = self.description.document()
@@ -517,12 +547,7 @@ class FeedbackDialog(_TitleDragDialog):
         # 只在“不能上传且原因必须让用户看见”时显示（见 _update_enabled）；平时隐藏、不占位。
         layout.addWidget(self.status)
         buttons = QHBoxLayout()
-        self.close_button = QPushButton("关闭", self)
-        self.close_button.setObjectName("cancel")
-        self.close_button.setAutoDefault(False)
-        self.close_button.setToolTip("关闭窗口不会取消正在进行的上传。")
-        self.close_button.clicked.connect(self.close)
-        buttons.addWidget(self.close_button)
+        # 底部只剩「上传反馈」：关闭入口已挪到右上角那枚与主窗一致的 ✕（见标题行）。
         buttons.addStretch()
         self.upload_button = QPushButton("上传反馈", self)
         self.upload_button.setFixedWidth(max(100, self.upload_button.fontMetrics().horizontalAdvance("核对并重试") + 32))
@@ -531,6 +556,9 @@ class FeedbackDialog(_TitleDragDialog):
         self.upload_button.setDefault(True)
         self.upload_button.clicked.connect(self._upload)
         buttons.addWidget(self.upload_button)
+        # 用户 2026-10-27：底部只剩这一枚按钮，左右各一段等权拉伸把它摆在正中
+        # （以前它是贴右的，因为左边还有一枚「关闭」）。
+        buttons.addStretch()
         layout.addLayout(buttons)
         self.description.textChanged.connect(self._draft_changed)
         self.history.currentIndexChanged.connect(self._select_pending)

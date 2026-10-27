@@ -2,6 +2,7 @@
 
 修订：2026-10-21。v1.4.96–v1.4.99 的实际失败、恢复和验收经验归入本流程，不新增另一套发布入口或缺陷台账。
 同日按 v1.4.101 的完整发布补充：基线取法、主树被占用时的独立发布树、质量记录两阶段、证据取舍、读回之后的收口顺序（见 P0、P1、P3、P5、P6 与第六节）。
+2026-10-27 按 v1.4.106 完整发布补充：包内说明特征的版本字串、发布日志入库整洁性、质量记录范围和脏主树中的证据归档（见 P1、P3、P6 与第五节）。
 
 状态：**发布前准备流程**。本文件用于把源码收口、候选构建和正式发布分开管理；它不替代
 `build_release.sh`、`DELIVERY_CHECKLIST.md`、`QC_CHECKLIST.md` 或发布后真实场景验收。
@@ -116,7 +117,7 @@ QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./.venv/bin/python3 tools/test_runne
 在提交或完整回归之前，再做一次便宜的发布输入核对，避免打完包才发现清单不可用：
 
 - `release_checks.txt` 当前解析器只接受一条有效 `version`，不能把新旧两条有效版本行堆叠；历史说明保留为注释或由 Git 追溯。`diag_coverage.txt` 则按版本段解析，不把两份清单当成同一种格式。
-- 除下载文件名外，逐项核对 `checkfile` 中 README、INSTALL 等包内说明的版本字串。单独通过 `public_docs_check` 不证明这些资源判据已经同步。
+- 除下载文件名外，逐项核对 `checkfile` 中 README、INSTALL 等包内说明的版本字串。单独通过 `public_docs_check` 不证明这些资源判据已经同步。**实做方式**：升版本后列出 `release_checks.txt` 里所有非注释的 `checkfile Contents/Resources/docs/` 行，逐条确认仍是本版版本字串；遗留的 `v<上一版> Beta` 会让候选构建后的 `test_public_release` 红，通常要到完整提交关卡才暴露。
 - 用现有 `release_feature_check.parse_checks()` / `gate()` 检查清单结构，并核对 `stale_declaration()` 的版本作用域；这只检查输入，不冒充包内核验。新增符号判据仍由正式工具执行。确实只是固定既有实现重新发行时，如实写版本限定的 `stale-feature` 和补充行为/包内同源证据，不为过关编造新符号。
 - 本轮 `quality_trend.py --round` 复盘声明、质量记录范围和公开资料一并收口；零逃逸只表示登记范围内未发现，不代表尚未发布的版本已证明无故障。先用 `--gate <版本>` 检查声明，避免候选后再改受指纹保护的台账。
 - 新版说明以普通用户能感知的变化为内容；按用户现行要求（2026-10-23 起由 100 字放宽为 200 字）含标题去空白不超过 200 字；闸门拒绝线与写作上限是同一个数，
@@ -476,6 +477,14 @@ run/job，不重跑发布、不新推源码、不覆盖资产，也不反复下�
    连同两份 manifest 和 `post_release.json`、`publish.log`、`online-manifest.json` 共七个文件。
    找不到、找到多份、哈希对不上、目标已存在但字节不同、索引里同一路径哈希不同，一律拒绝且不写任何东西；
    复制后重算哈希，不符就在写索引之前停下；已归档的条目再跑一次只报“已归档”。
+   **归档副本必须能通过提交钩子的空白检查。** `wrangler` 等工具的列对齐输出可能只在行尾补空格：原始
+   `publish.log` 先保留在发布树外的证据目录，再逐行仅去掉行尾空白生成待入库副本，并用这份副本重新运行
+   `quality_evidence.py post-release`，让 `post_release.json` 钉住副本的新 SHA-256；不得悄悄改其他字节。
+   `archive --apply` 的目标是**运行命令的仓库**（或显式的 `--repo`），`--tree` 只是证据来源。主树有别的会话的
+   已跟踪或可执行未跟踪文件时，不要在主树归档或提交：在同一 HEAD 新建干净归档工作树，用
+   `archive X.Y.Z --tree <发布树> --repo <干净归档树> --apply` 直接写入那里，仅提交这七份归档文件和
+   `archive-index.json`，再快进回主线；不挪动或提交别人的文件。若先误写进主树，先把那批文件和索引差异备份到
+   发布树外，逐个核对哈希后恢复主树，再按这条路径重做。
    `archive` 本身不提交、不推送（提交与推送分别见 `commit` 和下面的 `push`），也不替你写该目录 README 的批次说明；归档后的 `post_release.json` 仍保持原状态
    （通常是 `incomplete`），不会被写成通过。
 7. **复核桌面分发目录**（用户 2026-10-22 要求，永久规则）：`build_release.sh` 的 7.1 步在 P5 的发布脚本内、
@@ -495,7 +504,9 @@ run/job，不重跑发布、不新推源码、不覆盖资产，也不反复下�
    `tools/post_release_click_walkthrough.py --out <新目录>`；结果里的六项动作必须全部通过，且 `user_data.ok=true`。它是冻结安装包的交互验收，不由冷启动冒充。
 3. 用 `quality_evidence.py run` 为“读回报告已验证”留一份执行凭据。
 4. 另建发布后质量记录：由发布前记录派生，换新的 `change_id`、`release_qualification.stage` 设为 `complete`，
-   追加读回的验收条件和凭据，`scope` 加上它自己与 manifest 的文件名，写完 `verify_release_candidate` 自检。
+   追加读回的验收条件和凭据，`scope` 加上它自己与 manifest 的文件名，**以及本轮会被归档的
+   `outputs/release-candidates/vX.Y.Z/online-manifest.json`、`post_release.json` 与 `publish.log`**；否则后面
+   `verify/qualify` 会把这些真实凭据报为“未申报改动”。写完 `verify_release_candidate` 自检。
    发布前记录保持冻结，不改写。
 5. `release_state.py complete --quality <发布后记录> --readback <读回报告> --walkthrough <走查result.json>`，成功后状态才是 `complete`。
 6. 用新的 `--out` 重新生成发布总报告并带上 `--quality` 与 `--readback`。脚本退出时自动生成的那份
@@ -506,6 +517,13 @@ Git archive 的 ZIP 普通文件可能没有完整 Unix 权限字段，不把格
 公开 CI 两项任务绑定同一公开 SHA，保留首次失败、job ID、原始日志和复测；同源复测不是首次全绿，也不证明不再复发。
 绘制文案/像素检查主动取得实际帧或有界等待明确事件，不把一次 `update()+processEvents()` 当同步绘制保证，
 不放宽断言让空观测通过。收口后再优化流程/工具，另立提交；不改写已发资产、刷新历史指纹或把后续主线当发行源码。
+
+**发布经验自动回写（用户 2026-10-27 起的常设授权，不再逐次确认）**：每次发布走到 `complete`（读回、走查、归档、
+主线推送都已完成）之后，把本轮**实测撞到**的坑补进第五节对应版本的“执行经验”，必要时同步修正 P1/P3/P6 里
+相关操作步骤。口径：只写有证据的（命令输出、日志行、失败用例名、哈希），推测不写，写了必须标“未验证”；
+已发布版本的说明、质量记录和归档证据不改；用与主线同一 HEAD 的干净工作树另立一笔只含本文件的提交，
+走完整关卡后快进回主线。授权只到本地提交为止，推送仍按发布流程的常设授权单独判断。完整关卡若因用户数据红线
+（`config.json`、`debug.log` 被改）或与本文件无关的原因变红，停下并如实报告，不重试掩盖、不绕过钩子。
 
 ## 三、每轮最小证据包
 
@@ -710,7 +728,14 @@ release-preparation-vX.Y.Z/
   - **独立发布树里部署公开下载入口（6.1）需要 `services/feedback-worker/node_modules`**：该目录不在 git 里，
     新树没有它，`node deploy-pages.mjs` 找不到 wrangler。不要把整个目录做成符号链接——`.gitignore` 的
     `node_modules/` 只匹配目录，符号链接会显示成未跟踪文件，进而触发工作区指纹变化；做成真目录、
-    里面逐项指向主树。
+    里面逐项指向主树。**v1.4.106 实测：主树自己也没有这个目录**（部署脚本写死
+    `services/feedback-worker/node_modules/.bin/wrangler`，而 `services/download-analytics` 本身没有依赖）。
+    此时在发布树之外用锁文件装一份：复制 `services/feedback-worker/package.json` 与 `package-lock.json` 到一个
+    树外目录，`npm ci`（npm 缓存不全时离线装会失败，需联网；锁文件里的哈希会校验内容），再把装出的
+    `node_modules` 里的条目（含 `.bin`）逐项软链进发布树里的真目录。npm 会拦下 esbuild、workerd、fsevents 的
+    安装脚本，实测 `wrangler deploy --dry-run` 和 6.1 步部署都不受影响。发布前先用
+    `wrangler auth token --json` 只确认令牌存在（不要打印），并跑一次 dry-run，别等到第 6.1 步才发现缺依赖
+    ——那时 OTA 清单已经切换。
   - **发布后读回里“公开下载入口”4 次 403**：入口会拒绝 Python 默认的 User-Agent，即使带着正确的检查标记。
     同一标记下实测，默认 UA 403，任何明示的非默认 UA（工具自报、curl、浏览器）都是 302。读回因此全部走了
     回退直连，入口本身并没有被核验到。现在读回下载自报 `Skyrocket-release-readback/1`，不伪装成浏览器。
@@ -718,6 +743,24 @@ release-preparation-vX.Y.Z/
     不计。对这类条目不要硬登记一个逃逸来凑数，也不要给不知道的时间戳编数值（写 `null` 并留 `timestamp_audit`）。
   - **“完成”阶段的质量记录是在冻结的发布前记录上派生的**：新 `change_id`、阶段改为 `complete`，加两条验收条件
     （同源发布后读回、装机版点击走查），各绑一份阶段内取得的执行收据；发布前记录与它的 manifest 保持原字节不动。
+
+- v1.4.106 的执行经验（2026-10-27 实跑，下列各条都在那一轮撞到过）：
+  - **已发布版本的说明段不能提前改成“下一版的行为”**：主线上曾有一笔文字提交把 `release_notes.txt` 与 README 里
+    v1.4.105 的“清理前需再点一次确认”提前改成“点一下即可清理”，而线上 v1.4.105 仍是旧行为。写 v1.4.106 说明时
+    先对照线上清单的 `notes`（`Cache-Control: no-cache` 读取），把已发布段还原成发布时的原文，新行为只放进新版本段。
+  - **整档才红的版本字串**：升版本后候选前的 `public_docs_check` 与清单解析都通过，但 `release_checks.txt` 里两条
+    写死 `v<上一版>` 的 `checkfile`（README、INSTALL 的包内副本）让 `test_public_release` 在提交关卡里红，
+    第一次发布提交因此被拦下，没有产生提交，修好后重来。见 P1 的实做方式。
+  - **归档副本要去掉行尾空白**，并让 `post_release.json` 钉住副本的哈希；首次 `archive --apply` 在脏主树里被
+    `commit_preflight` 拒绝后，需先备份并清掉自己写进主树的归档文件与索引改动，才能重新归档（`archive` 不覆盖
+    已存在且字节不同的文件）。见 P6 第 6 条。
+  - **脏主树里提交归档**：用与主线同一 HEAD 的干净归档工作树提交，再 `merge --ff-only` 回主线；快进前逐个
+    `git hash-object` 比对主树残留的归档文件，一致才清掉。别人的 `outputs/todo-runs/*`、预览目录全程不动。
+  - **候选构建后必须在原树内补候选阶段的执行凭据**：冒烟、特征核验、签名核验和 `verify_candidate_delivery.py`
+    （`--out` 是文件路径，旧包放进证据目录的 `old/` 并先 `codesign --verify`），再绑定质量记录；
+    场景观测里的 `artifact_sha256` 要等于 `artifact_token(dist/Skyrocket.app)`，别手填。
+  - **收树前先把树外没有的原件搬走**：发布树的 `build/` 被 git 忽略，`retire` 不检查它。读回报告、点击走查结果、
+    候选关卡截图和候选阶段的执行凭据，要先复制到发布树之外的证据目录再收树。
 
 ## 六、主树被占用时的独立发布树
 

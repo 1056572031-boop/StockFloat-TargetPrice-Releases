@@ -164,6 +164,7 @@ class NotificationTests(SFCase):
         self.assertNotIn("synthetic-token", output.getvalue())
         notifier.sync.assert_called_once_with({}, "backend:authentication")
         self.assertNotIn("synthetic-secret", output.getvalue())
+        self.assertIn('"error_type": "CalledProcessError"', output.getvalue())
 
     def test_cli_notification_failure_keeps_processing_result_and_returns_nonzero(self):
         agent = Mock()
@@ -187,10 +188,12 @@ class NotificationTests(SFCase):
                 patch.object(feedback_agent, "FeedbackAgent", return_value=agent), \
                 patch.object(feedback_agent, "FeedbackNotifications", return_value=notifier), \
                 patch.object(feedback_agent.subprocess, "run", return_value=Mock(stdout="synthetic-token")), \
-                patch("sys.stdout", new_callable=io.StringIO):
+                patch("sys.stdout", new_callable=io.StringIO) as output:
             agent.run_once.side_effect = OSError("private exception text")
             self.assertEqual(feedback_agent.main(), 1)
             notifier.sync.assert_called_with({}, "backend:processing")
+            self.assertIn('"error_type": "OSError"', output.getvalue())
+            self.assertNotIn("private exception text", output.getvalue())
             agent.run_once.side_effect = None
             agent.run_once.return_value = {"ready": [], "failed": [], "discovered": 0}
             with patch.object(feedback_agent, "report_versions", side_effect=OSError):

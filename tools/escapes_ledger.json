@@ -4652,6 +4652,56 @@
           "result": "找不到能证明首次现象的秒级证据，退回未知，不借文件时刻或会话时刻替代"
         }
       ]
+    },
+    {
+      "id": "N26",
+      "symptom": "更新装完后重新打开又变回旧版，并再次弹出“发现新 Beta 版本 V1.4.106”：新版启动后始终没给安装助手回执，助手等满 30 秒判启动确认超时并回滚旧版",
+      "component": "自动更新与安装",
+      "channel": "online_user",
+      "introduced_version": "1.4.104",
+      "introduced_note": "回执调用 acknowledge_pending_handoff 由提交 c1f1dd0（2026-10-24）加入，该提交包含在 1.4.104 的发布提交 a8d42e1 里（git -S 查到该调用的首个提交即 c1f1dd0）；助手侧正式路径只用 open 而不带交接令牌，是否同批引入未单独核对。受影响起始版本没有用发布标签逐一核实。 修复在包里，自动更新用的却是已安装旧版复制出来的助手：从 1.4.106 及更早版本自动更新到 1.4.107 时仍是不带令牌的旧助手，代码读出新版只从环境变量取令牌，所以这些机器预计仍会被退回，需要手动安装一次安装包（更新说明第 4 条已提醒）；这一点由代码读出，未在用户机器上验证。",
+      "found_version": "1.4.106",
+      "fixed_version": "1.4.107",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "两处缺陷叠在一起：一是新版只在启动第 2 秒采样一次，旧条件要求更新清单已核验才算整体通过，而更新首检要到第 15 秒才开始，刚启动的新版必然不通过、不写回执；二是助手正式路径用裸 open 拉起新版，新进程拿不到交接令牌。已有测试把 capture 直接打桩成通过，从没跑过“第 2 秒采样、第 15 秒才首检”的真实时序；助手测试里 open 是替身，只验参数形状。",
+      "defense_added": [
+        "启动确认改为只看身份、可见、Space、窗口层级和玻璃，不再等第 15 秒才开始的更新检查；隐藏或最小化窗口不放行，用例按真实时序覆盖（改回旧条件两条变红，放行函数恒真十条变红，均已实测）",
+        "助手正式路径改用 open -n --env 把交接令牌交给新进程，无令牌路径与验证环境路径不变；release_checks 用 checkfile 钉住包内助手必须带这句。测试只证明参数形状，不证明真实 open 把变量送进新版，这一点仍未验证"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "用户转述并附截图，没有那台机器的日志或回滚记录，没有可独立证明现象首次出现的时刻；根因来自代码、日志与本机复现，不借会话或提交时刻估算定位时长。",
+      "source": "用户 2026-10-27 转述“已经更新到最新版本了，打开程序以后还是会弹窗”并附更新确认框截图（Vision OCR 读出原文）；修复提交 7b338df、bd36a0c，合并提交 14e1a12 与 c4ec0f8",
+      "evidence": "second-hand"
+    },
+    {
+      "id": "N27",
+      "symptom": "点关闭按钮正常退出后，运行会话账本仍停在 frame_ready，下次启动被判成上次没有正常结束，约 2 秒后弹“刚才似乎没有正常退出，要描述一下吗？”",
+      "component": "崩溃与生命周期",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "引入版本没有核实：只确认 1.4.106 装机版里存在。账本在 aboutToQuit 里才落 clean_exit，而 macOS cocoa 下 QApplication.quit() 可能不触发它；产品里 aboutToQuit 为什么没落账本没有定位，修法绕开了它。",
+      "found_version": "1.4.106",
+      "fixed_version": "1.4.107",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "退出路径的已有用例用离屏或替身验 aboutToQuit 接线，没有一条在真 cocoa 下走完整的“点关闭、读回账本相位”；真实账本停在 frame_ready 是 2026-10-27 用装机版点关闭后读回才看到的。",
+      "defense_added": [
+        "quit() 在请求 Qt 退出之前先把本次运行记为正常结束；相位已是终态（含 OTA 交接）则不写，交接态不会被覆盖成普通退出",
+        "tests/test_quit_lifecycle.py 两条：账本先于 Qt 退出落盘、交接态不被覆盖；真 cocoa 隔离账本对照实测，修前停 frame_ready，修后 clean_exit"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者本机实测发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，开条时刻只是记账，不计定位时长。",
+      "source": "2026-10-27 装机版点关闭后读回 run-session.sqlite3 为 frame_ready；修复提交 3c0f6c4，合并提交 cd54916",
+      "evidence": "verified"
     }
   ],
   "rounds": [
@@ -5363,6 +5413,18 @@
         "发版链诊断覆盖基线必须显式给出、回退副本按末尾时间戳回收、发布续跑信号处理的回归"
       ],
       "zero_reason": "本轮发布前复核线上台账与反馈记录，未发现新的用户报回线上逃逸。台账 N25 是维护者本机反馈代理的运行时问题，已通过升级代理运行时收口，不在客户端安装包内，本版也没有带它的修复，所以不计入本版。本版客户端侧的改动是反馈记录窗口的清理行为、日志脱敏的边界、窗口右沿贴齐、崩溃报告镜像选择和搜索出错留痕，均在发布前完整回归中验证；0 不等于上线后无故障，装机版上这些改动的实际观感发布后才能读回。"
+    },
+    {
+      "version": "1.4.107",
+      "date": "2026-10-27",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "完整回归、构建输入关卡戳和覆盖率来源凭据同源核验",
+        "启动确认只看核心启动信号、不等更新检查的定向回归，助手正式路径交接令牌的参数形状回归",
+        "点关闭正常退出先落终态、交接态不被覆盖的回归，反馈窗与记录窗右上角关闭按钮的版式回归"
+      ],
+      "zero_reason": null
     }
   ],
   "comparison_policy": {

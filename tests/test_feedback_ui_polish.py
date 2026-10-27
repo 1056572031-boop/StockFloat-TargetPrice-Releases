@@ -9,11 +9,11 @@ from urllib.error import HTTPError, URLError
 
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QScrollArea, QToolButton, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QToolButton, QWidget
 
 from sf_feedback_capture import MAX_DESCRIPTION
 from sf_feedback_ui import (
-    FeedbackDialog, FeedbackHistoryDialog, _COUNTER_SHOW_AT, _REOPEN_TAIL, _TITLE_BUTTON_H,
+    FeedbackDialog, FeedbackHistoryDialog, _COUNTER_SHOW_AT, _DEFAULT_SIZE, _REOPEN_TAIL, _TITLE_BUTTON_H,
     _failure_detail, _failure_hint, _failure_kind, feedback_diagnostics,
 )
 from tests._base import SFCase
@@ -200,6 +200,64 @@ class HistoryLayout(_DialogCase):
         self.assertIn("FeedbackHistoryDialog.refresh", swallowed.call_args.args[0])
 
 
+class HistoryCloseButton(_DialogCase):
+    """用户 2026-10-27：反馈记录窗的关闭入口也换成右上角 ✕（与反馈窗、主窗同一枚控件）。"""
+
+    def make_history(self):
+        history = self.track_widget(FeedbackHistoryDialog(_Outbox(3), self.dialog))
+        history.show()
+        QApplication.processEvents()
+        return history
+
+    def test_the_close_entry_is_the_shared_main_window_button(self):
+        from sf_editor import MainCloseButton
+        button = self.make_history().close_button
+        self.assertIsInstance(button, MainCloseButton, "记录窗的关闭键必须是主窗同款控件，不能另画一种叉号")
+        self.assertEqual(button.text(), "", "关闭图标是画出来的，不能用字体字符顶替")
+        self.assertEqual((button.width(), button.height()), (20, 20))
+        self.assertIsNotNone(button._close_img, "必须加载主窗正在用的那份 close SVG")  # discipline-ok(R5): 图标是否真加载只能看这一个成员
+
+    def test_the_close_button_sits_in_the_top_right_corner_above_the_list(self):
+        history = self.make_history()
+        close = history.close_button.geometry()
+        self.assertEqual(history.width() - 1 - close.right(), 20, "关闭键应贴着 20pt 右边距")
+        self.assertGreaterEqual(close.top(), 20, "关闭键不能越过 20pt 上边距")
+        self.assertLessEqual(close.bottom(), history.scroll_area.geometry().top(),
+                             "关闭键属于标题行，不能压进记录列表")
+
+    def test_the_title_stays_on_the_window_midline(self):
+        history = self.make_history()
+        center = history.title.geometry().center().x()
+        self.assertLessEqual(abs(center - history.width() // 2), 1,
+                             "标题必须仍在整窗中线，实测标题中心 %d / 窗宽 %d" % (center, history.width()))
+
+    def test_the_bottom_row_has_no_text_close_button_any_more(self):
+        history = self.make_history()
+        texts = [b.text() for b in history.findChildren(QPushButton)]
+        self.assertNotIn("关闭", texts, "底部那枚「关闭」文字按钮应已被右上角 ✕ 取代")
+        bottom = history.scroll_area.geometry().bottom()
+        stray = [b for b in history.findChildren(QPushButton) if b.geometry().top() > bottom]
+        self.assertEqual(stray, [], "记录列表下方不应再有任何按钮行")
+
+    def test_focus_never_lands_on_the_close_button(self):
+        button = self.make_history().close_button
+        self.assertEqual(button.focusPolicy(), Qt.FocusPolicy.NoFocus, "焦点落到 ✕ 后，敲空格或回车会直接关窗")
+        self.assertFalse(button.autoDefault())
+
+    def test_clicking_the_close_button_hides_the_history_window(self):
+        history = self.make_history()
+        self.assertTrue(history.isVisible())
+        history.close_button.click()
+        QApplication.processEvents()
+        self.assertFalse(history.isVisible())
+
+    def test_escape_still_closes_the_history_window(self):
+        history = self.make_history()
+        QTest.keyClick(history, Qt.Key.Key_Escape)
+        QApplication.processEvents()
+        self.assertFalse(history.isVisible(), "去掉底部按钮后，键盘退出路径仍须可用")
+
+
 class FailureEvidence(_DialogCase):
     def http_error(self, status, body=b""):
         return HTTPError("https://synthetic.invalid", status, "secret reason", {}, io.BytesIO(body))
@@ -276,6 +334,87 @@ class FailureEvidence(_DialogCase):
         self.assertEqual(exported["last_failure_detail"]["server_code"], "submission_unconfirmed")
         self.assertEqual(feedback_diagnostics(SimpleNamespace(_feedback_dialog=SimpleNamespace())
                                               )["last_failure_detail"], {})
+
+
+class TitleRowCloseButton(_DialogCase):
+    """用户 2026-10-27 要求：反馈窗的关闭入口改成与主窗右上角那枚一致的 ✕，不再在底部占一格。
+
+    三条都要钉住：
+    ① 用的是**同一份**关闭控件（`sf_editor.MainCloseButton`：主窗同款 close SVG + 同款悬停
+       底板令牌），不是再画第四种关闭键；
+    ② 底部那枚「关闭」文字按钮真的没了，标题行的居中标题没被新按钮挤偏；
+    ③ 焦点不会落到它身上（否则写反馈时敲空格/回车直接关窗），键盘退出走 Esc。
+    """
+
+    def bare_widgets(self):
+        return [c for c in self.dialog.findChildren(QWidget)
+                if type(c) is QWidget and c.parentWidget() is self.dialog]
+
+    def test_the_dialog_has_no_invisible_placeholder_widget_left(self):
+        self.assertEqual(self.bare_widgets(), [],
+                         "标题行又出现了裸 QWidget 占位块：那一格可能被画成一块实心黑，居中请改用 addSpacing")
+
+    def test_the_close_entry_is_the_main_windows_shared_button(self):
+        from sf_editor import MainCloseButton
+        button = self.dialog.close_button
+        self.assertIsInstance(button, MainCloseButton, "关闭键必须是主窗同款控件，不能各画一种叉号")
+        self.assertEqual(button.text(), "", "关闭图标不能用字体字符（✕ 是画出来的，不是打字）")
+        self.assertEqual((button.width(), button.height()), (20, 20))
+        self.assertIsNotNone(button._close_img, "必须加载主窗正在用的那份 close SVG")  # discipline-ok(R5): 图标是否真加载只能看这一个成员
+
+    def test_the_close_button_sits_in_the_top_right_corner(self):
+        close = self.dialog.close_button.geometry()
+        self.assertEqual(self.dialog.width() - 1 - close.right(), 20, "关闭键应贴着 20pt 右边距")
+        self.assertEqual(close.top(), self.dialog.history_button.geometry().top()
+                         + (self.dialog.history_button.height() - close.height()) // 2,
+                         "关闭键与「记录」在同一行内垂直居中")
+        self.assertLessEqual(close.bottom(), self.dialog.description.geometry().top(),
+                             "关闭键属于标题行，不能掉到正文区")
+
+    def test_the_history_button_moved_to_the_top_left_corner(self):
+        """用户 2026-10-27：记录挪到左上角，✕ 独占右上角。"""
+        history = self.dialog.history_button.geometry()
+        self.assertEqual(history.left(), 20, "「记录」应贴着 20pt 左边距")
+        self.assertLess(history.right(), self.dialog.close_button.geometry().left(),
+                        "「记录」不能再压在关闭键右侧")
+
+    def test_the_upload_button_is_centered_in_the_bottom_row(self):
+        """用户 2026-10-27：底部只剩这一枚按钮，摆正中。"""
+        center = self.dialog.upload_button.geometry().center().x()
+        self.assertLessEqual(abs(center - self.dialog.width() // 2), 1,
+                             "「上传反馈」必须居中，实测中心 %d / 窗宽 %d" % (center, self.dialog.width()))
+
+    def test_the_bottom_row_no_longer_has_a_text_close_button(self):
+        texts = [b.text() for b in self.dialog.findChildren(QPushButton) if b.parentWidget() is self.dialog]
+        self.assertNotIn("关闭", texts, "底部那枚「关闭」文字按钮应已被右上角 ✕ 取代")
+        self.assertIn("上传反馈", texts)
+
+    def test_the_title_is_still_centered_with_two_buttons_on_the_right(self):
+        center = self.dialog.title.geometry().center().x()
+        self.assertLessEqual(abs(center - self.dialog.width() // 2), 1,
+                             "标题必须仍在整窗中线，实测标题中心 %d / 窗宽 %d" % (center, self.dialog.width()))
+
+    def test_the_input_box_size_the_user_fixed_on_2026_10_22_is_unchanged(self):
+        """加一枚 ✕ 不许把用户钉死的输入框尺寸带跑（见 _DEFAULT_SIZE 那段注释）。"""
+        box = self.dialog.description.geometry()
+        self.assertEqual((box.width(), box.height()), (250, 188),
+                         "输入框尺寸变了：标题行/底部行的改动挤到了正文区")
+        self.assertEqual((self.dialog.width(), self.dialog.height()), _DEFAULT_SIZE,
+                         "整窗尺寸不再是 _DEFAULT_SIZE")
+        self.assertEqual(self.dialog.history_button.height(), _TITLE_BUTTON_H,
+                         "标题行被新按钮撑高，正文区就会跟着缩")
+
+    def test_focus_never_lands_on_the_close_button(self):
+        button = self.dialog.close_button
+        self.assertEqual(button.focusPolicy(), Qt.FocusPolicy.NoFocus,
+                         "焦点落到 ✕ 后，写反馈时敲空格就会关窗")
+        self.assertFalse(button.autoDefault(), "回车必须仍然触发「上传反馈」，不能触发关闭")
+
+    def test_clicking_the_close_button_hides_the_dialog(self):
+        self.assertTrue(self.dialog.isVisible())
+        self.dialog.close_button.click()
+        QApplication.processEvents()
+        self.assertFalse(self.dialog.isVisible())
 
 
 class CounterAndNewEntry(_DialogCase):

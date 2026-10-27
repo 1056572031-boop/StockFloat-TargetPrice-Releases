@@ -17,7 +17,10 @@ import tempfile
 # ---- v1.4.5 启动位置守卫：必须在 PyQt6 之前（旧副本从 /tmp 误启动会在
 # Qt 导入期 SIGSEGV，只留"程序意外退出"弹窗；守卫改为提示后正常退出）----
 from sf_bootstrap import guard_temporary_launch
-from sf_run_session import RuntimeSessionLedger, session_path_for_log
+from sf_run_session import (PHASE_CLEAN_EXIT, PHASE_UPDATE_HANDOFF,
+                             RuntimeSessionLedger, session_path_for_log)
+
+_SESSION_TERMINAL_PHASES = frozenset({PHASE_CLEAN_EXIT, PHASE_UPDATE_HANDOFF})
 
 guard_temporary_launch()
 
@@ -6803,6 +6806,13 @@ QMenu::separator {
         # 时刻才被销毁，就是 QWindow 析构踩空指针 —— 见 _flush_deferred_deletions。
         # 放在分支之前：_quit_after_threads 在工作线程里，那条路没法自己冲刷。
         _flush_deferred_deletions()
+        # 先把主动退出写成终态，再请求 Qt 结束事件循环。macOS 的 cocoa 后端
+        # 可能在 QApplication.quit() 内直接进入 terminate/exit，不能把会话账本
+        # 只接在 aboutToQuit 上；否则下一次启动会把正常关闭误判为异常中断。
+        session = vars(self).get("_runtime_session")
+        session_id = vars(self).get("_runtime_session_id")
+        if isinstance(session, RuntimeSessionLedger) and isinstance(session_id, str):
+            _mark_runtime_session_clean(session, session_id)
         if pending:
             threading.Thread(target=self._quit_after_threads,
                              args=(pending,), daemon=True).start()
@@ -6855,8 +6865,16 @@ def _begin_runtime_session():
 
 
 def _mark_runtime_session_clean(session, session_id):
-    """正常退出那一刻把账本落成 clean_exit；失败只留痕，不打扰用户。"""
+    """正常退出那一刻把账本落成 clean_exit；失败只留痕，不打扰用户。
+
+    主动退出会在 quit() 里先写一次，aboutToQuit 又会走到这里：已经是终态
+    （clean_exit 或 OTA 交接）就不再写，既不报“终态不能再推进”，也不会把
+    update_handoff 覆盖成普通退出。
+    """
     try:
+        current = session.current()
+        if isinstance(current, dict) and current.get("phase") in _SESSION_TERMINAL_PHASES:
+            return
         session.mark_clean_exit(session_id)
     except Exception as exc:
         log_swallow("stock_float_window.runtime_session.clean_exit", exc)

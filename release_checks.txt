@@ -20,7 +20,28 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.106
+version 1.4.107
+# ---- v1.4.107：OTA 交接令牌与启动确认、正常退出先记终态、反馈窗口右上角关闭（基线 d1f4237，非合并提交 6 笔，其中 3 笔是文档或发布留痕） ----
+# 启动确认只看身份、可见、Space、窗口层级和玻璃，不再等 15 秒后的更新检查：
+check sf_startup_health::ready_for_update_handoff
+# 点关闭按钮退出时，在请求 Qt 退出之前先把本次运行记为正常结束，已是终态（含 OTA 交接）则不覆盖：
+check stock_float_window::_SESSION_TERMINAL_PHASES
+check stock_float_window::PHASE_UPDATE_HANDOFF
+check stock_float_window::PHASE_CLEAN_EXIT
+# 反馈窗与记录窗右上角关闭按钮，底部文字「关闭」按钮撤掉：
+check sf_feedback_ui::_TITLE_ROW_GAP
+check sf_feedback_ui::MainCloseButton
+# OTA 助手拉起新版时把交接令牌交给新进程（随包 shell 资源，字节码里没有，用 checkfile）：
+checkfile Contents/Resources/updater/update_helper.sh::/usr/bin/open -n --env "SF_UPDATE_HANDOFF=
+# 以下是证据为测试的行为改动；testref 只证明用例仍在、以 test 开头、没被无条件跳过，不证明通过（通过由同轮完整回归证明），也不算本轮特征：
+#   启动确认不等更新检查：sf_startup_health.ready_for_update_handoff 与 schedule 的回执条件；
+#   正常退出先落终态且不覆盖 OTA 交接态；助手把令牌交给替换后的新版；反馈窗右上角关闭按钮与标题居中。
+testref tests/test_startup_health.py::StartupEvaluationTests::test_handoff_readiness_does_not_wait_for_the_later_update_check
+testref tests/test_coverage_runtime_session_entry.py::StartupHealthSessionTests::test_handoff_is_acknowledged_before_the_later_update_check_has_run
+testref tests/test_quit_lifecycle.py::TestAboutToQuitWiring::test_normal_quit_marks_the_runtime_session_before_qt_exit
+testref tests/test_quit_lifecycle.py::TestAboutToQuitWiring::test_update_handoff_quit_does_not_replace_its_terminal_phase
+testref tests/test_update_helper.py::TestHelperVerificationHome::test_production_handoff_reaches_the_replacement_app
+
 # ---- v1.4.106：反馈记录一键清理、日志脱敏句号边界、崩溃报告镜像与若干修正（基线 e2f13bf，26 笔非合并提交） ----
 # 清理按钮不再二次确认：旧的上膛/超时/复位三件套整套删除，包内必须不再出现：
 forbid sf_feedback_ui::_confirm_cleanup
@@ -305,9 +326,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.106 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.107 Beta
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.106
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.107
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

@@ -124,6 +124,36 @@ def evaluate(data):
             "boundary": "Single read-only sample, not screenshot, cross-Space, signature or OTA install acceptance"}
 
 
+def ready_for_update_handoff(sample):
+    """Return whether the new app itself is ready to acknowledge an OTA handoff.
+
+    The update check starts after this two-second startup sample.  Its manifest state
+    therefore cannot gate the acknowledgement: doing so makes every fresh launch
+    miss the helper's 30-second deadline and roll back a correctly installed app.
+    Only a user-disabled glass material may be not_applicable; identity, visibility,
+    Space and window level must each prove the new app is actually usable.
+    """
+    if not isinstance(sample, dict):
+        return False
+    checks = sample.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    # The helper may only accept a real, visible new application.  The optional
+    # glass material is the sole user-selected exception; hidden/minimized windows
+    # make visibility, Space and level not_applicable and must not acknowledge.
+    for name in ("identity", "visibility", "space", "window_level"):
+        check = checks.get(name)
+        if not isinstance(check, dict) or check.get("status") != "passed":
+            return False
+    glass = checks.get("glass")
+    if not isinstance(glass, dict):
+        return False
+    if glass.get("status") == "passed":
+        return True
+    return (glass.get("status") == "not_applicable"
+            and glass.get("reason") == "material_disabled_by_user")
+
+
 def capture(window):
     from PyQt6.QtWidgets import QApplication
     import sf_glass
@@ -200,6 +230,9 @@ def schedule(window):
             if window._startup_health.get("status") == "passed":
                 if session is not None and isinstance(session_id, str):
                     session.mark_healthy(session_id)
+            # The handoff acknowledgement has its own, narrower gate: it must not wait
+            # for the update check that only begins after this sample (see the helper).
+            if ready_for_update_handoff(window._startup_health):
                 try:
                     import sf_update
                     sf_update.acknowledge_pending_handoff(

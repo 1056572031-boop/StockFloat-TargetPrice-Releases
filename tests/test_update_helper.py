@@ -641,6 +641,18 @@ class TestHelperVerificationHome(SFCase):
         self.assertEqual([c.decode().split("\0") for c in calls],
                          [[str(self.target)], [str(self.target)]])
 
+    def test_production_handoff_reaches_the_replacement_app(self):
+        """正式更新也必须把握手令牌交给新版，不能确认超时后回退。"""
+        helper, log = self.instrument_helper()
+        token = "e" * 32
+        self._write_ack(token)
+        proc, payload = self.invoke(None, helper=helper, extra=("--handoff", token))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(payload.get("status"), "installed")
+        calls = log.read_bytes().split(b"\0\0")[:-1]
+        self.assertEqual([c.decode().split("\0") for c in calls],
+                         [["-n", "--env", "SF_UPDATE_HANDOFF=" + token, str(self.target)]])
+
     def _write_ack(self, token, *, version="9.9.9", bundle_id=BUNDLE_ID):
         (self.root / ("handoff-%s.ack.json" % token)).write_text(
             json.dumps({"handoff_id": token, "version": version, "bundle_id": bundle_id},

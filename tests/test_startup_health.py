@@ -101,6 +101,61 @@ class StartupEvaluationTests(SFCase):
         data["update"]["last_outcome"] = "error"
         self.assertEqual(health.evaluate(data)["checks"]["update_state"]["status"], "failed")
 
+    def test_handoff_readiness_does_not_wait_for_the_later_update_check(self):
+        """启动采样早于15秒更新首检，不能由 ota_manifest 卡住 OTA 回执。"""
+        data = healthy_data()
+        data["update"]["manifest"]["status"] = "not_checked"
+        sample = health.evaluate(data)
+        self.assertEqual(sample["status"], "unverified")
+        self.assertTrue(health.ready_for_update_handoff(sample))
+        data["identity"]["version"] = "wrong"
+        self.assertFalse(health.ready_for_update_handoff(health.evaluate(data)))
+
+    def test_handoff_readiness_requires_a_visible_window_but_allows_disabled_glass(self):
+        """最小化/隐藏不是可用的新版本，只有用户明确关掉玻璃可不适用。"""
+        hidden = healthy_data()
+        hidden["visibility"] = {"intentionally_hidden": True}
+        hidden_sample = health.evaluate(hidden)
+        self.assertEqual(hidden_sample["checks"]["visibility"]["status"], "not_applicable")
+        self.assertFalse(health.ready_for_update_handoff(hidden_sample))
+        no_glass = healthy_data()
+        no_glass["glass"].update(requested=False, present=False, real_state=None)
+        no_glass_sample = health.evaluate(no_glass)
+        self.assertEqual(no_glass_sample["checks"]["glass"]["status"], "not_applicable")
+        self.assertTrue(health.ready_for_update_handoff(no_glass_sample))
+
+    def test_handoff_readiness_refuses_samples_it_cannot_read(self):
+        """读不出来的采样一律不回执：不是字典、没有分项、分项缺失或状态未知。"""
+        for sample in (None, "passed", [], {}, {"status": "unverified"},
+                       {"status": "unverified", "checks": "x"}):
+            with self.subTest(sample=sample):
+                self.assertFalse(health.ready_for_update_handoff(sample))
+        sample = health.evaluate(healthy_data())
+        del sample["checks"]["space"]
+        sample["status"] = "unverified"
+        self.assertFalse(health.ready_for_update_handoff(sample))
+        sample = health.evaluate(healthy_data())
+        sample["status"] = "unverified"
+        sample["checks"]["glass"]["status"] = "unverified"
+        self.assertFalse(health.ready_for_update_handoff(sample))
+        sample = health.evaluate(healthy_data())
+        sample["checks"]["identity"]["status"] = "failed"
+        self.assertFalse(health.ready_for_update_handoff(sample))
+        # 玻璃项整个缺失，和"玻璃状态未知"是两种读不出来的形状
+        sample = health.evaluate(healthy_data())
+        del sample["checks"]["glass"]
+        self.assertFalse(health.ready_for_update_handoff(sample))
+        # 玻璃"不适用"必须是用户主动关闭才算数，别的原因不能借这个状态放行
+        sample = health.evaluate(healthy_data())
+        sample["checks"]["glass"] = {"status": "not_applicable", "data": None,
+                                     "reason": "user_hidden_or_quitting"}
+        self.assertFalse(health.ready_for_update_handoff(sample))
+        for name in ("visibility", "space", "window_level"):
+            with self.subTest(core_signal=name):
+                sample = health.evaluate(healthy_data())
+                sample["checks"][name]["status"] = "not_applicable"
+                self.assertFalse(health.ready_for_update_handoff(sample))
+
     def test_six_in_memory_source_mutants_are_killed_by_the_contract(self):
         # Compile and execute changed logic, not a source-string shape assertion.
         tree = ast.parse(Path(health.__file__).read_text())

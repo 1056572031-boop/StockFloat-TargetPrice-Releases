@@ -544,7 +544,10 @@ class StartupHealthSessionTests(SFCase):
         self.track_patch(mock.patch.object(sys, "frozen", True, create=True))
         self.track_patch(mock.patch.object(sf_glass, "native_cocoa_active", return_value=True))
         self.track_patch(mock.patch.object(health, "STARTUP_DELAY_MS", 0))
-        self.track_patch(mock.patch.object(health, "capture", return_value={"status": "passed"}))
+        core = {"status": "passed"}
+        self.track_patch(mock.patch.object(health, "capture", return_value={"status": "passed", "checks": {
+            "identity": core, "visibility": core, "glass": core, "space": core,
+            "window_level": core, "ota_manifest": core, "update_state": core}}))
         self.swallow = mock.Mock()
         self.track_patch(mock.patch("sf_logging.log_swallow", self.swallow))
 
@@ -559,6 +562,11 @@ class StartupHealthSessionTests(SFCase):
     def test_a_sampled_start_marks_the_session_healthy_and_acks_the_handoff(self):
         session = mock.Mock(spec=RuntimeSessionLedger)
         self.wire(session)
+        core = {"status": "passed"}
+        sample = {"status": "passed", "checks": {
+            "identity": core, "visibility": core, "glass": core, "space": core,
+            "window_level": core, "ota_manifest": core, "update_state": core}}
+        self.track_patch(mock.patch.object(health, "capture", return_value=sample))
         with mock.patch.object(sf_update, "acknowledge_pending_handoff", return_value=True) as ack:
             health.schedule(self.window)
             self.assertTrue(self.wait_for(self.sampled))
@@ -566,6 +574,58 @@ class StartupHealthSessionTests(SFCase):
         self.assertEqual(ack.call_args.kwargs["session_id"], "a" * 32)
         self.assertEqual(ack.call_args.kwargs["handoff_id"], None)
         self.assertFalse(self.swallow.called)
+
+    def test_handoff_is_acknowledged_before_the_later_update_check_has_run(self):
+        """启动采样在第2秒，更新首检在第15秒：清单还没查过不能卡住安装助手的回执。"""
+        session = mock.Mock(spec=RuntimeSessionLedger)
+        self.wire(session)
+        core = {"status": "passed"}
+        sample = {"status": "unverified", "checks": {
+            "identity": core, "visibility": core, "glass": core, "space": core,
+            "window_level": core, "ota_manifest": {"status": "unverified"},
+            "update_state": core}}
+        self.track_patch(mock.patch.object(health, "capture", return_value=sample))
+        with mock.patch.object(sf_update, "acknowledge_pending_handoff", return_value=True) as ack:
+            health.schedule(self.window)
+            QApplication.processEvents()
+            self.assertTrue(self.wait_for(
+                lambda: QApplication.processEvents() or ack.called))
+        ack.assert_called_once()
+        session.mark_healthy.assert_not_called()
+
+    def test_failed_core_signal_still_withholds_the_handoff_ack(self):
+        session = mock.Mock(spec=RuntimeSessionLedger)
+        self.wire(session)
+        core = {"status": "passed"}
+        sample = {"status": "failed", "checks": {
+            "identity": {"status": "failed"}, "visibility": core, "glass": core,
+            "space": core, "window_level": core, "ota_manifest": {"status": "unverified"}}}
+        self.track_patch(mock.patch.object(health, "capture", return_value=sample))
+        with mock.patch.object(sf_update, "acknowledge_pending_handoff", return_value=True) as ack:
+            health.schedule(self.window)
+            self.assertTrue(self.wait_for(self.sampled_any))
+        ack.assert_not_called()
+
+    def test_update_transport_failure_does_not_withhold_a_clean_start_handoff_ack(self):
+        """安装确认只证明新包起来，不能因联网检查暂时失败把已装版本回退。"""
+        session = mock.Mock(spec=RuntimeSessionLedger)
+        self.wire(session)
+        core = {"status": "passed"}
+        sample = {"status": "failed", "checks": {
+            "identity": core, "visibility": core, "glass": core, "space": core,
+            "window_level": core, "ota_manifest": {"status": "failed"},
+            "update_state": {"status": "failed"}}}
+        self.track_patch(mock.patch.object(health, "capture", return_value=sample))
+        with mock.patch.object(sf_update, "acknowledge_pending_handoff", return_value=True) as ack:
+            health.schedule(self.window)
+            self.assertTrue(self.wait_for(
+                lambda: QApplication.processEvents() or ack.called))
+        ack.assert_called_once()
+
+    def sampled_any(self):
+        QApplication.processEvents()
+        startup = health.diagnostics(self.window)["startup"]
+        return startup.get("status") != "unverified" or startup.get("checks") is not None
 
     def test_failed_health_does_not_advance_the_session_or_ack(self):
         session = mock.Mock(spec=RuntimeSessionLedger)

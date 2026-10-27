@@ -21,6 +21,7 @@ import os
 import sys
 import threading
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -288,6 +289,33 @@ class TestAboutToQuitWiring(_QuitCase):
             with patch.object(w, "close", lambda: None):
                 w.quit()
         self.assertEqual(len(calls), 1, "quit() 必须复用 _shutdown_threads，不得另写一份")
+
+    def test_normal_quit_marks_the_runtime_session_before_qt_exit(self):
+        """正常点关闭必须在 QApplication.quit 前落 clean_exit，避免下次误报。"""
+        w = self.win
+        session = mock.Mock(spec=m.RuntimeSessionLedger)
+        session.current.return_value = {"phase": "frame_ready"}
+        vars(w)["_runtime_session"] = session
+        vars(w)["_runtime_session_id"] = "a" * 32
+        order = []
+        with patch.object(m, "_mark_runtime_session_clean", side_effect=lambda *_: order.append("ledger")), \
+                patch.object(m.QApplication, "quit", side_effect=lambda: order.append("quit")), \
+                patch.object(w, "close", lambda: None):
+            w.quit()
+        self.assertEqual(order, ["ledger", "quit"],
+                         "会话账本必须先于 Qt 的退出调用落盘")
+
+    def test_update_handoff_quit_does_not_replace_its_terminal_phase(self):
+        """OTA 已登记交接后，退出不得覆写为 clean_exit。"""
+        w = self.win
+        session = mock.Mock(spec=m.RuntimeSessionLedger)
+        session.current.return_value = {"phase": m.PHASE_UPDATE_HANDOFF}
+        vars(w)["_runtime_session"] = session
+        vars(w)["_runtime_session_id"] = "a" * 32
+        with patch.object(m.QApplication, "quit"), \
+                patch.object(w, "close", lambda: None):
+            w.quit()
+        session.mark_clean_exit.assert_not_called()
 
     def test_single_implementation_in_source(self):
         """源码里 _wake.set() / join(timeout=1.5) 只能各出现一处。"""
