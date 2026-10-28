@@ -5,12 +5,12 @@
 # 安装：git init 后运行 ./git-hooks/install-hooks.sh 即可启用。
 set -euo pipefail
 
-# 优先使用工程内 .venv（Python 3.14.7）解释器，避免误用系统 3.9 导致导入失败。
+# 优先使用工程内 .venv（Python 3.14.10）解释器，避免误用系统 3.9 导致导入失败。
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 VENV_PY="$REPO_ROOT/.venv/bin/python3"
 if [ ! -x "$VENV_PY" ]; then
   echo "!! [pre-commit] 未找到工程内虚拟环境解释器：.venv/bin/python3" >&2
-  echo "!! [pre-commit] 请先重建 .venv（Python 3.14.7），依赖见 requirements.txt 头部注释" >&2
+  echo "!! [pre-commit] 请先重建 .venv（Python 3.14.10），依赖见 requirements.txt 头部注释" >&2
   exit 1
 fi
 PY="$VENV_PY"

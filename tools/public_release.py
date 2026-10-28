@@ -32,7 +32,9 @@ DOCS = ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md", "docs/INSTALL.md",
 CREDENTIALS = re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
                          rb"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 PERSONAL_MAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@(?:qq|foxmail|gmail|icloud|outlook|hotmail)\.com")
-PHONE = re.compile(rb"(?<![0-9.,eE+\-])1[3-9][0-9]{9}(?![0-9.,a-fA-F])")
+# 前后两侧都排除十六进制字母：锁文件里的 sha256 哈希是随机十六进制串，其中任意一段 11 位数字
+# 都可能恰好以 13~19 开头。原先只在后面排除，哈希里“字母 + 13xxxxxxxxx + 空格”会被误判成手机号。
+PHONE = re.compile(rb"(?<![0-9.,a-fA-F+\-])1[3-9][0-9]{9}(?![0-9.,a-fA-F])")
 NUMERIC_CONTACT = re.compile(
     r"(?i)(?:qq|phone|mobile|personal[_ -]?id|电话|手机|旧号码|个人号码)"
     r"[\s:=\"']*([0-9]{5,12})(?![0-9])".encode())

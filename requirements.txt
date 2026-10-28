@@ -22,16 +22,16 @@ pyobjc-framework-AVFoundation==12.2.2
 pyobjc-framework-CoreMedia==12.2.2
 pyobjc-framework-CoreAudio==12.2.2
 # 测试覆盖率门禁（本地与 CI 共用）
-coverage==7.16.1
+coverage==7.17.0
 # 第一道防线：静态检查闸门 tools/static_gate.py（本地钩子与 CI 共用，需精确锁定；
 # 版本一升，mypy 的推断结论可能变化并让 B 级基线整体漂移 —— 升版本时同步跑
 # `python tools/static_gate.py --update` 复核差值，不要盲目提交新基线）
-ruff==0.16.8
-mypy==2.3.1
+ruff==0.17.3
+mypy==2.4.0
 # 打包仅需（构建机）
-pyinstaller==6.22.2
+pyinstaller==6.22.3
 macholib==1.16.4
-# 构建/安装工具链：84.1.0 修复 GHSA-xmj3-9gf7-h52w 的 Windows legacy wheel 路径越界写入。
-setuptools==84.1.0
+# 构建/安装工具链：setuptools 84.1.0 起已修复 GHSA-xmj3-9gf7-h52w（Windows legacy wheel 路径越界写入），当前锁定 84.2.1。
+setuptools==84.2.1
 # 自动更新清单的 Ed25519 验签（私钥仅保存在本机 .private_tools/，绝不随应用发布）
 PyNaCl==1.6.2

@@ -1,0 +1,165 @@
+"""一次性离屏渲染：虚构标的“示例股份 000000”的小窗静态图。
+走势由固定种子合成（路标 + 余弦插值 + 带均值回复的噪声），不取自、也不对应任何真实行情。
+只读产品代码；HOME/日志/网络全部隔离，前后对 Application Support 做 (mtime,size) 快照对比。"""
+import hashlib, json, math, os, random, sys, tempfile, types, datetime, time as _rt
+from pathlib import Path
+
+REAL_SUPPORT = Path.home() / "Library/Application Support/StockFloatTargetPrice"
+ROOT = sys.argv[1]
+OUT = sys.argv[2]
+# 可选第三个参数：放着 NotoSansCJKsc-*.otf（SIL OFL 1.1）的目录。给了就用它画中文，
+# 不给就沿用产品默认的系统中文字体。公开页面的素材用前者，见 ASSETS.md。
+FONT_DIR = sys.argv[3] if len(sys.argv) > 3 else None
+OPEN_CJK_FAMILY = "Noto Sans CJK SC"
+SCALE = 3
+
+
+def snapshot():
+    if not REAL_SUPPORT.exists():
+        return "absent"
+    h = hashlib.sha256()
+    for p in sorted(REAL_SUPPORT.rglob("*")):
+        if p.is_file():
+            st = p.stat()
+            h.update(f"{p.relative_to(REAL_SUPPORT)}|{st.st_mtime_ns}|{st.st_size}\n".encode())
+    return h.hexdigest()
+
+
+before = snapshot()
+TMP = tempfile.mkdtemp(prefix="sk-hero-")
+os.environ.update({"QT_QPA_PLATFORM": "offscreen", "HOME": TMP, "SF_LOG_PATH": TMP + "/debug.log",
+                   "SF_UNIVERSE_DISABLE": "1", "SF_REJECT_NETWORK": "1", "SF_TEST_REJECT_NETWORK": "1"})
+sys.path.insert(0, ROOT)
+from unittest import mock
+from PyQt6.QtGui import QImage, QColor
+from PyQt6.QtWidgets import QApplication
+import sf_quote, sf_ui_render as R
+import stock_float_window as m
+
+# ---- 合成一天的分钟线（09:30-11:30、13:00-14:20），上午冲高回踩、午后再创新高 ----
+PRE = 100.00
+rng = random.Random(20261027)
+
+
+def minutes(a, b):
+    out, t = [], a
+    while t <= b:
+        out.append(t)
+        t += 1
+        if t % 100 == 60:
+            t += 40
+    return out
+
+
+slots = [f"{t:04d}" for t in minutes(930, 1130)] + [f"{t:04d}" for t in minutes(1300, 1420)]
+N = len(slots)
+# 路标：(分钟序号占比, 相对昨收涨幅%)
+marks = [(0.00, 0.35), (0.06, 1.05), (0.16, 1.80), (0.27, 1.15), (0.36, 0.85), (0.46, 1.40), (0.52, 1.55),
+         (0.60, 2.10), (0.70, 2.65), (0.80, 2.30), (0.90, 3.05), (1.00, 3.38)]
+
+
+def base(x):
+    for (x0, y0), (x1, y1) in zip(marks, marks[1:]):
+        if x0 <= x <= x1:
+            u = (x - x0) / (x1 - x0)
+            return y0 + (y1 - y0) * (1 - math.cos(math.pi * u)) / 2
+    return marks[-1][1]
+
+
+closes, noise = [], 0.0
+for i in range(N):
+    x = i / (N - 1)
+    vol = 0.045 * (1 + 0.9 * (1 - math.sin(math.pi * x)))        # 开盘、尾盘波动更大
+    noise = 0.55 * noise + rng.gauss(0, vol)
+    closes.append(round(PRE * (1 + (base(x) + noise) / 100), 2))
+closes[-1] = round(PRE * (1 + marks[-1][1] / 100), 2)
+weights = [1.0 + 1.6 * (1 - math.sin(math.pi * i / (N - 1))) * rng.uniform(0.6, 1.4) for i in range(N)]
+avg, cw, cv = [], 0.0, 0.0
+for c, w in zip(closes, weights):
+    cw += w
+    cv += c * w
+    avg.append(round(cv / cw, 2))
+pts = [(t, c, a) for t, c, a in zip(slots, closes, avg)]
+price = closes[-1]
+print("points", N, "| first/last", closes[0], price, "| high/low", max(closes), min(closes))
+
+vt = {"now": 0.0}
+proxy = types.SimpleNamespace(**{k: getattr(_rt, k) for k in dir(_rt) if not k.startswith("__")})
+proxy.monotonic = lambda: vt["now"]
+app = QApplication.instance() or QApplication([])
+R.load_bundled_fonts()
+if FONT_DIR:
+    from PyQt6.QtGui import QFont, QFontDatabase, QFontInfo
+    registered = set()
+    for otf in sorted(Path(FONT_DIR).glob("NotoSansCJKsc-*.otf")):
+        fid = QFontDatabase.addApplicationFont(str(otf))
+        if fid < 0:
+            sys.exit("字体注册失败：%s" % otf)
+        registered.update(QFontDatabase.applicationFontFamilies(fid))
+    if OPEN_CJK_FAMILY not in registered:
+        sys.exit("没有注册到 %s，只有 %s" % (OPEN_CJK_FAMILY, sorted(registered)))
+    # 产品代码里小窗的中文全走这个模块级名字，改指向即可，不改产品文件。
+    R.FONT = OPEN_CJK_FAMILY
+    # 注册成功不等于画的时候真用上：逐个字重问 Qt 实际会解析成哪个族，落到别的字体就中止。
+    for weight in (QFont.Weight.Light, QFont.Weight.Normal, QFont.Weight.Medium, QFont.Weight.Bold):
+        got = QFontInfo(QFont(OPEN_CJK_FAMILY, 9, weight)).family()
+        if OPEN_CJK_FAMILY not in got:
+            sys.exit("字重 %s 解析成了 %s，不是 %s" % (weight, got, OPEN_CJK_FAMILY))
+    print("中文字体:", OPEN_CJK_FAMILY, "已注册", len(registered), "个族名")
+NOW = datetime.datetime(2026, 10, 27, 14, 20, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+patches = [
+    mock.patch.object(m, "load_config", return_value=("sz000000", 100, 100, 224, "translucent")),
+    mock.patch.object(m, "save_config", lambda *a, **k: True),
+    mock.patch.object(sf_quote, "http_get", lambda *a, **k: ""),
+    mock.patch.object(m, "start_icon_worker", lambda: None),
+    mock.patch.object(m.FloatWindow, "_force_top", lambda self: None),
+    mock.patch.object(m.FloatWindow, "_inject_glass", lambda self: None),
+    mock.patch.object(m.FloatWindow, "_setup_reopen_handler", lambda self: None),
+    mock.patch.object(m.FloatWindow, "raise_", lambda self: None),
+    mock.patch.object(m.FloatWindow, "activateWindow", lambda self: None),
+    mock.patch.object(m.FloatWindow, "_quote_loop_wrapper", lambda self: None),
+    mock.patch.object(m.FloatWindow, "_minute_loop_wrapper", lambda self: None),
+    mock.patch.object(R, "time", proxy),
+]
+for mod in (sf_quote, m, R, sys.modules.get("sf_scheduler")):
+    if mod is not None and hasattr(mod, "_beijing_now"):
+        patches.append(mock.patch.object(mod, "_beijing_now", return_value=NOW))
+for p in patches:
+    p.start()
+try:
+    win = m.FloatWindow()
+    win.running = False
+    win._wake.set(); win._resched.set()
+    for t in (win.timer, win.top_timer, win._anim_timer, win._flash_timer, win._flash_drop_timer,
+              win._rainbow_timer, win._session_timer):
+        t.stop()
+    win._chart_expanded = True
+    win._last_ok_time, win._net_ok, win._pct_unknown = "14:20:30", True, False
+    win.resize(win.width(), win._height_expanded())
+    app.processEvents()
+    W, H = win.width(), win.height()
+    ps = [p[1] for p in pts]
+    win.quote = {"name": "示例股份", "code": "000000", "price": "%.2f" % price,
+                 "pct": "%.2f" % ((price / PRE - 1) * 100), "change": "%.2f" % (price - PRE),
+                 "pre_close": "%.2f" % PRE, "high": "%.2f" % max(ps), "low": "%.2f" % min(ps),
+                 "volume": "1000", "limit_up": "%.2f" % (PRE * 1.1), "limit_down": "%.2f" % (PRE * 0.9)}
+    win._disp_price, win._disp_pct = price, (price / PRE - 1) * 100
+    win.minute_points = sf_quote.MinutePoints(pts, day="2026-10-27")
+    win._line_ver += 1
+    app.processEvents()
+    img = QImage(W * SCALE, H * SCALE, QImage.Format.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(SCALE)
+    img.fill(QColor(0, 0, 0, 0))
+    win.render(img)
+    os.makedirs(OUT, exist_ok=True)
+    ok_png = img.save(OUT + "/hero-window.png", "PNG")
+    ok_webp = img.save(OUT + "/hero-window.webp", "WEBP", 92)
+    print("window", W, "x", H, "| ratio %.4f" % (W / H), "| png", ok_png, "| webp", ok_webp, "| img", img.width(), "x", img.height())
+    win._exit_persisted = True
+    win.close()
+finally:
+    for p in patches:
+        p.stop()
+after = snapshot()
+print("用户真实数据目录:", "未改动" if before == after else "!! 发生变化 !!")
+sys.exit(0 if before == after else 3)

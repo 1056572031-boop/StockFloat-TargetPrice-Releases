@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -121,18 +122,96 @@ for (let attempt = 0; attempt < 6 && !liveOk; attempt += 1) {
     const healthBody = await healthResponse.json().catch(() => ({}));
     const buttonCount = (pageBody.match(/href="\/download\?/g) || []).length;
     const csp = pageResponse.headers.get("content-security-policy") || "";
-    const probe = await fetch(
-      `${base}/download?version=${encodeURIComponent(version)}&asset=${encodeURIComponent(`Skyrocket-V${version}.dmg`)}`,
-      { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(10000) },
-    );
-    const location = probe.headers.get("location") || "";
+    // script-src 必须恰好是 'self'：子串匹配拦不住有人追加 'unsafe-inline'（读回演练实测漏过）。
+    const scriptSrc = (csp.match(/(?:^|;)\s*script-src([^;]*)/) || [])[1]?.trim();
+    const cspOk = csp.includes("img-src 'self' data:") && csp.includes("media-src 'self'") && scriptSrc === "'self'";
+    // 素材地址从线上页面里读出来（带 ?v=内容哈希），而不是自己拼：拼出来的地址即使能取到，
+    // 也证明不了页面里写的那个地址能取到。每个素材还要满足：长缓存头在、内容哈希与地址里的一致。
+    const assetNames = ["landing.css", "landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "file-pdf.png", "file-dmg.png", "file-zip.png",
+      "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-2-alert.webp", "scene-3-fullscreen.webp", "scene-4-hide.webp"];
+    const referenced = new Map();
+    for (const match of pageBody.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=([0-9a-f]{10})/g)) referenced.set(match[1], match[2]);
+    const assets = await Promise.all(assetNames.map(async name => {
+      const stamp = referenced.get(name);
+      if (!stamp) return { name, status: 0, bytes: 0, type: "", cache: "", hashOk: false };
+      const response = await fetch(`${base}/assets/${name}?v=${stamp}`, { signal: AbortSignal.timeout(10000), headers: { "cache-control": "no-cache" } });
+      const body = Buffer.from(await response.arrayBuffer());
+      // 样式表里的 url(...) 在构建时被改写后才算指纹，所以对样式表也是"取回来的内容哈希 = 地址里的指纹"。
+      const hashOk = createHash("sha256").update(body).digest("hex").slice(0, 10) === stamp;
+      return { name, status: response.status, bytes: body.byteLength, type: response.headers.get("content-type") || "",
+        cache: response.headers.get("cache-control") || "", hashOk, stamp, body: /\.(?:webm|mov|mp4)$/i.test(name) ? body : null };
+    }));
+    // 视频必须支持分段请求：Safari 播 <video> 依赖 206，Pages 的静态层不支持，漏掉就是 Worker 没接管视频。
+    // 头两个字节、最后一个字节都和整份文件逐字节对拍，不只看状态码。
+    const rangeChecks = await Promise.all(assets.filter(asset => asset.body).map(async asset => {
+      const url = `${base}/assets/${asset.name}?v=${asset.stamp}`;
+      const ask = async range => {
+        const response = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { range, "cache-control": "no-cache" } });
+        return { response, body: Buffer.from(await response.arrayBuffer()) };
+      };
+      const last = asset.bytes - 1;
+      const head = await ask("bytes=0-1");
+      const tail = await ask(`bytes=${last}-`);
+      const ok = head.response.status === 206 && head.response.headers.get("content-range") === `bytes 0-1/${asset.bytes}`
+        && head.response.headers.get("accept-ranges") === "bytes" && head.body.equals(asset.body.subarray(0, 2))
+        && tail.response.status === 206 && tail.response.headers.get("content-range") === `bytes ${last}-${last}/${asset.bytes}`
+        && tail.body.equals(asset.body.subarray(last));
+      return { name: asset.name, ok, head: head.response.status, tail: tail.response.status };
+    }));
+    const rangeOk = rangeChecks.length >= 2 && rangeChecks.every(check => check.ok);
+    const stylesheet = await (await fetch(`${base}/assets/landing.css?v=${referenced.get("landing.css")}`, { signal: AbortSignal.timeout(10000) })).text().catch(() => "");
+    const cssRefsOk = !/url\(\/assets\/[A-Za-z0-9._-]+\)/.test(stylesheet) && /url\(\/assets\/app-icon\.png\?v=[0-9a-f]{10}\)/.test(stylesheet);
+    const expectedTypes = { "landing.css": "text/css", "landing.js": "javascript", "atmo.svg": "image/svg+xml",
+      "app-icon.png": "image/png", "installer-icon.png": "image/png", "file-pdf.png": "image/png", "file-dmg.png": "image/png", "file-zip.png": "image/png",
+      "hero-replay-poster.webp": "image/webp", "hero-replay-60fps.webm": "video/webm", "hero-replay-60fps-hevc.mov": "video/quicktime",
+      "scene-1-switch.webp": "image/webp", "scene-2-alert.webp": "image/webp", "scene-3-fullscreen.webp": "image/webp", "scene-4-hide.webp": "image/webp" };
+    const assetsOk = cssRefsOk && assets.every(asset => asset.status === 200 && asset.bytes > 0 && asset.type.includes(expectedTypes[asset.name])
+      && /immutable/.test(asset.cache) && /max-age=\d{7,}/.test(asset.cache) && asset.hashOk);
+    const privacyResponse = await fetch(base + "/privacy", { signal: AbortSignal.timeout(10000), headers: { "cache-control": "no-cache" } });
+    const privacyBody = await privacyResponse.text();
+    // 打开首页与说明页都不许下发 cookie：访客编号只在点下载时才写。
+    const noCookieOnOpen = !pageResponse.headers.get("set-cookie") && !privacyResponse.headers.get("set-cookie");
+    // 隔离类响应头也要读回：Worker 漏发这些头，页面照样 200，只是少了一层防护。
+    const has = (response, name, pattern) => pattern.test(response.headers.get(name) || "");
+    const headersOk = [pageResponse, privacyResponse, healthResponse].every(response =>
+      has(response, "permissions-policy", /camera=\(\)/) && has(response, "cross-origin-opener-policy", /^same-origin$/)
+      && has(response, "cross-origin-resource-policy", /^same-origin$/) && has(response, "strict-transport-security", /max-age=\d{7,}/)
+      && has(response, "x-content-type-options", /^nosniff$/))
+      && has(pageResponse, "cache-control", /^public, max-age=60, s-maxage=300, stale-while-revalidate=60$/)
+      && has(privacyResponse, "cache-control", /^no-cache$/) && has(healthResponse, "cache-control", /^no-store$/);
+    const downloadAssets = [
+      `Skyrocket-V${version}.dmg`,
+      `Skyrocket-${version}-macos.zip`,
+      `Skyrocket-${version}-source.zip`,
+      `Skyrocket-${version}-SHA256SUMS.txt`,
+    ];
+    // 逐项验证页面入口和官方发布入口，但一律 HEAD + manual redirect，绝不下载 27 MB DMG。
+    // 先查 Pages 的 302，再查 GitHub 是否把同一资产交给临时签名的 release-assets 地址。
+    const downloadChecks = await Promise.all(downloadAssets.map(async asset => {
+      const entry = await fetch(`${base}/download?version=${encodeURIComponent(version)}&asset=${encodeURIComponent(asset)}`, {
+        method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(10000),
+      });
+      const target = entry.headers.get("location") || "";
+      if (entry.status !== 302 || target !== `https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/%E7%89%88%E6%9C%AC%E6%9B%B4%E6%96%B0/${encodeURIComponent(asset)}`) {
+        return { asset, entry: entry.status, github: 0, ok: false };
+      }
+      const github = await fetch(target, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(10000) });
+      const signed = github.headers.get("location") || "";
+      return { asset, entry: entry.status, github: github.status,
+        ok: github.status === 302 && /^https:\/\/release-assets\.githubusercontent\.com\//.test(signed) };
+    }));
+    const downloadsOk = downloadChecks.every(check => check.ok);
+    const expectedDmg = `Skyrocket-V${version}.dmg`;
     liveOk = pageResponse.ok && healthResponse.ok && healthBody.database === true
-      && healthBody.build_version === version && pageBody.includes("下载 macOS 版")
-      && pageBody.includes('class="logo"') && pageBody.includes("下载 DMG")
-      && buttonCount >= 3 && probe.status === 302
-      && location.startsWith("https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/")
-      && csp.includes("img-src data:");
-    lastObservation = `page=${pageResponse.status} health=${healthResponse.status} database=${healthBody.database} build=${healthBody.build_version} buttons=${buttonCount} probe=${probe.status} location=${Boolean(location)} csp=${csp.includes("img-src data:")}`;
+      && healthBody.build_version === version && pageBody.includes("下载 Mac 版")
+      && pageBody.includes('class="logo"') && pageBody.includes("三步装好")
+      && pageBody.includes(expectedDmg) && pageBody.includes(`version=${version}`)
+      && pageBody.includes('data-dl href="/download?') && /<script defer src="\/assets\/landing\.js\?v=[0-9a-f]{10}"><\/script>/.test(pageBody)
+      && !pageBody.includes('href="#"') && !pageBody.includes("#started") && !pageBody.includes("__CURRENT_")
+      && buttonCount >= 3 && assetsOk && rangeOk && privacyResponse.ok && noCookieOnOpen && headersOk && downloadsOk
+      && privacyBody.includes("处理者") && privacyBody.includes("保存 30 天") && privacyBody.includes("同一浏览器在 60 秒内重复下载同一文件只记录一次")
+      && privacyBody.includes("自动访问不写入统计") && cspOk;
+    lastObservation = `page=${pageResponse.status} health=${healthResponse.status} database=${healthBody.database} build=${healthBody.build_version} buttons=${buttonCount} assets=${assets.map(a => `${a.name}:${a.status}/${a.bytes}`).join(",")} downloads=${downloadChecks.map(check => `${check.asset}:${check.entry}/${check.github}`).join(",")} ranges=${rangeChecks.map(c => `${c.name}:${c.head}/${c.tail}`).join(",")} csp=${cspOk}`;
   } catch (error) {
     lastObservation = error?.name || "unknown";
   }

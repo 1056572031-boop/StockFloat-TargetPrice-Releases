@@ -123,7 +123,7 @@ git check-ignore .venv .venv/
 ./.venv/bin/python -c 'import PyQt6'
 ```
 
-要求 Python 3.14.7，PyQt6 可导入；跟踪列表中不得出现 `.venv` 本体或内部文件。
+要求 Python 3.14.10，PyQt6 可导入；跟踪列表中不得出现 `.venv` 本体或内部文件。
 在 M1 固定来源 SHA 后执行 `git ls-tree -r "$SOURCE_SHA" -- .venv`，检查目录、文件及模式为
 `120000` 的链接。不能以主线当前未跟踪或被 ignore 为充分证据；来源跟踪路径若与本地 ignored
 环境/数据相撞，停止并先隔离，不让 Git 在合并时替换它们。

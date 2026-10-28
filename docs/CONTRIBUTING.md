@@ -2,7 +2,7 @@
 
 源码采用 GPL-3.0-only。请先阅读 README 的隐私与数据使用边界；修改软件不意味着取得行情供应商的授权。
 
-运行与回归均使用工程 `.venv`（Python 3.14.7），精确依赖见 `requirements.lock`。执行 `QT_QPA_PLATFORM=offscreen ./run_tests.sh`，全量回归通过后才可打包。
+运行与回归均使用工程 `.venv`（Python 3.14.10），精确依赖见 `requirements.lock`。执行 `QT_QPA_PLATFORM=offscreen ./run_tests.sh`，全量回归通过后才可打包。
 
 `StockFloat.spec` 是独立打包配置。可执行 `.venv/bin/python -m PyInstaller --noconfirm StockFloat.spec` 构建本地应用。正式发行另需维护者自己的更新签名密钥及 GitHub 权限，私钥不在公开源码中。
 

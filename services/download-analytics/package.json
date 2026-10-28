@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "../feedback-worker/node_modules/.bin/wrangler deploy --dry-run --config wrangler.jsonc --outdir /tmp/skyrocket-downloads-dryrun"
+    "check": "../feedback-worker/node_modules/.bin/wrangler deploy --dry-run --config wrangler.jsonc --outdir /tmp/skyrocket-downloads-dryrun",
+    "preview": "node pages-control.mjs preview",
+    "rollback": "node pages-control.mjs rollback"
   }
 }

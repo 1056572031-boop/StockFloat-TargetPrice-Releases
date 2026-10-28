@@ -68,10 +68,10 @@ Mac 桌面上的股票行情小窗口。查看价格、涨跌幅和分时图，�
 
 ## 从源码运行
 
-开发环境需要 Python 3.14.7，所有依赖在工程自己的 `.venv` 中安装，不使用系统 Python 跑回归。
+开发环境需要 Python 3.14.10，所有依赖在工程自己的 `.venv` 中安装，不使用系统 Python 跑回归。
 
 ```sh
-uv venv .venv --python 3.14.7
+uv venv .venv --python 3.14.10
 uv pip install --python .venv/bin/python --require-hashes -r requirements.lock
 .venv/bin/python stock_float_window.py
 QT_QPA_PLATFORM=offscreen ./run_tests.sh

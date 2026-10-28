@@ -24,7 +24,7 @@
 #   让 PyInstaller 每次都从空目录开始 —— 产品产物与回退包的清理一律不删除（锁记录等脚本私有控制文件除外），
 #   脚本可无人值守跑完。
 #
-# 依赖：工程内 .venv（Python 3.14.7 + PyQt6 + PyInstaller），脚本自动使用。
+# 依赖：工程内 .venv（Python 3.14.10 + PyQt6 + PyInstaller），脚本自动使用。
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "$0")" && pwd)"
@@ -154,7 +154,7 @@ DMG_NAME="$APP_NAME"
 DESKTOP_OUTPUT_DIR="$HOME/Desktop/Skyrocket"
 if [ ! -x "$VENV_PY" ]; then
   echo "!! 未找到工程内虚拟环境解释器：$VENV_PY" >&2
-  echo "!! 请先重建 .venv（Python 3.14.7），依赖见 requirements.txt" >&2
+  echo "!! 请先重建 .venv（Python 3.14.10），依赖见 requirements.txt" >&2
   exit 1
 fi
 

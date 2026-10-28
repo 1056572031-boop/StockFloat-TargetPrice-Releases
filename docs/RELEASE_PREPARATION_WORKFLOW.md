@@ -155,7 +155,7 @@ QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./.venv/bin/python3 tools/test_runne
 因为发布状态绑定 HEAD，不能在候选后补提交再沿用原状态。以下命令用于没有本轮有效完整关卡的情况：
 
 ```bash
-./.venv/bin/python3 --version     # 必须是 3.14.7
+./.venv/bin/python3 --version     # 必须是 3.14.10
 ./.venv/bin/python3 -c "import PyQt6"
 QT_QPA_PLATFORM=offscreen SF_RERUN_FAILED=0 ./run_tests.sh
 ./.venv/bin/python3 tools/gate_stamp.py check
@@ -225,9 +225,7 @@ SF_QUALITY_RECORD="<本轮质量记录绝对路径>" ./build_release.sh --prepar
   做法：用 `ditto` 把 `/Applications` 里当前已装的上一版复制到本轮证据目录的 `old/`，
   再 `codesign --verify --deep --strict` 并确认版本号不同于候选；升级和回退验收都用这一份。
 - 质量记录分两阶段，别一次性预填：
-  1. `--prepare-only` 之前只需要一份**结构有效**的记录：`quality_evidence.py init` 起草，填意图、范围、
-     验收条件、至少一条真实执行过的验证（命令与整数退出码），场景保持 `unverified`，
-     未验证项如实写在 `unverified_limitations`，随后 `validate`。不预填任何成功的 receipt。
+  1. `./.venv/bin/python3 tools/release_evidence.py pre-record --root <发布树> --version <当前版本> --baseline <基线 SHA> --limitations-file <限制 JSON>` 起草并绑定三条前置凭据；记录场景保持 `unverified`，不预填任何成功的 receipt。
   2. 候选生成后补真实凭据：用 `quality_evidence.py run <证据目录> --level N -- <命令>` 分别执行
      完整回归日志核对、冻结包冒烟、候选交付验收（`verify_candidate_delivery.py`，其 `--out` 是**文件路径**，
      传目录以前要到最后写报告才失败，升级与回退实际已跑完也不算过；现在工具在做任何事之前就拒绝，退出码 2）。
@@ -503,12 +501,12 @@ run/job，不重跑发布、不新推源码、不覆盖资产，也不反复下�
 2. 在自动化任务可接管屏幕、屏幕未锁定且客观前置条件满足时，运行
    `tools/post_release_click_walkthrough.py --out <新目录>`；结果里的六项动作必须全部通过，且 `user_data.ok=true`。它是冻结安装包的交互验收，不由冷启动冒充。
 3. 用 `quality_evidence.py run` 为“读回报告已验证”留一份执行凭据。
-4. 另建发布后质量记录：由发布前记录派生，换新的 `change_id`、`release_qualification.stage` 设为 `complete`，
+4. 另建发布后质量记录：先用 `./.venv/bin/python3 tools/release_evidence.py complete --root <发布树> --version <当前版本> --state <状态 JSON> --readback <读回报告> --walkthrough <走查 result.json> --limitations-file <限制 JSON>`，由发布前记录派生，换新的 `change_id`、`release_qualification.stage` 设为 `complete`，
    追加读回的验收条件和凭据，`scope` 加上它自己与 manifest 的文件名，**以及本轮会被归档的
    `outputs/release-candidates/vX.Y.Z/online-manifest.json`、`post_release.json` 与 `publish.log`**；否则后面
    `verify/qualify` 会把这些真实凭据报为“未申报改动”。写完 `verify_release_candidate` 自检。
    发布前记录保持冻结，不改写。
-5. `release_state.py complete --quality <发布后记录> --readback <读回报告> --walkthrough <走查result.json>`，成功后状态才是 `complete`。
+   发布后记录会由 `release_evidence.py complete` 同步调用状态收口；不要再次执行独立的 `release_state.py complete`，避免重复完成或覆盖。
 6. 用新的 `--out` 重新生成发布总报告并带上 `--quality` 与 `--readback`。脚本退出时自动生成的那份
    在读回之前，渠道栏会是“未验证”，属于预期，不手改。
 
@@ -640,14 +638,19 @@ release-preparation-vX.Y.Z/
 | 续做后合成能过验收的发布日志 | 自动（本次新增） | `release_resume.py compose` |
 | 分支落地：合并、快进、推送、清理 | 自动（本次新增） | `land_branch.py`，默认预演，推送和清理要单独开关 |
 | 证据归档、提交、推送、收树 | 半自动 | `release_wrapup.py archive/commit/push/retire`，每步单独调用 |
-| 候选取证（收据）与绑定质量记录 | **人催**（脚本在证据目录里，未入库、写死版本） | `run-receipts.sh`、`bind-record.py`，见下方候选 |
-| 发布后读回、走查、补发布后记录 | **人催**（顺序靠人记） | `release_readback.py`、`post_release_click_walkthrough.py`、`quality_evidence.py` |
+| 候选取证（收据）与绑定质量记录 | **自动** | `tools/release_evidence.py pre-record` / `bind`，按当前版本、源码指纹和质量记录自动选择唯一有效凭据 |
+| 发布后读回、走查、补发布后记录 | **自动** | `tools/release_evidence.py wait-ci` / `complete`；CI 未完成只等待对应 run，读回和走查结果按新路径绑定 |
 | 装机版真点击走查 | **自动触发，客观前提不满足则退2** | 接管鼠标；屏幕未锁定、显示器未休眠、辅助功能已授权、正式版未运行且产物存在 |
 | 是否发布、是否推送、是否删远端分支 | **必须人决定** | 不可逆或对外动作，授权不能由工具代替 |
 
-下一批值得做、但还没做的：把候选取证与绑定（`run-receipts.sh`、`bind-record.py`、`bind-complete.py`）提成按版本
-参数化、入库、带测试的工具；把“读回、走查、补记录、归档”串成一条带状态文件的流水线（走查已不需要人点头，但屏幕与权限前提不满足时仍会停在退 2）。
-这两件的难点都在记录里的场景说明与限制文字是每版手写的，需要先定一份可复用的模板，不能硬编码进脚本。
+`tools/release_evidence.py` 已把候选取证、绑定、发布后补记录和公开 CI 等待做成入库、按当前 `APP_VERSION` 运行、带测试的工具。
+场景限制文字每版不同，必须用 `--limitations-file` 传入，文件含 `pre`、`bound`、`complete` 三个非空字符串数组；工具不替人编写限制，
+也不接受缺失、空数组或空字符串。它只负责凭据选择、记录绑定、manifest、verify、qualify 和发布状态收口；安装、OTA 上传、源码推送、
+删除远端分支仍由发布流程的显式授权控制，工具不会替它们授权。
+
+仍未串成单一状态机的只有“读回、走查、归档、提交、推送、收树”的外层顺序：现在由 `release_evidence.py`、
+`release_readback.py`、`post_release_click_walkthrough.py` 和 `release_wrapup.py` 分段完成，屏幕或权限前提不满足时走查仍退出码 2，
+不算通过。以后发布默认按本节顺序自动执行，不再等待口头催促。
 
 ## 五、历史经验固化为规则
 
@@ -761,6 +764,12 @@ release-preparation-vX.Y.Z/
     场景观测里的 `artifact_sha256` 要等于 `artifact_token(dist/Skyrocket.app)`，别手填。
   - **收树前先把树外没有的原件搬走**：发布树的 `build/` 被 git 忽略，`retire` 不检查它。读回报告、点击走查结果、
     候选关卡截图和候选阶段的执行凭据，要先复制到发布树之外的证据目录再收树。
+
+- v1.4.107 的执行经验（2026-10-27 实跑，下列各条都在这一轮撞到过）：
+  - **候选之后改发布说明必须退役并重建候选**：第一版候选已经通过构建和交付核验后，才根据已装旧助手的真实内容补充“可能需要手动安装一次”的用户提醒；说明、包内 README/INSTALL 和发布指纹都属于候选输入，不能只改文本继续复用旧候选。做法是把旧 `dist/`、DMG、OTA 资产、质量凭据和状态文件移到带提交号的 `build/_retired-candidate-*`，重建质量记录、完整走关卡、再跑 `--prepare-only`。
+  - **公开 CI 尚未完成不是失败**：独立读回第一次发现公开 `ci` 运行仍是 `in_progress`，报告如实记为未通过并保留；只等待对应 run，不重跑发布、不重复上传或反复下载。待两个 job 都 success 后，用新的 `--out` 路径重做读回，最终七个渠道全部通过。
+  - **旧版自动更新助手的修复不能反向救已装旧版**：1.4.106 的真实助手仍在正式路径使用裸 `open`，新版只能从 `SF_UPDATE_HANDOFF` 环境变量取交接令牌；因此从 1.4.106 及更早版本自动更新到 1.4.107 的限制要同时写入本版用户说明与质量记录，不能把候选包里新助手的升级/回退通过误写成已装旧版也已修复。用户需要手动安装一次的结论来自代码路径，仍需明确标为未在用户机器上验证。
+  - **发布树收口前要复制被忽略的全部证据**：`retire` 只检查受版本控制的文件，`build/` 里的候选截图、读回报告、走查结果、两轮发布记录和执行凭据不会自动跟着树走；本轮先复制到树外证据目录，再预演收树。发布树和分支随后保留，等下一次明确收拾时再移废纸篓，不在发布已完成后额外扩大不可逆动作。
 
 ## 六、主树被占用时的独立发布树
 

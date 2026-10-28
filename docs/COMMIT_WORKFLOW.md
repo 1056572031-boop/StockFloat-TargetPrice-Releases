@@ -247,7 +247,7 @@ git rev-parse --path-format=absolute --git-path hooks/pre-commit
 ./git-hooks/install-hooks.sh
 ```
 
-要求工程 Python 3.14.7、PyQt6 可导入。未配置 `core.hooksPath` 时查询返回 1 是正常配置结果。
+要求工程 Python 3.14.10、PyQt6 可导入。未配置 `core.hooksPath` 时查询返回 1 是正常配置结果。
 这些入口参考命令按需执行：只读预检已核对当前实际 hook 的路径、内容与可执行性时，
 本轮无需再运行安装脚本；只有缺失或需要协调更新时才转安装流程，不为核验重复执行 chmod。
 安装工具只核验/安装实际 hook，不执行测试；遇不同内容的已有 hook 必须停止，先审查、获准备份

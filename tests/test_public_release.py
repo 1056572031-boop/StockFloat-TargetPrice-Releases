@@ -411,6 +411,23 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
             with self.subTest(value=value):
                 self.assertEqual(public.privacy_problems(value, "unused"), [])
 
+    def test_phone_check_ignores_digit_runs_inside_hex_digests_but_not_real_numbers(self):
+        # 锁文件里的 sha256 是随机十六进制串，其中一段 11 位数字可能恰好以 13~19 开头，前后都紧贴十六进制字符。
+        # 2026-10-28 工具链升级后的 requirements.lock 就这样被误判成手机号，公开导出因此被拦。
+        phone = b"138" + b"00138000"
+        # 样本取真实误报的形状：哈希里“非 e/E 的十六进制字母 + 11 位数字 + 空格或换行”（数字在前或十六进制字母在后，旧规则本来就放行）。
+        digests = (b"--hash=sha256:6f868af552c0ceb2d19220b8cbcc2be096ca26163ac30e682a" + phone + b" \\\n",
+                   b"--hash=sha256:c2c48a36bd" + phone + b"\n",
+                   b"--hash=sha256:" + b"f" + phone + b" ")
+        for value in digests:
+            with self.subTest(value=value):
+                self.assertEqual(public.privacy_problems(value, "unused"), [])
+        # 真正的号码照样拦：独立出现、被标点或常见文字包住都算。
+        for value in (phone, b"phone=" + phone, b"tel: " + phone, b"(" + phone + b")",
+                      "联系".encode() + phone + "。".encode()):
+            with self.subTest(value=value):
+                self.assertTrue(public.privacy_problems(value, "unused"))
+
     def test_phone_shaped_github_owner_is_exempt_only_in_namespace(self):
         owner = b"138" + b"00138000" + b"-maintainer"
         repo = owner.decode() + "/release"

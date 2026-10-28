@@ -5,11 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# 优先使用工程内 .venv（Python 3.14.7）解释器，避免误用系统解释器。
+# 优先使用工程内 .venv（Python 3.14.10）解释器，避免误用系统解释器。
 VENV_PY="$(pwd)/.venv/bin/python3"
 if [ ! -x "$VENV_PY" ]; then
   echo "!! 未找到工程内虚拟环境解释器：.venv/bin/python3" >&2
-  echo "!! 请先重建 .venv（Python 3.14.7），依赖见 requirements.txt，安装用 uv pip install：" >&2
+  echo "!! 请先重建 .venv（Python 3.14.10），依赖见 requirements.txt，安装用 uv pip install：" >&2
   echo "!!   python3 -m pip install -r requirements.txt" >&2
   exit 1
 fi

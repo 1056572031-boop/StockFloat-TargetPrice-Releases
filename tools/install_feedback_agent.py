@@ -120,8 +120,8 @@ def main():
     if args.replace and not args.activate:
         parser.error("--replace needs --activate")
     os.umask(0o077)
-    if sys.version_info[:3] != (3, 14, 7):
-        parser.error("use the project Python 3.14.7")
+    if sys.version_info[:3] != (3, 14, 10):
+        parser.error("use the project Python 3.14.10")
     print(json.dumps(install(args.destination, args.gh, activate=args.activate, replace=args.replace),
                      ensure_ascii=False))
 

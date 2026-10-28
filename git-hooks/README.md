@@ -6,7 +6,7 @@
 
 - 一键跑通 `tests/` 下全部单元/回归测试，实际数量和条件跳过以本轮日志为准。
 - 已含 `set -euo pipefail`，任一用例失败即**非零退出码**，可阻断打包/发布流程。
-- 使用工程 `.venv`（Python 3.14.7 + PyQt6），不要用系统 Python 代替。
+- 使用工程 `.venv`（Python 3.14.10 + PyQt6），不要用系统 Python 代替。
 - 完整合并流程见 [`docs/BRANCH_MERGE_WORKFLOW.md`](../docs/BRANCH_MERGE_WORKFLOW.md)；
   回归通过不自动授权打包、安装或发布。
 
