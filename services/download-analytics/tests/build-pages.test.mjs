@@ -52,9 +52,11 @@ test("the build injects the version and the real DMG size, inlines the template 
     assert.ok(routes.exclude.length <= 80, "离平台 100 条上限要留余量");
     const { videoTypeFor } = await import(pathToFileURL(join(out, "_worker.js")).href);
     for (const video of videos) assert.ok(videoTypeFor(`/assets/${video}`), `${video} 的扩展名 Worker 不认识，会被当成普通素材放过去`);
-    for (const name of ["landing.css", "landing.js", "atmo.svg", "installer-icon.png", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "app-icon.png"]) {
+    for (const name of ["landing.css", "landing.js", "atmo.svg", "installer-icon.png", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp",
+      "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm", "app-icon.png"]) {
       assert.ok(existsSync(join(out, "assets", name)), `${name} 没有进产物`);
     }
+    assert.ok(videos.includes("scene-4-hide.mp4") && videos.includes("scene-4-hide.webm"), "第四张卖点图的两份视频要被当成视频（走 Worker 分段），不能被当成普通素材排除");
     assert.equal(readFileSync(join(out, "assets", "app-icon.png")).length, 900, "app-icon.png 来自导出程序的输出");
     assert.ok(existsSync(join(out, "_headers")));
   } finally {
@@ -71,11 +73,12 @@ test("every asset reference carries the content hash of the file it points to, a
     const worker = readFileSync(join(first.out, "_worker.js"), "utf8");
     const refs = [...worker.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=([0-9a-f]{10})/g)];
     const names = new Set(refs.map(match => match[1]));
-    for (const name of ["landing.css", "landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-4-hide.webp", "file-dmg.png"]) {
+    // landing.css 已内联进页面，页面不再引用它的地址（文件仍随产物发布，旧页面缓存里的引用不会 404）。
+    for (const name of ["landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm", "file-dmg.png"]) {
       assert.ok(names.has(name), `页面里对 ${name} 的引用必须带指纹`);
     }
     for (const [, name, hash] of refs) assert.equal(hash, sha(join(first.out, "assets", name)), `${name} 的指纹必须等于文件内容的哈希`);
-    assert.doesNotMatch(worker, /\/assets\/[A-Za-z0-9._-]+\.(?:css|js|svg|png|webp|webm|mov)(?!\?v=)/, "不能留下不带指纹的引用（含视频）");
+    assert.doesNotMatch(worker, /\/assets\/[A-Za-z0-9._-]+\.(?:css|js|svg|png|webp|webm|mov|mp4)(?!\?v=)/, "不能留下不带指纹的引用（含视频）");
     // 样式表自己引用的应用图标也要带指纹，并且样式表的指纹是改写之后的内容算出来的。
     const css = readFileSync(join(first.out, "assets", "landing.css"), "utf8");
     assert.match(css, new RegExp(`url\\(/assets/app-icon\\.png\\?v=${sha(join(first.out, "assets", "app-icon.png"))}\\)`));
@@ -88,6 +91,63 @@ test("every asset reference carries the content hash of the file it points to, a
   } finally {
     rmSync(first.work, { recursive: true, force: true });
     rmSync(second.work, { recursive: true, force: true });
+  }
+});
+
+test("the stylesheet is inlined into the built page and the landing policy allows exactly that one style by hash", async () => {
+  const built = build({ SF_DMG_PATH: "/nonexistent/Skyrocket-V9.8.7.dmg", HOME: mkdtempSync(join(tmpdir(), "dl-home-")) });
+  try {
+    const mod = await import(pathToFileURL(join(built.out, "_worker.js")).href);
+    const page = mod.page("9.8.7", null);
+    assert.doesNotMatch(page, /rel="stylesheet"/, "首次绘制不用再等一次样式表往返");
+    const styles = [...page.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(match => match[1]);
+    assert.equal(styles.length, 1, "页面上恰好一段内联样式");
+    const shipped = readFileSync(join(built.out, "assets", "landing.css"), "utf8");
+    assert.equal(styles[0], shipped, "内联的就是发布的那份（带指纹引用的）样式表，逐字相同");
+    assert.doesNotMatch(styles[0], /url\(\/assets\/[A-Za-z0-9._-]+\)/, "内联样式里的素材引用同样带指纹");
+    const hash = "sha256-" + createHash("sha256").update(styles[0], "utf8").digest("base64");
+    const csp = mod.landingCsp();
+    const styleSrc = csp.match(/style-src([^;]*)/)[1].trim();
+    assert.equal(styleSrc, `'self' '${hash}'`, "策略只认同源和这一段内联样式的哈希");
+    assert.doesNotMatch(csp, /unsafe-inline/, "没有 'unsafe-inline'：别的内联样式一律被浏览器拒绝");
+    assert.match(csp, /script-src 'self';/, "脚本仍然只许同源");
+    // Cloudflare 的 Worker 模块只接受函数（和默认处理器）作为导出：导出字符串常量，运行时会拒绝启动，整站不可用，
+    // 而 node 里直接 import 看不出来。2026-10-28 本地用 wrangler 实跑时撞上过一次。
+    for (const [name, value] of Object.entries(mod)) {
+      if (name === "default") continue;
+      assert.equal(typeof value, "function", `具名导出 ${name} 必须是函数，否则 Cloudflare 运行时无法启动 Worker`);
+    }
+    // 预加载仍排在样式之前，封面图在解析 HTML 时就开始拉。
+    const head = page.slice(0, page.indexOf("</head>"));
+    assert.ok(head.indexOf('rel="preload"') < head.indexOf("<style>"));
+    // 发布的 landing.css 也在路由排除名单里（静态文件，不走 Worker）。
+    const routes = JSON.parse(readFileSync(join(built.out, "_routes.json"), "utf8"));
+    assert.ok(routes.exclude.includes("/assets/landing.css"));
+    // 占位符必须被替换：留着就会让首页策略退回只许同源，内联样式整段被拒。
+    assert.doesNotMatch(readFileSync(join(built.out, "_worker.js"), "utf8"), /"__LANDING_STYLE_HASH__"/);
+  } finally {
+    rmSync(built.work, { recursive: true, force: true });
+  }
+});
+
+test("a stylesheet that could break out of the inline tag fails the build", () => {
+  const work = mkdtempSync(join(tmpdir(), "dl-style-test-"));
+  try {
+    const copy = join(work, "services", "download-analytics");
+    mkdirSync(copy, { recursive: true });
+    cpSync(serviceDir, copy, { recursive: true, filter: source => !/node_modules|dist|__pycache__/.test(source) });
+    writeFileSync(join(work, "sf_constants.py"), "APP_VERSION = '9.8.7'\n");
+    const cssPath = join(copy, "public/assets/landing.css");
+    writeFileSync(cssPath, readFileSync(cssPath, "utf8") + "\n</style><script>x</script>");
+    const python = join(work, "fake-python.sh");
+    writeFileSync(python, `#!/bin/sh\necho '{"light":"${Buffer.alloc(900, 7).toString("base64")}","size":128}'\n`);
+    chmodSync(python, 0o755);
+    assert.throws(() => execFileSync(process.execPath, ["build-pages.mjs"], {
+      cwd: copy, encoding: "utf8", stdio: "pipe",
+      env: { ...process.env, SF_PYTHON: python, SF_PAGES_OUT: join(work, "out"), SF_APP_VERSION: "9.8.7" },
+    }), /样式表里不能出现 <\/style/);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
   }
 });
 

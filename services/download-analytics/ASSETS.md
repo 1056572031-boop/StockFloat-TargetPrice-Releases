@@ -17,6 +17,8 @@
 
 上一版合规素材（虚构标的“示例股份 000000”首屏图、Unsplash 风光壁纸、HTML/CSS 自绘场景）在提交 `e79022a` 里，随时可以换回。`asset-sources/render-hero.py.txt` 仍是那张首屏图的渲染脚本。
 
+第四张场景图的动图版是用一组本地渲染脚本逐帧合成的（线上旧图去掉小窗后当底图，再叠玻璃、人物和小窗，运动模糊按位移自适应取子采样，管道直灌 ffmpeg 编码）。脚本里写着本机路径，所以只留在不进公开快照的 `outputs/` 里，没有放进本目录；要重做需要原壁纸、旧版线上图和本机的产品渲染环境。
+
 | 文件 | 来源 | 许可或授权状态 | 生成方式 |
 | --- | --- | --- | --- |
 | `landing.css` | 本项目自写 | GPLv3，随源码 | 手写 |
@@ -29,7 +31,27 @@
 | `scene-1-switch.webp` | 产品渲染的小窗 + 壁纸 12（见“壁纸来源”）+ 苹果菜单栏、程序坞玻璃底座；程序坞图标为 8 块自绘淡色纯色块（macOS 图标轮廓的圆角曲线）和 Skyrocket 的 `icon.png` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 第一张场景图：小窗浮在其他窗口上，2940×1912 |
 | `scene-2-alert.webp` | 同上，壁纸 08；程序坞图标同第一张（自绘淡色纯色块 + Skyrocket 的 `icon.png`）；通知横幅在系统玻璃上另垫一层 30% 不透明的黑色衬底（2026-10-28，提高文字对比度） | 未取得授权（苹果素材；真实行情走势）；壁纸见下表 | 第二张场景图：桌面右上角弹出到价提醒。横幅文字是白字，对着无文字的同一张衬底图量，标题行与副标题行最不利像素的对比度都是 7.6:1（垫衬底前 4.4:1）；横幅以外的像素没有改动，只有重新编码的压缩噪点 |
 | `scene-3-fullscreen.webp` | 产品真实右键菜单渲染 + 壁纸 13 当作全屏播放的画面（2.35:1，上下黑边）+ SF Symbols 控制条 | 未取得授权（苹果 SF Symbols；真实行情走势）；壁纸见下表 | 第三张场景图：全屏播放时小窗仍在画面上 |
-| `scene-4-hide.webp` | 产品渲染的小窗 + 壁纸 05 + 苹果菜单栏、程序坞玻璃底座；程序坞图标同第一张（自绘淡色纯色块 + Skyrocket 的 `icon.png`） | 未取得授权（苹果素材；真实行情走势）；壁纸见下表 | 第四张场景图：有人靠近时小窗收起 |
+| `scene-4-hide.webp` | 与视频同一条渲染管线出的静止帧（2.25 秒：路人入画、小窗缩向程序坞），壁纸 05 + 苹果菜单栏、程序坞玻璃底座；程序坞图标同第一张（自绘淡色纯色块 + Skyrocket 的 `icon.png`） | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 第四张场景图的静止版：系统开了“减少动态效果”时代替视频，无损渲染后编码为质量 90 的 webp，2940×1912 |
+| `scene-4-hide-poster.webp` | 同上，视频第 0 帧（只有主人一人，小窗在左侧空白处） | 未取得授权（同上） | 视频没开始播放时显示的封面，与视频起点一致；质量 88 的 webp |
+| `scene-4-hide.mp4` | 产品离屏渲染的小窗 + 壁纸 05 + 苹果菜单栏、程序坞玻璃底座 + 自绘的“摄像头视角”示意窗和人物剪影（不是任何真实软件界面，产品本身不显示摄像头画面）；小窗内是同一份占位名称“股票名称 / 038492”的真实行情走势 | 未取得授权（苹果素材；真实行情走势；苹方字体渲染的中文） | 第四张场景图的动图版：6.5 秒循环、60 帧/秒、2940×1912，HEVC（hvc1，faststart）给 Safari。2026-10-28 下载页加载优化时由原 crf15 成品降码率重编（libx265 slow crf20，5.7MB 降到 1.3MB，与原成品逐帧对比结构相似度 0.9925，帧数 390 不变），是高清屏用的大档；收起与放大的缩放曲线是为演示顺滑选的对称缓入缓出，不是产品里的真实曲线，速度也比真机慢（收起 0.55 秒、放大 0.60 秒，真机约 0.15 秒与 0.18 秒） |
+| `scene-4-hide.webm` | 同上 | 未取得授权（同上） | 同一画面的 VP9 版，给 Chrome、Firefox 等；2026-10-28 由原 crf22 成品降码率重编（libvpx-vp9 crf30，4.6MB 降到 1.7MB，结构相似度 0.9906，帧数 390 不变），是高清屏用的大档 |
+| `scene-1-switch-720.webp` | 同 `scene-1-switch.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 720 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-1-switch-1280.webp` | 同 `scene-1-switch.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 1280 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-1-switch-2100.webp` | 同 `scene-1-switch.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 2100 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-2-alert-720.webp` | 同 `scene-2-alert.webp` | 未取得授权（苹果素材；真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 720 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-2-alert-1280.webp` | 同 `scene-2-alert.webp` | 未取得授权（苹果素材；真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 1280 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-2-alert-2100.webp` | 同 `scene-2-alert.webp` | 未取得授权（苹果素材；真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 2100 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-3-fullscreen-720.webp` | 同 `scene-3-fullscreen.webp` | 未取得授权（苹果 SF Symbols；真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 720 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-3-fullscreen-1280.webp` | 同 `scene-3-fullscreen.webp` | 未取得授权（苹果 SF Symbols；真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 1280 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-3-fullscreen-2100.webp` | 同 `scene-3-fullscreen.webp` | 未取得授权（苹果 SF Symbols；真实行情走势）；壁纸见下表 | 响应式小图：由线上现行的 2940 宽成品 Lanczos 缩小到 2100 宽，WebP 质量 90；页面用 srcset 让手机和普通屏只下小图 |
+| `scene-4-hide-poster-720.webp` | 同 `scene-4-hide-poster.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 视频封面的响应式小图：直接取渲染管线的无损帧 Lanczos 缩小到 720 宽，WebP 质量 90 |
+| `scene-4-hide-poster-1280.webp` | 同 `scene-4-hide-poster.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 视频封面的响应式小图：直接取渲染管线的无损帧 Lanczos 缩小到 1280 宽，WebP 质量 90 |
+| `scene-4-hide-poster-2100.webp` | 同 `scene-4-hide-poster.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 视频封面的响应式小图：直接取渲染管线的无损帧 Lanczos 缩小到 2100 宽，WebP 质量 90 |
+| `scene-4-hide-720.webp` | 同 `scene-4-hide.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 减少动态效果时的静止图的响应式小图：直接取渲染管线的无损帧 Lanczos 缩小到 720 宽，WebP 质量 90 |
+| `scene-4-hide-1280.webp` | 同 `scene-4-hide.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 减少动态效果时的静止图的响应式小图：直接取渲染管线的无损帧 Lanczos 缩小到 1280 宽，WebP 质量 90 |
+| `scene-4-hide-2100.webp` | 同 `scene-4-hide.webp` | 未取得授权（苹果素材；小窗里是真实行情走势）；壁纸见下表 | 减少动态效果时的静止图的响应式小图：直接取渲染管线的无损帧 Lanczos 缩小到 2100 宽，WebP 质量 90 |
+| `scene-4-hide-1470.mp4` | 同 `scene-4-hide.mp4` | 未取得授权（同上） | 第四张动图的小档（手机和普通屏用，显示宽乘像素密度不超过 1600 时选它）：由大档成品缩小到 1470×956 重编，libx265 slow crf20、hvc1、faststart，416KB，结构相似度 0.9899，390 帧不变 |
+| `scene-4-hide-1470.webm` | 同 `scene-4-hide.mp4` | 未取得授权（同上） | 同一小档的 VP9 版：libvpx-vp9 crf28，680KB，结构相似度 0.9900，390 帧不变 |
 | `file-pdf.png` | macOS 系统文件图标（`NSWorkspace` 取 `UTType.pdf`） | 未取得授权（苹果素材） | 第 1 步示意图，192×192 |
 | `file-dmg.png` | macOS 系统文件图标（`NSWorkspace` 取本机分发目录里真 DMG 的图标） | 未取得授权（苹果素材） | 第 1 步示意图，192×192 |
 | `file-zip.png` | macOS 系统文件图标（`NSWorkspace` 取 `UTType.zip`） | 未取得授权（苹果素材） | 第 1 步示意图，192×192 |
@@ -43,7 +65,7 @@
 | `scene-1-switch.webp` | 12 日落云彩 Colorful sky during sunset (Unsplash).jpg | Rowan Heuvel | CC0 | https://commons.wikimedia.org/wiki/File:Colorful_sky_during_sunset_(Unsplash).jpg |
 | `scene-2-alert.webp` | 08 天空与云 Landscape-nature-sky-clouds (23958729879).jpg | www.Pixel.la Free Stock Photos | CC0 | https://commons.wikimedia.org/wiki/File:Landscape-nature-sky-clouds_(23958729879).jpg |
 | `scene-3-fullscreen.webp` | 13 红色天空 Red sky sunset (Unsplash).jpg | Quino Al | CC0 | https://commons.wikimedia.org/wiki/File:Red_sky_sunset_(Unsplash).jpg |
-| `scene-4-hide.webp` | 05 沙丘暮色 Desert Skies (Unsplash).jpg | Jared Evans | CC0 | https://commons.wikimedia.org/wiki/File:Desert_Skies_(Unsplash).jpg |
+| `scene-4-hide.webp`、`scene-4-hide-poster.webp`、`scene-4-hide.mp4`、`scene-4-hide.webm` 以及它们的各档缩小版 | 05 沙丘暮色 Desert Skies (Unsplash).jpg | Jared Evans | CC0 | https://commons.wikimedia.org/wiki/File:Desert_Skies_(Unsplash).jpg |
 
 没有文件的素材（由 `src/landing.mjs` 与 `landing.css` 直接画出）：
 

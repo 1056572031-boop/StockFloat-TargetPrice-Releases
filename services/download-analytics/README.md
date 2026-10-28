@@ -71,11 +71,74 @@ video; without it `default-src 'none'` blocks the video silently and only the po
 `script-src` is the part that matters: no inline script, no
 `unsafe-inline`, so the page's only script is `/assets/landing.js`. `/stats`, `/privacy` and
 the 400 page keep `'unsafe-inline'` for their inline `<style>`; the landing page alone is
-tightened to `style-src 'self'` because it has no inline styles (a test fails if one appears).
+tightened to `style-src 'self' 'sha256-…'`: the built page has exactly one inline `<style>` (the
+stylesheet) and the policy allows only that one by hash (see "Loading order").
 `/assets/atmo.svg` is additionally served with a sandbox policy, since an SVG opened directly
 can carry script. If a static file is missing or the CSP drops `'self'`, Chrome silently paints
 nothing while the page still returns 200, so both the worker tests and the deploy-time live
 check assert the header, the `script-src` value exactly, and fetch every asset with its type.
+
+## Loading order
+
+Only what the first screen needs is fetched with the page; everything else waits.
+
+- The first-screen cover image is preloaded at high priority (`<link rel="preload">` before the
+  stylesheet). It is the only preload: more of them just compete for bandwidth. The decorative
+  background is `fetchpriority="low"`.
+- At build time `build-pages.mjs` inlines the stylesheet into the page (one round trip less before
+  the first paint) and writes its SHA-256 into the landing page's `style-src`, which stays free of
+  `'unsafe-inline'`. `assets/landing.css` is still published so a cached old page does not 404, but
+  the new page no longer references it. The deploy readback checks that the header hash equals the
+  hash of the single inline `<style>` on the live page. A Worker module may only export functions
+  (a string constant makes the Cloudflare runtime refuse to start), which the build test enforces.
+- Scene images 1 to 3 and the fourth scene's still image ship as a 1x1 transparent GIF (`src`)
+  plus the real paths in `data-src` / `data-srcset` / `data-still`. `landing.js` swaps them in near
+  the viewport. Each has a 720 / 1280 / 2100 wide WebP (quality 90) besides the 2940 wide original,
+  and `sizes` mirrors the layout, so a phone or a 1x screen downloads a 40 to 125KB picture instead
+  of 470 to 660KB. Native `loading="lazy"` is not used: its look-ahead distance is chosen by the
+  browser and often pulls below-the-fold images during the first load.
+- Without JavaScript the placeholder keeps the aspect ratio and the `<noscript>` image is
+  positioned over it (no reliance on the newer `scripting` media query, which older browsers
+  ignore and would show a doubled-height box). If JavaScript is enabled but `landing.js` fails to
+  load (blocked, interrupted), `<noscript>` does not render and the pictures stay dark frames; the
+  download link is a plain link and still works. That trade-off was accepted.
+- The look-ahead opens in two steps. Until the page has loaded or the visitor has started to scroll,
+  only images already on screen are fetched; then the distance widens (800px, or 200px on 3G or with
+  data saver).
+- The hero video is no longer `autoplay` / `preload="auto"`. It is `preload="none"` and starts only
+  after the page has loaded and the images already requested have arrived (or after 6 seconds),
+  so the first-screen images get the whole bandwidth. It stays on the cover image with data saver,
+  2G or reduced motion, and pauses while off screen.
+- The fourth scene's video poster is `data-poster` / `data-posterset` and becomes `poster` near the
+  viewport. The video has two tiers: 1470 wide (about 0.4MB HEVC, 0.7MB VP9) when displayed width
+  times pixel density is at most 1600 or on 3G, and 2940 wide (1.3MB HEVC, 1.7MB VP9) for high
+  density screens. The `<source>` elements carry only `data-src`; the script writes `src` for the
+  chosen tier and calls `load()` once. Both large files were re-encoded from the earlier crf15 /
+  crf22 masters (structural similarity 0.9925 / 0.9906, 390 frames unchanged), see `ASSETS.md`.
+- Warm-up (setting `preload="auto"` so data is there when the visitor arrives) needs real input
+  (wheel, touch, key, pointer-down) and the video within 1200px. A `scroll` event alone is not
+  enough: restoring the scroll position after a reload and anchor jumps fire it too. Safari and
+  Firefox expose no `navigator.connection`, so they are treated as not slow; the small tier keeps
+  that cost low. Warm-up never happens on 3G, 2G, data saver or reduced motion.
+- With reduced motion, data saver, 2G, or no `IntersectionObserver`, the fourth scene shows its
+  still image and the video is never requested.
+
+Measured on a local build (Chrome, cache off, 3 runs each, simulated 1.6Mbps / 150ms; the
+old figures are the build before this work):
+
+| | old | new |
+| --- | --- | --- |
+| fetched with the page, 1440px | 2313KB, 15 requests | 1479KB, 10 requests |
+| fetched with the page, 390px | 2961KB, 16 requests | 1130KB, 10 requests |
+| largest contentful paint, 1440px, slow profile | about 9.0s | about 1.6s |
+| hero video complete, slow profile (1440px / 390px) | 11.7s / 14.8s | 7.9s / 6.2s |
+| scroll to fourth scene playing, slow profile | about 10.5s | about 4.9s |
+| total after the fourth scene plays, unthrottled | 7438KB | 3680KB |
+
+These are one machine and a local server; they show the direction, not what a visitor on a real
+network sees. Safari and real-display smoothness were not checked. AVIF stills (about 50% smaller
+than WebP at similar structural similarity) were tried and left out for now: they need `<picture>`
+fallbacks and the saving is below the fold.
 
 ## Hardening and failure behaviour
 
@@ -130,7 +193,11 @@ the page shows the version alone rather than an old size. `src/landing.mjs` is i
 Since 2026-10-28 the page uses the B25 mock-up media as designed: the hero is a looping video of
 real 2026-10-27 minute-line data of one A-share stock rendered by the product (its name and code
 replaced by the placeholders 股票名称 / 038492; the price path is still real) (WebM for Chrome, HEVC MOV for
-Safari, a still poster for reduced motion), and the four desktop scenes are rendered images with
+Safari, a still poster for reduced motion), and the four desktop scenes are rendered images (the
+fourth, "someone is next to you", is a 6.5 s looping 60 fps video, HEVC for Safari and VP9 WebM for
+the rest, that only starts once it is scrolled into view and shows a still frame under reduced
+motion; its camera-view panel and silhouettes are illustrations, the product shows no camera
+image) with
 the Apple menu bar and Dock glass (its icons are pale flat blocks with the product's own icon
 in one slot, no Apple app icons) over four CC0 wallpaper photos from Wikimedia Commons (the CC0
 tag is read from the Commons file pages, not re-checked at the original sites; see `ASSETS.md`).

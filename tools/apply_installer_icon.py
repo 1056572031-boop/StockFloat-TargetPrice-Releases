@@ -273,8 +273,19 @@ def displayed_name(path: pathlib.Path) -> str:
     return "" if shown is None else str(shown)
 
 
+def finder_info_extension_hidden(path: pathlib.Path) -> bool:
+    """确认 FinderInfo 的后缀隐藏位已写入；它是显示名检查的底层对照。"""
+    raw = read_finder_info(path)
+    if not raw or len(raw) < FD_FLAGS_OFFSET + 2:
+        return False
+    flags = struct.unpack_from(">H", raw, FD_FLAGS_OFFSET)[0]
+    return bool(flags & FLAG_HIDE_EXTENSION)
+
+
 def extension_hidden(path: pathlib.Path) -> bool:
-    """判据是"显示名去掉了真后缀"，不是"那一位写进去了"。"""
+    """判据同时要求 FinderInfo 写入隐藏位，并且显示名去掉了真后缀。"""
+    if not finder_info_extension_hidden(path):
+        return False
     name = pathlib.Path(path).name
     suffix = pathlib.Path(name).suffix
     shown = displayed_name(path)
@@ -405,8 +416,7 @@ def check(path: pathlib.Path) -> tuple[bool, str]:
     icon_ok, icon_note = check_icon(path)
     if not icon_ok:
         return False, icon_note
-    if not HIDE_EXTENSION_IN_VOLUME:
-        return True, icon_note + "；后缀按开关原样显示（HIDE_EXTENSION_IN_VOLUME=False）"
+    # 发版链的卷内条目始终必须隐藏 `.command`：对外文案开关不能削弱真实验收。
     if not extension_hidden(path):
         return False, ("%s；但 `.command` 还露在显示名里（卷里显示为「%s」）—— "
                        "隐藏后缀那一步没跑，或被后来的整块覆盖踩掉了"

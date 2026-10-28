@@ -16,6 +16,9 @@ const KEY = /^[a-f0-9]{32}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 let activeBodyBytes = 0;
+// 这个运行实例（isolate）已经处理过几个上传请求。只用来在计时头里标 cold（它的第 1 个请求）或 warm，
+// 读数偏慢时要另看；不对外给出累计数字，免得带头的人借此推算流量。
+let isolateServed = 0;
 export const LEASE_MS = 120000;
 // GitHub 阶段的总时限必须短于租约：慢到租约过期才写回，会被别的重试顶掉，回执白白丢失。
 export const PUBLISH_DEADLINE_MS = 100000;
@@ -50,6 +53,36 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const exact = (value, names) => object(value) && Object.keys(value).sort().join(',') === [...names].sort().join(',');
 const hex = value => [...new Uint8Array(value)].map(x => x.toString(16).padStart(2, '0')).join('');
 export const digest = async bytes => hex(await crypto.subtle.digest('SHA-256', bytes));
+
+// 分阶段计时：只在请求带 X-Skyrocket-Timing: 1 时才创建，结果放进响应的 Server-Timing 头；不带这个头时响应不变。
+// 头里分两类，单位都是毫秒：
+//   顺序阶段（headers、budget、body ... receipt_commit）互不重叠，加起来等于 total；失败时还有 lease_release、error_cleanup。
+//   gh_ 开头的是分解项，不能与顺序阶段相加。gh_token_mint 是换安装令牌自己的耗时，与写租约同时进行，
+//   所以和 lease 重叠；其余 gh_ 项在 github_storage 内部，其中预检的三个读取（gh_read_*）是同时发出的，
+//   gh_preflight 是它们的实际耗时，gh_preflight_serial_sum 是假如一个等一个会花的时间。
+// 注意：Workers 里 Date.now() 只在 I/O 完成时才前进，纯计算（解包、校验）的耗时会记在紧随其后的 I/O 阶段上，
+// 所以要读“在等 I/O 的阶段”（budget、case、github_*），别指望 unpack、archive 有精确读数。
+export function createTimer(now = Date.now) {
+  const sequence = [];
+  const inner = [];
+  const begun = now();
+  let current = 'headers';
+  let since = begun;
+  const close = () => {
+    if (current !== null) { sequence.push([current, Math.max(0, now() - since)]); current = null; }
+  };
+  return {
+    enter(name) { close(); current = name; since = now(); },
+    // 读数不是有限数（某个读取没跑到、值缺失）就不写进头，免得出现 dur=NaN。
+    inner(name, ms) { if (Number.isFinite(ms)) inner.push([name, Math.max(0, ms)]); },
+    header(extra = '') {
+      close();
+      const entry = ([name, ms]) => `${name};dur=${ms}`;
+      return [...sequence.map(entry), ...inner.map(entry), ...(extra ? [extra] : []),
+        `total;dur=${Math.max(0, now() - begun)}`].join(', ');
+    },
+  };
+}
 
 function checkDiagnosticPrivacy(text) {
   if (/-----(?:BEGIN|END) (?:[A-Z]+ )?PRIVATE KEY-----/.test(text)
@@ -306,11 +339,27 @@ export async function validateArchive(archive, envelope, deepDiagnostics = true)
   return state;
 }
 
-let tokenCache;
+const tokenCache = new Map();
+const tokenInflight = new Map();
 const base64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 
-export async function installationToken(env, fetcher = fetch, deadline = Infinity) {
-  if (tokenCache && tokenCache.installation === env.GITHUB_INSTALLATION_ID && tokenCache.until > Date.now()) return tokenCache.value;
+function awaitTokenWithin(promise, deadline) {
+  if (!Number.isFinite(deadline)) return promise;
+  const left = deadline - Date.now();
+  if (left <= 0) reject('upstream_timeout', 503);
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, timeout) => { timer = setTimeout(() => timeout(new Rejection('upstream_timeout', 503)), left); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+export function invalidateInstallationToken(env, value) {
+  const cached = tokenCache.get(env.GITHUB_INSTALLATION_ID);
+  if (cached && cached.value === value) tokenCache.delete(env.GITHUB_INSTALLATION_ID);
+}
+
+async function mintInstallationToken(env, fetcher, deadline) {
   const pem = env.GITHUB_PRIVATE_KEY_PKCS8;
   const pemHeader = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
   if (!pem?.startsWith(pemHeader) || !/^\d+$/.test(env.GITHUB_APP_ID)
@@ -335,13 +384,43 @@ export async function installationToken(env, fetcher = fetch, deadline = Infinit
       || !Array.isArray(result.repositories) || result.repositories.length !== 1
       || result.repositories[0].full_name !== REPOSITORY || result.repositories[0].private !== true
       || Object.keys(result.permissions).some(name => !['contents', 'metadata'].includes(name))) reject('github_app_token_invalid', 503);
-  tokenCache = { installation: env.GITHUB_INSTALLATION_ID, value: result.token, until: Date.parse(result.expires_at) - 60000 };
-  return result.token;
+  return { value: result.token, until: Date.parse(result.expires_at) - 60000 };
 }
 
+export async function installationToken(env, fetcher = fetch, deadline = Infinity) {
+  const installation = env.GITHUB_INSTALLATION_ID;
+  const cached = tokenCache.get(installation);
+  if (cached && cached.until > Date.now()) return cached.value;
+  let pending = tokenInflight.get(installation);
+  if (!pending) {
+    pending = mintInstallationToken(env, fetcher, deadline).then(record => {
+      tokenCache.set(installation, record);
+      return record.value;
+    });
+    tokenInflight.set(installation, pending);
+    pending.then(
+      () => { if (tokenInflight.get(installation) === pending) tokenInflight.delete(installation); },
+      () => { if (tokenInflight.get(installation) === pending) tokenInflight.delete(installation); },
+    );
+  }
+  return awaitTokenWithin(pending, deadline);
+}
+
+function isGitHubAuthFailure(error) {
+  return error instanceof Rejection && ['github_http_401', 'github_http_403'].includes(error.code);
+}
+
+
 export class GitHubStore {
-  constructor(token, releaseId, fetcher = fetch, deadline = Infinity) {
+  constructor(token, releaseId, fetcher = fetch, deadline = Infinity, probe = null) {
     this.token = token; this.releaseId = releaseId; this.fetcher = fetcher.bind(globalThis); this.deadline = deadline;
+    this.probe = probe;
+  }
+  // 计时：probe 为空（调用方没要计时）时只多读几次 Date.now()，不改变任何行为。
+  mark(name, ms) { if (this.probe) this.probe(name, ms); }
+  async span(work, record) {
+    const begun = Date.now();
+    try { return await work(); } finally { record(Date.now() - begun); }
   }
   // 每次上游调用的超时 = min(30 秒, 距总时限还剩多少)；总时限已过就不再发请求。
   budget() {
@@ -367,13 +446,31 @@ export class GitHubStore {
     return binary ? bytes : JSON.parse(utf8.decode(bytes));
   }
   async publish(envelope, archive) {
-    const repo = await this.request('');
+    // 仓库、发布、第一页资产三个读取互不依赖，同时发出，省掉两次串行往返。
+    // 判断结果仍按原来的先后：先看仓库，再看发布，最后看资产，所以同时出错时报的错误码和以前一致。
+    // 令牌只授权这一个仓库；仓库不是私有时，多发出去的两次也只是读，写入要等检查通过之后才开始。
+    const spent = {};
+    const preflightBegun = Date.now();
+    const [repoResult, releaseResult, firstPage] = await Promise.allSettled([
+      this.span(() => this.request(''), ms => { spent.repo = ms; }),
+      this.span(() => this.request(`/releases/${this.releaseId}`), ms => { spent.release = ms; }),
+      this.span(() => this.request(`/releases/${this.releaseId}/assets?per_page=100&page=1`), ms => { spent.assets = ms; }),
+    ]);
+    // 先记账再判断结果，读取失败时也要留下这几项耗时；固定顺序输出，不跟着谁先返回走。
+    this.mark('gh_preflight', Date.now() - preflightBegun);
+    this.mark('gh_read_repo', spent.repo);
+    this.mark('gh_read_release', spent.release);
+    this.mark('gh_read_assets', spent.assets);
+    this.mark('gh_preflight_serial_sum', spent.repo + spent.release + spent.assets);
+    const settled = outcome => { if (outcome.status === 'rejected') throw outcome.reason; return outcome.value; };
+    const repo = settled(repoResult);
     if (repo.private !== true || repo.full_name !== REPOSITORY) reject('repository_not_private', 503);
-    const release = await this.request(`/releases/${this.releaseId}`);
+    const release = settled(releaseResult);
     if (release.tag_name !== INBOX_TAG) reject('inbox_identity', 503);
     const assets = new Map();
     for (let page = 1; page <= 22; page++) {
-      const rows = await this.request(`/releases/${this.releaseId}/assets?per_page=100&page=${page}`);
+      const rows = page === 1 ? settled(firstPage)
+        : await this.request(`/releases/${this.releaseId}/assets?per_page=100&page=${page}`);
       for (const row of rows) { if (assets.has(row.name)) reject('duplicate_assets', 503); assets.set(row.name, row); }
       if (rows.length < 100) break;
       if (page === 22) reject('inbox_capacity', 503);
@@ -386,9 +483,13 @@ export class GitHubStore {
     if (assets.size + neededAssets > MAX_RELEASE_ASSETS) reject('inbox_asset_capacity', 429);
     if (!zip) {
       if ([...assets.keys()].filter(x => x.endsWith('.zip')).length >= 1000) reject('inbox_capacity', 503);
-      zip = await this.request(`/releases/${this.releaseId}/assets?name=${caseId}.zip`, { method: 'POST', body: archive, upload: true });
+      zip = await this.span(
+        () => this.request(`/releases/${this.releaseId}/assets?name=${caseId}.zip`, { method: 'POST', body: archive, upload: true }),
+        ms => this.mark('gh_zip_upload', ms));
     }
-    const stored = await this.request(`/releases/assets/${zip.id}`, { binary: true, maximum: MAX_UPLOAD });
+    const stored = await this.span(
+      () => this.request(`/releases/assets/${zip.id}`, { binary: true, maximum: MAX_UPLOAD }),
+      ms => this.mark('gh_zip_readback', ms));
     if (stored.length !== archive.length || await digest(stored) !== envelope.archive_sha256) reject('remote_binding', 409);
     if (!receiptAsset) {
       const receipt = { case_id: caseId, archive_sha256: envelope.archive_sha256, size_bytes: archive.length,
@@ -396,10 +497,14 @@ export class GitHubStore {
         retention_until: null, retention_policy: 'manual_deletion', repository: REPOSITORY,
         asset_id: zip.id, consent_policy_version: envelope.consent_policy_version };
       if (envelope.diagnostic_payload_version >= 2) receipt.validation_scope = 'container_sha256_and_member_catalog';
-      receiptAsset = await this.request(`/releases/${this.releaseId}/assets?name=${caseId}.receipt.json`, {
-        method: 'POST', body: new TextEncoder().encode(JSON.stringify(receipt)), upload: true });
+      receiptAsset = await this.span(
+        () => this.request(`/releases/${this.releaseId}/assets?name=${caseId}.receipt.json`, {
+          method: 'POST', body: new TextEncoder().encode(JSON.stringify(receipt)), upload: true }),
+        ms => this.mark('gh_receipt_upload', ms));
     }
-    const receipt = strictJson(await this.request(`/releases/assets/${receiptAsset.id}`, { binary: true, maximum: 64 * 1024 }));
+    const receipt = strictJson(await this.span(
+      () => this.request(`/releases/assets/${receiptAsset.id}`, { binary: true, maximum: 64 * 1024 }),
+      ms => this.mark('gh_receipt_readback', ms)));
     // The first deployed v3 receiver stored an otherwise bound receipt without this
     // field. Preserve idempotency for that already-stored package: all data needed to
     // derive the scope is immutable and has just been re-read from the authoritative ZIP.
@@ -419,13 +524,18 @@ export default {
     const url = new URL(request.url);
     const configured = env.ENABLED === 'true' && env.DB && env.GITHUB_APP_ID && env.GITHUB_INSTALLATION_ID
       && env.GITHUB_PRIVATE_KEY_PKCS8 && /^\d+$/.test(env.GITHUB_RELEASE_ID);
-    const json = (data, status = 200) => new Response(JSON.stringify(data), { status,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+    const json = (data, status = 200, extra = {}) => new Response(JSON.stringify(data), { status,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...extra } });
     if (request.method === 'GET' && url.pathname === '/health') return json({ ready: Boolean(configured), protocol: 1,
       payloadVersions: [1, 2, 3], maxUploadBytes: MAX_UPLOAD, freeOnly: true });
     if (request.method !== 'POST' || url.pathname !== '/v1/feedback' || url.search) return json({ error: 'not_found' }, 404);
     if (!configured) return json({ error: 'receiver_not_ready' }, 503);
     let phase = 'headers';
+    // 只有请求明确带 X-Skyrocket-Timing: 1 才计时并返回 Server-Timing；其余请求的响应与以前完全一样。
+    const timer = request.headers.get('X-Skyrocket-Timing') === '1' ? createTimer() : null;
+    const served = ++isolateServed;
+    const timingHeaders = () => (timer ? { 'Server-Timing': timer.header(`isolate;desc=${served === 1 ? 'cold' : 'warm'}`) } : {});
+    const enter = name => { phase = name; if (timer) timer.enter(name); };
     let reservedBytes = 0;
     const started = Date.now();
     const day = new Date().toISOString().slice(0, 10);
@@ -460,7 +570,7 @@ export default {
       if (activeBodyBytes + size > MAX_UPLOAD + MAX_HEADER + 4) reject('receiver_busy', 429);
       activeBodyBytes += size;
       reservedBytes = size;
-      phase = 'budget';
+      enter('budget');
       // 先按来源限流：单个来源把自己的份额用完只影响它自己，不会拖垮全局额度。
       // 只存“日期+来源”的哈希，不落真实地址；日期进了哈希，次日自然换桶。
       const source = await digest(new TextEncoder().encode(day + '|' + (request.headers.get('CF-Connecting-IP') || 'unknown')));
@@ -480,19 +590,19 @@ export default {
         const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
         await env.DB.prepare('DELETE FROM budget WHERE substr(day, 1, 10) < ?').bind(cutoff).run();
       }
-      phase = 'body';
+      enter('body');
       const bytes = await readBounded(request, MAX_UPLOAD + MAX_HEADER + 4);
       if (bytes.length !== size) reject('request_size');
-      phase = 'byte_budget';
+      enter('byte_budget');
       const byteBudget = await env.DB.prepare('INSERT INTO budget(day, requests) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET requests=requests+excluded.requests WHERE requests+excluded.requests<=268435456 RETURNING requests')
         .bind(day + ':bytes', bytes.length).first();
       if (!byteBudget) reject('daily_byte_budget', 429);
       charged.bytes = bytes.length;
-      phase = 'unpack';
+      enter('unpack');
       const { envelope, archive } = await unpackRequest(bytes);
-      phase = 'archive';
+      enter('archive');
       await validateArchive(archive, envelope, false);
-      phase = 'case';
+      enter('case');
       const total = await env.DB.prepare('SELECT COUNT(*) AS n FROM cases').bind().first();
       if (total && total.n >= CASE_PRUNE_AT) {
         // 案件表有硬上限。从未走完的行（失败、被中断、没有回执）租约一过期就没有保留价值：
@@ -511,26 +621,51 @@ export default {
       if (row.archive_sha256 !== envelope.archive_sha256) reject('identity_conflict', 409);
       const now = Date.now();
       const lease = crypto.randomUUID();
-      phase = 'lease';
+      const deadline = now + PUBLISH_DEADLINE_MS;
+      enter('lease');
+      // 容量已满、身份冲突这类请求在任何 GitHub 请求之前就被拒了，这一点不变。
+      // 同一安装号的并发请求会复用同一枚在途令牌；租约被拒时这一路在后台自己跑完，失败也不能变成未处理拒绝。
+      const probe = timer ? (name, ms) => timer.inner(name, ms) : null;
+      const requestToken = async () => {
+        const began = Date.now();
+        try { return await installationToken(env, fetch, deadline); }
+        finally { if (probe) probe('gh_token_mint', Date.now() - began); }
+      };
+      const tokenRequest = requestToken();
+      tokenRequest.catch(() => {});
       // 已经有回执的行（重放一次已收件的案件）保持“已收件”，不能被临时改成 uploading：
       // 重放中途失败会让它变成可被清理的状态，而回执的本地副本只在这一行里。
       const owned = await env.DB.prepare("UPDATE cases SET state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'uploading' END, lease_until=?, lease_token=? WHERE idempotency_key=? AND lease_until<=? RETURNING idempotency_key")
         .bind(now + LEASE_MS, lease, envelope.idempotency_key, now).first();
       if (!owned) reject('submission_in_progress', 409);
       try {
-        phase = 'github_auth';
-        const deadline = now + PUBLISH_DEADLINE_MS;
-        const token = await installationToken(env, fetch, deadline);
-        // 拿到令牌才算真的用了上游：配置错误、证书导入失败这类没碰到 GitHub 的失败仍然退额度。
-        reachedGitHub = true;
-        phase = 'github_storage';
-        const receipt = await new GitHubStore(token, env.GITHUB_RELEASE_ID, fetch, deadline).publish(envelope, archive);
-        phase = 'receipt_commit';
-        const saved = await env.DB.prepare("UPDATE cases SET state='received', lease_until=0, receipt=? WHERE idempotency_key=? AND lease_token=? RETURNING idempotency_key")
-          .bind(JSON.stringify(receipt), envelope.idempotency_key, lease).first();
-        if (!saved) reject('lease_superseded', 409);
-        return json(receipt);
+        enter('github_auth');
+        const publishWith = async token => {
+          // 令牌拿到才算真的用了上游：配置错误、证书导入失败这类没碰到 GitHub 的失败仍然退额度。
+          reachedGitHub = true;
+          enter('github_storage');
+          const receipt = await new GitHubStore(token, env.GITHUB_RELEASE_ID, fetch, deadline, probe).publish(envelope, archive);
+          enter('receipt_commit');
+          const saved = await env.DB.prepare("UPDATE cases SET state='received', lease_until=0, receipt=? WHERE idempotency_key=? AND lease_token=? RETURNING idempotency_key")
+            .bind(JSON.stringify(receipt), envelope.idempotency_key, lease).first();
+          if (!saved) reject('lease_superseded', 409);
+          return json(receipt, 200, timingHeaders());
+        };
+        let token = await tokenRequest;
+        try {
+          return await publishWith(token);
+        } catch (error) {
+          if (!isGitHubAuthFailure(error)) throw error;
+          // 令牌撤销或权限被 GitHub 改掉时，只清同一枚值并从预检开始完整再试一轮。
+          // 从预检重来可利用资产名幂等，避免只重试半条上传路线造成重复写入；第二轮失败直接上抛，绝不循环。
+          invalidateInstallationToken(env, token);
+          enter('github_auth');
+          token = await requestToken();
+          return await publishWith(token);
+        }
       } catch (error) {
+        // 只给计时器换个阶段名；phase 变量不动，它还要用来判断错误类型和退额度。
+        if (timer) timer.enter('lease_release');
         await env.DB.prepare("UPDATE cases SET lease_until=0, state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'unknown' END WHERE idempotency_key=? AND lease_token=?")
           .bind(envelope.idempotency_key, lease).run();
         throw error;
@@ -545,6 +680,7 @@ export default {
       const code = error instanceof Rejection ? error.code : badContent ? 'archive_invalid'
         : timedOut ? 'upstream_timeout' : 'submission_unconfirmed';
       const status = error instanceof Rejection ? error.status : badContent ? 422 : 503;
+      if (timer) timer.enter('error_cleanup');
       await refund(status >= 500 && !CLIENT_SIDE_PHASES.includes(phase));
       console.error(JSON.stringify({ event: 'feedback_unconfirmed', phase, code, status,
         elapsed_ms: Date.now() - started,
@@ -552,7 +688,7 @@ export default {
       const wait = status === 429 || status === 409 ? retryAfter(code) : null;
       const body = new Response(JSON.stringify({ error: code, phase }), { status,
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
-          ...(wait ? { 'Retry-After': String(wait) } : {}) } });
+          ...(wait ? { 'Retry-After': String(wait) } : {}), ...timingHeaders() } });
       return body;
     } finally {
       activeBodyBytes -= reservedBytes;

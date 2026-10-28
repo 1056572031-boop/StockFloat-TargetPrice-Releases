@@ -14,8 +14,9 @@ from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QToo
 from sf_feedback_capture import MAX_DESCRIPTION
 from sf_feedback_ui import (
     FeedbackDialog, FeedbackHistoryDialog, _COUNTER_SHOW_AT, _DEFAULT_SIZE, _REOPEN_TAIL, _TITLE_BUTTON_H,
-    _failure_detail, _failure_hint, _failure_kind, feedback_diagnostics,
+    _UploadTiming, _failure_detail, _failure_hint, _failure_kind, _timing_line, feedback_diagnostics,
 )
+from sf_feedback_ui import FeedbackOutbox, build_archive
 from tests._base import SFCase
 from tests.test_feedback_dialog import _FeedbackCase
 from tests.test_feedback_pipeline import MemoryGitHub, snapshot
@@ -316,6 +317,11 @@ class FailureEvidence(_DialogCase):
         self.assertNotIn("secret", line)
         # 级别必须显式给出：log_line 的默认级别是 INFO，漏写就会被日志级别过滤掉。
         self.assertEqual(matched[0].args[1:], ("WARNING",))
+        timing = feedback_diagnostics(SimpleNamespace(_feedback_dialog=self.dialog))["last_upload_timing"]
+        self.assertEqual(timing["outcome"], "failed")
+        self.assertEqual(timing["phase"], "submit")
+        self.assertIn("network_ms", timing)
+        self.assertNotIn("secret", repr(timing))
 
     def test_the_failure_popup_adds_the_hint_for_a_known_situation(self):
         alerts, _log = self.fail_with(self.http_error(429, b'{"error":"receiver_busy"}'))
@@ -334,6 +340,102 @@ class FailureEvidence(_DialogCase):
         self.assertEqual(exported["last_failure_detail"]["server_code"], "submission_unconfirmed")
         self.assertEqual(feedback_diagnostics(SimpleNamespace(_feedback_dialog=SimpleNamespace())
                                               )["last_failure_detail"], {})
+
+    def test_successful_upload_records_four_timing_segments_in_log_and_diagnostics(self):
+        with patch("sf_system_alert.show_alert"), patch("sf_feedback_ui.log_line") as log:
+            self.dialog.description.setPlainText("timing evidence")
+            self.dialog.upload_button.click()
+            self.finish()
+        timing = feedback_diagnostics(SimpleNamespace(_feedback_dialog=self.dialog))["last_upload_timing"]
+        self.assertEqual(timing["outcome"], "received")
+        self.assertFalse(timing["resumed"])
+        # 这个夹具是旧式反馈（没有诊断采集），所以没有 capture_ms：不执行就不出现，不补 0。
+        # 带采集的四段齐全判据在 test_feedback_full_bundle 里。
+        for name in ("pack_ms", "enqueue_ms", "network_ms", "other_ms", "total_ms"):
+            self.assertIsInstance(timing[name], int, name)
+            self.assertGreaterEqual(timing[name], 0, name)
+        self.assertNotIn("capture_ms", timing)
+        lines = [call for call in log.call_args_list if "feedback upload timing:" in call.args[0]]
+        self.assertEqual(len(lines), 1, "上传成功也必须留下可供诊断包对照的分段耗时")
+        for token in ("outcome=received", "resumed=0", "pack_ms=", "enqueue_ms=", "network_ms=", "total_ms="):
+            self.assertIn(token, lines[0].args[0])
+        self.assertNotIn("capture_ms=", lines[0].args[0])
+        self.assertEqual(lines[0].args[1:], ("INFO",))
+
+    def test_each_segment_is_charged_only_to_its_own_step(self):
+        # 用假时钟：打包、入队、网络三步各自推进固定秒数，其余步骤不推进。
+        # 段名错位、漏记、重复计入，都会让下面的精确数字对不上。
+        now = [1000.0]
+        real_build, real_enqueue = build_archive, FeedbackOutbox.enqueue
+
+        def build(*args, **kwargs):
+            result = real_build(*args, **kwargs)
+            now[0] += 3.0
+            return result
+
+        def enqueue(outbox, *args, **kwargs):
+            result = real_enqueue(outbox, *args, **kwargs)
+            now[0] += 2.0
+            return result
+
+        def sender(_url, envelope, path):
+            now[0] += 7.0
+            return self.inbox.accept(envelope, Path(path).read_bytes())
+
+        self.dialog.sender = sender
+        with patch("sf_system_alert.show_alert"), patch("sf_feedback_ui.log_line"), \
+                patch("sf_feedback_ui._clock", lambda: now[0]), \
+                patch("sf_feedback_ui.build_archive", build), \
+                patch.object(FeedbackOutbox, "enqueue", enqueue):
+            self.dialog.description.setPlainText("attribution")
+            self.dialog.upload_button.click()
+            self.finish()
+        timing = feedback_diagnostics(SimpleNamespace(_feedback_dialog=self.dialog))["last_upload_timing"]
+        self.assertEqual((timing["pack_ms"], timing["enqueue_ms"], timing["network_ms"]), (3000, 2000, 7000))
+        self.assertNotIn("capture_ms", timing)
+        self.assertEqual(timing["total_ms"], 12000, "总数必须等于各段之和加其他")
+        self.assertEqual(timing["other_ms"], 0)
+
+    def test_timing_object_sums_a_segment_entered_twice_and_keeps_time_of_a_failing_step(self):
+        now = [50.0]
+        with patch("sf_feedback_ui._clock", lambda: now[0]):
+            timing = _UploadTiming(resumed=False)
+            for step in (1.5, 2.5):
+                with timing.segment("capture"):
+                    now[0] += step
+            with self.assertRaises(OSError):
+                with timing.segment("pack"):
+                    now[0] += 4.0
+                    raise OSError("synthetic")
+            now[0] += 1.0
+            result = timing.result("failed", "archive")
+        self.assertEqual(result["capture_ms"], 4000)
+        self.assertEqual(result["pack_ms"], 4000, "失败的那一步也要记下已花掉的时间")
+        self.assertNotIn("enqueue_ms", result)
+        self.assertEqual((result["other_ms"], result["total_ms"]), (1000, 9000))
+        self.assertEqual(_timing_line(result),
+                         "feedback upload timing: outcome=failed phase=archive resumed=0 "
+                         "capture_ms=4000 pack_ms=4000 other_ms=1000 total_ms=9000")
+
+    def test_retry_records_only_the_new_network_segment(self):
+        sender = self.dialog.sender
+        self.dialog.sender = Mock(side_effect=TimeoutError())
+        with patch("sf_system_alert.show_alert"), patch("sf_feedback_ui.log_line"):
+            self.dialog.description.setPlainText("retry timing")
+            self.dialog.upload_button.click()
+            self.finish()
+        self.assertEqual(self.dialog.stage, "pending")
+        self.dialog.sender = sender
+        with patch("sf_system_alert.show_alert"), patch("sf_feedback_ui.log_line"):
+            self.dialog.upload_button.click()
+            self.finish()
+        timing = feedback_diagnostics(SimpleNamespace(_feedback_dialog=self.dialog))["last_upload_timing"]
+        self.assertEqual(timing["outcome"], "received")
+        self.assertTrue(timing["resumed"])
+        self.assertIn("network_ms", timing)
+        self.assertNotIn("capture_ms", timing)
+        self.assertNotIn("pack_ms", timing)
+        self.assertNotIn("enqueue_ms", timing)
 
 
 class TitleRowCloseButton(_DialogCase):

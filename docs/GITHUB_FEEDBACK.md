@@ -68,6 +68,8 @@ node deploy-pages.mjs --configuration /private/wrangler.pages.production.jsonc \
 
 最初的 `workers.dev` 入口在本机 TLS 握手阶段被重置，不能当成可用结果；正式入口改用已经真实试传通过的 `pages.dev`。不要把旧地址或失败日志改写成成功。
 
+分阶段计时：上传请求带 `X-Skyrocket-Timing: 1`（必须是精确的 `1`）时，响应多一个 `Server-Timing` 头；不带这个头时响应与以前完全一样，正式客户端不发它。单位毫秒。头里分两类：顺序阶段（`headers`、`budget`、`body`、`byte_budget`、`unpack`、`archive`、`case`、`lease`、`github_auth`、`github_storage`、`receipt_commit`，失败时还有 `lease_release`、`error_cleanup`）互不重叠，加起来等于 `total`；`gh_` 开头的是分解项，不能与顺序阶段相加。`gh_token_mint` 是向 GitHub 换安装令牌自己花的时间（实例内缓存命中时接近 0）：它与写租约同时发出，所以和 `lease` 重叠，`github_auth` 只是租约写完之后还要多等它的那一小段；其余 `gh_` 项属于 `github_storage` 内部。预检的三个读取（`gh_read_repo`、`gh_read_release`、`gh_read_assets`）同时发出，`gh_preflight` 是它们实际花的时间，`gh_preflight_serial_sum` 是假如一个等一个会花的时间，两者之差就是并发省下的。`isolate;desc=cold|warm` 标明这个运行实例是不是刚启动：`cold` 是它处理的第一个上传请求，读数偏慢要另看；不给出累计请求数。Workers 里时钟只在 I/O 完成时前进，纯计算（解包、校验）的耗时会记在紧随其后的 I/O 阶段上，所以要读等待 I/O 的阶段。头里只有阶段名和毫秒数，不含任何内容。
+
 `tools/feedback_service.py` 保留为本机或自有 TLS 代理后的收件适配器，不是当前免费生产入口。它只监听回环地址，单进程内串行发布、并发上限 2；不能用其线程锁冒充云端多实例协调。部署时同样不得把本机全仓权限凭据复制到服务器。
 
 ```bash

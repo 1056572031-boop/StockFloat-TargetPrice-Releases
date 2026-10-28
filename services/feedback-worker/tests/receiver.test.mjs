@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { ZipReader, ZipWriter, Uint8ArrayWriter, Uint8ArrayReader } from '@zip.js/zip.js';
-import worker, { CASE_PRUNE_AT, CLIENT_DAILY_LIMIT, FULL_POLICY, FULL_V3_POLICY, GitHubStore, INBOX_TAG, LEASE_MS, POLICY, PUBLISH_DEADLINE_MS, REFUND_DAILY_LIMIT, REPOSITORY, digest, retryAfter, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
+import worker, { CASE_PRUNE_AT, CLIENT_DAILY_LIMIT, createTimer, FULL_POLICY, FULL_V3_POLICY, GitHubStore, INBOX_TAG, LEASE_MS, POLICY, PUBLISH_DEADLINE_MS, REFUND_DAILY_LIMIT, REPOSITORY, digest, retryAfter, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
 import { appJwt, manifest } from '../setup-github-app.mjs';
 
 const encoder = new TextEncoder();
@@ -12,6 +12,14 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const pem = privateKey.export({ type: 'pkcs8', format: 'pem' });
 let installationSequence = 10000;
 const key = () => randomBytes(16).toString('hex');
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// 整个文件的联网总闸：没有用 withGitHub 换上假 GitHub 的地方，任何对外请求都直接失败并记下来，
+// 不能悄悄打到真实的 api.github.com（换令牌现在可能在后台发出，漏掉一处就会真的联网）。
+const strayRequests = [];
+globalThis.fetch = async input => {
+  strayRequests.push(String(input instanceof Request ? input.url : input));
+  throw new Error('a test tried to reach the real network');
+};
 const state = () => ({ app_version: '1.4.96', bundle_id: 'com.skyrocket.app', run_id: 'abcdef',
   phase: 'user_feedback', capture_started_at: '2026-10-19T00:00:00Z', capture_completed_at: '2026-10-19T00:00:00Z',
   health: null, counts: { synthetic_error_count: 1 }, summary: { capture_issue_count: 0, loaded_modules: 1 },
@@ -164,6 +172,11 @@ class FakeGitHub {
   loseUpload = false;
   redirect = false;
   mintCount = 0;
+  tokenLifetimeMs = 3600000;
+  mintDelayMs = 0;
+  authFailures = 0;
+  authFailureStatus = 401;
+  authFailureAfterUploads = null;
   fetch = async (input, options = {}) => {
     const url = new URL(input);
     const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
@@ -175,16 +188,25 @@ class FakeGitHub {
     assert.equal(options.redirect, 'manual');
     if (url.pathname.startsWith('/app/installations/')) {
       this.mintCount++;
+      if (this.mintDelayMs) await sleep(this.mintDelayMs);
       const jwt = options.headers.Authorization.slice(7);
       const [head, payload, signature] = jwt.split('.');
       assert.ok(verify('RSA-SHA256', Buffer.from(head + '.' + payload), publicKey, Buffer.from(signature, 'base64url')));
       assert.deepEqual(JSON.parse(options.body), { repositories: ['Skyrocket-Private-Feedback'], permissions: { contents: 'write' } });
-      return json({ token: 'test-installation-token', expires_at: new Date(Date.now() + 3600000).toISOString(),
+      return json({ token: 'test-installation-token', expires_at: new Date(Date.now() + this.tokenLifetimeMs).toISOString(),
         permissions: { contents: 'write', metadata: 'read' }, repository_selection: 'selected',
         repositories: [{ full_name: REPOSITORY, private: true,
           ...Object.fromEntries(Array.from({ length: 70 }, (_, n) => ['metadata_' + n, null])) }] }, 201);
     }
     assert.equal(options.headers.Authorization, 'Bearer test-installation-token');
+    if (this.authFailureAfterUploads !== null && this.uploadCount >= this.authFailureAfterUploads) {
+      this.authFailureAfterUploads = null;
+      return json({ error: 'expired token after write' }, this.authFailureStatus);
+    }
+    if (this.authFailures > 0) {
+      this.authFailures--;
+      return json({ error: 'expired token' }, this.authFailureStatus);
+    }
     if (url.pathname === '/repos/' + REPOSITORY) return json({ private: this.private, full_name: REPOSITORY,
       ...Object.fromEntries(Array.from({ length: 70 }, (_, n) => ['metadata_' + n, null])) });
     if (url.pathname.endsWith('/releases/1')) return json({ id: 1, tag_name: INBOX_TAG, draft: true });
@@ -256,6 +278,7 @@ test('plaintext description credentials are rejected before GitHub or case creat
         const response = await worker.fetch(request(packet), env);
         assert.equal(response.status, 422);
         assert.equal((await response.json()).error, 'diagnostic_secret');
+        await sleep(60); // 换令牌若被提前发出，要等它真的走到假 GitHub 才看得见
       });
       assert.equal(remote.mintCount, 0);
       assert.equal(remote.assets.size, 0);
@@ -319,6 +342,69 @@ test('private GitHub publication reads actual bytes back and retries with one ca
   remote.private = true;
   remote.assets.delete(receipt.asset_id);
   await assert.rejects(() => store.publish(packet.envelope, packet.archive));
+});
+
+// 包一层假 GitHub：每次请求先登记“开始”，让出一次事件循环，再转给真实实现并登记“结束”。
+// 串行实现里第二个“开始”必须排在第一个“结束”之后；同时发出时头三条记录都是“开始”。
+function recordingFetcher(remote, overrides = {}) {
+  const events = [];
+  const fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    const label = options.method === 'POST' ? 'POST ' + url.pathname : url.pathname + (url.searchParams.get('page') ? '?page=' + url.searchParams.get('page') : '');
+    events.push('start ' + label);
+    await new Promise(resolve => setImmediate(resolve));
+    const replaced = overrides[url.pathname];
+    const response = replaced ? replaced() : await remote.fetch(input, options);
+    events.push('end ' + label);
+    return response;
+  };
+  return { fetch, events };
+}
+
+test('the three independent preflight reads are issued together, not one after another', async () => {
+  const remote = new FakeGitHub();
+  const { fetch, events } = recordingFetcher(remote);
+  const packet = await archiveFor();
+  await new GitHubStore('test-installation-token', '1', fetch).publish(packet.envelope, packet.archive);
+  assert.deepEqual(events.slice(0, 3), [
+    'start /repos/' + REPOSITORY,
+    'start /repos/' + REPOSITORY + '/releases/1',
+    'start /repos/' + REPOSITORY + '/releases/1/assets?page=1',
+  ], '仓库、发布、第一页资产必须在任何一个返回之前就全部发出');
+});
+
+test('preflight failures keep the original precedence even though the reads run together', async () => {
+  const packet = await archiveFor();
+  const releasePath = '/repos/' + REPOSITORY + '/releases/1';
+  const failing = () => new Response('{}', { status: 500 });
+  // 仓库不是私有、发布读取也失败：仍然先报仓库。
+  let remote = new FakeGitHub();
+  remote.private = false;
+  let { fetch } = recordingFetcher(remote, { [releasePath]: failing });
+  await assert.rejects(() => new GitHubStore('test-installation-token', '1', fetch).publish(packet.envelope, packet.archive),
+    error => error.code === 'repository_not_private');
+  // 仓库没问题、发布读取失败：报发布读取的错误。
+  remote = new FakeGitHub();
+  ({ fetch } = recordingFetcher(remote, { [releasePath]: failing }));
+  await assert.rejects(() => new GitHubStore('test-installation-token', '1', fetch).publish(packet.envelope, packet.archive),
+    error => error.code === 'github_http_500');
+  // 仓库、发布都没问题、第一页资产读取失败：报资产读取的错误。
+  remote = new FakeGitHub();
+  ({ fetch } = recordingFetcher(remote, { [releasePath + '/assets']: failing }));
+  await assert.rejects(() => new GitHubStore('test-installation-token', '1', fetch).publish(packet.envelope, packet.archive),
+    error => error.code === 'github_http_500');
+});
+
+test('a repository that is not private never receives a write, whatever the other reads returned', async () => {
+  const remote = new FakeGitHub();
+  remote.private = false;
+  const { fetch, events } = recordingFetcher(remote);
+  const packet = await archiveFor();
+  await assert.rejects(() => new GitHubStore('test-installation-token', '1', fetch).publish(packet.envelope, packet.archive),
+    error => error.code === 'repository_not_private');
+  assert.equal(remote.uploadCount, 0);
+  assert.equal(remote.assets.size, 0);
+  assert.equal(events.some(event => event.includes('POST')), false);
 });
 
 test('receipt loss does not create duplicate objects, corrupt remote bytes cannot succeed', async () => {
@@ -416,6 +502,7 @@ test('daily byte protection refuses before GitHub and does not leak a reservatio
     const refused = await worker.fetch(request(packet), env);
     assert.equal(refused.status, 429);
     assert.equal((await refused.json()).error, 'daily_byte_budget');
+    await sleep(60);
     assert.equal(remote.mintCount, 0);
     env.DB.native.prepare('UPDATE budget SET requests=0 WHERE day=?').run(day);
     assert.equal((await worker.fetch(request(packet), env)).status, 200);
@@ -480,6 +567,7 @@ test('case capacity is a persistent hard limit before any GitHub request', async
     const response = await worker.fetch(request(packet), env);
     assert.equal(response.status, 429);
     assert.equal((await response.json()).error, 'case_budget');
+    await sleep(60);
     assert.equal(remote.mintCount, 0);
   });
   env.DB.native.close();
@@ -683,10 +771,14 @@ test('a live lease answers 409 with a Retry-After the client can obey', async ()
   const env = environment();
   env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'uploading', ?, 'someone-else', NULL)")
     .run(packet.envelope.idempotency_key, packet.envelope.archive_sha256, Date.now() + 60000);
-  const refused = await worker.fetch(request(packet), env);
-  assert.equal(refused.status, 409);
-  assert.equal((await refused.json()).error, 'submission_in_progress');
-  assert.equal(refused.headers.get('Retry-After'), '60');
+  // 租约被拒时，同时发出的换令牌请求会在后台继续跑：必须接到假 GitHub 上，不能真的联网。
+  await withGitHub(new FakeGitHub(), async () => {
+    const refused = await worker.fetch(request(packet), env);
+    assert.equal(refused.status, 409);
+    assert.equal((await refused.json()).error, 'submission_in_progress');
+    assert.equal(refused.headers.get('Retry-After'), '60');
+    await sleep(60); // 让后台那路换令牌在假 GitHub 还挂着的时候跑完
+  });
   env.DB.native.close();
 });
 
@@ -695,10 +787,15 @@ test('a digest mismatch on stored data is a 409 with no Retry-After, because wai
   const env = environment();
   env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'received', 0, '', '{}')")
     .run(packet.envelope.idempotency_key, '0'.repeat(64));
-  const refused = await worker.fetch(request(packet), env);
-  assert.equal(refused.status, 409);
-  assert.equal((await refused.json()).error, 'identity_conflict');
-  assert.equal(refused.headers.get('Retry-After'), null);
+  const remote = new FakeGitHub();
+  await withGitHub(remote, async () => {
+    const refused = await worker.fetch(request(packet), env);
+    assert.equal(refused.status, 409);
+    assert.equal((await refused.json()).error, 'identity_conflict');
+    assert.equal(refused.headers.get('Retry-After'), null);
+    await sleep(60);
+  });
+  assert.equal(remote.mintCount, 0, '身份冲突在任何 GitHub 请求之前就被拒，一次令牌都不能换');
   env.DB.native.close();
 });
 
@@ -762,7 +859,9 @@ test('replaying a received case that fails midway keeps it received with its rec
   await withGitHub(afterToken(remote, async () => { states.push(row().state); throw new Error('upstream went away'); }), async () => {
     assert.equal((await worker.fetch(request(packet), env)).status, 503);
   });
-  assert.deepEqual(states, ['received'], '重放进行中也不能把已收件的行改成别的状态');
+  // 预检读取是同时发出的，钩子会被触发多次；要守的是每一次观察到的状态都还是 received，而不是触发了几次。
+  assert.ok(states.length >= 1, '钩子必须至少被触发一次，否则这条用例什么也没观察');
+  assert.ok(states.every(value => value === 'received'), '重放进行中也不能把已收件的行改成别的状态：' + states.join(','));
   const after = row();
   assert.equal(after.state, 'received');
   assert.ok(after.receipt && after.receipt.includes('archive_sha256'));
@@ -831,6 +930,232 @@ test('pruning never touches the requester’s own row and starts exactly at the 
   below.DB.native.close();
 });
 
+// ---- Server-Timing：只在请求带 X-Skyrocket-Timing: 1 时返回，不带时响应与以前完全一样 ----
+function timedRequest(packet, headers = { 'X-Skyrocket-Timing': '1' }) {
+  const body = wire(packet);
+  return new Request('https://receiver.example/v1/feedback', { method: 'POST', body,
+    headers: { 'Content-Type': 'application/vnd.skyrocket.feedback-v1', 'Content-Length': String(body.length), ...headers } });
+}
+function parseTiming(value) {
+  return value.split(', ').map(part => {
+    const [name, ...params] = part.split(';');
+    const dur = params.map(item => /^dur=(\d+)$/.exec(item)).find(Boolean);
+    return { name, dur: dur ? Number(dur[1]) : null };
+  });
+}
+const durations = entries => Object.fromEntries(entries.filter(item => item.dur !== null).map(item => [item.name, item.dur]));
+const SEQUENCE = ['headers', 'budget', 'body', 'byte_budget', 'unpack', 'archive', 'case', 'lease', 'github_auth', 'github_storage', 'receipt_commit'];
+// gh_token_mint 是换令牌自己的耗时：它和写租约同时进行，所以不属于顺序阶段，先于任何仓库读取记下。
+const INNER = ['gh_token_mint', 'gh_preflight', 'gh_read_repo', 'gh_read_release', 'gh_read_assets', 'gh_preflight_serial_sum'];
+
+// 虚拟时钟：只在“数据库操作”和“GitHub 的几个慢路由”上前进固定毫秒数，其余步骤不动。
+// 这样每个阶段的耗时是确定的，名字记错、漏记、重复计入都会让精确数字对不上。
+function virtualClock(start = 5000000) {
+  const real = Date.now;
+  const clock = { now: start, tick(ms) { clock.now += ms; },
+    install() { Date.now = () => clock.now; }, restore() { Date.now = real; } };
+  return clock;
+}
+function slowDatabase(env, clock, perOperation = 3) {
+  const inner = env.DB;
+  env.DB = { native: inner.native, prepare(sql) { const prepared = inner.prepare(sql); return { bind(...params) {
+    const bound = prepared.bind(...params);
+    return { async first() { clock.tick(perOperation); return bound.first(); },
+      async run() { clock.tick(perOperation); return bound.run(); } };
+  } }; } };
+}
+function slowGitHub(remote, clock, { failZipReadback = false } = {}) {
+  let readbacks = 0;
+  return { fetch: async (input, options = {}) => {
+    const url = new URL(input);
+    const method = options.method ?? 'GET';
+    const name = url.searchParams.get('name') ?? '';
+    if (url.pathname.startsWith('/app/installations/')) clock.tick(50);
+    else if (method === 'POST' && name.endsWith('.zip')) clock.tick(200);
+    else if (method === 'POST' && name.endsWith('.receipt.json')) clock.tick(120);
+    else if (/\/releases\/assets\/\d+$/.test(url.pathname)) {
+      readbacks++;
+      clock.tick(readbacks === 1 ? 80 : 40);
+      if (failZipReadback && readbacks === 1) return new Response('{}', { status: 500 });
+    }
+    return remote.fetch(input, options);
+  } };
+}
+test('the timer closes each phase when the next one starts and keeps inner entries out of the total', () => {
+  let now = 100;
+  const timer = createTimer(() => now);
+  now += 7; timer.enter('budget');
+  now += 11; timer.inner('gh_read_repo', 99);
+  now += 5; timer.enter('body');
+  now += 2;
+  const first = timer.header('isolate;desc=warm');
+  assert.equal(first, 'headers;dur=7, budget;dur=16, body;dur=2, gh_read_repo;dur=99, isolate;desc=warm, total;dur=25');
+  assert.equal(timer.header('isolate;desc=warm'), first, '再取一次必须得到同样的头，不能重复计入');
+});
+
+test('a clock that runs backwards never produces a negative duration, and non-finite readings stay out of the header', () => {
+  // 每次读时钟都比上一次早 10：所有区间的原始差值都是负数。必须钳成 0，而且直接比对头的原文——
+  // 不能用只认非负整数的解析器去查，它遇到 "-10" 会解析成空值而放行。
+  let tick = 50;
+  const clamped = createTimer(() => (tick -= 10));
+  clamped.enter('budget');
+  assert.equal(clamped.header(), 'headers;dur=0, budget;dur=0, total;dur=0');
+  const timer = createTimer(() => 0);
+  timer.inner('gh_read_repo', Number.NaN);
+  timer.inner('gh_read_release', undefined);
+  timer.inner('gh_read_assets', -5);
+  assert.equal(timer.header(), 'headers;dur=0, gh_read_assets;dur=0, total;dur=0');
+});
+
+test('without the opt-in header the response carries no Server-Timing at all', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(timedRequest(packet, {}), env);
+      assert.equal(response.status, 200);
+      assert.deepEqual([...response.headers.keys()].sort(), ['cache-control', 'content-type']);
+    });
+    const bad = new Request('https://receiver.example/v1/feedback', { method: 'POST', body: 'x',
+      headers: { 'Content-Type': 'text/plain', 'Content-Length': '1' } });
+    const refused = await worker.fetch(bad, env);
+    assert.equal(refused.status, 400);
+    assert.equal(refused.headers.get('Server-Timing'), null);
+  } finally { env.DB.native.close(); }
+});
+
+test('a successful upload reports every sequential phase, and each phase is charged to its own step', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const clock = virtualClock();
+  slowDatabase(env, clock);
+  const remote = new FakeGitHub();
+  clock.install();
+  try {
+    await withGitHub(slowGitHub(remote, clock), async () => {
+      const response = await worker.fetch(timedRequest(packet), env);
+      assert.equal(response.status, 200);
+      assert.ok((await response.json()).case_id.startsWith('feedback-'));
+      const entries = parseTiming(response.headers.get('Server-Timing'));
+      const names = entries.map(item => item.name);
+      assert.deepEqual(names.filter(name => SEQUENCE.includes(name)), SEQUENCE, '顺序阶段必须齐全且按处理先后排列');
+      assert.deepEqual(names.filter(name => name.startsWith('gh_')),
+        [...INNER, 'gh_zip_upload', 'gh_zip_readback', 'gh_receipt_upload', 'gh_receipt_readback']);
+      const spent = durations(entries);
+      assert.equal(spent.github_auth, 50);
+      assert.equal(spent.github_storage, 200 + 80 + 120 + 40);
+      assert.equal(spent.gh_zip_upload, 200);
+      assert.equal(spent.gh_zip_readback, 80);
+      assert.equal(spent.gh_receipt_upload, 120);
+      assert.equal(spent.gh_receipt_readback, 40);
+      assert.equal(spent.lease, 3);
+      assert.equal(spent.receipt_commit, 3);
+      // 数据库操作数（每次 3 毫秒）按处理流程逐步数出来：budget 4 次（来源额度、全局额度、当天清扫标记，
+      // 全新库里这是当天第一个请求所以还会执行一次清扫删除）；byte_budget 1 次；case 3 次（数案件、插入、读回）。
+      assert.equal(spent.budget, 12);
+      assert.equal(spent.byte_budget, 3);
+      assert.equal(spent.case, 9);
+      assert.equal(spent.body + spent.unpack + spent.archive, 0, '纯计算和读请求体不推进虚拟时钟');
+      const total = SEQUENCE.reduce((sum, name) => sum + spent[name], 0);
+      assert.equal(spent.total, total, '总数必须等于各顺序阶段之和，不能有悄悄消失的时间');
+      assert.match(response.headers.get('Server-Timing'), /isolate;desc=(cold|warm)/);
+      assert.doesNotMatch(response.headers.get('Server-Timing'), /request_\d/, '不对外给出累计请求数');
+    });
+  } finally { clock.restore(); env.DB.native.close(); }
+});
+test('a failure partway through storage still reports the phases it reached, plus the cleanup it cost', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const clock = virtualClock();
+  slowDatabase(env, clock);
+  const remote = new FakeGitHub();
+  clock.install();
+  try {
+    await withGitHub(slowGitHub(remote, clock, { failZipReadback: true }), async () => {
+      const response = await worker.fetch(timedRequest(packet), env);
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: 'github_http_500', phase: 'github_storage' });
+      const entries = parseTiming(response.headers.get('Server-Timing'));
+      const names = entries.map(item => item.name);
+      assert.deepEqual(names.filter(name => !name.startsWith('gh_') && name !== 'isolate' && name !== 'total'),
+        [...SEQUENCE.slice(0, SEQUENCE.indexOf('github_storage') + 1), 'lease_release', 'error_cleanup'],
+        '失败后只有走到的阶段，外加释放租约和退额度两步');
+      const spent = durations(entries);
+      assert.equal(spent.github_storage, 200 + 80, '读回失败时上传和读回的耗时都要算进去');
+      assert.equal(spent.gh_zip_readback, 80, '抛错的那一步也要留下耗时');
+      assert.equal(spent.lease_release, 3);
+      assert.ok(spent.error_cleanup >= 3, '退额度至少有一次数据库写入');
+      assert.equal(spent.total, [...SEQUENCE.slice(0, SEQUENCE.indexOf('github_storage') + 1), 'lease_release', 'error_cleanup']
+        .reduce((sum, name) => sum + spent[name], 0));
+      assert.equal(names.includes('receipt_commit'), false);
+    });
+  } finally { clock.restore(); env.DB.native.close(); }
+});
+
+test('a request refused at the door still answers with timing when asked, and only its own phases', async () => {
+  const env = environment();
+  try {
+    const refused = await worker.fetch(new Request('https://receiver.example/v1/feedback', { method: 'POST', body: 'x',
+      headers: { 'Content-Type': 'text/plain', 'Content-Length': '1', 'X-Skyrocket-Timing': '1' } }), env);
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { error: 'request_headers', phase: 'headers' });
+    const names = parseTiming(refused.headers.get('Server-Timing')).map(item => item.name);
+    assert.deepEqual(names, ['headers', 'error_cleanup', 'isolate', 'total']);
+    // 这条请求是合法上传，会一路走到 GitHub，所以必须挂假 GitHub，不能让测试真的去访问线上接口。
+    const remote = new FakeGitHub();
+    await withGitHub(remote, async () => {
+      const other = await worker.fetch(timedRequest(await archiveFor(), { 'X-Skyrocket-Timing': 'yes' }), env);
+      assert.equal(other.status, 200);
+      assert.equal(other.headers.get('Server-Timing'), null, '只有精确的 1 才算打开计时');
+    });
+    assert.equal(remote.assets.size, 2, '上传确实走完了，只是没有计时头');
+  } finally { env.DB.native.close(); }
+});
+
+test('the three preflight reads overlap in real time: preflight takes about the slowest read, not the sum', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  const base = '/repos/' + REPOSITORY;
+  const delays = new Map([[base, 100], [base + '/releases/1', 200], [base + '/releases/1/assets', 300]]);
+  const delayed = { fetch: async (input, options = {}) => {
+    const url = new URL(input);
+    const wait = (options.method ?? 'GET') === 'GET' ? delays.get(url.pathname) : undefined;
+    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+    return remote.fetch(input, options);
+  } };
+  try {
+    await withGitHub(delayed, async () => {
+      const response = await worker.fetch(timedRequest(packet), env);
+      assert.equal(response.status, 200);
+      const spent = durations(parseTiming(response.headers.get('Server-Timing')));
+      assert.ok(spent.gh_read_repo >= 90 && spent.gh_read_release >= 190 && spent.gh_read_assets >= 290, JSON.stringify(spent));
+      // 用同一次请求里的相对关系判断，不依赖机器忙闲：并发时预检约等于最慢那项（300），串行才是三项之和（600）。
+      // 两者差 300 毫秒，留 150 毫秒的余量给定时器抖动，仍然分得开。
+      assert.ok(spent.gh_preflight_serial_sum - spent.gh_preflight >= 150,
+        `并发应当省下至少 150 毫秒：预检 ${spent.gh_preflight}，串行之和 ${spent.gh_preflight_serial_sum}`);
+      assert.ok(spent.gh_preflight >= spent.gh_read_assets - 5, '预检不可能比最慢的那项还短');
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('the isolate is labelled cold only for its first upload request and never reveals a running count', async () => {
+  const env = environment();
+  try {
+    const labels = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await worker.fetch(new Request('https://receiver.example/v1/feedback', { method: 'POST', body: 'x',
+        headers: { 'Content-Type': 'text/plain', 'Content-Length': '1', 'X-Skyrocket-Timing': '1' } }), env);
+      const header = response.headers.get('Server-Timing');
+      labels.push(/isolate;desc=(cold|warm)/.exec(header)[1]);
+      assert.doesNotMatch(header, /request_\d|\d+;desc/, '头里不能带累计数字');
+    }
+    // 本文件里别的用例已经让这个运行实例处理过上传请求，所以这里三次都是 warm；cold 只可能出现在整个进程的第 1 个请求。
+    assert.deepEqual(labels, ['warm', 'warm', 'warm']);
+  } finally { env.DB.native.close(); }
+});
+
 test('the publish deadline really reaches every GitHub call made for a request', async () => {
   const packet = await archiveFor();
   const env = environment();
@@ -853,4 +1178,280 @@ test('the publish deadline really reaches every GitHub call made for a request',
   } finally { Date.now = realNow; }
   assert.equal(remote.assets.size, 0, '总时限过后不能再往 GitHub 写东西');
   env.DB.native.close();
+});
+
+// ---- 安装令牌的实例内缓存：同一个运行实例里不该每个请求都向 GitHub 换一次 ----
+async function uploadsOnOneInstance(remote, env, count) {
+  const statuses = [];
+  await withGitHub(remote, async () => {
+    for (let n = 0; n < count; n++) statuses.push((await worker.fetch(request(await archiveFor({ text: 'SYNTHETIC TEST ONLY ' + n })), env)).status);
+  });
+  return statuses;
+}
+
+test('two different uploads on one instance share one installation token', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    assert.deepEqual(await uploadsOnOneInstance(remote, env, 2), [200, 200]);
+    assert.equal(remote.assets.size, 4, '两份反馈各占 zip 和回执两个资产，说明确实是两个不同的案件');
+    assert.equal(remote.mintCount, 1, '第二个请求必须复用缓存的令牌，不能再向 GitHub 换');
+  } finally { env.DB.native.close(); }
+});
+
+test('two concurrent uploads on one instance share the in-flight installation token request', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  const slowRemote = { fetch: async (input, options = {}) => {
+    if (new URL(input).pathname.startsWith('/app/installations/')) await sleep(150);
+    return remote.fetch(input, options);
+  } };
+  try {
+    const packets = await Promise.all([archiveFor({ text: 'CONCURRENT SYNTHETIC TEST 1' }), archiveFor({ text: 'CONCURRENT SYNTHETIC TEST 2' })]);
+    const statuses = await withGitHub(slowRemote, () => Promise.all(packets.map(packet => worker.fetch(request(packet), env).then(response => response.status))));
+    assert.deepEqual(statuses.sort(), [200, 200]);
+    assert.equal(remote.mintCount, 1, '并发请求必须等待同一个进行中的换令牌请求');
+  } finally { env.DB.native.close(); }
+});
+
+test('a failed in-flight token request is cleared before the next request retries', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  let failed = true;
+  const flakyRemote = { fetch: async (input, options = {}) => {
+    if (new URL(input).pathname.startsWith('/app/installations/') && failed) {
+      failed = false;
+      return new Response('{}', { status: 500 });
+    }
+    return remote.fetch(input, options);
+  } };
+  try {
+    const packet = await archiveFor({ text: 'RETRY SYNTHETIC TEST' });
+    await withGitHub(flakyRemote, async () => {
+      const refused = await worker.fetch(request(packet), env);
+      assert.equal(refused.status, 503);
+      const accepted = await worker.fetch(request(packet), env);
+      assert.equal(accepted.status, 200);
+    });
+    assert.equal(remote.mintCount, 1, '第一次换令牌失败后，下一次请求必须重新换令牌');
+  } finally { env.DB.native.close(); }
+});
+
+ test('a token that is about to expire is not reused', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  remote.tokenLifetimeMs = 30000; // 短于提前作废的一分钟余量：缓存里的令牌一拿到就已经算过期
+  try {
+    assert.deepEqual(await uploadsOnOneInstance(remote, env, 2), [200, 200]);
+    assert.equal(remote.mintCount, 2, '快到期的令牌不能复用：每个请求都要换新的');
+  } finally { env.DB.native.close(); }
+});
+
+// ---- 换令牌与写租约同时进行：令牌不依赖租约的结果，没必要排在它后面 ----
+function delayLeaseWrite(env, ms) {
+  const inner = env.DB;
+  env.DB = { native: inner.native, prepare(sql) { const prepared = inner.prepare(sql); return { bind(...params) {
+    const bound = prepared.bind(...params);
+    const lag = sql.startsWith('UPDATE cases SET state=CASE') ? ms : 0;
+    return { async first() { if (lag) await sleep(lag); return bound.first(); }, async run() { return bound.run(); } };
+  } }; } };
+}
+
+test('the token request and the lease write overlap in real time: the token wait is hidden behind the lease', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  delayLeaseWrite(env, 300);
+  const remote = new FakeGitHub();
+  const slowToken = { fetch: async (input, options = {}) => {
+    if (new URL(input).pathname.startsWith('/app/installations/')) await sleep(300);
+    return remote.fetch(input, options);
+  } };
+  try {
+    await withGitHub(slowToken, async () => {
+      const response = await worker.fetch(timedRequest(packet), env);
+      assert.equal(response.status, 200);
+      const spent = durations(parseTiming(response.headers.get('Server-Timing')));
+      assert.ok(spent.lease >= 290, '租约写入被拖慢了 300 毫秒：' + JSON.stringify(spent));
+      assert.ok(spent.gh_token_mint >= 290, '换令牌本身要 300 毫秒：' + JSON.stringify(spent));
+      // 同一次请求里的相对关系：串行时 github_auth 约等于换令牌的 300，并行时只剩换令牌与租约之间的差。
+      assert.ok(spent.gh_token_mint - spent.github_auth >= 150,
+        `换令牌应当被租约写入盖住至少 150 毫秒：换令牌 ${spent.gh_token_mint}，github_auth ${spent.github_auth}`);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('the overlapped token request is bound by the publish deadline too', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const realNow = Date.now;
+  let skewed = false;
+  // 租约写入的那一刻（换令牌已发出、请求还没真正出门）时钟越过总时限：换令牌必须按“已超时”失败，
+  // 而不是拿一个默认的 30 秒上限继续等。假接口只在收到中止信号时才失败，所以没传时限就会照常成功。
+  const inner = env.DB;
+  env.DB = { native: inner.native, prepare(sql) { const prepared = inner.prepare(sql); return { bind(...params) {
+    const bound = prepared.bind(...params);
+    return { async first() { if (sql.startsWith('UPDATE cases SET state=CASE')) skewed = true; return bound.first(); },
+      async run() { return bound.run(); } };
+  } }; } };
+  const remote = new FakeGitHub();
+  const abortable = { fetch: async (input, options = {}) => {
+    if (new URL(input).pathname.startsWith('/app/installations/')) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 150);
+        options.signal.addEventListener('abort', () => { clearTimeout(timer); reject(options.signal.reason); });
+      });
+    }
+    return remote.fetch(input, options);
+  } };
+  Date.now = () => realNow() + (skewed ? PUBLISH_DEADLINE_MS + 1000 : 0);
+  try {
+    await withGitHub(abortable, async () => {
+      const refused = await worker.fetch(request(packet), env);
+      assert.equal(refused.status, 503);
+      assert.deepEqual(await refused.json(), { error: 'upstream_timeout', phase: 'github_auth' });
+    });
+  } finally { Date.now = realNow; env.DB.native.close(); }
+  assert.equal(remote.assets.size, 0);
+});
+
+test('a refused lease answers at once and a failing overlapped token request leaves no unhandled rejection', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'uploading', ?, ?, NULL)")
+    .run(packet.envelope.idempotency_key, packet.envelope.archive_sha256, Date.now() + 120000, 'someone-else');
+  const rejections = [];
+  const record = reason => rejections.push(reason);
+  process.on('unhandledRejection', record);
+  let mintFinished = false;
+  try {
+    await withGitHub({ fetch: async () => { await sleep(150); mintFinished = true; return new Response('{}', { status: 500 }); } }, async () => {
+      const refused = await worker.fetch(request(packet), env);
+      assert.equal(refused.status, 409);
+      assert.equal((await refused.json()).error, 'submission_in_progress');
+      assert.equal(mintFinished, false, '租约被拒时直接回应，不能等一个已经没用的令牌请求');
+      await sleep(300);
+      assert.equal(mintFinished, true, '换令牌那一路确实在后台跑完并失败了，否则这条用例什么也没证明');
+    });
+  } finally { process.off('unhandledRejection', record); env.DB.native.close(); }
+  assert.deepEqual(rejections, []);
+});
+
+test('a token minted for one installation is never used for another', async () => {
+  const first = environment();
+  const second = environment();
+  const remote = new FakeGitHub();
+  try {
+    assert.deepEqual(await uploadsOnOneInstance(remote, first, 1), [200]);
+    assert.equal(remote.mintCount, 1);
+    assert.deepEqual(await uploadsOnOneInstance(remote, second, 1), [200]);
+    assert.equal(remote.mintCount, 2, '换了安装号就是另一个身份，必须重新换令牌');
+  } finally { first.DB.native.close(); second.DB.native.close(); }
+});
+
+test('cold-cache uploads on one installation share one in-flight token request', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  remote.mintDelayMs = 120;
+  const first = await archiveFor({ text: 'SYNTHETIC CONCURRENT ONE' });
+  const second = await archiveFor({ text: 'SYNTHETIC CONCURRENT TWO' });
+  try {
+    await withGitHub(remote, async () => {
+      const results = await Promise.all([worker.fetch(request(first), env), worker.fetch(request(second), env)]);
+      assert.deepEqual(results.map(result => result.status), [200, 200]);
+    });
+    assert.equal(remote.mintCount, 1, '冷缓存并发上传也只能向 GitHub 换一次令牌');
+    assert.equal(remote.assets.size, 4, '两份不同反馈都正常收件，不能因为合并令牌请求而丢一份');
+  } finally { env.DB.native.close(); }
+});
+
+test('a burst of refused leases shares one background token request instead of multiplying GitHub auth calls', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  remote.mintDelayMs = 120;
+  env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'uploading', ?, ?, NULL)")
+    .run(packet.envelope.idempotency_key, packet.envelope.archive_sha256, Date.now() + 120000, 'someone-else');
+  try {
+    await withGitHub(remote, async () => {
+      const results = await Promise.all(Array.from({ length: 6 }, () => worker.fetch(request(packet), env)));
+      assert.deepEqual(results.map(result => result.status), [409, 409, 409, 409, 409, 409]);
+      await sleep(220);
+    });
+    assert.equal(remote.mintCount, 1, '租约都被拒也不能把 6 次重试放大成 6 次 GitHub 认证');
+    assert.equal(remote.assets.size, 0);
+  } finally { env.DB.native.close(); }
+});
+
+test('a GitHub 401 or 403 invalidates the cached token and retries the whole publication once', async () => {
+  for (const status of [401, 403]) {
+    const env = environment();
+    const remote = new FakeGitHub();
+    remote.authFailures = 1;
+    remote.authFailureStatus = status;
+    try {
+      await withGitHub(remote, async () => {
+        const response = await worker.fetch(request(await archiveFor({ text: 'SYNTHETIC AUTH RETRY ' + status })), env);
+        assert.equal(response.status, 200, '认证失败后应从预检开始完整重试一次：' + status);
+      });
+      assert.equal(remote.mintCount, 2, '旧令牌清掉后只换一次新令牌：' + status);
+      assert.equal(remote.assets.size, 2, '重试必须利用资产名幂等，不重复写入：' + status);
+    } finally { env.DB.native.close(); }
+  }
+});
+
+test('a second GitHub 401 or 403 is returned after one retry rather than looping or keeping the bad cache', async () => {
+  for (const status of [401, 403]) {
+    const env = environment();
+    const remote = new FakeGitHub();
+    remote.authFailures = 9;
+    remote.authFailureStatus = status;
+    try {
+      await withGitHub(remote, async () => {
+        const response = await worker.fetch(request(await archiveFor({ text: 'SYNTHETIC AUTH STOPS ' + status })), env);
+        assert.equal(response.status, 503);
+        assert.equal((await response.json()).error, 'github_http_' + status);
+      });
+      assert.equal(remote.mintCount, 2, '最多刷新一次令牌，不能无限重试：' + status);
+      assert.equal(remote.assets.size, 0);
+    } finally { env.DB.native.close(); }
+  }
+});
+
+test('an auth failure after the ZIP write retries from the preflight and reuses the already stored ZIP', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  remote.authFailureAfterUploads = 1;
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(request(await archiveFor({ text: 'SYNTHETIC AUTH AFTER ZIP' })), env);
+      assert.equal(response.status, 200);
+    });
+    assert.equal(remote.mintCount, 2, '认证失效后只刷新一次令牌');
+    assert.equal(remote.uploadCount, 2, 'ZIP 已写入，重试只补回执，不能上传第二份同名 ZIP');
+    assert.equal(remote.assets.size, 2);
+  } finally { env.DB.native.close(); }
+});
+
+test('different installations can mint tokens concurrently without sharing in-flight state', async () => {
+  const first = environment();
+  const second = environment();
+  const remote = new FakeGitHub();
+  const slowRemote = { fetch: async (input, options = {}) => {
+    if (new URL(input).pathname.startsWith('/app/installations/')) await sleep(100);
+    return remote.fetch(input, options);
+  } };
+  try {
+    const packets = await Promise.all([archiveFor({ text: 'INSTALLATION A' }), archiveFor({ text: 'INSTALLATION B' })]);
+    const statuses = await withGitHub(slowRemote, () => Promise.all([
+      worker.fetch(request(packets[0]), first).then(response => response.status),
+      worker.fetch(request(packets[1]), second).then(response => response.status),
+    ]));
+    assert.deepEqual(statuses.sort(), [200, 200]);
+    assert.equal(remote.mintCount, 2, '不同安装号必须各自换令牌');
+  } finally { first.DB.native.close(); second.DB.native.close(); }
+});
+
+test('no test in this file reached the real network', async () => {
+  await sleep(100); // 后台那路换令牌可能在前面某条用例结束后才发出，给它们落地的时间
+  assert.deepEqual(strayRequests, []);
 });

@@ -52,7 +52,13 @@ const SECURITY_HEADERS = {
 // 这些路径只认 GET / HEAD；其他方法给 405 和 Allow，而不是笼统的 404。
 const READ_ONLY_PATHS = new Set(["/", "/index.html", "/health", "/privacy", "/robots.txt", "/favicon.ico", "/owner", "/stats"]);
 // 首页没有内联样式（样式表是同源文件，内联 SVG 只用呈现属性），所以单独收紧：样式也只许同源。
-const LANDING_CSP = SECURITY_HEADERS["content-security-policy"].replace("style-src 'self' 'unsafe-inline'", "style-src 'self'");
+// 构建时把样式表内联进页面（省掉首次绘制前的一次往返），并把内联样式的 sha256 写进来：
+// 策略里没有 'unsafe-inline'，页面上多出任何别的内联样式都会被浏览器拒绝。源码形态（未构建）没有内联样式，只许同源。
+const LANDING_STYLE_HASH = "__LANDING_STYLE_HASH__";
+const LANDING_CSP = SECURITY_HEADERS["content-security-policy"].replace("style-src 'self' 'unsafe-inline'",
+  LANDING_STYLE_HASH.startsWith("__") ? "style-src 'self'" : `style-src 'self' '${LANDING_STYLE_HASH}'`);
+// 只能导出函数：Cloudflare 的 Worker 模块不接受字符串之类的非函数导出，运行时会直接拒绝启动（node 里的测试看不出来）。
+export function landingCsp() { return LANDING_CSP; }
 
 export function downloadPath(version, asset, route = "public") {
   const query = new URLSearchParams({ version, asset });

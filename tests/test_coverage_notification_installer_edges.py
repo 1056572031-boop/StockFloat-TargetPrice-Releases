@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover
 
 import sf_notify as notify
 import sf_update as update
+from tools import apply_installer_icon as installer_icon
 
 install_delegate = notify._install_delegate  # discipline-ok(R5): UN creates this callback entry internally
 notification_identifier = notify._notification_identifier  # discipline-ok(R5): response adapter under test
@@ -45,6 +46,34 @@ class ObjectBase:
 def response(identifier):
     return types.SimpleNamespace(notification=lambda: types.SimpleNamespace(
         request=lambda: types.SimpleNamespace(identifier=lambda: identifier)))
+
+
+class InstallerMetadataEdges(SFCase):
+    def test_missing_or_short_finder_info_cannot_claim_hidden_extension(self):
+        path = pathlib.Path(tempfile.mkstemp(suffix=".command")[1])
+        self.addCleanup(path.unlink, missing_ok=True)
+        with mock.patch.object(installer_icon, "read_finder_info", side_effect=[None, b"short"]):
+            self.assertFalse(installer_icon.finder_info_extension_hidden(path))
+            self.assertFalse(installer_icon.finder_info_extension_hidden(path))
+
+    def test_extension_hidden_stops_before_display_name_when_flag_is_absent(self):
+        path = pathlib.Path(tempfile.mkstemp(suffix=".command")[1])
+        self.addCleanup(path.unlink, missing_ok=True)
+        with mock.patch.object(installer_icon, "finder_info_extension_hidden", return_value=False), \
+                mock.patch.object(installer_icon, "displayed_name") as displayed:
+            self.assertFalse(installer_icon.extension_hidden(path))
+        displayed.assert_not_called()
+
+    def test_check_requires_hidden_extension_even_when_copy_setting_is_changed(self):
+        path = pathlib.Path(tempfile.mkstemp(suffix=".command")[1])
+        self.addCleanup(path.unlink, missing_ok=True)
+        with mock.patch.object(installer_icon, "check_icon", return_value=(True, "图标已读回")), \
+                mock.patch.object(installer_icon, "extension_hidden", return_value=False), \
+                mock.patch.object(installer_icon, "displayed_name", return_value=path.name), \
+                mock.patch.object(installer_icon, "HIDE_EXTENSION_IN_VOLUME", False):
+            ok, note = installer_icon.check(path)
+        self.assertFalse(ok)
+        self.assertIn(".command", note)
 
 
 class NotificationClickLifecycle(SFCase):

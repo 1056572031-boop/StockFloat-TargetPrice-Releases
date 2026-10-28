@@ -66,8 +66,13 @@ PLANTED_SELECTOR = "applicationShouldHandleReopen:hasVisibleWindows:"
 
 # ---------------------------------------------------------------- 静态部分（父进程）
 def _product_files(root):
-    """产品范围内的 .py：闸门与用例自己造的探针类不算（它们由 --self-test 负责）。"""
-    skip_parts = {".venv", "build", "backups", ".git", "__pycache__", "node_modules"}
+    """产品范围内的 .py：闸门与用例自己造的探针类不算（它们由 --self-test 负责）。
+
+    `.qoder` 是编辑器放并行工作树的地方（`.qoder/worktrees/<名>/` 里是整份工程副本）。
+    不排除它，副本里的每个 ObjC 类都会以 `.qoder.worktrees.<名>.模块.类` 的名字被当成
+    "本工程新写的、没进 FACTORIES 的类"而判红（2026-10-28 实测 7 条），红的不是本工程的代码。
+    """
+    skip_parts = {".venv", "build", "backups", ".git", "__pycache__", "node_modules", ".qoder"}  # pragma: no cover
     for path in sorted(root.rglob("*.py")):
         rel_parts = path.relative_to(root).parts
         if "archive" in rel_parts or any(p in skip_parts for p in rel_parts):
@@ -497,6 +502,35 @@ def self_test(found):
         if empty_total or not empty_bad:
             bad.append("空目录扫出 %d 处引用、报红 %d 条 → 零输入被当成通过，"
                        "这一层失明时没人会知道" % (empty_total, len(empty_bad)))
+
+    # 7) 并行工作树（.qoder/worktrees/<名>/）里的副本不是本工程：同一份探针放在根下必须扫到、
+    #    放在 .qoder 下必须扫不到。根下那一份是对照 —— 没有它，"扫不到"可能只是扫描整体失明。
+    #    本函数只在子进程里跑（run_tests.sh 第 0.3 关的 --self-test，以及 tests/test_release_gates.py
+    #    对每个链上工具起子进程跑一遍），coverage.py 看不见子进程；本文件不在主进程 import
+    #    （理由见 tests/test_gate_selftests_in_suite.py 的 SKIPPED），所以这一段标 no cover，
+    #    这是记账口径，不是没跑。
+    probe = ("from Foundation import NSObject, NSString\n\n\n"  # pragma: no cover
+             "class _Twin(NSObject):\n"
+             "    def applicationShouldHandleReopen_hasVisibleWindows_(self, app, flag):\n"
+             "        return True\n")
+    with tempfile.TemporaryDirectory() as td:  # pragma: no cover
+        root = pathlib.Path(td)
+        (root / "sf_probe_root.py").write_text(probe, encoding="utf-8")
+        nested = root / ".qoder" / "worktrees" / "other-tree"
+        nested.mkdir(parents=True)
+        (nested / "sf_probe_nested.py").write_text(probe, encoding="utf-8")
+        scanned = scan_objc_classes(root)
+        symbols = scan_pyobjc_symbols(root)
+        if "sf_probe_root._Twin" not in scanned:
+            bad.append("根下的对照探针没被扫到 → 本条自检是空的（扫到 %r）" % (sorted(scanned),))
+        if not any("sf_probe_root.py" in w for ws in symbols.values() for w in ws):
+            bad.append("根下的对照探针的 pyobjc 符号引用没被扫到 → 符号扫描失明")
+        if any(k.startswith(".qoder") or "other-tree" in k for k in scanned):
+            bad.append(".qoder 下的另一棵工作树被当成本工程扫描 → 它的类会被误报成"
+                       "「没进 FACTORIES」：%r" % (sorted(scanned),))
+        nested_refs = [w for ws in symbols.values() for w in ws if ".qoder" in w]
+        if nested_refs:
+            bad.append(".qoder 下的 pyobjc 符号引用被算进本工程：%r" % (nested_refs,))
 
     if bad:
         for line in bad:

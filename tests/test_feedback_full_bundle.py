@@ -625,6 +625,47 @@ class FullDiagnosticDialogTests(_FeedbackCase):
             self.assertEqual(set(packets[0]["state"]["truncated"]), {"automatic_collection", "diagnostic_attachments"})
             self.assertEqual(read_diagnostics(packets[0]["files"]["diagnostics.zip"])["state.json"]["truncated"], ["synthetic field cap"])
 
+    def test_full_capture_charges_main_thread_and_worker_time_to_one_capture_segment(self):
+        # 采集的前半（拍快照、建任务）在用户点击后的主线程，后半（写出诊断压缩包）在上传线程。
+        # 假时钟让两半各推进固定秒数：只量后台 finish() 会得到 11 秒，漏掉主线程那 5 秒。
+        with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None):
+            now = [1000.0]
+
+            def capture(_context):
+                now[0] += 5.0
+                job = DiagnosticArchive(None)
+                real_finish = job.finish
+
+                def finish():
+                    now[0] += 11.0
+                    return real_finish()
+
+                job.finish = finish
+                with zipfile.ZipFile(io.BytesIO(diagnostic_bytes())) as package:
+                    for name in package.namelist():
+                        job.writestr(name, package.read(name))
+                return job
+
+            inbox = GitHubInbox(MemoryGitHub())
+            state = snapshot()
+            state["app_version"] = APP_VERSION
+            dialog = self.track_widget(FeedbackDialog(snapshot=state, storage_dir=directory,
+                endpoint="https://receiver.example", diagnostic_capture=capture,
+                sender=lambda _url, envelope, path: inbox.accept(envelope, Path(path).read_bytes())))
+            with patch("sf_feedback_ui._clock", lambda: now[0]), patch("sf_feedback_ui.log_line") as log:
+                dialog.upload_button.click()
+                self.finish(dialog)
+            self.assertEqual(dialog.stage, "received")
+            timing = dialog.last_upload_timing
+            self.assertEqual(timing["capture_ms"], 16000)
+            for name in ("pack_ms", "enqueue_ms", "network_ms", "other_ms"):
+                self.assertEqual(timing[name], 0, name)
+            self.assertEqual(timing["total_ms"], 16000)
+            self.assertFalse(timing["resumed"])
+            lines = [call.args[0] for call in log.call_args_list if "feedback upload timing:" in call.args[0]]
+            self.assertEqual(len(lines), 1)
+            self.assertIn("capture_ms=16000 pack_ms=0 enqueue_ms=0 network_ms=0 other_ms=0 total_ms=16000", lines[0])
+
     def test_upload_and_retry_keep_the_same_complete_capture_and_description(self):
         with tempfile.TemporaryDirectory() as directory, patch("sf_system_alert.show_alert", return_value=None):
             root = Path(directory)

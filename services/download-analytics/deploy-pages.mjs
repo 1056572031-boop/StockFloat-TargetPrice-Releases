@@ -127,8 +127,10 @@ for (let attempt = 0; attempt < 6 && !liveOk; attempt += 1) {
     const cspOk = csp.includes("img-src 'self' data:") && csp.includes("media-src 'self'") && scriptSrc === "'self'";
     // 素材地址从线上页面里读出来（带 ?v=内容哈希），而不是自己拼：拼出来的地址即使能取到，
     // 也证明不了页面里写的那个地址能取到。每个素材还要满足：长缓存头在、内容哈希与地址里的一致。
-    const assetNames = ["landing.css", "landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "file-pdf.png", "file-dmg.png", "file-zip.png",
-      "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-2-alert.webp", "scene-3-fullscreen.webp", "scene-4-hide.webp"];
+    const assetNames = ["landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "file-pdf.png", "file-dmg.png", "file-zip.png",
+      "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-2-alert.webp", "scene-3-fullscreen.webp", "scene-4-hide.webp",
+      "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm", "scene-4-hide-1470.mp4", "scene-4-hide-1470.webm",
+      ...["scene-1-switch", "scene-2-alert", "scene-3-fullscreen", "scene-4-hide", "scene-4-hide-poster"].flatMap(base => [720, 1280, 2100].map(width => `${base}-${width}.webp`))];
     const referenced = new Map();
     for (const match of pageBody.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=([0-9a-f]{10})/g)) referenced.set(match[1], match[2]);
     const assets = await Promise.all(assetNames.map(async name => {
@@ -158,13 +160,23 @@ for (let attempt = 0; attempt < 6 && !liveOk; attempt += 1) {
         && tail.body.equals(asset.body.subarray(last));
       return { name: asset.name, ok, head: head.response.status, tail: tail.response.status };
     }));
-    const rangeOk = rangeChecks.length >= 2 && rangeChecks.every(check => check.ok);
-    const stylesheet = await (await fetch(`${base}/assets/landing.css?v=${referenced.get("landing.css")}`, { signal: AbortSignal.timeout(10000) })).text().catch(() => "");
-    const cssRefsOk = !/url\(\/assets\/[A-Za-z0-9._-]+\)/.test(stylesheet) && /url\(\/assets\/app-icon\.png\?v=[0-9a-f]{10}\)/.test(stylesheet);
-    const expectedTypes = { "landing.css": "text/css", "landing.js": "javascript", "atmo.svg": "image/svg+xml",
+    // 页面上登记的每一个视频都必须做过分段对拍，数量对不上就是有视频没被读回到。
+    const videoCount = assetNames.filter(name => /\.(?:webm|mov|mp4)$/i.test(name)).length;
+    const rangeOk = rangeChecks.length === videoCount && rangeChecks.every(check => check.ok);
+    // 样式表已内联进页面（省一次往返）：策略头里的哈希必须等于页面上那一段内联样式的 sha256，
+    // 且页面上只有这一段内联样式、没有外链样式表、没有 'unsafe-inline'——哈希对不上，浏览器会整段拒绝，页面照样 200 但没有任何样式。
+    const inlineStyles = [...pageBody.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(match => match[1]);
+    const styleHash = inlineStyles.length === 1 ? "sha256-" + createHash("sha256").update(inlineStyles[0], "utf8").digest("base64") : "";
+    const styleSrc = (csp.match(/(?:^|;)\s*style-src([^;]*)/) || [])[1]?.trim() || "";
+    const styleCspOk = inlineStyles.length === 1 && !/rel="stylesheet"/.test(pageBody) && styleSrc === `'self' '${styleHash}'`;
+    const cssRefsOk = styleCspOk && !/url\(\/assets\/[A-Za-z0-9._-]+\)/.test(inlineStyles[0] || "") && /url\(\/assets\/app-icon\.png\?v=[0-9a-f]{10}\)/.test(inlineStyles[0] || "");
+    const expectedTypes = { "landing.js": "javascript", "atmo.svg": "image/svg+xml",
       "app-icon.png": "image/png", "installer-icon.png": "image/png", "file-pdf.png": "image/png", "file-dmg.png": "image/png", "file-zip.png": "image/png",
       "hero-replay-poster.webp": "image/webp", "hero-replay-60fps.webm": "video/webm", "hero-replay-60fps-hevc.mov": "video/quicktime",
-      "scene-1-switch.webp": "image/webp", "scene-2-alert.webp": "image/webp", "scene-3-fullscreen.webp": "image/webp", "scene-4-hide.webp": "image/webp" };
+      "scene-1-switch.webp": "image/webp", "scene-2-alert.webp": "image/webp", "scene-3-fullscreen.webp": "image/webp", "scene-4-hide.webp": "image/webp",
+      "scene-4-hide-poster.webp": "image/webp", "scene-4-hide.mp4": "video/mp4", "scene-4-hide.webm": "video/webm",
+      "scene-4-hide-1470.mp4": "video/mp4", "scene-4-hide-1470.webm": "video/webm" };
+    for (const name of assetNames) if (/-(?:720|1280|2100)\.webp$/.test(name)) expectedTypes[name] = "image/webp";
     const assetsOk = cssRefsOk && assets.every(asset => asset.status === 200 && asset.bytes > 0 && asset.type.includes(expectedTypes[asset.name])
       && /immutable/.test(asset.cache) && /max-age=\d{7,}/.test(asset.cache) && asset.hashOk);
     const privacyResponse = await fetch(base + "/privacy", { signal: AbortSignal.timeout(10000), headers: { "cache-control": "no-cache" } });

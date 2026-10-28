@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-27",
+  "updated": "2026-10-29",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4301,12 +4301,12 @@
       "introduced_version": null,
       "introduced_note": "原始快照时间为2026-10-20T01:40:04Z，不等于发现时间。此前对话已发现但无可独立证明的发现时刻，本次按实际记账时刻登记，不补估定位耗时。问题在管理分析器，不据此认定客户端更新失败。",
       "found_version": "1.4.97",
-      "fixed_version": null,
+      "fixed_version": "1.4.101",
       "failed_lines": [
         "verify"
       ],
       "why_missed": "分析器按计数名称包含fail/error/dropped和正数一概触发疑似故障，未区分隐私过滤元数据与历史错误；原有测试只验证健康真假和报告落盘，缺少真实正常快照的隐私计数反例。首次发现和根因均在此前无秒级证据的分析中已发生，本次命令只是补记账，不用于定位耗时。",
-      "defense_added": "源码已区分隐私过滤、历史计数和当前异常；补充tests/test_feedback_analyzer.py正反例及tests/test_feedback_pipeline.py旧缓存失效/原报告保留测试。关联断言通过不代替完整关卡；后台独立快照尚未更新，本条未关闭。",
+      "defense_added": "源码已区分隐私过滤、历史计数和当前异常；补充tests/test_feedback_analyzer.py正反例及tests/test_feedback_pipeline.py旧缓存失效/原报告保留测试。关联断言通过不代替完整关卡。2026-10-28 补收口：修复提交 e5ce171 是 1.4.101 发布头 70d3b69 的祖先，该版发布前的完整回归日志含「全部测试通过」且关卡戳与发布头同源；后台独立快照已于 2026-10-27 随反馈代理运行时 f6869505cd1c93bb（分析器 v9）更新，并用它重分析了原始案件 feedback-5dac422f，读回的真实报告把 sf_update._secret_keys_dropped 记为 privacy_filter / info，结论 insufficient_evidence、依据 no_fault_signal，历史计数不再冒充当前故障。",
       "observed_at": null,
       "observed_origin": "unknown",
       "rootcause_at": null,
@@ -4323,15 +4323,15 @@
       "evidence": "verified",
       "rootcause_origin": "unknown",
       "recurrence_risk": "中",
-      "recurrence_verdict": "已有本地正反例，完整关卡与实际后台更新待验",
+      "recurrence_verdict": "已有本地正反例；完整关卡随 1.4.101 发布已过，后台快照已更新并读回原案件真实报告（单案件证据）",
       "recurrence_guard_refs": [
         "tests/test_feedback_analyzer.py",
         "tests/test_feedback_pipeline.py"
       ],
       "recurrence_liar_check": "隐私精确例外不得吞掉其他丢弃或错误计数；测试自声明不得自动排除反馈；历史计数不得冒充当前异常。",
-      "recurrence_next_action": "保留并行界面修改，解决兼容测试后，在正式版正常退出的安全条件下完成完整关卡，再更新独立后台快照并读回真实报告。",
-      "recurrence_reviewed_on": "2026-10-20",
-      "recurrence_review_method": "源码及关联断言和7个哈希匹配原始包的隔离重分析；完整关卡未通过，不代表后台已生效"
+      "recurrence_next_action": "保留 tests/test_feedback_analyzer.py 与 tests/test_feedback_pipeline.py 的隐私过滤正反例；后续改分析器规则时，同批升级后台运行时并用新规则重分析原始案件 feedback-5dac422f 读回。本次读回用的是本机已收件的真实案件，没有跑 tools/verify_feedback_github.py 的联网合成上传，那条只验上传链路，不影响本条分类结论。",
+      "recurrence_reviewed_on": "2026-10-28",
+      "recurrence_review_method": "源码及关联断言和7个哈希匹配原始包的隔离重分析（2026-10-20）；2026-10-28 补：核对 1.4.101 完整回归与关卡戳证据、后台运行时与代码一致性，并读回原案件在分析器 v9 下的真实报告"
     },
     {
       "id": "N16",
@@ -4631,6 +4631,7 @@
       "defense_added": [
         "代理运行时升级为 f6869505cd1c93bb（14 个文件与提交 17ca4fe 逐字相同，识别 feedback_ui.json），17 条案件全部 ready 并生成桌面报告；后续客户端新增诊断字段时，需同批升级代理运行时并用最新已收件包复验"
       ],
+      "recurrence_next_action": "2026-10-28 已复验：升级后新收到的 1.4.104 反馈包 feedback-c21ea053（10-27 16:44，内含 feedback_ui.json）被新运行时分析为 ready 并生成桌面报告，队列 18 条全部 ready、无失败，定时任务上次退出码 0。本条修复是本机代理运行时升级，不在任何出包版本内，故 fixed_version 保持为空（与 1.4.106 复盘声明一致）。下一步：每次客户端诊断包新增成员，同批用 tools/install_feedback_agent.py --replace 升级代理运行时，并用升级后新收到的反馈包复验 ready；现运行时 f6869505 比当前代码少 4 个文件的更新（sf_diag.py、sf_privacy.py、tools/feedback_agent.py、tools/feedback_desktop_reports.py），下次需要这些行为时再升级。",
       "observed_at": null,
       "observed_origin": "unknown",
       "rootcause_at": null,
@@ -5425,6 +5426,18 @@
         "点关闭正常退出先落终态、交接态不被覆盖的回归，反馈窗与记录窗右上角关闭按钮的版式回归"
       ],
       "zero_reason": null
+    },
+    {
+      "version": "1.4.108",
+      "date": "2026-10-29",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "防线一：静态闸门、PyObjC 签名核对与公开资料检查均通过；反馈与下载改动进入对应测试和发布特征清单。",
+        "防线二：6318 项完整回归、改动行覆盖 13205/13205、候选包特征/import 闭包/冻结冒烟/圆角与安装器元数据验收覆盖本轮变更。",
+        "防线三：反馈队列状态、上传失败类别与下载页交付结果仍由诊断包、日志和发布后读回记录保留；真实站点、Safari HEVC 与显示器流畅度继续单列未验证。"
+      ],
+      "zero_reason": "本轮改动在发布前完整回归、改动行覆盖、冻结产物特征与安装器真实验收中均有对应判据；未发现已进入发布产物的线上逃逸，因此不新增逃逸条目。"
     }
   ],
   "comparison_policy": {

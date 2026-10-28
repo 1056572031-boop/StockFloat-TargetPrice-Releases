@@ -49,7 +49,7 @@ const landing = await fs.readFile(resolve(root, "src/landing.mjs"), "utf8");
 const importLine = 'import { landingPage } from "./landing.mjs";\n';
 if (!source.includes(importLine)) throw new Error("src/index.mjs 缺少 landing.mjs 的 import 行");
 if (!landing.includes("export function landingPage")) throw new Error("src/landing.mjs 缺少 landingPage");
-for (const placeholder of ['"__CURRENT_VERSION__"', '"__CURRENT_DMG_BYTES__"']) {
+for (const placeholder of ['"__CURRENT_VERSION__"', '"__CURRENT_DMG_BYTES__"', '"__LANDING_STYLE_HASH__"']) {
   if (!source.includes(placeholder)) throw new Error(`${placeholder} is missing from src/index.mjs`);
 }
 // 两个文件合成一个模块后，顶层同名声明会在部署时才报错；这里先把两边的顶层名字取出来比对。
@@ -87,8 +87,18 @@ const styled = (await fs.readFile(stylePath, "utf8")).replace(/url\(\/assets\/([
 });
 await fs.writeFile(stylePath, styled);
 hashes["landing.css"] = await fingerprint(stylePath);
+// 样式表内联进页面：首次绘制不用再等一次样式表的往返。landing.css 仍随产物发布（旧页面缓存里的引用不会 404），新页面不再引用它。
+// 内联的是改写（带指纹）之后的样式文本，它的 sha256 写进首页的样式策略；文本放进模板字符串前要转义反斜杠、反引号和 ${。
+const STYLE_LINK = '<link rel="stylesheet" href="/assets/landing.css">';
+if (built.split(STYLE_LINK).length !== 2) throw new Error("页面模板里应恰好有一处样式表外链");
+if (/<\/style/i.test(styled)) throw new Error("样式表里不能出现 </style，否则会提前结束内联样式");
+const escapedCss = styled.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+const styleHash = "sha256-" + createHash("sha256").update(styled, "utf8").digest("base64");
+const inlineBuilt = built
+  .replace(STYLE_LINK, () => `<style>${escapedCss}</style>`)
+  .replace('"__LANDING_STYLE_HASH__"', () => JSON.stringify(styleHash));
 // 页面模板里的引用同样改写；引用到 public/ 里没有的文件，宁可构建失败也不要上线一个 404。
-const versioned = built.replace(/\/assets\/([A-Za-z0-9._-]+\.(?:css|js|svg|png|webp|webm|mov))(?=")/g, (_all, name) => {
+const versioned = inlineBuilt.replace(/\/assets\/([A-Za-z0-9._-]+\.(?:css|js|svg|png|webp|webm|mov|mp4))(?=["\s,])/g, (_all, name) => {
   if (!hashes[name]) throw new Error(`页面模板引用了不存在的素材：${name}`);
   return `/assets/${name}?v=${hashes[name]}`;
 });

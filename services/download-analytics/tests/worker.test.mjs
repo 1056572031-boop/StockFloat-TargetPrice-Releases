@@ -110,7 +110,12 @@ test("the application icon is a same-origin file shared by favicon, header and i
   assert.match(body, /<link rel="icon" type="image\/png" href="\/assets\/app-icon\.png">/);
   assert.match(body, /<div class="logo" role="img" aria-label="Skyrocket 图标"><\/div>/);
   assert.match(body, /<span class="appic"><\/span>/, "第 2 步的程序图标与页头、标签页图标用同一份文件");
-  assert.doesNotMatch(body, /data:image\//, "页面本身不再内嵌 data URI");
+  // 唯一允许的内嵌图是懒加载用的 1x1 透明占位图（37 字节、整串精确匹配）；任何别的 data URI 仍然不许出现。
+  const placeholder = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+  assert.doesNotMatch(body.replaceAll(placeholder, ""), /data:image\//i, "页面本身不再内嵌 data URI（1x1 占位图除外，大小写都不行）");
+  // 占位图恰好四处（场景 1–3 与第 4 张的静止图），而且都在 <img src="…"> 里，不能出现在样式或别的属性里。
+  assert.equal(body.split(placeholder).length - 1, 4);
+  assert.equal((body.match(new RegExp(`<img class="lz"[^>]* src="${placeholder.replace(/[+/=]/g, "\\$&")}"`, "g")) || []).length, 4);
 });
 
 test("an uninjected version does not emit broken download links", () => {
@@ -373,16 +378,84 @@ test("the page has a skip link, one main landmark and a footer landmark, in that
 test("the hero plays the recorded replay, falls back to a still frame, and the four scene images load lazily with their size written down", () => {
   const body = page("1.4.104", 27_472_418);
   const video = body.match(/<video id="mv"[^>]*>[\s\S]*?<\/video>/)?.[0] || "";
-  assert.match(video, /muted loop playsinline autoplay/, "无声循环自动播放才不会被浏览器拦");
+  assert.match(video, /muted loop playsinline preload="none"/, "无声循环内联；preload=none：脚本不叫它之前一个字节都不下");
+  assert.doesNotMatch(video, /autoplay/, "不写 autoplay：开始时机由脚本定（首屏图片到位之后，省流量与弱动效时不播）");
   assert.match(video, /poster="\/assets\/hero-replay-poster\.webp"/, "视频没加载出来时先显示封面");
   assert.ok(video.indexOf("video/quicktime") < video.indexOf("video/webm"), "Safari 的 HEVC 源要排在 WebM 前面，Chrome 会跳过它");
   assert.match(body, /<img class="still" src="\/assets\/hero-replay-poster\.webp"[^>]*alt="[^"]*非实时[^"]*"/, "减少动态效果时显示的静止图");
   assert.match(video, /aria-label="[^"]*真实分钟线回放 非实时[^"]*"/, "读屏用户能听到这是回放、非实时");
-  const shots = body.match(/<img src="\/assets\/scene-[1-4]-[a-z]+\.webp"[^>]*>/g) || [];
-  assert.equal(shots.length, 4);
-  for (const tag of shots) assert.match(tag, /width="2940" height="1912"[^>]*loading="lazy"|loading="lazy"[^>]*width="2940" height="1912"/, "屏下场景图懒加载并写明宽高，避免版面跳动");
-  assert.equal(new Set(shots.map(tag => tag.match(/scene-\d/)[0])).size, 4, "四张用四张不同的图");
+  // 前三张是脚本懒加载的图片：HTML 里只有占位图 + data-src，真地址靠脚本在接近视野时换上；
+  // 第四张是循环视频（下一条用例单独守），所以这里按 scene-1..3 的 data-src 取。
+  const shots = body.match(/<img class="lz" src="data:[^"]*" data-src="\/assets\/scene-[1-3]-[a-z]+\.webp"[^>]*>/g) || [];
+  assert.equal(shots.length, 3);
+  for (const tag of shots) {
+    assert.match(tag, /width="2940" height="1912"/, "屏下场景图写明宽高，避免版面跳动");
+    assert.match(tag, /decoding="async"/);
+    assert.doesNotMatch(tag, /loading="lazy"/, "不用浏览器自带懒加载：它的提前量常把首屏下面的图在首屏加载时就一起拉了");
+    assert.doesNotMatch(tag, /\ssrcset=/, "真的 srcset 只能放在 data-srcset 里，写成 srcset 浏览器会立刻去选一档下载");
+    const set = tag.match(/data-srcset="([^"]+)"/)?.[1] || "";
+    assert.deepEqual(set.split(", ").map(item => item.split(" ")[1]), ["720w", "1280w", "2100w", "2940w"], "四档宽度，最大一档是原图");
+    assert.match(tag, /sizes="\(min-width:1120px\) 1040px, \(min-width:981px\) calc\(100vw - 80px\), calc\(100vw - 48px\)"/, "sizes 要与版面一致：容器最宽 1040，窄屏两侧留白 40 和 24");
+  }
+  assert.equal(new Set(shots.map(tag => tag.match(/scene-\d/)[0])).size, 3, "三张用三张不同的图");
+  // 没有脚本时占位图会让图空着，所以每张都要有 noscript 里的真图；真地址不能只存在于 data-src 里。
+  for (const name of ["scene-1-switch", "scene-2-alert", "scene-3-fullscreen"]) {
+    assert.match(body, new RegExp(`<noscript><img src="/assets/${name}\\.webp" srcset="[^"]+" sizes="[^"]+" width="2940" height="1912"[^>]*></noscript>`), `${name} 缺 noscript 备份`);
+  }
+  assert.doesNotMatch(body, /<img src="\/assets\/scene-[1-3]-[a-z]+\.webp"[^>]*>(?!<\/noscript>)/, "场景图不能再以真地址直接出现在 HTML 里，否则会随首屏一起下载");
   assert.doesNotMatch(body, /class="scene |class="dock"|hero-window|wall-\d/, "自绘场景和上一版素材不再出现");
+});
+
+test("the first screen preloads its cover image at high priority and keeps the decorative background out of the way", () => {
+  const body = page("1.4.104", 27_472_418);
+  const head = body.slice(0, body.indexOf("</head>"));
+  assert.match(head, /<link rel="preload" as="image" href="\/assets\/hero-replay-poster\.webp" fetchpriority="high">/, "首屏封面要在解析 HTML 时就开始拉，不等样式表和脚本");
+  assert.ok(head.indexOf('rel="preload"') < head.indexOf('rel="stylesheet"'), "预加载排在样式表之前才有意义");
+  assert.equal((head.match(/rel="preload"/g) || []).length, 1, "只预加载首屏封面一个：多预加载只会互相抢带宽");
+  assert.doesNotMatch(head, /rel="preload"[^>]*(scene-|\.mp4|\.webm)/, "屏下的图和视频绝不预加载");
+  assert.match(body, /<img src="\/assets\/atmo\.svg" alt="" fetchpriority="low" decoding="async">/, "纯装饰的背景图降低优先级，不和首屏封面抢");
+  // 小图标在屏下，不随首屏一起拉。
+  for (const name of ["file-pdf", "file-dmg", "file-zip", "installer-icon"]) {
+    assert.match(body, new RegExp(`<img src="/assets/${name}\\.png"[^>]*loading="lazy"`), `${name} 在屏下，应延后加载`);
+  }
+});
+
+test("the fourth scene is a looping video that waits for the viewer, keeps a poster, and has a still frame for reduced motion", () => {
+  const body = page("1.4.104", 27_472_418);
+  const video = body.match(/<video id="sv"[^>]*>[\s\S]*?<\/video>/)?.[0] || "";
+  assert.ok(video, "第 4 张卖点图应是 id=sv 的视频");
+  assert.match(video, /muted loop playsinline/, "无声循环内联播放，手机和 Safari 才不会弹全屏");
+  assert.match(video, /preload="none"/, "没滚到就不下载：四千像素的视频合计约 10MB，不能随首屏一起拉");
+  assert.doesNotMatch(video, /autoplay/, "播放时机交给脚本（滚进屏幕才播），不能写 autoplay");
+  assert.match(video, /width="2940" height="1912"/, "写明宽高，加载前后版面不跳动");
+  // 封面约 300KB：写成 poster 属性浏览器会随首屏就拉，所以先放 data-poster，接近视野时由脚本换成 poster。
+  assert.doesNotMatch(video, /\sposter=/, "不能直接写 poster 属性，否则封面随首屏一起下载");
+  assert.match(video, /data-poster="\/assets\/scene-4-hide-poster\.webp"/, "接近视野时脚本把它换成 poster，与视频第一帧一致");
+  const posterSet = video.match(/data-posterset="([^"]+)"/)?.[1] || "";
+  assert.deepEqual(posterSet.split(", ").map(item => item.split(" ")[1]), ["720w", "1280w", "2100w", "2940w"], "封面也分档，按屏幕挑");
+  // 视频分小档（1470 宽，手机和普通屏）与大档（2940 宽，高清屏）。源不写 src：写了浏览器在解析时就会挑一个，preload=none 也拦不住它去读元数据之外的东西。
+  const sources = [...video.matchAll(/<source ([^>]*)>/g)].map(match => match[1]);
+  assert.equal(sources.length, 4);
+  assert.ok(sources.every(attrs => !/\ssrc=|^src=/.test(attrs) && /data-src="\/assets\/scene-4-hide[^"]*\.(?:mp4|webm)\?v=[0-9a-f]{10}"|data-src="\/assets\/scene-4-hide[^"]*\.(?:mp4|webm)"/.test(attrs)), "四个源都只有 data-src");
+  assert.deepEqual(sources.map(attrs => attrs.match(/data-tier="(\w)"/)[1]), ["s", "s", "l", "l"], "每档里 mp4 在前 webm 在后");
+  assert.match(sources[0], /scene-4-hide-1470\.mp4/);
+  assert.match(sources[1], /scene-4-hide-1470\.webm/);
+  assert.match(sources[2], /scene-4-hide\.mp4/);
+  assert.match(sources[3], /scene-4-hide\.webm/);
+  assert.match(video, /<video id="sv" hidden /, "脚本接管前视频是隐藏的，占位由静止图的占位图撑着");
+  assert.ok(video.indexOf("video/mp4") < video.indexOf("video/webm"), "Safari 的 HEVC 源要排在 WebM 前面，Chrome 会跳过它");
+  assert.match(video, /codecs="hvc1"/, "HEVC 要标 hvc1，Safari 才认");
+  assert.match(video, /aria-label="[^"]*自动收进程序坞[^"]*示意数据[^"]*"/, "读屏用户能听到画面讲了什么、是示意数据");
+  assert.match(body, /<figure class="sc-shot" id="s4"><video id="sv"/, "容器 id=s4 是脚本观察的对象");
+  const still = body.match(/<img class="lz" id="ss"[^>]*>/)?.[0] || "";
+  assert.match(still, /data-still="\/assets\/scene-4-hide\.webp"/, "静止图的真地址只存在 data-still 里，静态模式才由脚本换上");
+  assert.match(still, /data-stillset="[^"]*720w[^"]*1280w[^"]*2100w[^"]*2940w"/, "静止图也分档");
+  assert.match(still, /alt="[^"]*收进程序坞[^"]*"/, "静止图有替代文字");
+  assert.match(still, /width="2940" height="1912"/);
+  assert.doesNotMatch(still, /\ssrc="\/assets\/|\ssrcset=/, "静止图加载时只是占位，不然视频用户也会白下 350KB");
+  assert.match(body, /<noscript><img src="\/assets\/scene-4-hide\.webp"[^>]*width="2940" height="1912"[^>]*alt="[^"]*收进程序坞[^"]*"><\/noscript>/, "没有脚本时：视频是隐藏的，改显静止图");
+  assert.equal((body.match(/id="sv"/g) || []).length, 1);
+  assert.doesNotMatch(body, /<img src="\/assets\/scene-4-hide\.webp"[^>]*>(?!<\/noscript>)/, "第四张不能再是不会动的普通图片");
 });
 
 test("the footer links to a statistics note that states what is stored and for how long", async () => {
@@ -436,7 +509,8 @@ test("every restored file without clearance is marked as such in its own row, an
   const register = readFileSync(fileURLToPath(new URL("../ASSETS.md", import.meta.url)), "utf8");
   const rows = name => register.split("\n").find(line => line.startsWith(`| \`${name}\` |`)) || "";
   for (const name of ["hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "hero-replay-poster.webp",
-    "scene-1-switch.webp", "scene-2-alert.webp", "scene-3-fullscreen.webp", "scene-4-hide.webp", "file-pdf.png", "file-dmg.png", "file-zip.png"]) {
+    "scene-1-switch.webp", "scene-2-alert.webp", "scene-3-fullscreen.webp", "scene-4-hide.webp", "scene-4-hide-poster.webp",
+    "scene-4-hide.mp4", "scene-4-hide.webm", "file-pdf.png", "file-dmg.png", "file-zip.png"]) {
     assert.match(rows(name), /未取得授权/, `${name} 的登记行必须写明没有授权`);
   }
   assert.match(rows("scene-3-fullscreen.webp"), /壁纸 13/, "第三张必须写明用的是哪张壁纸");
@@ -901,6 +975,16 @@ test("the stylesheet keeps the narrow-screen fix and the fallbacks, and the fall
   assert.match(css, /@media\(prefers-reduced-motion:reduce\)\{\.win video\{display:none\}\.win \.still\{display:block\}\}/,
     "减少动态效果时必须藏视频、显示静止图");
   assert.match(css, /\.win \.still\{display:none\}/, "平时静止图是藏着的，否则会盖在视频上");
+  // 第四张卖点图：视频与静止图谁显示由脚本切 hidden 属性（含减少动态效果、省流量），样式只负责三件事：
+  // 隐藏态真的不占位、图和视频都按比例占住位置（占位图是 1 像素，不写比例会塌成一条线）、无脚本时藏起占位图。
+  // 这条规则必须存在：视频自带的 display:block 会盖过浏览器默认的 [hidden]；它靠选择器优先级（类+属性）取胜，与书写顺序无关。
+  assert.match(css, /\.sc-shot \[hidden\]\{display:none\}/, "hidden 属性要真的藏起来");
+  assert.match(css, /\.sc-shot img,\.sc-shot video\{[^}]*aspect-ratio:2940\/1912/, "视频和占位图在加载前后都要占住同样的位置");
+  // 无脚本时占位图留在原处撑住比例，noscript 里的真图绝对定位盖在它上面：不依赖较新的 scripting 媒体查询（旧浏览器不认它会叠成两倍高）。
+  assert.match(css, /\.sc-shot\{[^}]*position:relative/, "真图要相对这个容器定位");
+  assert.match(css, /\.sc-shot noscript img\{position:absolute;top:0;left:0;width:100%;height:100%;aspect-ratio:auto\}/, "无脚本时真图盖住占位框");
+  assert.doesNotMatch(css, /scripting:none/, "不用 scripting 媒体查询：旧浏览器不认它");
+  assert.doesNotMatch(css, /\.sc-shot \.still|\.sc-shot video\{display:none\}/, "旧的靠样式切换静止图的写法不能残留，否则会和脚本的切换打架");
   assert.doesNotMatch(css, /\.scene|\.dock|cqw/, "自绘场景已经换成整图，样式不应残留");
   // 被覆盖的基础规则以最后一条为界：降级和强制配色块必须排在它之后，否则同优先级下基础规则会赢。
   const lastBase = css.indexOf(".nojs-note{");

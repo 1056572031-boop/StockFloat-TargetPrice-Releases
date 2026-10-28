@@ -108,9 +108,16 @@ def endpoint_url(url: str, *, allow_loopback=False) -> str:
     return url
 
 
-def submit_https(url, envelope, archive_path, *, allow_loopback=False):
+def _read_for_send(path, envelope, verified):
+    """verified 为空时与以前完全一样地调用 read_upload_archive（不多传参数，替换它的用例照常工作）。"""
+    if verified is None:
+        return read_upload_archive(path, envelope)
+    return read_upload_archive(path, envelope, verified=verified)
+
+
+def submit_https(url, envelope, archive_path, *, allow_loopback=False, verified=None):
     url = endpoint_url(url, allow_loopback=allow_loopback)
-    packet = read_upload_archive(archive_path, envelope)
+    packet = _read_for_send(archive_path, envelope, verified)
     validate_capture_context(packet["manifest"], packet["state"])
     del packet
     archive = Path(archive_path).read_bytes()
@@ -135,14 +142,16 @@ def submit_https(url, envelope, archive_path, *, allow_loopback=False):
     return receipt
 
 
-def submit_pending(outbox, outbox_id, url, *, sender=submit_https):
+def submit_pending(outbox, outbox_id, url, *, sender=submit_https, verified=None):
     row = outbox.get(outbox_id)
     if row["status"] not in ("locally_verified", "response_unknown", "receipt_persisted"):
         raise FeedbackProtocolError("反馈状态不允许提交")
     # Recompute the binding before any network access; corrupted disk state
     # must not be submitted under a previously accepted identity.
+    # verified 是本进程刚做过完整内容校验的令牌：只用来跳过同一份字节的重复解析，
+    # 信封绑定与摘要仍然在下面对着此刻磁盘上的字节重算。
     from sf_feedback import sha256_file
-    read_upload_archive(row["archive_path"], row["envelope"])
+    _read_for_send(row["archive_path"], row["envelope"], verified)
     if sha256_file(row["archive_path"]) != row["archive_sha256"]:
         raise FeedbackProtocolError("本地反馈包校验失败")
     if row["status"] == "receipt_persisted":

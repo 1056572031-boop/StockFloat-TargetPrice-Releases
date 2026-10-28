@@ -44,11 +44,11 @@ class TestReleaseEvidence(SFCase):
         self.assertEqual(self.version, tool.version_value(None))
         with self.assertRaises(tool.EvidenceError):
             tool.version_value("0.0.0")
-        self.assertEqual("quality-v1.4.107-complete.json", tool.record_path(Path("."), self.version, True).name)
-        self.assertEqual("quality-v1.4.107.manifest.json", tool.manifest_path(Path("."), self.version).name)
+        self.assertEqual(f"quality-v{self.version}-complete.json", tool.record_path(Path("."), self.version, True).name)
+        self.assertEqual(f"quality-v{self.version}.manifest.json", tool.manifest_path(Path("."), self.version).name)
         self.assertEqual("true", tool.command_text(["true"]))
         self.assertEqual(3, len(tool.pre_commands(self.version, "base")))
-        self.assertEqual("Skyrocket-1.4.107-macos.zip", tool.app_paths(Path("/tmp"), self.version, None, None)[1].name)
+        self.assertEqual(f"Skyrocket-{self.version}-macos.zip", tool.app_paths(Path("/tmp"), self.version, None, None)[1].name)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "limitations.json"
             path.write_text(json.dumps(self.limitations()), encoding="utf-8")
@@ -95,7 +95,7 @@ class TestReleaseEvidence(SFCase):
             for index, command in enumerate(commands):
                 self.receipt(sessions / str(index), command, "fingerprint")
             with patch.object(quality, "source_snapshot", return_value={"fingerprint": "fingerprint"}), \
-                    patch.object(tool, "expanded_scope", return_value=["quality-v1.4.107.json", "quality-v1.4.107.manifest.json"]):
+                    patch.object(tool, "expanded_scope", return_value=[f"quality-v{self.version}.json", f"quality-v{self.version}.manifest.json"]):
                 path = tool.pre_record(root, self.version, "baseline", self.limitations())
             record = quality.load(path)
             self.assertEqual("development", record["status"])
@@ -274,7 +274,7 @@ class TestReleaseEvidence(SFCase):
             with patch.object(quality, "source_snapshot", return_value={"fingerprint": "fp"}):
                 with self.assertRaises(tool.EvidenceError):
                     tool.complete(root, self.version, self.limitations(), root / "state", root / "read", root / "walk", root / "evidence")
-            out = root / "quality-v1.4.107-complete.json"
+            out = root / f"quality-v{self.version}-complete.json"
             out.write_text("{}", encoding="utf-8")
             with patch.object(quality, "source_snapshot", return_value={"fingerprint": "fp"}):
                 with self.assertRaises(tool.EvidenceError):

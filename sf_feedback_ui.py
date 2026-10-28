@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import logging
@@ -14,7 +15,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
 from PyQt6.QtCore import QPoint, Qt, QTimer
@@ -27,13 +28,14 @@ from PyQt6.QtWidgets import (
 from sf_feedback import FeedbackProtocolError, build_archive
 from sf_feedback_capture import (
     CONSENT_VERSION, MAX_DESCRIPTION, package_files, read_upload_archive, validate_capture_context, validate_upload_receipt,
+    verify_upload_content,
 )
 from sf_feedback_outbox import FeedbackOutbox, OutboxBusy
 from sf_feedback_bundle import FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION, read_diagnostics
 from sf_feedback import utc_now
 from sf_feedback_versions import PAYLOAD_V3, is_full_payload
 from sf_logging import feature_enabled, log_line, log_swallow
-from sf_feedback_transport import endpoint_url, server_reply, submit_pending
+from sf_feedback_transport import endpoint_url, server_reply, submit_https, submit_pending
 from sf_glass import GlassMixin, paint_popup_surface, popup_stylesheet, prepare_popup_surface
 from sf_editor import MainCloseButton
 from sf_constants import FG_BRIGHT_HEX, FG_DISABLED_HEX, FG_HINT_HEX, FG_TEXT_HEX
@@ -109,6 +111,70 @@ def _failure_detail(exc, started):
         # 连上之后读响应超时抛的是裸 TimeoutError，不是 URLError，之前认不出来。
         detail["network_reason"] = "timeout"
     return detail
+
+
+def _clock() -> float:
+    """上传计时用的单调时钟。单独成函数，是为了让用例能只替换它，不去动全局 time 模块。"""
+    return time.monotonic()
+
+
+# 上传耗时的四个分段，顺序即日志里的输出顺序。
+#   capture 诊断采集（主线程拍快照与建任务 + 上传线程写出诊断压缩包）
+#   pack    外层反馈包压缩并校验
+#   enqueue 写入本机待提交队列
+#   network 网络请求，到收到服务端回执为止
+_TIMING_SEGMENTS = ("capture", "pack", "enqueue", "network")
+
+
+class _UploadTiming:
+    """一次点击“上传”的分段耗时。只记录真正走到的段：没走到的段不出现，不补 0。
+
+    重试一份已入队的反馈时不会重新采集、压缩、入队，那三段缺席就是“没执行”，
+    和“执行了但很快”在数据里是两回事。段内异常也会记下已经花掉的时间（finally）。
+    """
+
+    def __init__(self, resumed):
+        self.resumed = bool(resumed)
+        self.started = _clock()
+        self.spent: dict[str, float] = {}
+
+    @contextlib.contextmanager
+    def segment(self, name):
+        begin = _clock()
+        try:
+            yield
+        finally:
+            # 同一段允许进入多次（采集的前半在主线程、后半在上传线程），耗时累加。
+            self.spent[name] = self.spent.get(name, 0.0) + max(0.0, _clock() - begin)
+
+    def result(self, outcome, phase=""):
+        """输出可直接进日志和诊断包的纯数字字典（毫秒，整数）。
+
+        other_ms 是总耗时减去四段之和：入队前的草稿核对、领取提交租约、回执落盘等
+        没单列的本机步骤都在里面，保证“总数 = 各段 + 其他”，没有悄悄消失的时间。
+        """
+        total = max(0.0, _clock() - self.started)
+        measured = sum(self.spent.values())
+        data: dict[str, Any] = {"outcome": outcome, "resumed": self.resumed}
+        if phase:
+            data["phase"] = phase
+        for name in _TIMING_SEGMENTS:
+            if name in self.spent:
+                data[name + "_ms"] = int(round(self.spent[name] * 1000))
+        data["other_ms"] = int(round(max(0.0, total - measured) * 1000))
+        data["total_ms"] = int(round(total * 1000))
+        return data
+
+
+def _timing_line(timing):
+    """把计时字典写成一行 key=value，字段顺序固定，便于事后 grep 与人工对照。"""
+    order = ("outcome", "phase", "resumed") + tuple(n + "_ms" for n in _TIMING_SEGMENTS) + ("other_ms", "total_ms")
+    parts = []
+    for key in order:
+        if key in timing:
+            value = timing[key]
+            parts.append("%s=%s" % (key, int(value) if isinstance(value, bool) else value))
+    return "feedback upload timing: " + " ".join(parts)
 
 
 # 服务端明确拒收内容、重试不会改变结果的错误码（来自 services/feedback-worker 的 Rejection）。
@@ -447,6 +513,8 @@ class FeedbackDialog(_TitleDragDialog):
         self.last_error = ""
         self.last_failure_phase = ""
         self.last_failure_detail: dict[str, Any] = {}
+        # 最近一次点击“上传”的分段耗时（成功、失败都记）；程序重启后清空，只回答“刚才那次慢在哪”。
+        self.last_upload_timing: dict[str, Any] = {}
         self.preview_valid = False
         self.preview_files: dict[str, Any] | None = None
         self.validation_error = ""
@@ -893,21 +961,27 @@ class FeedbackDialog(_TitleDragDialog):
         outbox = self.outbox
         if outbox is None or not self.upload_button.isEnabled():
             return
+        timing = _UploadTiming(resumed=self.current_id is not None)
         try:
             if self.preview_files is None:
                 raise FeedbackProtocolError("没有已确认的上传预览")
             files = dict(self.preview_files)
             snapshot = json.loads(files["state.json"])
             if self.current_id is None and self.diagnostic_capture is not None and self.full_capture is None:
-                started = utc_now()
-                snapshot = self.capture_again() if self.capture_again else snapshot
-                snapshot["capture_started_at"] = started
-                snapshot["omitted"] = ["camera", "screenshots"]
-                context = {"trigger": "manual"} if self.payload_version == PAYLOAD_V3 else None
-                self.full_capture = {"job": self.diagnostic_capture(context), "bytes": None, "state": snapshot,
-                                     "payload_version": self.payload_version}
+                # 只有真的重新采集时才进“采集”段：拍快照、建采集任务都发生在用户点击后的主线程，
+                # 不能只量后台 finish() 而漏掉这部分。重试已入队的反馈、旧式不带诊断的反馈不会走到这里，
+                # 那时数据里没有 capture_ms，表示“没执行”，而不是“执行了 0 毫秒”。
+                with timing.segment("capture"):
+                    started = utc_now()
+                    snapshot = self.capture_again() if self.capture_again else snapshot
+                    snapshot["capture_started_at"] = started
+                    snapshot["omitted"] = ["camera", "screenshots"]
+                    context = {"trigger": "manual"} if self.payload_version == PAYLOAD_V3 else None
+                    self.full_capture = {"job": self.diagnostic_capture(context), "bytes": None, "state": snapshot,
+                                         "payload_version": self.payload_version}
             capture = self.full_capture if self.current_id is None else None
         except Exception as exc:
+            self.results.put(("timing", timing.result("failed", "prepare")))
             self.results.put(("failed", _failure("prepare", exc)))
             self._poll()
             return
@@ -927,7 +1001,7 @@ class FeedbackDialog(_TitleDragDialog):
 
         def work():
             phase = "recovery"
-            started = time.monotonic()
+            verified = None     # 只有本次点击里亲手打包并校验过的包才有令牌；重试已入队的包、重启后续传都没有
             try:
                 if pending_id is None:
                     # A previous enqueue can commit before its readback fails.
@@ -941,57 +1015,74 @@ class FeedbackDialog(_TitleDragDialog):
                             if capture is not None:
                                 phase = "capture"
                                 if capture["bytes"] is None:
-                                    diagnostic_path = Path(directory) / "diagnostics.zip"
-                                    capture["job"].path = str(diagnostic_path)
-                                    capture["job"].finish()
-                                    content = diagnostic_path.read_bytes()
-                                    diagnostics = read_diagnostics(content)
-                                    automatic = diagnostics.get("state.json", {})
-                                    if isinstance(automatic, dict) and isinstance(automatic.get("issues"), list):
-                                        capture["state"]["summary"]["capture_issue_count"] = len(automatic["issues"])
-                                    if (isinstance(automatic, dict) and automatic.get("truncated")
-                                            and "automatic_collection" not in capture["state"]["truncated"]):
-                                        capture["state"]["truncated"].append("automatic_collection")
-                                    if any(isinstance(issue, str) and (": source truncated," in issue or ": text truncated to " in issue)
-                                           for issue in diagnostics["export.json"]["issues"]):
-                                        capture["state"]["truncated"].append("diagnostic_attachments")
-                                    capture["bytes"] = content
-                                    capture["state"]["capture_completed_at"] = utc_now()
+                                    with timing.segment("capture"):
+                                        diagnostic_path = Path(directory) / "diagnostics.zip"
+                                        capture["job"].path = str(diagnostic_path)
+                                        capture["job"].finish()
+                                        content = diagnostic_path.read_bytes()
+                                        diagnostics = read_diagnostics(content)
+                                        automatic = diagnostics.get("state.json", {})
+                                        if isinstance(automatic, dict) and isinstance(automatic.get("issues"), list):
+                                            capture["state"]["summary"]["capture_issue_count"] = len(automatic["issues"])
+                                        if (isinstance(automatic, dict) and automatic.get("truncated")
+                                                and "automatic_collection" not in capture["state"]["truncated"]):
+                                            capture["state"]["truncated"].append("automatic_collection")
+                                        if any(isinstance(issue, str) and (": source truncated," in issue or ": text truncated to " in issue)
+                                               for issue in diagnostics["export.json"]["issues"]):
+                                            capture["state"]["truncated"].append("diagnostic_attachments")
+                                        capture["bytes"] = content
+                                        capture["state"]["capture_completed_at"] = utc_now()
                                 files["diagnostics.zip"] = capture["bytes"]
                                 snapshot.update(capture["state"])
                                 files["state.json"] = json.dumps(snapshot, ensure_ascii=False, allow_nan=False)
-                            build_archive(path, files, app_version=snapshot["app_version"],
-                                          bundle_id=snapshot["bundle_id"], run_id=snapshot["run_id"],
-                                          omitted=snapshot["omitted"], truncated=snapshot["truncated"],
-                                          capture_started_at=snapshot["capture_started_at"],
-                                          capture_completed_at=snapshot["capture_completed_at"],
-                                          diagnostic_payload_version=(capture["payload_version"] if capture else None))
-                            read_upload_archive(path)
+                            with timing.segment("pack"):
+                                build_archive(path, files, app_version=snapshot["app_version"],
+                                              bundle_id=snapshot["bundle_id"], run_id=snapshot["run_id"],
+                                              omitted=snapshot["omitted"], truncated=snapshot["truncated"],
+                                              capture_started_at=snapshot["capture_started_at"],
+                                              capture_completed_at=snapshot["capture_completed_at"],
+                                              diagnostic_payload_version=(capture["payload_version"] if capture else None))
+                                # 刚打好的包要先过一遍完整内容校验才允许入队（坏包不能落进待提交队列）；
+                                # 校验结果发成令牌，入队后的发送前复核对着同样的字节只重算摘要和信封绑定。
+                                verified = verify_upload_content(path)
                             phase = "enqueue"
-                            row = outbox.enqueue(path, app_version=snapshot["app_version"],
-                                                 consent_policy_version=(FULL_V3_CONSENT_VERSION if capture and capture["payload_version"] == PAYLOAD_V3
-                                                                          else FULL_CONSENT_VERSION if capture else CONSENT_VERSION),
-                                                 idempotency_key=draft_key)
+                            with timing.segment("enqueue"):
+                                row = outbox.enqueue(path, app_version=snapshot["app_version"],
+                                                     consent_policy_version=(FULL_V3_CONSENT_VERSION if capture and capture["payload_version"] == PAYLOAD_V3
+                                                                              else FULL_CONSENT_VERSION if capture else CONSENT_VERSION),
+                                                     idempotency_key=draft_key)
                     outbox_id = row["outbox_id"]
                 else:
                     outbox_id = pending_id
                 self.results.put(("sealed", outbox_id))
                 phase = "submit"
-                kwargs = {"sender": self.sender} if self.sender is not None else {}
-                receipt = submit_pending(outbox, outbox_id, self.endpoint, **kwargs)
+                injected: Callable[..., Any] | None = self.sender   # 测试注入的发送函数；None 即默认发送
+
+                def timed_sender(url, envelope, archive_path):
+                    with timing.segment("network"):
+                        if injected is None:
+                            # 默认发送：带上本次刚做过完整校验的令牌，同一份字节不再解析第三遍。
+                            return submit_https(url, envelope, archive_path, verified=verified)
+                        return injected(url, envelope, archive_path)
+
+                receipt = submit_pending(outbox, outbox_id, self.endpoint, sender=timed_sender, verified=verified)
+                # 计时先于结果入队：_poll 一次取空整条队列，先记账再改界面。
+                self.results.put(("timing", timing.result("received")))
                 self.results.put(("received", receipt))
             except Exception as exc:
                 failed = _failure(phase, exc)
                 try:
-                    failed["detail"] = _failure_detail(exc, started)
+                    failed["detail"] = _failure_detail(exc, timing.started)
                 except Exception:
                     failed["detail"] = {}    # 取证失败不能吞掉失败本身
+                self.results.put(("timing", timing.result("failed", phase)))
                 self.results.put(("failed", failed))
 
         try:
             self.worker = threading.Thread(target=work, name="feedback-upload", daemon=True)
             self.worker.start()
         except Exception as exc:
+            self.results.put(("timing", timing.result("failed", "worker_start")))
             self.results.put(("failed", _failure("worker_start", exc)))
             self._poll()
             return
@@ -1030,6 +1121,11 @@ class FeedbackDialog(_TitleDragDialog):
                 self.history.setCurrentIndex(index)
                 self.history.blockSignals(False)
                 self.status.setText("正在上传；未收到校验回执前，不代表 GitHub 已收件。")
+            elif kind == "timing":
+                self.last_upload_timing = dict(value)
+                # 失败那一行级别用 WARNING，和同一次失败的 “feedback failure” 行放在一起好对照。
+                log_line(_timing_line(self.last_upload_timing),
+                         "INFO" if value.get("outcome") == "received" else "WARNING")
             elif kind == "received":
                 self.stage = "received"
                 self.upload_button.setText("已上传")
@@ -1118,5 +1214,6 @@ def feedback_diagnostics(owner):
             "last_error": state.get("last_error", ""),
             "last_failure_phase": state.get("last_failure_phase", ""),
             "last_failure_detail": dict(state.get("last_failure_detail") or {}),
+            "last_upload_timing": dict(state.get("last_upload_timing") or {}),
             "storage_uncertain": state.get("storage_uncertain", False),
             "outbox_ready": state.get("outbox") is not None}
