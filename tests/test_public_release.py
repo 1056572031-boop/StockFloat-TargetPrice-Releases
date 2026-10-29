@@ -458,6 +458,10 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
             calls.append(args)
             if "ls-remote" in args:
                 return "abc refs/heads/public-source\n"
+            if args[:3] == ["git", "rev-parse", "HEAD^{tree}"]:
+                return "new-tree\n"
+            if args[:3] == ["git", "rev-parse", "FETCH_HEAD^{tree}"]:
+                return "published-tree\n"
             if "commit-tree" in args or "rev-parse" in args:
                 return "public-commit\n"
             return ""
@@ -467,6 +471,30 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
             self.assertEqual(public.push_source(self.root), "public-commit")
         self.assertTrue(any("FETCH_HEAD" in call and "commit-tree" in call for call in calls))
         self.assertFalse(any("--force" in call for call in calls))
+        audit.assert_called_once()
+
+    def test_public_push_reuses_an_identical_public_tree_without_new_commit_or_push(self):
+        calls = []
+
+        def command(args, *extra, **kwargs):
+            calls.append(args)
+            if "ls-remote" in args:
+                return "public-commit refs/heads/public-source\n"
+            if args[:3] == ["git", "rev-parse", "HEAD^{tree}"]:
+                return "same-tree\n"
+            if args[:3] == ["git", "rev-parse", "FETCH_HEAD^{tree}"]:
+                return "same-tree\n"
+            if args[:3] == ["git", "rev-parse", "HEAD"]:
+                return "public-commit\n"
+            return ""
+
+        with patch.object(public, "run", side_effect=command), \
+                patch.object(public, "audit_history") as audit:
+            self.assertEqual(public.push_source(self.root), "public-commit")
+        self.assertTrue(any(call[:3] == ["git", "update-ref", "HEAD"] and call[-1] == "FETCH_HEAD"
+                            for call in calls))
+        self.assertFalse(any("commit-tree" in call for call in calls))
+        self.assertFalse(any(call[:2] == ["git", "push"] for call in calls))
         audit.assert_called_once()
 
     def test_public_first_push_has_no_private_parent(self):

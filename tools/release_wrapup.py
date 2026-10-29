@@ -231,6 +231,19 @@ def preserved_elsewhere(repo: Path, base: str, tree: Path, name: str) -> bool:
                for e in entries)
 
 
+def tracked_matches_base(tree: Path, base: str, name: str) -> bool:
+    """A tracked file whose working copy equals base's version (bytes and mode) holds nothing to lose.
+
+    `git diff --quiet <base> -- <path>` compares the working tree with that commit; a deleted file, a
+    path base does not have, a different byte or a changed mode all count as unsaved, so only an exact
+    copy passes. Staged and unstaged edits are judged by the same working copy. A pathspec that matches
+    nothing also exits 0, which is why base must really hold the path (a rename entry carries a second
+    path field that parses into a name no tree has)."""
+    if git(tree, "rev-parse", "--verify", "-q", "%s:%s" % (base, name)).returncode != 0:
+        return False
+    return git(tree, "diff", "--quiet", base, "--", name).returncode == 0
+
+
 def unsaved_work(repo: Path, base: str, tree: Path, allow: list[str]) -> list[str]:
     """Reasons the tree still holds work that exists nowhere else (empty list = safe)."""
     status = git(tree, "status", "--porcelain=v1", "-z", "--untracked-files=all")
@@ -241,22 +254,40 @@ def unsaved_work(repo: Path, base: str, tree: Path, allow: list[str]) -> list[st
     for entry in [e for e in raw.split("\0") if e]:
         name = entry[3:]
         if entry[:2] != "??":
-            reasons.append("uncommitted change: " + name)
+            if not tracked_matches_base(tree, base, name):
+                reasons.append("uncommitted change: " + name)
         elif name not in allow and not preserved_elsewhere(repo, base, tree, name):
             reasons.append("untracked and not preserved: " + name)
     return reasons
 
 
+def calling_chain(parents: dict[str, str], start: str) -> set[str]:
+    """`start` and every ancestor reachable through the pid -> ppid map (cycle-safe)."""
+    chain, pid = set(), start
+    while pid and pid not in chain and pid in parents:
+        chain.add(pid)
+        pid = parents[pid]
+    return chain
+
+
 def processes_using(tree: Path) -> list[str]:
-    """Command lines of other running processes that mention the tree path."""
-    result = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, encoding="utf-8",
+    """Command lines of other running processes that mention the tree path.
+
+    The process running this check and the processes that launched it do not count: a caller such as
+    `land_branch --tree <tree> --retire` names the tree on its own command line, and so does the shell
+    wrapper around it, but they are the ones doing the retiring, not users of the tree. An ancestor
+    that really sits inside the tree is still caught by `cwd_holders`."""
+    result = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, encoding="utf-8",
                             errors="replace", timeout=30, check=False)
     if result.returncode != 0:
         raise WrapupError("cannot list running processes, so cannot prove the tree is idle")
     mention = re.compile(re.escape(str(tree)) + r"(?![\w.-])")
-    return [line.strip() for line in result.stdout.splitlines()
-            if mention.search(line) and "release_wrapup" not in line
-            and line.split(None, 1)[0] != str(os.getpid())]
+    rows = [line.split(None, 2) for line in result.stdout.splitlines() if line.strip()]
+    parents = {row[0]: row[1] for row in rows if len(row) >= 2}
+    skip = calling_chain(parents, str(os.getpid()))
+    return ["%s %s" % (row[0], row[2]) for row in rows
+            if len(row) == 3 and row[0] not in skip and mention.search(row[2])
+            and "release_wrapup" not in row[2]]
 
 
 def cwd_holders(tree: Path) -> list[str]:

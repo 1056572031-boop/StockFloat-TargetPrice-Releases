@@ -240,15 +240,26 @@ def export_source(out: Path, root: Path = ROOT) -> None:
 def push_source(out: Path) -> str:
     url = "https://github.com/%s.git" % REPO
     refs = run(["git", "ls-remote", url, "refs/heads/" + PUBLIC_BRANCH], out)
+    needs_push = True
     if refs.strip():
         run(["git", "fetch", "-q", url, PUBLIC_BRANCH], out)
-        # Attach only to the already public branch, never to the private development commit.
         tree = run(["git", "rev-parse", "HEAD^{tree}"], out).strip()
-        commit = run(["git", "commit-tree", tree, "-p", "FETCH_HEAD", "-m",
-                      "Corresponding source v" + APP_VERSION], out).strip()
-        run(["git", "update-ref", "refs/heads/" + PUBLIC_BRANCH, commit], out)
+        public_tree = run(["git", "rev-parse", "FETCH_HEAD^{tree}"], out).strip()
+        if tree == public_tree:
+            # Retrying an already published source snapshot must not create a new
+            # commit with identical content: its ZIP would have different archive
+            # metadata, while the same-name release asset is intentionally immutable.
+            run(["git", "update-ref", "HEAD", "FETCH_HEAD"], out)
+            needs_push = False
+            print("Public source tree already published; reusing existing commit")
+        else:
+            # Attach only to the already public branch, never to the private development commit.
+            commit = run(["git", "commit-tree", tree, "-p", "FETCH_HEAD", "-m",
+                          "Corresponding source v" + APP_VERSION], out).strip()
+            run(["git", "update-ref", "refs/heads/" + PUBLIC_BRANCH, commit], out)
     audit_history(out, str(Path.home()), signing_secrets(ROOT))
-    run(["git", "push", "-q", url, "HEAD:refs/heads/" + PUBLIC_BRANCH], out)
+    if needs_push:
+        run(["git", "push", "-q", url, "HEAD:refs/heads/" + PUBLIC_BRANCH], out)
     return run(["git", "rev-parse", "HEAD"], out).strip()
 
 

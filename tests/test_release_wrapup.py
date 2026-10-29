@@ -410,6 +410,39 @@ class TestRetire(RetireCase):
         self.commit(self.repo, entry["to"], "changed since it was indexed\n")
         self.assert_blocked("quality-copy.json")
 
+    def advance_base_file(self, text="advanced\n"):
+        """Main moves base.txt on; the release tree still sits on the old commit."""
+        self.commit(self.repo, "base.txt", text)
+
+    def test_tracked_change_whose_bytes_equal_the_base_version_does_not_block(self):
+        self.advance_base_file()
+        self.put("base.txt", "advanced\n", self.tree)
+        self.assertIn(" M base.txt", self.git(self.tree, "status", "--porcelain").stdout)
+        self.assertEqual(self.retire(apply=False)["tree"], "planned")
+        self.git(self.tree, "add", "--", "base.txt")  # staged edits are judged by the same working copy
+        self.assertEqual(self.retire(apply=False)["tree"], "planned")
+
+    def test_tracked_change_that_differs_from_the_base_version_still_blocks(self):
+        self.advance_base_file()
+        self.put("base.txt", "advanced, then edited here\n", self.tree)
+        self.assert_blocked("uncommitted change: base.txt")
+
+    def test_mode_only_change_and_deletion_of_a_tracked_file_still_block(self):
+        os.chmod(self.tree / "base.txt", 0o755)
+        self.assertIn(" M base.txt", self.git(self.tree, "status", "--porcelain").stdout)
+        self.assert_blocked("uncommitted change: base.txt")
+        os.chmod(self.tree / "base.txt", 0o644)
+        os.remove(self.tree / "base.txt")
+        self.assert_blocked("uncommitted change: base.txt")
+
+    def test_rename_and_new_staged_file_still_block_even_though_their_names_match_nothing_in_base(self):
+        self.git(self.tree, "mv", "base.txt", "moved.txt")
+        self.assert_blocked("uncommitted change: moved.txt")
+        self.git(self.tree, "mv", "moved.txt", "base.txt")
+        self.put("fresh.txt", "x\n", self.tree)
+        self.git(self.tree, "add", "--", "fresh.txt")
+        self.assert_blocked("uncommitted change: fresh.txt")
+
 
 class TestRetireSafetyEdges(RetireCase):
     def test_a_real_process_working_in_the_tree_blocks_retirement(self):
@@ -443,14 +476,46 @@ class TestRetireSafetyEdges(RetireCase):
             w.cwd_holders(self.tree)
 
     def test_process_filter_skips_ourselves_and_this_tool_but_keeps_real_users(self):
-        lines = ["%d python edit %s/a.txt" % (os.getpid(), self.tree),
-                 "4242 python tools/release_wrapup.py retire --tree %s" % self.tree,
-                 "4343 vim %s/real.txt" % self.tree,
-                 "4444 vim %s-old/other.txt" % self.tree,
-                 "4545 vim %s_scratch/other.txt" % self.tree]
+        lines = ["%d 1 python edit %s/a.txt" % (os.getpid(), self.tree),
+                 "4242 1 python tools/release_wrapup.py retire --tree %s" % self.tree,
+                 "4343 1 vim %s/real.txt" % self.tree,
+                 "4444 1 vim %s-old/other.txt" % self.tree,
+                 "4545 1 vim %s_scratch/other.txt" % self.tree]
         fake = subprocess.CompletedProcess([], 0, stdout="\n".join(lines) + "\n", stderr="")
         with mock.patch.object(w.subprocess, "run", return_value=fake):
             self.assertEqual(w.processes_using(self.tree), ["4343 vim %s/real.txt" % self.tree])
+
+    def test_processes_that_launched_this_check_do_not_count_but_unrelated_ones_do(self):
+        me = os.getpid()
+        lines = ["%d 7002 python wrapper.py" % me,  # this process, no mention
+                 "7002 7001 python tools/land_branch.py --tree %s --apply --retire" % self.tree,  # caller
+                 "7001 7000 /bin/zsh -c cd %s && run" % self.tree,  # the shell wrapper around the caller
+                 "7000 1 launcher --cwd %s" % self.tree,  # the top of the chain
+                 "8001 7000 vim %s/notes.txt" % self.tree,  # shares the grandparent, not an ancestor
+                 "8002 1 tail -f %s/log" % self.tree]
+        fake = subprocess.CompletedProcess([], 0, stdout="\n".join(lines) + "\n", stderr="")
+        with mock.patch.object(w.subprocess, "run", return_value=fake):
+            users = w.processes_using(self.tree)
+        self.assertEqual([u.split()[0] for u in users], ["8001", "8002"])
+
+    def test_calling_chain_follows_parents_stops_at_gaps_and_survives_cycles(self):
+        parents = {"10": "9", "9": "8", "8": "1", "1": "0", "50": "51", "51": "50"}
+        self.assertEqual(w.calling_chain(parents, "10"), {"10", "9", "8", "1"})
+        self.assertEqual(w.calling_chain(parents, "50"), {"50", "51"})
+        self.assertEqual(w.calling_chain(parents, "999"), set())
+
+    def test_a_real_caller_naming_the_tree_on_its_own_command_line_does_not_block(self):
+        # The parent's own command line carries the tree path but not the tool's file name (that comes from
+        # the environment), so the old "skip lines that name release_wrapup" rule cannot hide it: only
+        # recognising it as the caller's ancestor lets the retire check pass.
+        code = ("import os, subprocess, sys; sys.exit(subprocess.run([sys.executable, os.environ['SF_TEST_TOOL'],"
+                " 'retire', '--tree', sys.argv[1], '--repo', sys.argv[2], '--base', 'main']).returncode)")
+        env = dict(self.env, PYTHONPATH=str(SCRIPT.parent.parent), SF_TEST_TOOL=str(SCRIPT))
+        caller = subprocess.run([sys.executable, "-c", code, str(self.tree), str(self.repo)], cwd=str(self.repo),
+                                env=env, capture_output=True, text=True, timeout=120, check=False)
+        self.assertEqual(caller.returncode, 0, caller.stdout + caller.stderr)
+        self.assertIn("dry-run", caller.stdout)
+        self.assertTrue(self.tree.exists())
 
     def test_unreadable_process_list_means_the_tree_cannot_be_proven_idle(self):
         fake = subprocess.CompletedProcess([], 1, stdout="", stderr="denied")

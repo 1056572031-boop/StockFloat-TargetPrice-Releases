@@ -337,7 +337,7 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.108 Beta
+checkfile Contents/Resources/docs/README.md::v1.4.108**（稳定版）
 checkfile Contents/Resources/docs/README.md::未签名、未公证
 checkfile Contents/Resources/docs/INSTALL.md::v1.4.108
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞

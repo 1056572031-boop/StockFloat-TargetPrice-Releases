@@ -32,7 +32,7 @@ version 1.4.108
 skip sf_feedback_capture 主动采集、投影与上传前校验均为请求级处理，无模块级可变状态；失败停在反馈窗阶段并写入 outbox 错误，feedback.json 只报告最终队列事实。
 skip sf_feedback_transport HTTPS 发送器与令牌绑定校验无模块级可变状态；发送成功/失败、错误类型与队列结果由 feedback.json 的 queue 状态与 last_errors 输出，debug.log 另留失败 WARNING，不重复采集地址、正文或凭据。
 
-version 1.4.106
+version 1.4.107
 # 本版区间是 e2f13bf..HEAD（v1.4.105 发布源码以来，26 笔非合并提交）。下列模块要么只改了说明（语法树与基线逐项相同），要么没有常驻状态，逐条交代通路。
 skip renderer 本版只改说明文字，语法树与基线相同；纯几何与绘制函数，无模块级可变状态。
 skip sf_animator 本版只改说明文字，语法树与基线相同；动画由主窗持有，其开关由 state.json 的 features 输出。
