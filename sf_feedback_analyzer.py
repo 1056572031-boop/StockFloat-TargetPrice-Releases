@@ -12,7 +12,7 @@ import re
 import tempfile
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -21,7 +21,11 @@ from sf_feedback_bundle import read_diagnostics
 from sf_feedback_v3 import V3_DIAGNOSTIC_FILES, is_v3_export
 
 ANALYZER_SCHEMA_VERSION = 4
-ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v9"
+ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v10"
+# A 股连续竞价时段（北京时间，含端点），与 sf_quote.market_status 的口径一致。
+# 分析器要在没有行情模块的反馈代理里单独运行，所以这里不 import 它，也不带节假日表。
+_CN_TZ = timezone(timedelta(hours=8))
+_CN_SESSIONS = ((9 * 60 + 30, 11 * 60 + 30), (13 * 60, 15 * 60))
 DEFAULT_RULESET = {
     "required_members": ["state.json"],
     "health_false_conclusion": "suspected_problem",
@@ -53,6 +57,29 @@ def _atomic_text(path: Path, text: str) -> None:
 
 def _finding(code: str, severity: str, message: str) -> dict[str, Any]:
     return {"code": code, "severity": severity, "message": message}
+
+
+def _captured_outside_trading_session(completed_at: Any) -> bool:
+    """采集时刻是否确定落在 A 股连续竞价之外（周末、盘前、午休、收盘后）。
+
+    只在“能确定休市”时返回 True：时间缺失、解析失败、不带时区一律返回 False，
+    让调用方保持原来的告警口径（宁可多报，不许把真问题当成休市说明）。
+    没有节假日表，工作日的法定休市日会被当作开市处理，同样偏向多报。"""
+    if not isinstance(completed_at, str):
+        return False
+    try:
+        moment = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            return False
+        # 极值日期（如 9999-12-31 或 0001-01-01 带偏移）能被解析，但换算时区会溢出：
+        # 这条数据来自对端写的 state.json，不能让它把整份分析带崩。
+        local = moment.astimezone(_CN_TZ)
+    except (ValueError, OverflowError):
+        return False
+    if local.weekday() >= 5:
+        return True
+    minute_of_day = local.hour * 60 + local.minute
+    return not any(start <= minute_of_day <= end for start, end in _CN_SESSIONS)
 
 
 class _LogBucket(TypedDict):
@@ -273,10 +300,21 @@ def _full_analysis(files: dict[str, Any], run_id: Any) -> dict[str, Any]:
             else "last_failures 仅为留痕记录，不证明当前仍然失效；无标识时无法归属。", failure_scope)
     notify = _object(files.get("notify.json"))
     if notify.get("authorization") == "unknown":
-        add("notify_authorization_unknown", "warning" if notify_error else "info",
-            "通知授权状态未知；本次运行有 auth status/settings/query/center error，不等于用户拒绝授权。"
-            if notify_error else
-            "通知授权状态未知；没有本次查询错误可证明故障，可能正在异步查询或尚未取得答案，原因尚不能确定。", "snapshot")
+        auth_cache = _object(notify.get("authorization_cache"))
+        auth_pending = _object(notify.get("pending"))
+        # 缓存没有时间戳、没有在飞的查询、也没有本次的查询错误：这一次运行里系统从没答复过授权。
+        # 这是「没人问过」，不是「问了没结果」，更不是用户拒绝；两个字段缺一就退回原来的泛称。
+        never_answered = (not notify_error and auth_cache.get("value") == "unknown"
+                          and auth_cache.get("age_sec") is None
+                          and auth_pending.get("query_in_flight") is False)
+        if notify_error:
+            text = "通知授权状态未知；本次运行有 auth status/settings/query/center error，不等于用户拒绝授权。"
+        elif never_answered:
+            text = ("通知授权状态未知；本次运行没有收到过系统的授权答复，也没有在飞的查询或查询错误，"
+                    "只说明没有查询结果，不等于用户拒绝授权。")
+        else:
+            text = "通知授权状态未知；没有本次查询错误可证明故障，可能正在异步查询或尚未取得答案，原因尚不能确定。"
+        add("notify_authorization_unknown", "warning" if notify_error else "info", text, "snapshot")
     runtime = _object(files.get("runtime.json"))
     face = _object(runtime.get("face_guard"))
     # Camera settings have appeared nested in different snapshot versions.
@@ -478,9 +516,18 @@ def analyze_archive(archive_path: os.PathLike[str] | str, output_dir: os.PathLik
                 summary = state.get("summary", {})
                 counts = state.get("counts", {})
                 if isinstance(summary, dict):
+                    market_closed = _captured_outside_trading_session(state.get("capture_completed_at"))
                     for name, bad in (("net_ok", False), ("minute_stale", True),
                                       ("price_is_fallback", True), ("pct_unknown", True)):
-                        if summary.get(name) is bad:
+                        if summary.get(name) is not bad:
+                            continue
+                        if name == "price_is_fallback" and market_closed:
+                            # 休市时界面显示的本来就是兜底价（昨收或分时最后一点），这一位恒为真，
+                            # 不是故障线索；开市时段内为真才说明行情没有及时到。
+                            findings.append(_finding(
+                                "price_fallback_market_closed", "info",
+                                "采集时处于休市时段，价格为兜底价属于正常显示，不是故障线索。"))
+                        else:
                             findings.append(_finding("runtime_warning", "warning", name))
                 if isinstance(counts, dict):
                     for name, value in counts.items():

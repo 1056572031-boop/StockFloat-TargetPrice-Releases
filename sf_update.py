@@ -426,6 +426,14 @@ def resolve_download_url(info, cancel_event, timeout, deadline=None):
         return resolved
 
 
+def _log_safe_host(url):
+    """只取主机名供日志使用；解析不了就写 unknown，绝不回退成整串地址。"""
+    try:
+        return urllib.parse.urlparse(url).hostname or "unknown"
+    except ValueError:
+        return "unknown"
+
+
 class _DownloadSource:
     """A per-download URL shared by workers, with at most one expiry refresh."""
 
@@ -442,7 +450,8 @@ class _DownloadSource:
         with self.lock:
             return self.url
 
-    def refresh(self, failed_url):
+    def refresh(self, failed_url, reason=None):
+        """reason 是调用方手里的失败异常（可选），只用来在日志里写它的类型名。"""
         with self.lock:
             _update_remaining(self.deadline, self.cancel_event)
             if self.url != failed_url:
@@ -451,8 +460,14 @@ class _DownloadSource:
                 return False
             if self.refreshed:
                 self.url = self.info.archive_url
-                log_line("update asset rejected after refresh; falling back to signed origin",
-                         "WARNING")
+                # 此前这行没有任何原因（用户机器上出现过 14 次却无从查起）。
+                # 地址只写主机名：路径与查询串里带着一次性的签名令牌，不许进日志；
+                # 没有异常对象就不写失败类型，不硬凑。
+                detail = "host=%s" % _log_safe_host(failed_url)
+                if reason is not None:
+                    detail += " error=%s" % type(reason).__name__
+                log_line("update asset rejected after refresh; falling back to signed origin (%s)"
+                         % detail, "WARNING")
                 return True
             self.refreshed = True
             self.url = resolve_download_url(self.info, self.cancel_event, self.timeout,
@@ -488,7 +503,7 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
         except urllib.error.HTTPError as exc:
             exc.close()
             if exc.code in (401, 403) and source is not None:
-                if source.refresh(url):
+                if source.refresh(url, reason=exc):
                     continue
                 raise UpdateError("更新下载地址已失效") from exc
             last_error = UpdateError("无法连接更新服务: HTTP %s" % exc.code)

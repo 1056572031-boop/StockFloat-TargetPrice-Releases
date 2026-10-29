@@ -3,9 +3,11 @@
 import copy
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 import plistlib
+import runpy
 import shutil
 import sys
 import tempfile
@@ -66,8 +68,8 @@ class PostReleaseRecordTests(SFCase):
         evidence.atomic_json(self.candidate, self.record)
         evidence.atomic_json(self.candidate.with_suffix(".manifest.json"), self.bound)
 
-    def run_record(self):
-        return evidence.post_release_record(self.root, self.candidate, self.log, self.installed)
+    def run_record(self, label=None):
+        return evidence.post_release_record(self.root, self.candidate, self.log, self.installed, label)
 
     def test_positive_binds_install_log_online_bytes_and_never_completes(self):
         before = self.candidate.read_bytes()
@@ -86,6 +88,48 @@ class PostReleaseRecordTests(SFCase):
         self.assertEqual(self.candidate.read_bytes(), before)
         with self.assertRaises(ValueError):
             self.run_record()
+
+    def test_label_writes_a_parallel_folder_and_never_touches_the_earlier_receipt(self):
+        earlier = self.run_record()
+        earlier_bytes = earlier.read_bytes()
+        labeled = self.run_record("stable")
+        labeled_folder, earlier_folder = "v%s-stable" % APP_VERSION, "v" + APP_VERSION
+        self.assertEqual(labeled.parent.name, labeled_folder)
+        self.assertEqual(earlier.parent.name, earlier_folder)
+        self.assertEqual(earlier.read_bytes(), earlier_bytes)
+        self.assertNotIn("archive_label", evidence.load(earlier))
+        self.assertEqual(evidence.load(labeled)["archive_label"], "stable")
+        self.assertEqual({p.name for p in labeled.parent.iterdir()},
+                         {"post_release.json", "publish.log", "online-manifest.json"})
+        with self.assertRaisesRegex(ValueError, "不覆盖现有发布后记录"):
+            self.run_record("stable")
+
+    def test_a_missing_identity_module_fails_loudly_when_the_tool_is_loaded(self):
+        real = importlib.util.spec_from_file_location
+
+        def no_spec_for_identity(name, *args, **kwargs):
+            return None if name == "release_identity" else real(name, *args, **kwargs)
+
+        with mock.patch.object(importlib.util, "spec_from_file_location", side_effect=no_spec_for_identity), \
+                self.assertRaisesRegex(ImportError, "release_identity"):
+            runpy.run_path(evidence.__file__, run_name="quality_evidence_probe")
+
+    def test_unsafe_label_is_refused_before_anything_is_written(self):
+        for label in ("../x", "Stable", "a/b", "", "x" * 40):
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self.run_record(label)
+        self.assertFalse((self.root / "outputs").exists())
+
+    def test_cli_label_reaches_the_record(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            rc = evidence.main(["post-release", str(self.candidate), "--root", str(self.root),
+                                "--release-log", str(self.log), "--installed-app", str(self.installed),
+                                "--label", "stable"])
+        self.assertEqual(rc, 0)
+        written = Path(output.getvalue().strip())
+        expected_folder = "v%s-stable" % APP_VERSION
+        self.assertEqual(written.parent.name, expected_folder)
+        self.assertEqual(evidence.load(written)["archive_label"], "stable")
 
     def test_cli_requires_log_before_reading_or_writing_evidence(self):
         before = self.candidate.read_bytes()

@@ -508,6 +508,15 @@ run/job，不重跑发布、不新推源码、不覆盖资产，也不反复下�
    ./.venv/bin/python tools/release_wrapup.py archive X.Y.Z --tree <发布树> --apply  # 确认清单后执行
    ```
 
+   **同一版本号再发布**（例如把已发的 Beta 同号转正）时，上一轮的 `vX.Y.Z` 归档文件夹已在主线上，
+   `post-release` 会因“不覆盖现有发布后记录”拒绝，`archive` 会因同名异字节拒绝。三个工具都加 `--label`，
+   证据改放并列的 `vX.Y.Z-标签/`，上一轮的文件夹和索引条目一个字节都不动：
+   `quality_evidence.py post-release … --label stable`、`release_evidence.py complete … --label stable`
+   （完成记录的范围里归档文件夹随之变成 `vX.Y.Z-stable`）、`release_wrapup.py archive X.Y.Z --tree <发布树> --label stable`。
+   标签只能是小写字母、数字和单个连字符（最长 24 个字符），不合规在动手之前就拒绝。`post_release.json` 会带
+   `archive_label`，`archive` 要求它与 `--label` 一致，不一致（含一边没有标签）一律拒绝，避免把两轮证据混归到一处。
+   不带 `--label` 时三个工具与以往逐字相同。标签不改变“哈希对得上才归档”的规则。
+
    它按回执里的两个哈希各找出**恰好一份**质量记录，再按 `artifact_fingerprint` 找出同源的 `complete` 阶段记录，
    连同两份 manifest 和 `post_release.json`、`publish.log`、`online-manifest.json` 共七个文件。
    找不到、找到多份、哈希对不上、目标已存在但字节不同、索引里同一路径哈希不同，一律拒绝且不写任何东西；
@@ -818,6 +827,16 @@ release-preparation-vX.Y.Z/
   - **`retire` 不再拦“内容与基线完全一致”的已跟踪文件**：本轮发布树里 `archive-index.json` 被改过，内容与主线已提交版本逐字节相同，旧逻辑仍按“未提交改动”拒绝，只能先 `git restore` 再收树。现在 `unsaved_work` 对已跟踪条目用 `git diff --quiet <基线> -- <路径>` 判断，字节或文件模式有任何差异、文件被删、基线里没有该路径（新增、重命名）都照旧拒绝。未跟踪文件的规则不变。
   - **被迫暂存他人未提交文件时的恢复办法**：优先按第六节在与主线同一提交的干净树里提交，不碰主树。若已经 `git stash -u` 过，恢复时：先记下暂存提交号；未跟踪部分用 `git archive stash@{n}^3 | tar -x -k -f -` 取回（`-k` 不覆盖已有文件），逐文件对拍字节；既有的追加型日志（如 `outputs/todo-runs/history.jsonl`）先备份，再按“基线行 + 暂存新增行 + 工作区新增行”合并并确认三段互不重复；全部对拍一致后才 `git stash drop`。其他会话遗留的更早暂存条目不动。
   - **证据拷贝只带证据，不带安装包**：收树前（或收树后从废纸篓里）复制到 `.sf-release-vX.Y.Z-evidence/kept-from-tree/` 时排除 `*.dmg`、`*.zip`、`*.app`，读回下载目录只留 json、日志、报告和校验文件。本轮 `build/` 约 1.1G，其中四份读回下载目录各约 67MB，都能从线上重新取；保留下来的约 7.7MB。拷完逐个对拍关键文件（发布状态、公开发布回执、读回报告、点击走查结果、合成日志、交付凭据）的 SHA-256。收树之后才发现遗漏时，整棵树仍在废纸篓里，清空废纸篓之前补拷。
+
+- v1.4.108 同号转正为稳定版的经验（2026-10-29 实跑，用户明确授权删除并重传四个线上同名文件；下列各条都撞到过）：
+  - **做法与代价**：改 `RELEASE_STAGE`、发布说明标题和 README 的标签并重新走回归、候选、发布；线上先用 JSON 解析核对要删的四个资产编号和名字，再连续删除并 `--publish-prepared`。已装同号 Beta 的机器按版本号不会自动更新，要手动覆盖安装。该做法与“已占用的同名发行资产不得覆盖，改用新版本”的默认规则冲突，只在用户明确授权时使用，默认仍发新版本号。
+  - **删除前的核对别用文本匹配**：第一次预检用 `grep` 找 `"id": 编号`，GitHub 返回的是紧凑 JSON，没有空格，脚本在删除之前以退出码 92 中止，线上没有变化；改为用 Python 解析 JSON 后才进入删除。
+  - **删完四个文件后，6.1 的下载页校验要等 DMG、源码包和校验文件补回**：`--publish-prepared` 的 6.1 在 6.2 之前，停在 6.1 时这三个文件线上不存在；先单独跑 `public_release.py --publish` 补回，再重跑 6.1。
+  - **6.1 的线上校验连续三次报 `TimeoutError`，第四次通过，原因没有查明**：校验脚本里每个请求写死 10 秒。中途用 curl 量到首页 7.7 秒、`/health` 9.9 秒、`/privacy` 10.6 秒、素材最长 23 秒，之后用 Node 量同一批地址都在 2 秒内。把单次超时临时抬到 30 秒的第一次重试仍失败，加了每请求耗时日志的第二次重试通过，日志里没有出现慢请求。结论只是“间歇性慢”，不是已定位的根因；再遇到先量各端点耗时，不要直接改判据。
+  - **候选取证的层级**：冻结包冒烟、包内特征、签名和候选交付核验要用 `--level 3`；用 `--level 1` 生成的收据在绑定时报“不能拿低层级替身证明真实场景”。重跑前把层级 1 的收据移到另一个目录保留，不留在 `build/quality-evidence-vX/` 里，否则同一命令会有两份收据而被判“必须恰好一份”。
+  - **`--old-app` 路径放在发布树里**：收据记录的命令用 `shlex.join`，树外路径含中文时被加引号，而绑定端按不加引号的文本比对，报“找到 0 份”。把旧包复制进 `build/release-evidence-vX/old/`，用相对路径重跑交付核验。旧包版本必须不同于候选：本次 `/Applications` 里已是同号 Beta，改用主树 `build/_rollback_*` 里签名有效的 1.4.103。
+  - **`complete` 按“相对仓库根的文件名”找读回和走查的收据**：读回报告和走查的 `result.json` 放在树外或 `build/` 子目录时找不到。做法是各补一份 `quality_evidence.py run` 收据，命令实际打开真实文件判定，参数里带上裸文件名，本次这样通过；这是匹配规则的限制，不是对结果的二次证明。
+  - **同版本再发布会撞上归档**：`post_release.json` 在主线已存在上一轮的同名文件，`quality_evidence.py post-release` 报“不覆盖现有发布后记录”，`release_wrapup.py archive` 找不到与旧哈希对应的新质量记录。v1.4.108 当时没有生成稳定版的 `post_release.json`，稳定版证据并列放进 `outputs/release-candidates/v1.4.108-stable/` 并手工写索引，旧 Beta 的记录原样保留。该缺口已补：`post-release`、`complete`、`archive` 现在都认 `--label`（见 P6 第 6 条），下次同号再发布按它走，不必手工写索引；已归档的 `v1.4.108-stable` 是手工产物，没有 `archive_label` 字段，不要拿它去重跑 `archive --label`。
 
 ## 六、主树被占用时的独立发布树
 

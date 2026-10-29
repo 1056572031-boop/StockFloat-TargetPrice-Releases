@@ -5,6 +5,8 @@
     ./.venv/bin/python tools/verify_face_presence.py                 # 默认 12 秒
     ./.venv/bin/python tools/verify_face_presence.py --seconds 30
     ./.venv/bin/python tools/verify_face_presence.py --image         # 静态图核验，不碰摄像头
+    ./.venv/bin/python tools/verify_face_presence.py --body 单人照.png --expect-people 1
+                                                                      # 脸+上半身人数核验，不碰摄像头
     ./.venv/bin/python tools/verify_face_presence.py --self-test     # 不碰摄像头
 
 它证明的是回归用例证明不了的那一段：AVFoundation 真起会话 → CMSampleBuffer 真能
@@ -104,6 +106,69 @@ def run_image(path: str = DEFAULT_IMAGE, expect_min: int = 2) -> int:
     return 0 if verdict == "pass" else 1
 
 
+def judge_body(people: int, expect_people: int) -> str:
+    """上半身档的判据：数到的人数必须**恰好**等于预期。纯函数，自检里拿它做变异判定。
+
+    不是"至少"：单人照数成 2 个人（主人被误数，窗口收起后不会自动恢复）和两人照数成
+    1 个人（漏数，该收的窗不收），方向相反，都是失败。
+    """
+    return "pass" if people == expect_people else "fail"
+
+
+def _best_margin(face, bodies):
+    """脸中心离最匹配身体框最近一条边的有符号距离；没有身体框返回 None。"""
+    cx, cy = face[0] + face[2] / 2.0, face[1] + face[3] / 2.0
+    margins = [min(cx - b[0], b[0] + b[2] - cx, cy - b[1], b[1] + b[3] - cy) for b in bodies]
+    return max(margins) if margins else None
+
+
+def run_body(path: str = DEFAULT_IMAGE, expect_people: int = 2) -> int:
+    """静态图同时跑脸 + 上半身两个请求，用**产品同一个** `count_people` 数人。
+
+    补的是 AGENTS §5.2 里上半身阈值（置信度 0.6 / 宽度 0.12 / 配对外扩）一直没有仓库内的
+    核验入口的缺口：证据脚本只在 /tmp，别人复现不了。退出码 0 通过｜1 不通过｜2 跳过
+    （没有系统框架 / 没有上半身检测类 / 没有素材）—— 跳过不是通过。
+    """
+    cls, why = sf_presence._load_frameworks()
+    if cls is None:
+        print("!! 系统框架不可用：%s（这一档是跳过，不是通过）" % why)
+        return 2
+    if "VNDetectHumanRectanglesRequest" not in cls:
+        print("!! 这台机器取不到上半身检测类，产品也只会数脸（这一档是跳过，不是通过）")
+        return 2
+    img = pathlib.Path(path)
+    if not img.exists():
+        print("!! 素材图不存在：%s" % img)
+        return 2
+    from Foundation import NSURL
+    handler = cls["VNImageRequestHandler"].alloc().initWithURL_options_(
+        NSURL.fileURLWithPath_(str(img)), None)
+    face_req = cls["VNDetectFaceRectanglesRequest"].alloc().init()
+    body_req = cls["VNDetectHumanRectanglesRequest"].alloc().init()
+    body_req.setUpperBodyOnly_(True)
+    if handler is None or not sf_presence.vision_request_succeeded(
+            handler.performRequests_error_([face_req, body_req], None)):
+        print("!! Vision 拒绝处理图片，不能用空 results 冒充成功")
+        return 1
+    face_obs, body_obs = list(face_req.results() or []), list(body_req.results() or [])
+    faces, people = sf_presence.count_people(face_obs, body_obs)
+    _, face_rects = sf_presence.qualifying_faces(face_obs)
+    body_rects = sf_presence.qualifying_bodies(body_obs)
+    print("== 脸 + 上半身静态图核验（不碰摄像头、不需要授权）==")
+    print("   素材：%s；原始框 脸 %d / 身体 %d；算数 脸 %d / 身体 %d"
+          % (img, len(face_obs), len(body_obs), faces, len(body_rects)))
+    for i, f in enumerate(face_rects):
+        m = _best_margin(f, body_rects)
+        print("      脸 #%d 中心离最匹配身体框边：%s（配对外扩 %.2f）"
+              % (i, "无身体框" if m is None else "%.3f" % m,
+                 sf_presence.FACE_GUARD_BODY_PAIR_MARGIN))
+    verdict = judge_body(people, expect_people)
+    print("== 结论：%s（数到 %d 个人，预期 %d；喂给迟滞的有效计数 %d）=="
+          % ("通过" if verdict == "pass" else "不通过", people, expect_people,
+             sf_presence.effective_count(faces, people)))
+    return 0 if verdict == "pass" else 1
+
+
 def run(seconds: float) -> int:
     mon = sf_presence.FacePresenceMonitor()
     print("== 装载系统框架并请求采集 ==")
@@ -180,6 +245,16 @@ def self_test() -> int:
     missing_rc = run_image(str(pathlib.Path(__file__).resolve().parent / "没有这个文件.png"))
     if missing_rc == 0:
         fails.append("素材图不存在时 run_image 仍返回 0 —— 这是一道永远过的关")
+
+    # ---- 2026-10-29 新增：`--body` 这一档自己也必须能失败，并且两个方向都要 ----
+    if judge_body(2, 2) != "pass" or judge_body(1, 1) != "pass":
+        fails.append("judge_body 把数对的人数判成失败：这一档会每轮必红")
+    if judge_body(2, 1) != "fail":
+        fails.append("judge_body 放过「单人照数成两个人」：主人被误数后窗口收起且不自动恢复")
+    if judge_body(1, 2) != "fail":
+        fails.append("judge_body 放过「两人照只数到一个人」：该收的窗不收")
+    if run_body(str(pathlib.Path(__file__).resolve().parent / "没有这个文件.png")) == 0:
+        fails.append("素材图不存在时 run_body 仍返回 0 —— 这是一道永远过的关")
 
     # ---- 2026-10-12 新增：边脸放宽、距离闸门、三条判据本身都要能失败 ----
     cf = sf_presence.count_faces
@@ -879,6 +954,10 @@ def main(argv=None) -> int:
                     metavar="PNG", help="用静态图核验 Vision 链（不碰摄像头、不要授权）")
     ap.add_argument("--expect-min", type=int, default=2,
                     help="静态图至少要数出几张脸才算通过（默认 2）")
+    ap.add_argument("--body", nargs="?", const=DEFAULT_IMAGE, default=None,
+                    metavar="PNG", help="用静态图核验脸 + 上半身的人数（不碰摄像头、不要授权）")
+    ap.add_argument("--expect-people", type=int, default=2,
+                    help="--body 要求恰好数出几个人才算通过（默认 2）")
     ap.add_argument("--self-test", action="store_true", help="不碰摄像头的结构自检")
     args = ap.parse_args(argv)
     if args.self_test:
@@ -893,6 +972,8 @@ def main(argv=None) -> int:
         return run_lowlight()
     if args.image:
         return run_image(args.image, args.expect_min)
+    if args.body:
+        return run_body(args.body, args.expect_people)
     return run(args.seconds)
 
 

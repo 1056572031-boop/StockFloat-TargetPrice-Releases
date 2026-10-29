@@ -303,8 +303,6 @@ class EditorSearchPaths(SFCase):
         self.track_patch(mock.patch.object(w.ok, "isEnabled", lambda: True))
         import sf_universe
         self.track_patch(mock.patch.object(sf_universe, "ensure_ready", lambda: True))
-        self.track_patch(mock.patch.object(sf_universe, "covers_segment", lambda c: True))
-        self.track_patch(mock.patch.object(sf_universe, "index_ready", lambda: True))
         self.track_patch(mock.patch.object(sf_universe, "match_confident", lambda c: []))
         self.track_patch(mock.patch.object(sf_quote, "fetch_quote",
                                           side_effect=sf_quote.QuoteDataError("not found")))
@@ -320,7 +318,6 @@ class EditorSearchPaths(SFCase):
         self.track_patch(mock.patch.object(w.ok, "isEnabled", lambda: True))
         import sf_universe
         self.track_patch(mock.patch.object(sf_universe, "ensure_ready", lambda: True))
-        self.track_patch(mock.patch.object(sf_universe, "covers_segment", lambda c: False))
         self.track_patch(mock.patch.object(sf_quote, "fetch_quote",
                                            lambda c: {"name": "沪深300ETF"}))
         editor_search(w)
@@ -334,7 +331,6 @@ class EditorSearchPaths(SFCase):
         self.track_patch(mock.patch.object(w.ok, "isEnabled", lambda: True))
         import sf_universe
         self.track_patch(mock.patch.object(sf_universe, "ensure_ready", lambda: True))
-        self.track_patch(mock.patch.object(sf_universe, "covers_segment", lambda c: False))
 
         def boom(_code):
             # 注意是 sf_quote 的那个类：`sf_editor` 里没有这个名字，
@@ -354,7 +350,6 @@ class EditorSearchPaths(SFCase):
         self.track_patch(mock.patch.object(w.ok, "isEnabled", lambda: True))
         import sf_universe
         self.track_patch(mock.patch.object(sf_universe, "ensure_ready", lambda: True))
-        self.track_patch(mock.patch.object(sf_universe, "covers_segment", lambda c: False))
         self.track_patch(mock.patch.object(sf_quote, "fetch_quote",
                                            side_effect=OSError("网络不可达")))
         editor_search(w)
@@ -370,8 +365,6 @@ class EditorSearchPaths(SFCase):
         self.track_patch(mock.patch.object(w.ok, "isEnabled", lambda: True))
         import sf_universe
         self.track_patch(mock.patch.object(sf_universe, "ensure_ready", lambda: True))
-        self.track_patch(mock.patch.object(sf_universe, "covers_segment", lambda c: True))
-        self.track_patch(mock.patch.object(sf_universe, "index_ready", lambda: False))
         self.track_patch(mock.patch.object(sf_quote, "fetch_quote", return_value={"name": "Example"}))
         editor_search(w)
         self.assertIn("替换失败", w.hint.text())

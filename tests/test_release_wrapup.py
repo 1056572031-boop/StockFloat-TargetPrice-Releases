@@ -76,9 +76,13 @@ class ArchiveCase(WrapupCase):
         self.fingerprint = {"source": "abc"}
         self.stage(self.tree)
 
-    def stage(self, root):
-        """Evidence as a release tree leaves it: root-level quality records plus the receipt folder."""
-        fp, folder = self.fingerprint, w.ARCHIVE_DIR + "/v" + VER
+    def stage(self, root, label=None, fingerprint=None):
+        """Evidence as a release tree leaves it: root-level quality records plus the receipt folder.
+
+        label / fingerprint stage a same-version re-release: its receipt sits in vX.Y.Z-label and its
+        quality records carry different bytes from the earlier release's."""
+        fp = fingerprint or self.fingerprint
+        folder = w.ARCHIVE_DIR + "/" + ("v" + VER if label is None else "v%s-%s" % (VER, label))
         cand = self.put("quality-v%s.json" % VER, {"artifact_fingerprint": fp, "stage": "candidate",
                                                    "release_qualification": {"stage": "candidate"}}, root)
         man = self.put("quality-v%s.manifest.json" % VER, {"manifest_of": "candidate"}, root)
@@ -89,9 +93,11 @@ class ArchiveCase(WrapupCase):
                                                   "release_qualification": {"stage": "candidate"}}, root)
         self.put(folder + "/publish.log", "published\n", root)
         self.put(folder + "/online-manifest.json", {"version": VER}, root)
-        self.put(folder + "/post_release.json", {
-            "version": VER, "status": "incomplete", "candidate_sha256": w.sha256_file(cand),
-            "candidate_manifest_sha256": w.sha256_file(man)}, root)
+        receipt = {"version": VER, "status": "incomplete", "candidate_sha256": w.sha256_file(cand),
+                   "candidate_manifest_sha256": w.sha256_file(man)}
+        if label is not None:
+            receipt["archive_label"] = label
+        self.put(folder + "/post_release.json", receipt, root)
 
     def receipt_path(self):
         return self.tree / w.ARCHIVE_DIR / ("v" + VER) / "post_release.json"
@@ -579,6 +585,88 @@ class TestRetireRemote(RetireCase):
             self.retire(remote=True)
         self.assertFalse(self.tree.exists())
         self.assertIn("release/x", self.remote_heads())
+
+
+class TestArchiveLabel(ArchiveCase):
+    """A same-version re-release: the earlier vX.Y.Z archive stays, the new evidence lands in vX.Y.Z-label."""
+
+    def setUp(self):
+        super().setUp()
+        self.label = "stable"
+        self.labeled_folder = self.repo / w.ARCHIVE_DIR / ("v%s-%s" % (VER, self.label))
+        self.tree2 = self.root / "tree2"
+        self.tree2.mkdir()
+        self.stage(self.tree2, label=self.label, fingerprint={"source": "re-release"})
+
+    def archive_earlier_release(self):
+        self.run_archive()
+        return {p.name: p.read_bytes() for p in self.folder.iterdir()}
+
+    def labeled_receipt(self, **changes):
+        path = self.tree2 / w.ARCHIVE_DIR / ("v%s-%s" % (VER, self.label)) / "post_release.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.update(changes)
+        for key in [k for k, v in changes.items() if v is None]:
+            del data[key]
+        self.put(w.ARCHIVE_DIR + "/v%s-%s/post_release.json" % (VER, self.label), data, self.tree2)
+
+    def test_labeled_archive_lands_beside_the_earlier_folder_and_leaves_it_untouched(self):
+        earlier = self.archive_earlier_release()
+        before = json.loads(self.index_path.read_text(encoding="utf-8"))["files"]
+        self.assertEqual(w.archive(self.repo, self.tree2, VER, True, self.label),
+                         {"copy": EXPECTED, "index": EXPECTED, "keep": 0})
+        self.assertEqual({p.name: p.read_bytes() for p in self.folder.iterdir()}, earlier)
+        self.assertEqual(len(list(self.labeled_folder.iterdir())), EXPECTED)
+        index = json.loads(self.index_path.read_text(encoding="utf-8"))
+        self.assertEqual(index["files"][:len(before)], before)
+        added = index["files"][len(before):]
+        prefix = "%s/v%s-%s/" % (w.ARCHIVE_DIR, VER, self.label)
+        self.assertEqual(len(added), EXPECTED)
+        self.assertTrue(all(entry["to"].startswith(prefix) for entry in added))
+        self.assertIn("v%s-%s entries" % (VER, self.label), index["notes"][-1])
+        self.assertEqual(w.archive(self.repo, self.tree2, VER, True, self.label),
+                         {"copy": 0, "index": 0, "keep": EXPECTED})
+
+    def test_the_same_evidence_without_a_label_collides_with_the_earlier_archive(self):
+        self.archive_earlier_release()
+        tree3 = self.root / "tree3"
+        tree3.mkdir()
+        self.stage(tree3, fingerprint={"source": "re-release"})
+        with self.assertRaisesRegex(w.WrapupError, "already exists with different bytes"):
+            w.archive(self.repo, tree3, VER, True)
+
+    def test_receipt_label_and_requested_label_must_agree(self):
+        before = self.index_path.read_bytes()
+        self.labeled_receipt(archive_label="other")
+        with self.assertRaisesRegex(w.WrapupError, "archive label 'other' but 'stable' was asked for"):
+            w.archive(self.repo, self.tree2, VER, True, self.label)
+        self.labeled_receipt(archive_label=None)
+        with self.assertRaisesRegex(w.WrapupError, "archive label None but 'stable' was asked for"):
+            w.archive(self.repo, self.tree2, VER, True, self.label)
+        self.edit_receipt(archive_label=self.label)
+        with self.assertRaisesRegex(w.WrapupError, "archive label 'stable' but None was asked for"):
+            w.archive(self.repo, self.tree, VER, True)
+        for folder in (self.folder, self.labeled_folder):
+            self.assertFalse(folder.exists(), "a refusal must not leave a half-made archive folder")
+        self.assertEqual(self.index_path.read_bytes(), before)
+
+    def test_unsafe_labels_are_refused_before_any_file_is_read(self):
+        for label in ("../x", "Stable", "a/b", "", "x" * 40):
+            with self.subTest(label=label), self.assertRaises(w.WrapupError):
+                w.archive(self.repo, self.tree2, VER, True, label)
+        self.assertFalse(self.labeled_folder.exists())
+        self.assertEqual(self.index_path.read_bytes(), self.index_bytes)
+
+    def test_command_line_label_selects_the_labeled_folder_and_rejects_bad_ones(self):
+        argv = ["archive", VER, "--tree", str(self.tree2), "--repo", str(self.repo)]
+        self.assertEqual(w.main(argv + ["--label", self.label]), 0)
+        self.assertFalse(self.labeled_folder.exists(), "without --apply nothing is written")
+        self.assertEqual(w.main(argv + ["--label", self.label, "--apply"]), 0)
+        self.assertEqual(len(list(self.labeled_folder.iterdir())), EXPECTED)
+        for bad in ("Bad/Name", "..", ""):
+            with self.subTest(label=bad), self.assertRaises(SystemExit) as raised:
+                w.main(argv + ["--label", bad])
+            self.assertEqual(raised.exception.code, 2)
 
 
 class TestCommandLine(ArchiveCase):

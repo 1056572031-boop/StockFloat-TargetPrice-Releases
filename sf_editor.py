@@ -4,27 +4,53 @@
 import threading
 
 from PyQt6.QtCore import (QThread, Qt, QTimer, pyqtSignal, QRectF)
-from PyQt6.QtGui import (QColor, QGuiApplication, QPainter, QPen)
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen)
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 from sf_constants import FG_BRIGHT_HEX, FG_HINT_HEX, FG_TEXT_HEX
 from sf_glass import (GlassMixin, PopupLineEdit, paint_popup_surface, popup_stylesheet,
                       prepare_popup_surface, POPUP_INPUT_H)
 from sf_icons import _ICON_SVG, svg_pixmap
 from sf_logging import log_swallow
-from sf_quote import search_stocks
-from sf_utils import normalize_code
+from sf_quote import search_by_digits, search_stocks
+from sf_universe import code_shape, fold_name, prefixed_digits
+from sf_utils import market_prefix, normalize_code
 from sf_ui_render import (HOVER_BG_ALPHA, HOVER_STROKE_ALPHA, HOVER_RADIUS,
                           HOVER_PRESSED_BG_ALPHA, HOVER_PRESSED_STROKE_ALPHA)
 
 
+def _canonical_code(text):
+    """输入若是完整 6 位代码（可带 sh/sz/bj），返回规范化后的带前缀代码，否则返回 None。
+
+    全角数字、大小写和中间空白先由 code_shape 收成标准形态；这样输入法在全角状态下
+    敲出的 ６００５１９ 不会绕过归一化，被当成一个"代码"原样写进配置。
+    """
+    shape = code_shape(text)
+    if shape is None:
+        return None
+    return normalize_code(shape[0] + shape[1])
+
+
 def verify_bare_code(keyword):
-    """字典只确认存在，不用缺页或过期名单证明不存在；联网仅在工作线程执行。"""
+    """字典只确认存在，不用缺页或过期名单证明不存在；联网仅在工作线程执行。
+
+    显式写了交易所前缀、但和代码段对不上的（sh000001、bj600519），明确判"无此代码"：
+    悄悄纠正成另一个交易所的同号股票，等于替用户换了一只他没点名的股票。
+    """
     import sf_universe
     from sf_quote import QuoteDataError, fetch_quote
-    code = normalize_code(keyword)
+    shape = code_shape(keyword)
+    if shape is None:
+        sf_universe.note_reject("invalid_code_shape")
+        return []
+    prefix, digits = shape
+    expected = market_prefix(digits)
+    if prefix and expected and prefix != expected:
+        sf_universe.note_reject("prefix_mismatch")
+        return []
+    code = normalize_code(prefix + digits)
     try:
         sf_universe.ensure_ready()
-        local = sf_universe.match_confident(keyword)
+        local = sf_universe.match_confident(code)
         if any(normalize_code(candidate) == code for candidate, _ in local):
             return [(code, local[0][1])]
     except Exception as exc:
@@ -42,6 +68,46 @@ def verify_bare_code(keyword):
         sf_universe.note_reject("probe_empty_or_wrong_code")
         return []
     return [(code, quote["name"])]
+
+
+def _is_code_input(text):
+    """输入是代码一类（完整 6 位，或写了交易所前缀的数字）还是名称。"""
+    if code_shape(text) is not None:
+        return True
+    shape = prefixed_digits(text)
+    return bool(shape and shape[0])
+
+
+def resolve_code_input(keyword):
+    """把代码类输入解析成候选列表；窗口按条数决定：一条直接替换，多条列出来选。
+
+    交易所前缀写错（sh000001、bj600519）不再直接判"无此代码"：按数字去找同号的股票、
+    ETF/LOF 和指数。同号有多条（上证指数与平安银行）就全部列出来让用户选；只有一条
+    （bj600519 只对得上沪市茅台）就直接替换，与其他搜索一致，不再多问一次。
+    写对了前缀（或没写）的完整代码照旧：字典/行情确认存在就直接用；确认不存在时，
+    同号也可能是另一个交易所的指数（000300 只在沪市是指数），同样按同号候选处理。
+    """
+    import sf_universe
+    shape = code_shape(keyword)
+    if shape is None:
+        partial = prefixed_digits(keyword)
+        if not (partial and partial[0]):
+            return []
+        found = search_by_digits(partial[1], partial[0])
+        if not found:
+            sf_universe.note_reject("prefix_no_match")
+        return found
+    prefix, digits = shape
+    expected = market_prefix(digits)
+    if prefix and expected and prefix != expected:
+        found = search_by_digits(digits, prefix)
+        if not found:
+            sf_universe.note_reject("prefix_mismatch")
+        return found
+    found = verify_bare_code(keyword)
+    if found:
+        return found
+    return search_by_digits(digits, prefix or expected)
 
 # H-1 v1.2.50：zombie 搜索线程登记表改为模块级 + 软上限。
 # 背景：原实现把关闭时仍在运行的 SearchThread 挂在窗口实例 _zombie_threads 上，
@@ -85,8 +151,10 @@ class SearchThread(QThread):
 
     def run(self):
         try:
-            results = (verify_bare_code(self.keyword) if self.verify_code
-                       else search_stocks(self.keyword))
+            if self.verify_code:
+                results = resolve_code_input(self.keyword)
+            else:
+                results = search_stocks(self.keyword)
         except Exception as exc:
             # 搜索失败按"无结果"回报，但必须留痕：否则"搜不到"与"搜索代码出错"在日志里长得一样。
             log_swallow("sf_editor.SearchThread.run", exc)
@@ -97,6 +165,36 @@ class SearchThread(QThread):
             self.done.emit(results, self.seq)
         except Exception as exc:
             log_swallow("sf_editor.SearchThread.emit", exc)
+
+
+_CAND_SIDE_PAD = 52      # 弹窗左右边距 28 + 按钮内边距 20 + 余量 4
+_CAND_FALLBACK_W = 132   # 取不到窗口宽度时按主窗最窄的 160 推（160 - 52 + 24）
+
+
+def _candidate_label(name, code, avail_px):
+    """候选按钮文字：放得下就是"名称  代码"，放不下只省略名称，代码永远完整。"""
+    font = QFont()
+    font.setPixelSize(12)             # 与样式表 QPushButton#cand 的 font-size 一致
+    metrics = QFontMetrics(font)
+    full = "%s  %s" % (name, code)
+    if metrics.horizontalAdvance(full) <= avail_px:
+        return full
+    shown = name
+    while shown and metrics.horizontalAdvance("%s…  %s" % (shown, code)) > avail_px:
+        shown = shown[:-1]
+    return "%s…  %s" % (shown, code) if shown else code
+
+
+class _CandidateButton(QPushButton):
+    """候选按钮：回车可选中；上下键交还给编辑窗在候选间移动焦点。"""
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.click()
+        elif e.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            e.ignore()
+        else:
+            super().keyPressEvent(e)
 
 
 class MainCloseButton(QPushButton):
@@ -385,7 +483,10 @@ class EditorWindow(GlassMixin, QWidget):
                 return
             same = False
             try:
-                same = normalize_code(txt) == normalize_code(self.code or "")
+                # 全角数字、大小写、中间空白先收成标准代码再比，否则输入法全角状态下
+                # 敲出的当前代码会被当成"新内容"，确定按钮不置灰。
+                typed = _canonical_code(txt) or normalize_code(txt)
+                same = typed == normalize_code(self.code or "")
             except Exception:
                 same = txt == (self.code or "")
             self.ok.setEnabled(not same)
@@ -402,19 +503,20 @@ class EditorWindow(GlassMixin, QWidget):
         txt = self.entry.text().strip()
         if not txt:
             return
-        if txt.isdigit() and len(txt) == 6:
+        typed_code = _canonical_code(txt)
+        if typed_code is not None:
             # v1.2.23：直接输入代码且与当前股票重复 → 明确提示，不做静默替换
-            if self._is_dup(txt):
+            if self._is_dup(typed_code):
                 self.hint.setText("该股票已在显示中，无需替换")
                 return
             try:
                 import sf_universe
-                local = sf_universe.match_confident(txt)
+                local = sf_universe.match_confident(typed_code)
             except Exception as _swallow_exc:
                 log_swallow("sf_editor.guard_bare_code", _swallow_exc)
                 local = []
             if local:
-                self._choose_candidate(normalize_code(txt))
+                self._choose_candidate(typed_code)
                 return
         self.hint.setText("搜索中...")
         self._clear_candidates()
@@ -431,9 +533,9 @@ class EditorWindow(GlassMixin, QWidget):
             except (TypeError, RuntimeError):
                 pass
         self._search_seq += 1
-        self._search_keyword = "".join(txt.split()).casefold()
+        self._search_keyword = fold_name(txt)
         self._search_thread = SearchThread(txt, self._search_seq)
-        self._search_thread.verify_code = txt.isdigit() and len(txt) == 6
+        self._search_thread.verify_code = _is_code_input(txt)
         self._search_thread.done.connect(self._on_search_done)
         self._search_thread.start()
 
@@ -470,12 +572,12 @@ class EditorWindow(GlassMixin, QWidget):
         if seq < self._search_seq:
             return
         keyword = getattr(self, "_search_keyword", None)
-        if keyword is not None and "".join(self.entry.text().split()).casefold() != keyword:
+        if keyword is not None and fold_name(self.entry.text()) != keyword:
             return
         if not results:
             import sf_universe
             sf_universe.note_reject("search_no_match")
-            is_code = bool(keyword and keyword.isdigit() and len(keyword) == 6)
+            is_code = bool(keyword and _is_code_input(keyword))
             self.hint.setText("未找到该代码，请核对后重试" if is_code
                               else "未找到匹配的 A 股")
             return
@@ -497,13 +599,20 @@ class EditorWindow(GlassMixin, QWidget):
         shown = 0
         for code, name in results:
             if shown >= 8:
-                self.hint.setText("结果过多，已显示前 %d 条，请输入更精确的关键词" % shown)
+                # 提示行只有一行高、不换行：主窗收窄到 184 时可用宽约 156px，
+                # 原文案「结果过多，已显示前 8 条，请输入更精确的关键词」要 223px，会被截断。
+                self.hint.setText("结果过多，仅显示前 %d 条" % shown)
                 break
-            # 候选名超长防护：截断到 24 字符，避免长名称撑破固定宽度弹窗布局
-            label = "%s  %s" % (name, code)
-            if len(label) > 24:
-                label = label[:24] + "…"
-            button = QPushButton(label)
+            # 候选名超长防护：按像素省略名称、保留代码。同名的 ETF/指数靠代码区分，
+            # 旧写法按 24 个字符一刀切，长名称会把代码裁掉，两条候选就看不出区别了。
+            try:
+                avail = int(self.width()) - _CAND_SIDE_PAD
+            except Exception:
+                avail = _CAND_FALLBACK_W
+            label = _candidate_label(name, code, avail)
+            button = _CandidateButton(label)
+            if label != "%s  %s" % (name, code):
+                button.setToolTip("%s  %s" % (name, code))
             button.setObjectName("cand")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, c=code: self._choose_candidate(c))
@@ -513,14 +622,49 @@ class EditorWindow(GlassMixin, QWidget):
         self._move_near()
 
     def _clear_candidates(self):
+        had = self.cand_box.count() > 0
         while self.cand_box.count():
             item = self.cand_box.takeAt(0)
             widget = item.widget()
             if widget:
+                # deleteLater 要等下一轮事件循环才真正销毁；先隐藏，
+                # 否则旧按钮在新结果画出来之前还会留在窗口上。
+                widget.hide()
                 widget.deleteLater()
+        if had:
+            self._fit_height()
+
+    def _fit_height(self):
+        """候选收起后把窗口收回内容所需的高度并回到锚点位置。
+
+        只在 _on_search_done 里 adjustSize 过一次的话，继续输入或搜到 0 条后窗口
+        仍保持 8 条候选时的高度（实测 421px，内容只需 151px），底部留下大片空白。
+        关闭后 _anchor 已清空，此时不再定位。
+        """
+        self.adjustSize()
+        if self._anchor is not None:
+            self._move_near()
+
+    def _step_candidate(self, delta):
+        """上下键在输入框与候选之间移动焦点；没有候选时不处理。"""
+        items = (self.cand_box.itemAt(i) for i in range(self.cand_box.count()))
+        buttons = [item.widget() for item in items if item is not None]
+        if not buttons:
+            return False
+        focused = self.focusWidget()
+        index = buttons.index(focused) if focused in buttons else -1
+        target = index + delta
+        if target < 0:
+            self.entry.setFocus()
+        else:
+            buttons[min(target, len(buttons) - 1)].setFocus()
+        return True
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key.Key_Escape:
             self._close()
+        elif e.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up) and self._step_candidate(
+                1 if e.key() == Qt.Key.Key_Down else -1):
+            e.accept()
         else:
             super().keyPressEvent(e)

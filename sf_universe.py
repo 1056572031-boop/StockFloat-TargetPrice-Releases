@@ -31,9 +31,12 @@
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
+import unicodedata
+from functools import lru_cache
 from itertools import islice
 from operator import index
 
@@ -94,6 +97,47 @@ def _norm_name(s):
     精确匹配和包含匹配会双双落空，白白退回联网。
     """
     return "".join((s or "").split())
+
+
+def fold_name(s):
+    """搜索比较用的折叠：全角转半角（NFKC）、去所有空白、英文字母统一小写。
+
+    只用于"比较"，不用于显示：字典里存的仍是东财给的原名（"TCL科技"、"ST晨鸣"、
+    "京东方Ａ"）。搜索词和字典名称必须走**同一个**折叠，否则只要名称里有英文字母，
+    本地匹配就永远对不上（实测 5922 只里有 389 只含半角字母，317 只是 ST）。
+    全角数字和全角字母是中文输入法的常见产物，NFKC 一并收成半角。
+    """
+    return "".join(unicodedata.normalize("NFKC", str(s or "")).split()).casefold()
+
+
+@lru_cache(maxsize=16384)
+def _name_key(name):
+    """字典名称的折叠键（带缓存：一次搜索要对 5900 行各折叠一次）。
+
+    匹配函数一律经由它取键而不直接调 fold_name，测试可以在这一处换成计数字符串。
+    """
+    return fold_name(name)
+
+
+_CODE_SHAPE = re.compile(r"(?:(sh|sz|bj)\.?)?([0-9]{6})(?:\.(sh|sz|bj))?")
+
+
+def code_shape(text):
+    """判断输入是不是"完整的 6 位代码"，返回 (前缀, 数字)，前缀可为空串；不是则返回 None。
+
+    先走 fold_name，所以全角数字、首尾与中间的空白、大小写都已收成标准形态。
+    只认 ASCII 数字：NFKC 之后仍不是 ASCII 的数字（阿拉伯-印度数字等）不算代码，
+    原样交给名称搜索，不会被当成代码送去取行情。
+    交易所可以写在前面（sh600519、sh.600519）或后面（600519.SH，券商软件复制出来的
+    常见写法）；前后都写且不一致时不当作代码。
+    """
+    m = _CODE_SHAPE.fullmatch(fold_name(text))
+    if not m:
+        return None
+    head, digits, tail = m.groups()
+    if head and tail and head != tail:
+        return None
+    return (head or tail or "", digits)
 
 
 def _index(rows):
@@ -315,39 +359,76 @@ def ensure_ready():
         pass
 
 
+_DIGITS_SHAPE = re.compile(r"(sh|sz|bj)?([0-9]+)")
+
+
+def _split_digits(kw):
+    """关键词 -> (显式前缀或空串, 数字段)；不是"可选前缀 + 纯数字"则返回 ("", "")。"""
+    m = _DIGITS_SHAPE.fullmatch(fold_name(kw))
+    return (m.group(1) or "", m.group(2)) if m else ("", "")
+
+
 def _digits_of(kw):
-    """从关键词剥出纯数字代码：认 sh/sz/bj 前缀（剥掉取后段），也认裸 6 位；否则空串。"""
-    k = kw.strip().lower()
-    if k[:2] in ("sh", "sz", "bj") and k[2:].isdigit():
-        return k[2:]
-    return k if k.isdigit() else ""
+    """从关键词剥出纯数字代码：认 sh/sz/bj 前缀（剥掉取后段），也认裸数字；否则空串。"""
+    return _split_digits(kw)[1]
+
+
+def prefixed_digits(text):
+    """输入若是「可选交易所前缀 + 任意位数字」，返回 (前缀或空串, 数字)，否则 None。
+
+    和 code_shape 的区别：不要求恰好 6 位。编辑窗用它识别 `sh6005` 这类写了前缀、
+    还没敲完或前缀写错的代码输入，按数字模糊搜索，而不是当成名称去搜。
+    """
+    prefix, digits = _split_digits(text)
+    return (prefix, digits) if digits else None
+
+
+def match_digits(digits, limit=50):
+    """按代码数字（不看交易所前缀）列出字典里的股票；联网拿不到候选时的离线兜底。
+
+    字典只收股票，指数、ETF 不在其中，所以这里列不全；它的作用是断网时前缀写错的
+    输入至少还能给出同号股票，而不是什么都没有。
+    """
+    if _DISABLED or not digits:
+        return []
+    with _lock:
+        return [(c, n) for c, n in _rows if c[2:].startswith(digits)][:limit]
 
 
 def match_confident(kw):
     """高置信匹配：只有"确定无疑"才返回结果，否则返回 []（交给联网）。
 
     1) 代码精确   2) 名称精确   3) 名称包含且唯一
+
+    两条口径（2026-10-29 走查补）：
+    - **显式交易所前缀必须被尊重**。用户写了 sh000001（上证指数）就只查 sh000001，
+      查不到就是查不到；旧写法只取后面的数字、把三个交易所挨个试，结果 sh000001 悄悄
+      变成深市的平安银行，窗口还立刻关了。裸 6 位数字没有前缀可尊重，仍三个交易所依次试。
+    - 名称比较一律经 `_name_key` 折叠（全角转半角、小写、去空白），返回的仍是原名。
     """
     if _DISABLED or not kw:
         return []
-    k = _norm_name(kw)
+    k = fold_name(kw)
     if not k:
         return []
     with _lock:
         if not _rows:
             return []
-        digits = _digits_of(k)
+        prefix, digits = _split_digits(k)
         if digits:
-            for pre in ("sh", "sz", "bj"):
+            for pre in ((prefix,) if prefix else ("sh", "sz", "bj")):
                 full = pre + digits
                 if full in _by_code:
                     return [(full, _by_code[full])]
-        full = _by_name.get(k)
-        if full is not None:
-            return [(full, k)]
+        # 名称精确：先扫一遍只比相等。必须单独成一遍 —— 歧义要在"第二个包含命中"
+        # 就提前判定，若同一遍里边找精确边判歧义，"平安"这种本身就是全名、又被
+        # "平安银行""平安保险"包含的词会被误判成歧义。
+        for code, name in _rows:
+            if _name_key(name) == k:
+                return [(code, name)]
         hit = None
         for code, name in _rows:
-            if k in name:
+            if k in _name_key(name):
                 if hit is not None:
                     return []
                 hit = (code, name)
@@ -360,7 +441,7 @@ def match_fuzzy(kw, limit=50):
     """兜底模糊匹配：名称前缀优先，其次任意位置包含。用于联网 0 结果时救场。"""
     if _DISABLED or not kw:
         return []
-    k = _norm_name(kw)
+    k = fold_name(kw)
     if not k:
         return []
     with _lock:
@@ -369,22 +450,22 @@ def match_fuzzy(kw, limit=50):
         count = None if limit is None else index(limit)
         # Negative slicing remains supported for compatibility with existing callers.
         if count is not None and count < 0:
-            prefix = [(c, n) for c, n in _rows if n.startswith(k)]
-            return prefix[:count] if prefix else [(c, n) for c, n in _rows if k in n][:count]
+            prefix = [(c, n) for c, n in _rows if _name_key(n).startswith(k)]
+            return prefix[:count] if prefix else [(c, n) for c, n in _rows if k in _name_key(n)][:count]
         if count == 0:
             return []
-        prefix = list(islice(((c, n) for c, n in _rows if n.startswith(k)), count))
+        prefix = list(islice(((c, n) for c, n in _rows if _name_key(n).startswith(k)), count))
         if prefix:
             return prefix
-        return list(islice(((c, n) for c, n in _rows if k in n), count))
+        return list(islice(((c, n) for c, n in _rows if k in _name_key(n)), count))
 
 
 def index_ready():
     """本地字典是否已装载可用条目。
 
-    v1.4.18 建议#5：编辑器据此判断"能不能拿本地字典校验一个裸 6 位码是否存在"。
-    match_confident 在"字典未装载"与"代码确实不存在"时都返回 []，无法区分；
-    调用方先用本函数确认字典已就绪，再决定拦截还是放行离线快速替换。"""
+    v1.4.18 建议#5 曾让编辑器据此判断"能不能拿本地字典校验一个裸 6 位码是否存在"。
+    编辑器自 v1.4.50 起不再调用它（存在性只由行情探针回答，字典只负责"确认存在"），
+    现在只有诊断导出读它，用来回答"字典是否已装载"。"""
     with _lock:
         return bool(_rows)
 
@@ -406,6 +487,10 @@ def covers_segment(code):
     调用方必须改用别的存在性证据（行情探测），既不能盲放也不能误拒。
 
     `index_ready()` 为假时一律 False —— 空字典对任何段都没有发言权。
+
+    2026-10-29 注：产品代码里已没有调用方（编辑器不再用"字典覆盖不覆盖这一段"来决定
+    拦不拦，见 `sf_editor.verify_bare_code`），只剩 `tests/test_v1450_etf_entry.py`
+    对它本身的判据。保留是因为删除属于"死代码清理"，要走独立批次的治理流程。
     """
     digits = _digits_of(code or "")
     if len(digits) != 6:
@@ -424,8 +509,9 @@ _REJECTS: dict = {}
 def note_reject(reason):
     """编辑器拒绝录入/搜索无匹配时记一笔，进 sf_universe.stats() 的 rejects。
 
-    reason 取编辑器调用点给的短标签（如 "dict_no_match" / "probe_says_missing" /
-    "probe_empty_name" / "search_no_match"），这里不做二次解释 —— 口径归调用方。
+    reason 取编辑器调用点给的短标签（现有 "probe_says_missing" /
+    "probe_empty_or_wrong_code" / "search_no_match" / "prefix_mismatch" /
+    "prefix_no_match" / "invalid_code_shape"），这里不做二次解释 —— 口径归调用方。
     只有两行 dict 操作、reason 全部来自调用点字面量，不设兜异常：这里一旦写坏，
     宁可在调用点的外层守卫里留痕（编辑器三处调用各有自己的 try/log_swallow），
     也不在这里悄悄吞。

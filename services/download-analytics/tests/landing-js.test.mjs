@@ -469,8 +469,8 @@ test("the lead distance for lazy images is long on a normal connection and short
   assert.equal(lead({ effectiveType: "4g", saveData: true }), "200px 0px", "开了省流量按慢档");
 });
 
-test("with data saver on or a 2G connection the scene never loads the video and shows the still picture instead", () => {
-  for (const connection of [{ effectiveType: "4g", saveData: true }, { effectiveType: "2g" }, { effectiveType: "slow-2g" }]) {
+test("with the visitor's data saver on, the scene never loads the video and shows the still picture instead", () => {
+  for (const connection of [{ effectiveType: "4g", saveData: true }, { saveData: true }, { effectiveType: "2g", saveData: true }]) {
     const h = harness({ withScene: true, connection });
     h.intent();
     h.fire("near", true);
@@ -480,6 +480,25 @@ test("with data saver on or a 2G connection the scene never loads the video and 
     assert.equal(h.scene.getAttribute("preload"), "none");
     assert.equal(h.still.getAttribute("src"), "/assets/scene-4-hide.webp");
     assert.equal(h.find("warm"), undefined, "省流量时即使滚动过也不热身");
+  }
+});
+
+// 2026-10-29 实测：Chrome 没限速、没开省流量，只因服务端首字节慢，effectiveType 被估成 2g，第 4 张视频一个字节都没下。
+// effectiveType 是浏览器的估算不是访客的选择，所以 2g / slow-2g 只能降档，不能禁播。
+test("a 2G or slow-2G estimate alone does not stop the scene video: it plays on the small tier without warm-up", () => {
+  for (const effectiveType of ["2g", "slow-2g"]) {
+    const h = harness({ withScene: true, connection: { effectiveType }, width: 1040, dpr: 2 });
+    h.intent();
+    assert.equal(h.find("warm"), undefined, effectiveType + "：慢网不热身");
+    assert.equal(h.find("near").options.rootMargin, "200px 0px", effectiveType + "：预读距离缩短");
+    h.fire("near", true);
+    h.fire("on", true);
+    assert.equal(h.scene.plays, 1, effectiveType + "：视频照常播放");
+    assert.equal(h.scene.hidden, false);
+    assert.equal(h.still.hidden, true);
+    assert.deepEqual(h.sources.filter(source => source.getAttribute("src")).map(source => source.getAttribute("src")),
+      ["/assets/v-1470.mp4", "/assets/v-1470.webm"], effectiveType + "：高清屏也只装小档");
+    assert.equal(h.scene.getAttribute("preload"), "none", "到了才读，不提前读");
   }
 });
 
@@ -584,16 +603,18 @@ test("if an image never finishes, the hero video starts after 6 seconds anyway",
   assert.equal(h.video.plays, 1);
 });
 
-test("with data saver or a 2G connection the hero video is never started, and on 3G it is", () => {
-  for (const connection of [{ saveData: true }, { effectiveType: "2g" }, { effectiveType: "slow-2g" }]) {
+test("with the visitor's data saver on the hero video is never started, while 3G / 2G estimates still play it", () => {
+  for (const connection of [{ saveData: true }, { effectiveType: "4g", saveData: true }]) {
     const h = harness({ withVideo: true, connection });
     h.startHero();
     h.fallback();
     assert.equal(h.video.plays, 0, JSON.stringify(connection) + "：只显示封面，视频一个字节都不下");
   }
-  const threeG = harness({ withVideo: true, connection: { effectiveType: "3g" } });
-  threeG.startHero();
-  assert.equal(threeG.video.plays, 1);
+  for (const effectiveType of ["3g", "2g", "slow-2g"]) {
+    const slowEstimate = harness({ withVideo: true, connection: { effectiveType } });
+    slowEstimate.startHero();
+    assert.equal(slowEstimate.video.plays, 1, effectiveType + "：网络估算偏慢不等于访客要省流量，照常播放");
+  }
 });
 
 test("each kind of real visitor input counts as intent, a plain scroll event does not, and scripted input cannot warm the video", () => {
@@ -628,8 +649,26 @@ test("changing to 3G rebuilds the lead observers, cancels warm-up, and switches 
   assert.equal(h.scene.loads, loads + 1, "切档要调用 load() 让浏览器放弃旧源");
 });
 
-test("changing to data saver or 2G pauses a prepared scene, hides the video, and shows the still picture", () => {
-  for (const next of [{ saveData: true }, { effectiveType: "2g" }, { effectiveType: "slow-2g" }]) {
+test("changing to 2G keeps a playing scene video running but moves it to the small tier", () => {
+  for (const effectiveType of ["2g", "slow-2g"]) {
+    const h = harness({ withScene: true, connection: { effectiveType: "4g" }, width: 1040, dpr: 2 });
+    h.load();
+    h.fire("near", true);
+    h.fire("on", true);
+    assert.equal(h.scene.plays, 1);
+    assert.deepEqual(h.sources.filter(source => source.getAttribute("src")).map(source => source.getAttribute("src")), ["/assets/v.mp4", "/assets/v.webm"], "高清屏 4G 先用大档");
+    const paused = h.scene.pauses;
+    h.changeConnection({ effectiveType });
+    assert.equal(h.scene.pauses, paused, effectiveType + "：不能因为估算变慢就暂停");
+    assert.equal(h.scene.hidden, false);
+    assert.equal(h.still.hidden, true);
+    assert.deepEqual(h.sources.filter(source => source.getAttribute("src")).map(source => source.getAttribute("src")), ["/assets/v-1470.mp4", "/assets/v-1470.webm"], effectiveType + "：改装小档");
+    assert.ok(h.scene.plays >= 2, "切档后继续播放");
+  }
+});
+
+test("changing to data saver pauses a prepared scene, hides the video, and shows the still picture", () => {
+  for (const next of [{ saveData: true }]) {
     const h = harness({ withScene: true, connection: { effectiveType: "4g" } });
     h.load();
     h.fire("near", true);

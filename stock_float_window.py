@@ -86,7 +86,8 @@ from sf_scheduler import compute_poll_interval
 from sf_animator import anim_duration_ms, crossed_key_level, is_tiny_move, quote_changed
 
 # ---- 模块化拆分 sf_quote_loop（v1.2.40 上帝类拆分第二步②）：行情循环与轮询调度 ----
-from sf_quote_loop import (QuoteLoopSchedule, minute_retry_state, next_poll_backoff,
+from sf_quote_loop import (QuoteLoopSchedule, WakeDetector, minute_retry_state,
+                           next_poll_backoff, off_market_retry_interval,
                            ui_poll_interval_ms, ui_top_poll_interval_ms)
 # 主窗消息路由：只负责队列消费与行情合批，业务应用仍留在主线程。
 from sf_window_message_router import WindowMessageRouter
@@ -460,6 +461,12 @@ def _normalize_code_6(code):
     if len(c) < 6:
         c = c.ljust(6, "0")
     return c
+
+
+def _explicit_prefix(code):
+    """代码里明写的交易所前缀（sh/sz/bj），没写返回空串。"""
+    c = (code or "").strip().lower()
+    return c[:2] if c[:2] in ("sh", "sz", "bj") else ""
 
 
 def _lazy_attr(owner, name, factory):
@@ -3473,6 +3480,7 @@ QMenu::separator {
         非交易不高频空转，但保留低频拉取，保证启动/收盘后仍能显示最新收盘价（避免"加载中"）。"""
         # v1.2.40：到期判定/长暂停退避/节拍调度下沉 sf_quote_loop.QuoteLoopSchedule
         sched = QuoteLoopSchedule()
+        wake = WakeDetector()
         while self.running:
             # v1.2.71：用单调时钟做到期判定。墙钟 time.time() 会被 NTP 校时、
             # 手动改表、夏令时切换拨回 —— 一旦回拨，`now - self.last` 变负，
@@ -3482,6 +3490,14 @@ QMenu::separator {
             if self._minimized:      # v1.2.39：缩到 Dock 隐藏期间低频拉取（防后台空转耗电）
                 interval = max(interval, POLL_INTERVAL_MINIMIZED)
             fetch, backoff, _tick = sched.step(now, interval)
+            # 睡眠唤醒：单调钟睡眠期间不走，盘中睡到收盘后醒来会被当成"才过几秒"，
+            # 要再等最长一小时才拉，打开程序看到的就是睡前的旧价。墙钟与单调钟之差
+            # 突增即刚醒，立即补拉；退避 1 秒给 Wi-Fi 一点重连时间（失败了由收盘后
+            # 的短间隔重试接着拉，不会再干等）。
+            if wake.check(time.time(), now):
+                fetch, backoff = True, True
+                sched.mark(now)
+                log_line("wake from sleep detected: refetching quote now")
             # v1.2.71：外部强制拉取（切股/刷新行情/Dock 恢复）—— 本节拍立即拉一次
             if self._take_force("_force_quote"):
                 fetch, backoff = True, False
@@ -3504,7 +3520,11 @@ QMenu::separator {
         v1.2.39：熔断→间隔映射下沉到 sf_scheduler.compute_poll_interval
         （上帝类拆分第一步），本方法仅保留薄委托与交易时段判定的壳。"""
         if not self._is_trading_time():
-            return POLL_INTERVAL_OFF_MARKET
+            # 收盘后 60 分钟一次只适用于上一次拉取成功；失败（开机自启时网络未连上、
+            # 睡眠唤醒后网络未恢复、接口还是旧数据）时按 5/10/20/40/60 秒重试，
+            # 否则用户打开程序要对着旧行情干等一小时。
+            return off_market_retry_interval(POLL_INTERVAL_OFF_MARKET,
+                                             getattr(self, "_quote_fail", 0))
         if not feature_enabled("poll_backoff"):
             return compute_poll_interval(POLL_NORMAL)   # 关闭熔断 = 固定高频 0.1s
         with self._poll_lock:   # v1.2.22：跨线程读需持锁
@@ -3576,6 +3596,7 @@ QMenu::separator {
         # v1.2.40：到期判定/长暂停退避/节拍调度下沉 sf_quote_loop.QuoteLoopSchedule；
         # 快速重试窗口状态转移下沉 sf_quote_loop.minute_retry_state（纯函数）
         sched = QuoteLoopSchedule()
+        wake = WakeDetector()
         retry_left = 0        # >0：处于快速重试窗口，剩余可重试次数
         hot = False           # 已进入持续失败回落状态（避免耗尽窗口后反复重置快速重试）
         retry_code = getattr(self, "code", None)
@@ -3586,7 +3607,12 @@ QMenu::separator {
                 self._minute_retry_left, self._minute_retry_hot = 0, False
             # v1.2.71：单调时钟（理由同 _quote_loop，墙钟回拨会静默停拉）
             now = time.monotonic()
-            base = self._minute_interval if self._is_trading_time() else POLL_INTERVAL_OFF_MARKET
+            trading = self._is_trading_time()
+            base = self._minute_interval if trading else POLL_INTERVAL_OFF_MARKET
+            if not trading:
+                # 收盘后 60 分钟一次只适用于上一次成功；拉取抛错（网络未恢复等）时
+                # 按 5/10/20/40/60 秒重试，成功一次 _minute_fail 归零即回到 60 分钟。
+                base = off_market_retry_interval(base, getattr(self, "_minute_fail", 0))
             if retry_left > 0:
                 # 快速重试只许比常规更快，不许更慢（修一处倒挂）：MINUTE_RETRY_INTERVAL
                 # 定下来时常规周期还是 10s，后来展开态降到 CHART_EXPANDED_MINUTE_INTERVAL
@@ -3599,6 +3625,10 @@ QMenu::separator {
             if self._minimized:      # v1.2.39：缩到 Dock 隐藏期间低频拉取（防后台空转耗电）
                 interval = max(interval, POLL_INTERVAL_MINIMIZED)
             fetch, backoff, _tick = sched.step(now, interval)
+            # 睡眠唤醒补拉，理由同 _quote_loop：单调钟睡眠期间不走。
+            if wake.check(time.time(), now):
+                fetch, backoff = True, True
+                sched.mark(now)
             # v1.2.71：外部强制拉取（切股/刷新行情/Dock 恢复）—— 本节拍立即拉一次
             if self._take_force("_force_minute"):
                 fetch, backoff = True, False
@@ -4407,13 +4437,17 @@ QMenu::separator {
     def _quote_zero_fallback(self, data, price, pct):
         """v1.2.28：0 值兜底 —— 非交易时段（收盘/休市/盘前）或接口偶发失败/空返回。
 
-        触发条件：展示价 <= 0，或当前处于非交易时段（sf_quote.market_status() 非 None）。
+        触发条件：展示价 <= 0（接口在休市/盘前把价格给成 0，或这一条本身是坏数据）。
+        **价格有效就一律用接口的价格与涨跌幅，休市也不例外**：此前触发条件还含
+        「当前处于非交易时段」，于是收盘后接口给了真实收盘价，也会被 minute_points
+        最后一点覆盖；而启动时 minute_points 是从首屏快照预填的，可能属于几个交易日
+        之前，用户看到的是旧价和反号的涨跌幅，必须手动刷新才对（2026-10-29 报障）。
         兜底源：分时缓存 self.minute_points 的最后一点价格（当日最后成交价/收盘价），
         涨跌幅 = (兜底价 - 昨收) / 昨收 * 100 重算；昨收缺失/非法时仅兜底价格不动涨跌幅。
         回写 data 的 price/pct（self.quote 字段同源）以驱动动画与展示。
         没有任何分时数据可兜底 → 维持原样（-- 或 0），不编造数据。
         """
-        if price > 0 and market_status() is None:
+        if price > 0:
             return price, pct
         if not getattr(self, "minute_points", None):
             return price, pct
@@ -4700,6 +4734,11 @@ QMenu::separator {
             cached_code = str(snap.get("code") or "").strip()
             if not cached_code or _normalize_code_6(cached_code) != _normalize_code_6(self.code):
                 return                      # 换过股票：缓存价是别家的，不能用
+            # 同号不同交易所也是别家的：sz000001 平安银行与 sh000001 上证指数只差前缀，
+            # 只比 6 位数字会把 11.54 元的旧快照预填到 3600 点的指数上。
+            cached_pfx, current_pfx = _explicit_prefix(cached_code), _explicit_prefix(self.code)
+            if cached_pfx and current_pfx and cached_pfx != current_pfx:
+                return
             q = snap.get("quote")
             if not isinstance(q, dict):
                 return
@@ -5884,6 +5923,8 @@ QMenu::separator {
                       if mon is not None else sf_presence.STATE_OFF),
             "reason": (getattr(mon, "last_error", "") or "") if mon is not None else "",
             "hidden_by_guard": bool(getattr(a, "hidden_by_guard", False)),
+            # 名字沿用旧的（反馈分析器等读取方按这个键读）：2026-10-29 起这里是喂给迟滞的
+            # "有效计数"，看到两个人以上时可能包含没有脸的上半身，不再严格等于脸数。
             "last_faces": getattr(a, "last_faces", None),
             "tick_sec": getattr(a, "tick_sec", sf_presence.FACE_GUARD_TICK_SEC),
             "hide_hits": getattr(a, "hide_hits", sf_presence.FACE_GUARD_HIDE_HITS),
@@ -5893,9 +5934,31 @@ QMenu::separator {
             # v1.4.63 边脸放宽与 1.5 米闸门：这三条一起决定"几张算数"，只写 conf_min
             # 就等于让外面按旧口径读这份诊断（贴边的框实际用的是 0.55，不是 0.6）。
             "edge_conf_min": sf_presence.FACE_GUARD_EDGE_CONF_MIN,
-            "near_face_w": sf_presence.FACE_GUARD_NEAR_FACE_W,
+            # 本会话**实际生效**的距离闸门：取景放宽（变焦拉回 1.0）生效后它会比常量小，
+            # 只写常量就等于让外面按放宽之前的口径读这份诊断。
+            "near_face_w": getattr(mon, "near_w_min", sf_presence.FACE_GUARD_NEAR_FACE_W),
+            "burst_frames": int(getattr(mon, "burst_frames", 0) or 0),
+            # 2026-10-29 上半身检测：哪一格坏了要能从这里读出来。
+            #   body_available   这个会话用的系统类表里有没有人体检测类（且开关没关）
+            #   body_frames      脸+人体合跑成功的帧数
+            #   body_assisted    身体框改变了喂给判定的数（有效计数 > 脸数）的帧数 —— 上半身检测
+            #                    真正起作用的次数；只见一个身体不算（那一帧按 0 张处理）
+            #   body_detect_errors / body_disabled  合跑失败的次数；连续失败后本会话放弃人体检测
+            "body_available": bool(
+                mon is not None
+                and (getattr(mon, "_cls", None) or {}).get("VNDetectHumanRectanglesRequest") is not None
+                and feature_enabled("face_guard_body")),
+            "body_frames": int(getattr(mon, "body_frames", 0) or 0),
+            "body_assisted": int(getattr(mon, "body_assisted", 0) or 0),
+            "body_detect_errors": int(getattr(mon, "body_detect_errors", 0) or 0),
+            "body_disabled": bool(getattr(mon, "body_disabled", False)),
+            "body_geometry_failures": int(sf_presence.body_geometry_failures()),
             "edge_shrink": sf_presence.FACE_GUARD_EDGE_SHRINK,
             "dwell_sec": getattr(a, "dwell_sec", sf_presence.FACE_GUARD_DWELL_SEC),
+            # 恢复侧驻留（2026-10-29 与收窗驻留拆开）：收窗提速后两者不再相等，
+            # 只写 dwell_sec 就等于让外面误以为恢复也变快了。
+            "restore_dwell_sec": getattr(a, "restore_dwell_sec",
+                                         sf_presence.FACE_GUARD_RESTORE_DWELL_SEC),
             # 几何读不出来 = 贴边放宽与距离闸门双双失效（降级方向是保守的，但不能静默）。
             # 没有这个计数，"边缘的人不收窗"这类事只能靠复现，日志里一个字都没有。
             "geometry_failures": int(sf_presence.geometry_failures()),
@@ -6023,13 +6086,21 @@ QMenu::separator {
             # 2026-10-12 加了驻留、贴边放宽、距离闸门三条之后，只写"连续 N 次"
             # 就等于让外面按旧口径理解 —— 而这三条恰好是"人站我旁边为什么没收窗"
             # 唯一可能的答案所在。
-            base = ("运行中 · 每 %g 秒数一次脸，连续 %d 次看到 2 张以上、"
-                    "且第二张脸在半径内停留满 %g 秒才收起"
-                    "（把握分门槛：画面中 %.2f / 贴边 %.2f；"
-                    "距离闸门：脸宽需占画面 %.1f%% 以上，贴边按 %.2f 折算）"
+            # 上半身那半句只在它真的可用时才写：开关关掉、本机缺这个系统类、本会话已放弃，
+            # 都按"只数脸"的旧口径说，不能对没在跑的保护说有（诚实性锁，同上面几处状态文案）。
+            body_on = bool(d.get("body_available")) and not d.get("body_disabled")
+            head = (("运行中 · 每 %g 秒数一次脸（脸看不到时也认上半身），连续 %d 次看到 2 个人以上、"
+                     "且第二个人在半径内停留满 %g 秒才收起") if body_on else
+                    ("运行中 · 每 %g 秒数一次脸，连续 %d 次看到 2 张以上、"
+                     "且第二张脸在半径内停留满 %g 秒才收起"))
+            base = ((head +
+                     "（把握分门槛：画面中 %.2f / 贴边 %.2f；"
+                     "距离闸门：脸宽需占画面 %.1f%% 以上，贴边按 %.2f 折算）")
                     % (d["tick_sec"], d["hide_hits"], d["dwell_sec"],
                        d["conf_min"], d["edge_conf_min"],
                        d["near_face_w"] * 100, d["edge_shrink"]))
+            if d.get("body_disabled"):
+                base += " · 上半身检测连续失败，本会话已放弃，只数脸"
             if d["hidden_by_guard"]:
                 return base + " · 已收起，等你一个人回到座位（连续 %d 次）" % d["restore_hits"]
             return base
@@ -6247,7 +6318,7 @@ QMenu::separator {
         self._face_guard_fed_ts = ts
         event = a.feed(count)
         if event == sf_presence.EVENT_HIDE:
-            log_line("face_guard 收起：连续命中，画面 %d 张脸" % count)
+            log_line("face_guard 收起：连续命中，画面 %d 个人（脸或上半身）" % count)
             # 更新流程的弹窗**刻意不在这里收掉**：它由 _close_update_flow_box 在退出
             # 与失败路径里统一收口，装更新装到一半被强制关掉会让收尾踩空。
             # 也就是说：自动收起时若恰好有更新弹窗在屏上，那块文字不会跟着消失 —— 已知限制。

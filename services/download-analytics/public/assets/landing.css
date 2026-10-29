@@ -47,8 +47,7 @@ h1 em{display:block;font-style:normal;color:var(--red)}
 .band{padding:64px 0 8px}
 #install{padding-top:48px}
 h2{margin:0 0 6px;font-size:28px;letter-spacing:-.01em}
-.sub{margin:0 0 28px;color:var(--muted);font-size:16px}
-.sub strong{color:var(--ink);font-weight:650}
+#install>h2,#check>h2{margin-bottom:28px}
 .flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 44px}
 .st{display:flex;flex-direction:column;min-width:0}
 .hd{display:flex;align-items:center;gap:12px;margin-bottom:14px}
@@ -107,15 +106,15 @@ a:focus-visible,summary:focus{outline:3px solid var(--ring);outline-offset:3px}
 .mt12{margin-top:12px}
 .mb20{margin-bottom:20px}
 .sc-show{padding:72px 0 8px}
-.sc-list{display:grid;gap:64px;margin-top:36px}
+.sc-list{display:grid;gap:64px}
 .sc-row{display:grid;gap:18px}
 .sc-row .sc-shot{order:2}
 .sc-shot{margin:0;border-radius:20px;overflow:hidden;border:1px solid var(--line);box-shadow:0 22px 40px -22px rgba(8,12,24,.5);background:#111;position:relative}.sc-shot img,.sc-shot video{display:block;width:100%;height:auto;aspect-ratio:2940/1912}.sc-shot img.asset-failed{opacity:0}
 .sc-shot video{background:#111}.sc-shot [hidden]{display:none}.sc-shot noscript img{position:absolute;top:0;left:0;width:100%;height:100%;aspect-ratio:auto}
-.sc-txt{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px}
-.sc-txt h3{margin:0;font-size:30px;line-height:1.25;letter-spacing:-.01em}
+.sc-txt{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.sc-txt h2{margin:0;font-size:30px;line-height:1.25;letter-spacing:-.01em}
 .sc-txt p{margin:0;font-size:20px;font-weight:650;color:var(--red-ink)}
-@media(max-width:980px){.sc-txt h3{font-size:24px}.sc-txt p{font-size:18px}}
+@media(max-width:980px){.sc-txt h2{font-size:24px}.sc-txt p{font-size:18px}}
 .nojs-note{margin:16px 2px 0;max-width:30em;font-size:14px;color:var(--muted)}.nojs-note a{color:var(--ink);font-weight:650}
 @media(forced-colors:active){
   .cta,.num,.pill{forced-color-adjust:none;border:1px solid ButtonText}.cta{background:ButtonFace;color:ButtonText}.num,.pill{background:Highlight;color:HighlightText}.box,.pic,.sc-shot{border-color:ButtonText}.nav a:hover,summary:hover{background:Highlight;color:HighlightText}

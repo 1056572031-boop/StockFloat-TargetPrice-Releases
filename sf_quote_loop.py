@@ -19,8 +19,9 @@ v1.2.40 继续下沉剩余调度决策（纯逻辑，无 Qt/网络副作用）�
 防回归测试，仍内联在主窗，本模块只收敛纯状态转移。
 """
 
-from sf_constants import (LOOP_TICK_CAP, POLL_DEGRADED, POLL_INTERVAL_MINIMIZED,
-                          POLL_NORMAL, POLL_OPEN, UI_WATCHDOG_INTERVAL_MS)
+from sf_constants import (LOOP_TICK_CAP, OFF_MARKET_RETRY_BASE_SEC, OFF_MARKET_RETRY_CAP_SEC,
+                          POLL_DEGRADED, POLL_INTERVAL_MINIMIZED, POLL_NORMAL, POLL_OPEN,
+                          UI_WATCHDOG_INTERVAL_MS, WAKE_GAP_SEC)
 
 
 def next_poll_backoff(state, fail, ok, fail_to_degraded, fail_to_open):
@@ -74,6 +75,48 @@ def ui_top_poll_interval_ms(minimized, trading):
     """
     del trading
     return 10000 if minimized else 250
+
+
+def off_market_retry_interval(base, fail_streak, retry_base=OFF_MARKET_RETRY_BASE_SEC,
+                              retry_cap=OFF_MARKET_RETRY_CAP_SEC):
+    """收盘后的轮询间隔（纯函数）：上一次成功沿用 base，连续失败则按 5、10、20…封顶 60 秒重试。
+
+    fail_streak 是连续失败次数（成功一次即归零）。读不出整数按 0 处理，即沿用 base：
+    宁可少重试，也不能因为计数异常把循环推成高频。结果恒不大于 base，
+    所以调用方传入比 retry_cap 更短的 base 时不会被拉长。"""
+    try:
+        streak = int(fail_streak)
+    except (TypeError, ValueError):
+        return base
+    if streak <= 0:
+        return base
+    step = retry_base * (2 ** min(streak - 1, 10))
+    return min(base, retry_cap, step)
+
+
+class WakeDetector:
+    """睡眠唤醒探测（纯逻辑，时钟由调用方传入以便测试）。
+
+    背景：行情与分时循环用 time.monotonic 判断「到期没」，它在 macOS 上睡眠期间不前进
+    （实测 mach_absolute_time，与 CLOCK_UPTIME_RAW 同类）。盘中睡了一会儿、收盘后才醒，
+    循环会以为才过了几秒，要再等最长一小时才拉，用户打开看到的是睡前的旧价。
+    墙钟睡眠期间照走，所以「墙钟 - 单调钟」在醒来后会突然变大；每次与上一次比较，
+    增量超过阈值就是刚醒。只认变大：往回跳（手动改表、校时回拨）重新记基线，不触发。
+    校时把时钟往前拨很多时会多拉一次，无害。"""
+
+    __slots__ = ("gap_sec", "_offset")
+
+    def __init__(self, gap_sec=WAKE_GAP_SEC):
+        self.gap_sec = gap_sec
+        self._offset = None
+
+    def check(self, wall, mono):
+        """传入此刻的墙钟与单调钟，返回是否刚从睡眠恢复。首次调用只记基线，返回 False。"""
+        offset = wall - mono
+        previous, self._offset = self._offset, offset
+        if previous is None:
+            return False
+        return (offset - previous) > self.gap_sec
 
 
 def minute_retry_state(retry_left, hot, result, retry_max):

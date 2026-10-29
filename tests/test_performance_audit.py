@@ -193,10 +193,14 @@ class TestSearchWorkBounds(SFCase):
             self.track_patch(mock.patch.object(universe, name, value))
 
     def set_rows(self, names):
-        # Install counting strings after normal indexing so normalization cannot erase them.
+        # 比较发生在折叠键上（大小写、全角已收成统一形态），所以计数字符串装在
+        # 折叠键里：名称本身保持普通字符串，返回值仍与输入行逐项相等。
         rows = [("sh%06d" % i, name) for i, name in enumerate(names)]
         build_index(rows)
-        vars(universe)["_rows"] = [(code, CountingName(name)) for code, name in rows]
+        # 装入未归一化的原行（_index 会去掉名称里的空白），返回值才能与输入逐项相等。
+        vars(universe)["_rows"] = list(rows)
+        self.track_patch(mock.patch.object(
+            universe, "_name_key", lambda name: CountingName(universe.fold_name(name))))
         CountingName.comparisons = 0
         return rows
 

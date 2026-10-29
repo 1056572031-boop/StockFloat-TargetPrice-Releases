@@ -156,7 +156,8 @@ class TestReleaseEvidence(SFCase):
             with patch.object(tool.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout='[{"headSha":"sha","status":"completed","conclusion":"success"},{"headSha":"other"}]', stderr="")):
                 self.assertEqual(1, len(tool.gh_runs("r/o", "sha")))
 
-    def test_complete_and_write_qualification(self):
+    def complete_in(self, label=None):
+        """Run complete() against a minimal repo; returns (output path, record)."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             clean_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -183,9 +184,36 @@ class TestReleaseEvidence(SFCase):
                     patch.object(tool.release_state, "finish"), \
                     patch.object(tool, "pick_receipt_contains", side_effect=[read, walk]):
                 out = tool.complete(root, self.version, self.limitations(), state,
-                                    root / "readback.json", root / "click.json", evidence_dir)
+                                    root / "readback.json", root / "click.json", evidence_dir, label)
             self.assertTrue(out.exists())
-            self.assertEqual("complete", quality.load(out)["release_qualification"]["stage"])
+            return out, quality.load(out)
+
+    def test_complete_and_write_qualification(self):
+        out, record = self.complete_in()
+        self.assertEqual("complete", record["release_qualification"]["stage"])
+        self.assertIn("outputs/release-candidates/v%s/post_release.json" % self.version, record["scope"])
+
+    def test_complete_label_moves_the_archive_scope_to_the_parallel_folder(self):
+        _, record = self.complete_in("stable")
+        folder = "outputs/release-candidates/v%s-stable/" % self.version
+        for name in ("online-manifest.json", "post_release.json", "publish.log"):
+            self.assertIn(folder + name, record["scope"])
+        self.assertFalse([item for item in record["scope"]
+                          if item.startswith("outputs/release-candidates/v%s/" % self.version)])
+
+    def test_complete_refuses_an_unsafe_label_before_reading_anything(self):
+        for label in ("../x", "Stable", ""):
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                tool.complete(Path("/nonexistent"), self.version, self.limitations(), Path("s"),
+                              Path("r"), Path("w"), None, label)
+
+    def test_cli_label_reaches_complete(self):
+        with patch.object(tool, "complete") as completed, \
+                patch.object(tool, "load_limitations", return_value=self.limitations()):
+            self.assertEqual(0, tool.main(["complete", "--root", "/x", "--limitations-file", "l.json",
+                                           "--state", "s", "--readback", "r", "--walkthrough", "w",
+                                           "--label", "stable"]))
+        self.assertEqual("stable", completed.call_args.args[-1])
 
     def test_gh_parser_and_qualification_errors_are_observable(self):
         with patch.object(tool.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="not-json", stderr="")):

@@ -37,6 +37,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 import urllib.request, urllib.parse
 from sf_constants import (CONFIG_PATH, EASTMONEY_SEARCH_URL, EASTMONEY_TOKEN_DEFAULT,
                           FG_DIM, MINUTE_HTTP_RETRIES, MINUTE_HTTP_TIMEOUT,
@@ -879,6 +880,65 @@ def fetch_minute_fallback(code):
         points.append((hm_part, price, avg))
     return _ordered_minute_points(points)
 
+# ---- 分时备源日志节流（2026-10-29）-------------------------------------------------
+# 旧事实：主源（腾讯）分时失败、备源（东财）成功时，fetch_minute 每一次都无条件写一行
+# WARNING "minute fallback(tencent->eastmoney) ok"。一台用户机器的 debug.log 里这类行
+# 累计三千多条，集中在三天，约占全部历史警告的七成，把真日志挤掉；而且这行不记主源为什么
+# 失败、备源花了多久，查问题时帮不上忙。
+# 现在与 _note_degraded_source 同口径：首条必记，其后每 DEGRADED_SOURCE_LOG_SEC 秒最多
+# 一条；行内带累计次数、主源失败的异常类型与简短信息、备源这一次的耗时毫秒。主源分时
+# 拿到数据时计数与手表一起归零，让下一次降级的第一条一定记下来。
+# 行首固定文本不变（按前缀找这行的人照常能找到）；它与 _LAST_MINUTE_SOURCE 是两件事，
+# 后者只记"最近一次成功靠谁"，这里只管日志写不写。
+MINUTE_FALLBACK_REASON_MAX = 80
+_minute_fb_lock = threading.Lock()
+_minute_fb_count = 0
+_minute_fb_last_log = 0.0
+# 异常文案里常带整条请求地址：问号之后是查询串（可能含令牌），一律整段去掉
+_URL_QUERY_RE = re.compile(r"\?[^\s'\"<>]*")
+
+
+def _short_exc(exc):
+    """异常 → "类型: 简短信息"：折成单行、去掉 URL 查询串、再截断到 80 字。
+
+    先去查询串再截断：反过来会把令牌从中间截开，留下半截。"""
+    try:
+        text = str(exc)
+    except Exception:
+        text = "<unprintable>"
+    text = _URL_QUERY_RE.sub("", " ".join(text.split()))
+    if len(text) > MINUTE_FALLBACK_REASON_MAX:
+        text = text[:MINUTE_FALLBACK_REASON_MAX] + "..."
+    name = type(exc).__name__
+    return "%s: %s" % (name, text) if text else name
+
+
+def _note_minute_fallback(code, exc, elapsed_ms):
+    """记一次"分时主源失败、备源兜住"。首条必记，其后按时间节流（附累计）。"""
+    global _minute_fb_count, _minute_fb_last_log
+    with _minute_fb_lock:
+        _minute_fb_count += 1
+        n = _minute_fb_count
+        now = time.monotonic()
+        due = n == 1 or (now - _minute_fb_last_log) >= DEGRADED_SOURCE_LOG_SEC
+        if due:
+            _minute_fb_last_log = now
+    if due:
+        log_line("minute fallback(tencent->eastmoney) ok code=%s n=%d fallback_ms=%d primary=%s"
+                 % (code, n, elapsed_ms, _short_exc(exc)), "WARNING")
+
+
+def _reset_minute_fallback():
+    """分时主源拿到数据时调用（仅 fetch_minute 主源成功分支一处）：计数与手表一起归零。
+
+    手表归零的理由同 _reset_degraded_source：否则下一次降级的第一条可能被上一次
+    60 秒内的记录顶掉，又一次"事后查不到"。"""
+    global _minute_fb_count, _minute_fb_last_log
+    with _minute_fb_lock:
+        _minute_fb_count = 0
+        _minute_fb_last_log = 0.0
+
+
 def fetch_minute(code):
     """分时拉取：主源（腾讯）→ 异常或盘中结构性空结果自动切备用源（东财）。
 
@@ -900,6 +960,7 @@ def fetch_minute(code):
             _reset_format_error("minute")
             if pts:
                 _LAST_MINUTE_SOURCE = "primary"
+                _reset_minute_fallback()      # 主源活着：降级日志的计数与手表归零
             return pts
         # 主源结构完整但盘中没有点集：这是降级条件，不是接口格式坏了，不能
         # 累加 FORMAT ERROR（否则备用源正常时仍会把日志刷成"接口格式变更"）。
@@ -910,11 +971,13 @@ def fetch_minute(code):
                                                    AttributeError, QuoteDataError)):
             _bump_format_error("minute", "MINUTE", code, exc)
         try:
+            t0 = time.monotonic()
             pts = fetch_minute_fallback(code)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             _reset_format_error("minute")
             if pts:
                 _LAST_MINUTE_SOURCE = "fallback"
-                log_line("minute fallback(tencent->eastmoney) ok code=%s" % code, "WARNING")
+                _note_minute_fallback(code, exc, elapsed_ms)
             return pts
         except Exception as fallback_exc:
             # Preserve the primary exception contract, but retain both failed sources.
@@ -1060,6 +1123,10 @@ def eastmoney_search_bj(keyword, count=8):
 def search_stocks(keyword):
     """股票搜索编排器：缓存 → 本地确定匹配 → 腾讯主搜 ∥ 东财北交所兜底 → 本地模糊救场。
 
+    名称搜索只在没有任何股票命中时，才把沪深 ETF / LOF 和指数作为候选（搜「沪深300」
+    能看到指数本身）；有股票命中时它们不出现，搜「茅台」仍然只得到贵州茅台。
+    按代码数字找同号候选（交易所前缀写错时）走 `search_by_digits`。
+
     顺序与理由：
       1. 空 keyword 直接 []（v1.2.69：不发无效网络请求）；
       2. 结果缓存命中（LRU+TTL，见 _SEARCH_CACHE 段注释）—— 同词短期重搜零网络往返；
@@ -1116,23 +1183,37 @@ def search_stocks(keyword):
         data = http_get(url, timeout=SEARCH_TIMEOUT, retries=SEARCH_RETRIES)
     except Exception:
         data = ""
-    out = []
+    out: list[tuple[str, str]] = []
+    funds: list[tuple[str, str]] = []
     seen = set()
-    if '="' in data:
+    # 主搜索是否真的给出了可解析的响应（"没有结果"也是一种响应，形如 v_hint="N"）。
+    # 网络失败或返回了错误页时为 False，此时的空结果不能当成"确实没有"去缓存。
+    answered = '="' in data
+    if answered:
         payload = data.split('="', 1)[1].rstrip('";\n')
         for it in payload.split("^"):
             f = it.split("~")
-            if len(f) >= 5 and f[4].startswith("GP-A") and f[0] in ("sh", "sz", "bj"):
-                # 接口返回 \uXXXX 字面转义，解码为真实名称
-                name = re.sub(r"\\u([0-9a-fA-F]{4})",
-                              lambda m: chr(int(m.group(1), 16)), f[2])
-                c = f[0] + f[1]
-                if c not in seen:                      # v1.2.69：同源重复也去重
-                    seen.add(c)
-                    out.append((c, name))
-                    # 弹窗最多展示固定数量；停止解析剩余的大响应，缩短搜索完成时间。
-                    if len(out) >= SEARCH_MAX_RESULTS:
-                        break
+            if len(f) < 5 or f[0] not in ("sh", "sz", "bj"):
+                continue
+            # 股票：GP-A 及其板块后缀（GP-A-KCB 等）。ETF / LOF / 指数另放第二队，
+            # 只在没有任何股票命中时才作为候选 —— 搜"茅台"不该混进一堆茅台主题 ETF，
+            # 把原本唯一命中自动替换的体验变成要多点一次。jj（场外基金）不收。
+            is_stock = f[4].startswith("GP-A")
+            if not is_stock and f[4] not in _SECOND_TIER_KINDS:
+                continue
+            target = out if is_stock else funds
+            if len(target) >= SEARCH_MAX_RESULTS:
+                continue
+            # 接口返回 \uXXXX 字面转义，解码为真实名称
+            name = re.sub(r"\\u([0-9a-fA-F]{4})",
+                          lambda m: chr(int(m.group(1), 16)), f[2])
+            c = f[0] + f[1]
+            if c not in seen:                      # v1.2.69：同源重复也去重
+                seen.add(c)
+                target.append((c, name))
+            # 弹窗最多展示固定数量；两类都满了就不再解析剩余的大响应。
+            if len(out) >= SEARCH_MAX_RESULTS and len(funds) >= SEARCH_MAX_RESULTS:
+                break
     # 腾讯结果未填满界面可展示的上限时，并入东财（北交所）候选。
     # v1.3.65：东财请求已提前并行发起，此处只做**有界等待 + 合并**，
     # 总耗时由"腾讯+东财"降为两者取大；兜底能力（北交所）与原实现一致。
@@ -1145,6 +1226,9 @@ def search_stocks(keyword):
                 out.append((c, n))
                 if len(out) >= SEARCH_MAX_RESULTS:
                     break
+    # 没有任何股票命中时，沪深 ETF / LOF 和指数才进候选（例如搜「沪深300ETF」）。
+    if not out and funds:
+        out = funds[:SEARCH_MAX_RESULTS]
     # v1.3.66：联网 0 结果时用本地字典救场（断网 / 接口抽风 / 腾讯不认的写法
     # 如 "sz000651"、以及腾讯不覆盖的北交所股票）。本地也没有才真的返回空。
     if not out:
@@ -1152,13 +1236,69 @@ def search_stocks(keyword):
             out = list(universe.match_fuzzy(kw, SEARCH_MAX_RESULTS))
         except Exception:
             out = []
-    _search_cache_put(kw, out)
+    # 只缓存"主搜索确实答复过、且有结果"的搜索。空结果一律不缓存：联网失败、腾讯答了
+    # 但东财北交所兜底静默失败，两种情况从这里看都是 []，分不出"确实没有"。占 5 分钟
+    # 缓存会让同一个词在网络恢复、字典装载后仍然搜不到（2026-10-29 走查实测：断网搜
+    # "万科"得 []，恢复后再搜仍是 []，且 0 次网络调用）。代价只是重复搜无效词多一次
+    # 联网检查，编辑窗的"搜索进行中忽略重复触发"守卫已防止连发。
+    if answered and out:
+        _search_cache_put(kw, out)
     return out
 
 
+# 腾讯 smartbox 的第二队类型：沪深 ETF / LOF 与指数。jj（场外基金）不收，
+# 它们没有交易所行情，不能作为本程序的实时行情标的。
+_SECOND_TIER_KINDS = ("ETF", "LOF", "ZS")
+_U_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def search_by_digits(digits, prefer=""):
+    """按代码数字（不看交易所前缀）列出同号候选：股票、ETF/LOF、指数。
+
+    编辑窗里交易所前缀写错时用它（用户写 sh000001，要把上证指数和平安银行都列出来
+    让他选，而不是替他换成其中一个）。`prefer` 是用户写的前缀，同前缀的排在前面，
+    其余保持接口顺序。腾讯不认带前缀的写法，所以这里只发数字；北交所不在腾讯里，
+    腾讯没有结果时再问东财；联网都没结果时用本地字典（只有股票）离线兜底。
+    不进搜索缓存：这是一次明确的选择，结果不该影响之后的普通搜索。
+    """
+    digits = str(digits or "")
+    if not (digits.isascii() and digits.isdigit()):
+        return []
+    out = []
+    seen = set()
+
+    def add(code, name):
+        if code[2:].startswith(digits) and code not in seen:
+            seen.add(code)
+            out.append((code, name))
+
+    try:
+        data = http_get(SEARCH_URL % digits, timeout=SEARCH_TIMEOUT, retries=SEARCH_RETRIES)
+    except Exception:
+        data = ""
+    if '="' in data:
+        for it in data.split('="', 1)[1].rstrip('";\n').split("^"):
+            f = it.split("~")
+            if len(f) < 5 or f[0] not in ("sh", "sz", "bj"):
+                continue
+            if f[4].startswith("GP-A") or f[4] in _SECOND_TIER_KINDS:
+                add(f[0] + f[1], _U_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), f[2]))
+    if not out:
+        for code, name in eastmoney_search_bj(digits, count=SEARCH_MAX_RESULTS) or []:
+            add(code, name)
+    if not out:
+        # 刚启动就断网时字典还没从磁盘读进内存，match_digits 只看内存，先让它装载
+        # （ensure_ready 不阻塞、不抛异常；刷新字典的联网动作在后台线程里）。
+        universe.ensure_ready()
+        for code, name in universe.match_digits(digits, SEARCH_MAX_RESULTS):
+            add(code, name)
+    out.sort(key=lambda row: not row[0].startswith(prefer))     # 稳定排序：同前缀的提到前面
+    return out[:SEARCH_MAX_RESULTS]
+
+
 def _normalize_search_keyword(keyword):
-    """归一化搜索词，保持中文语义并消除粘贴输入带来的格式差异。"""
-    return "".join(str(keyword or "").split()).casefold()
+    """归一化搜索词：兼容全角输入、大小写和粘贴的任意空白。"""
+    return "".join(unicodedata.normalize("NFKC", str(keyword or "")).split()).casefold()
 
 
 def _eastmoney_bj_worker(kw, count, box):

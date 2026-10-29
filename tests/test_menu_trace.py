@@ -194,6 +194,65 @@ class RealInteractions(TraceBase):
         self.assertEqual(self.last_session()["hover"], "diagnostics")
         self.menu.hide()
 
+    def test_悬停在某项上但没收到按下与按键_原因是_hover_no_press(self):
+        self.open()
+        self.menu.hovered.emit(self.fb)
+        self.menu.hide()
+        s = self.finish()
+        self.assertEqual((s["picked"], s["hover"], s["presses"], s["keys"], s["first_press"]),
+                         ("none", "feedback", 0, 0, None))
+        self.assertEqual(s["reason"], "hover_no_press")
+        self.assertTrue([x for x in self.lines() if x.startswith("ctx menu closed")
+                         and "picked=none" in x and "reason=hover_no_press" in x])
+
+    def test_没有悬停就收起_原因仍是_unknown_不被新分支抢走(self):
+        self.open()
+        self.menu.hide()
+        s = self.finish()
+        self.assertEqual((s["hover"], s["reason"]), ("none", "unknown"))
+
+    def test_悬停之后点菜单外面_原因仍是_outside_click(self):
+        self.open()
+        self.menu.hovered.emit(self.fb)
+        QTest.mouseClick(self.menu, Qt.MouseButton.LeftButton, pos=QPoint(-20, -20))
+        s = self.finish()
+        self.assertEqual((s["hover"], s["reason"]), ("feedback", "outside_click"))
+
+    def test_悬停之后按Esc_原因仍是_escape(self):
+        self.open()
+        self.menu.hovered.emit(self.fb)
+        QTest.keyClick(self.menu, Qt.Key.Key_Escape)
+        s = self.finish()
+        self.assertEqual((s["hover"], s["reason"]), ("feedback", "escape"))
+
+    def test_悬停之后程序切到后台_原因仍是_app_deactivated(self):
+        app = Mock()
+        app.applicationState.return_value = Qt.ApplicationState.ApplicationActive
+        mt.install_app_tracker(app)
+        handler = app.applicationStateChanged.connect.call_args.args[0]
+        self.open()
+        self.menu.hovered.emit(self.fb)
+        handler(Qt.ApplicationState.ApplicationInactive)
+        self.menu.hide()
+        s = self.finish()
+        self.assertEqual((s["hover"], s["reason"]), ("feedback", "app_deactivated"))
+
+    def test_悬停之后点中某项_原因仍是选中(self):
+        self.open()
+        QTest.mouseClick(self.menu, Qt.MouseButton.LeftButton, pos=self.centre(self.fb))
+        s = self.finish()
+        self.assertEqual((s["picked"], s["reason"]), ("feedback", "picked"))
+
+    def test_收到过按下但没落在菜单外_不算_hover_no_press(self):
+        self.open()
+        self.menu.hovered.emit(self.fb)
+        QTest.mousePress(self.menu, Qt.MouseButton.LeftButton, pos=self.centre(self.diag))
+        QTest.mouseRelease(self.menu, Qt.MouseButton.LeftButton, pos=self.centre(self.diag))
+        self.pump()
+        s = self.finish()
+        self.assertGreaterEqual(s["presses"], 1)
+        self.assertNotEqual(s["reason"], "hover_no_press")
+
     def test_上一个菜单没收就开新的_上一个记为被替换(self):
         mt.begin_menu(QMenu())
         mt.begin_menu(QMenu())

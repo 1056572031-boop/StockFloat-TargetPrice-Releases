@@ -7,11 +7,13 @@ import re
 import shutil
 import tempfile
 import time
+import unicodedata
 from sf_constants import (BG_MODE_DEFAULT, CONFIG_BACKUP_PATH, CONFIG_PATH,
                           CONFIG_SCHEMA_VERSION, DEFAULT_STOCK, LAST_QUOTE_PATH,
                           LEGACY_CONFIG_PATH, MAX_H, MIN_H)
 from sf_logging import log_line, log_swallow
 from sf_privacy import redact_url, redact_urls_in_text
+from sf_utils import normalize_code
 
 # 目标价版从拆分前正式版继承配置的只读来源；独立常量便于测试隔离。
 SPLIT_SOURCE_CONFIG_PATH = os.path.expanduser(
@@ -170,9 +172,23 @@ def _clean_code(v):
     在这里卡前缀会误伤可正常使用的旧配置；本函数只保证类型是 str 且非空，
     脏值（null / 数字 / 空白）不会一路拼进行情 URL。"""
     if isinstance(v, str) and v.strip():
-        return v.strip()
+        text = v.strip()
+        # 旧版本曾把输入法全角状态下敲的 ６００５１９ 原样写进配置，读回后行情永远是"--"。
+        # 只有含全角字符时才改写；纯 ASCII 的写法（含裸码 600519）一律原样保留。
+        folded = unicodedata.normalize("NFKC", text)
+        return text if folded == text else normalize_code(folded)
     log_line("config code 非法(%r)，回退默认代码 %s" % (v, DEFAULT_STOCK), "WARNING")
     return DEFAULT_STOCK
+
+
+def _canon_code(value):
+    """代码比较用的规范形态：600519 与 sh600519 是同一只股票，全角数字也算。
+
+    只用于"是不是同一只"的判断，不改写存储里的字符串。目标价按 code 分家存储后，
+    config 顶层是裸码 600519、编辑器切回来是 sh600519，字符串比较会把它们当成两只，
+    切走再切回目标价就读不到了（2026-10-29 走查实测）。
+    """
+    return normalize_code(unicodedata.normalize("NFKC", str(value or "")))
 
 def _clean_int(v, name, default, lo, hi):
     """读回的数值字段清洗：必须是有限数值且落在 [lo, hi]，否则回退默认值并记 WARNING。
@@ -478,9 +494,9 @@ def load_alerts(code=None):
         # 顶层 code 缺失（手工编辑过的配置、首装）时退回"对谁都可见"，宁可多显示不许看不见。
         owner = str(d.get("code") or "").strip()
         out = [a for a in out
-               if str(a.get("code") or "").strip() == want
+               if _canon_code(a.get("code")) == _canon_code(want)
                or (not str(a.get("code") or "").strip()
-                   and (not owner or owner == want))]
+                   and (not owner or _canon_code(owner) == _canon_code(want)))]
     return out
 
 
@@ -523,9 +539,9 @@ def _dormant_of(stored, code, owner=""):
     for a in stored:
         have = str(a.get("code") or "").strip()
         if have:
-            if have != want:
+            if _canon_code(have) != _canon_code(want):
                 out.append(a)
-        elif owner and owner != want:
+        elif owner and _canon_code(owner) != _canon_code(want):
             stamped = dict(a)
             stamped["code"] = owner
             out.append(stamped)

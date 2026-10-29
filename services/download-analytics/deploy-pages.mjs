@@ -5,6 +5,15 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readCloudflareToken } from "../feedback-worker/cloudflare-auth.mjs";
+import { mapLimit } from "./fetch-pool.mjs";
+
+// 读回要取回页面登记的全部素材（35 份，含几份 1 到 2 MB 的视频）再做视频分段对拍。
+// 2026-10-29 实测：46 个请求一次性并发，本机链路只有约 300 到 500 KB/s，带宽被摊薄，排在后面的请求撑不到 10 秒上限，
+// 整轮读回连续超时，而逐条取都正常（2.2 MB 的首屏视频单独取 6 到 7 秒）。并发 6 + 30 秒仍有一份 2.2 MB 的视频每轮超时；
+// 并发 2 + 45 秒连续三轮 0 超时，最慢一项 17.9 秒。所以带正文的请求限并发、单项上限放宽到能在慢线路上取完一份 2 MB 视频；
+// 判据本身（状态码、类型、缓存头、内容哈希、Range 对拍）一条不放宽。
+const READBACK_CONCURRENCY = 2;
+const READBACK_BODY_TIMEOUT_MS = 45000;
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const account = "45a8a4ed1f283f7449697c5958207c56";
@@ -133,22 +142,22 @@ for (let attempt = 0; attempt < 6 && !liveOk; attempt += 1) {
       ...["scene-1-switch", "scene-2-alert", "scene-3-fullscreen", "scene-4-hide", "scene-4-hide-poster"].flatMap(base => [720, 1280, 2100].map(width => `${base}-${width}.webp`))];
     const referenced = new Map();
     for (const match of pageBody.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=([0-9a-f]{10})/g)) referenced.set(match[1], match[2]);
-    const assets = await Promise.all(assetNames.map(async name => {
+    const assets = await mapLimit(assetNames, READBACK_CONCURRENCY, async name => {
       const stamp = referenced.get(name);
       if (!stamp) return { name, status: 0, bytes: 0, type: "", cache: "", hashOk: false };
-      const response = await fetch(`${base}/assets/${name}?v=${stamp}`, { signal: AbortSignal.timeout(10000), headers: { "cache-control": "no-cache" } });
+      const response = await fetch(`${base}/assets/${name}?v=${stamp}`, { signal: AbortSignal.timeout(READBACK_BODY_TIMEOUT_MS), headers: { "cache-control": "no-cache" } });
       const body = Buffer.from(await response.arrayBuffer());
       // 样式表里的 url(...) 在构建时被改写后才算指纹，所以对样式表也是"取回来的内容哈希 = 地址里的指纹"。
       const hashOk = createHash("sha256").update(body).digest("hex").slice(0, 10) === stamp;
       return { name, status: response.status, bytes: body.byteLength, type: response.headers.get("content-type") || "",
         cache: response.headers.get("cache-control") || "", hashOk, stamp, body: /\.(?:webm|mov|mp4)$/i.test(name) ? body : null };
-    }));
+    });
     // 视频必须支持分段请求：Safari 播 <video> 依赖 206，Pages 的静态层不支持，漏掉就是 Worker 没接管视频。
     // 头两个字节、最后一个字节都和整份文件逐字节对拍，不只看状态码。
-    const rangeChecks = await Promise.all(assets.filter(asset => asset.body).map(async asset => {
+    const rangeChecks = await mapLimit(assets.filter(asset => asset.body), READBACK_CONCURRENCY, async asset => {
       const url = `${base}/assets/${asset.name}?v=${asset.stamp}`;
       const ask = async range => {
-        const response = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { range, "cache-control": "no-cache" } });
+        const response = await fetch(url, { signal: AbortSignal.timeout(READBACK_BODY_TIMEOUT_MS), headers: { range, "cache-control": "no-cache" } });
         return { response, body: Buffer.from(await response.arrayBuffer()) };
       };
       const last = asset.bytes - 1;
@@ -159,7 +168,7 @@ for (let attempt = 0; attempt < 6 && !liveOk; attempt += 1) {
         && tail.response.status === 206 && tail.response.headers.get("content-range") === `bytes ${last}-${last}/${asset.bytes}`
         && tail.body.equals(asset.body.subarray(last));
       return { name: asset.name, ok, head: head.response.status, tail: tail.response.status };
-    }));
+    });
     // 页面上登记的每一个视频都必须做过分段对拍，数量对不上就是有视频没被读回到。
     const videoCount = assetNames.filter(name => /\.(?:webm|mov|mp4)$/i.test(name)).length;
     const rangeOk = rangeChecks.length === videoCount && rangeChecks.every(check => check.ok);

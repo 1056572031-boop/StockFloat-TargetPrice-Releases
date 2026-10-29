@@ -118,6 +118,17 @@ function text(status, body, extraHeaders = {}) {
 // Pages 的静态文件层对 Range 一律回 200 全量、不带 Accept-Ranges；Safari 播 <video> 依赖 206，
 // 所以视频文件改由 Worker 经 ASSETS 绑定取回后自己切片。地址和内容指纹不变，其余素材仍由 Pages 直接提供。
 const VIDEO_TYPES = { webm: "video/webm", mov: "video/quicktime", mp4: "video/mp4" };
+// 静态层不会替我们切片，所以带内容指纹的视频在一个 Worker 实例内只读一次、放内存里反复切；
+// 总量和单个文件都有上限（现有视频最大约 2MB，实例内存 128MB），超限就不缓存、照旧每次读取。
+const VIDEO_MEMO_MAX_BYTES = 24 * 1024 * 1024;
+const VIDEO_MEMO_MAX_ENTRY_BYTES = 8 * 1024 * 1024;
+const videoMemo = new Map();
+let videoMemoBytes = 0;
+
+export function resetVideoMemo() {
+  videoMemo.clear();
+  videoMemoBytes = 0;
+}
 
 export function videoTypeFor(pathname) {
   const match = /\.([a-z0-9]+)$/i.exec(pathname);
@@ -143,15 +154,67 @@ export function parseRange(header, size) {
   return end < start ? null : { start, end: Math.min(end, size - 1) };
 }
 
+// 读一次完整视频：{ ok, status, body, etag, contentType }。只有地址带内容指纹（v=<10 位十六进制>，构建器写入）
+// 才进内存缓存，手工访问的旧地址不会借缓存看见过期内容；同一时刻的并发请求共用同一次上游读取。
+async function loadVideo(request, env) {
+  const url = new URL(request.url);
+  const key = /^[0-9a-f]{10}$/i.test(url.searchParams.get("v") || "") ? url.pathname + url.search : "";
+  const known = key && videoMemo.get(key);
+  if (known) return known.promise;
+  const promise = (async () => {
+    // 干净的 GET：不带浏览器的 Range 和 If-None-Match，免得静态层回 304 或别的半截响应，我们需要完整正文来切片。
+    const upstream = await env.ASSETS.fetch(new Request(request.url, { method: "GET" }));
+    if (!upstream.ok) return { ok: false, status: upstream.status };
+    return { ok: true, status: 200, body: new Uint8Array(await upstream.arrayBuffer()),
+      etag: upstream.headers.get("etag"), contentType: upstream.headers.get("content-type") };
+  })();
+  if (!key) return promise;
+  const entry = { promise, size: 0 };
+  videoMemo.set(key, entry);
+  promise.then(result => {
+    if (videoMemo.get(key) !== entry) return;
+    if (!result.ok || result.body.byteLength > VIDEO_MEMO_MAX_ENTRY_BYTES) { videoMemo.delete(key); return; }
+    entry.size = result.body.byteLength;
+    videoMemoBytes += entry.size;
+    for (const [oldKey, old] of videoMemo) {
+      if (videoMemoBytes <= VIDEO_MEMO_MAX_BYTES) break;
+      if (oldKey === key || old.size === 0) continue;
+      videoMemo.delete(oldKey);
+      videoMemoBytes -= old.size;
+    }
+  }, () => { if (videoMemo.get(key) === entry) videoMemo.delete(key); });
+  return promise;
+}
+
+// HEAD 只需要大小和校验值：先问静态层的元数据，拿不到可信的 content-length 才退回读完整文件。
+async function videoMetadata(request, env) {
+  const meta = await env.ASSETS.fetch(new Request(request.url, { method: "HEAD" }));
+  // 个别静态绑定不实现 HEAD：这不是资源不存在，退回完整读取仍要保证 Safari 能探测到长度。
+  if (!meta.ok) return meta.status === 405 || meta.status === 501 ? null : { ok: false, status: meta.status };
+  const size = Number(meta.headers.get("content-length"));
+  if (!Number.isInteger(size) || size <= 0) return null;
+  return { ok: true, status: 200, size, etag: meta.headers.get("etag"), contentType: meta.headers.get("content-type") };
+}
+
 async function serveVideo(request, env) {
-  // 干净的 GET：不带浏览器的 Range 和 If-None-Match，免得静态层回 304 或别的半截响应，我们需要完整正文来切片。
-  const upstream = await env.ASSETS.fetch(new Request(request.url, { method: "GET" }));
-  if (!upstream.ok) return json(upstream.status === 404 ? 404 : 502, { error: upstream.status === 404 ? "not_found" : "asset_unavailable" });
-  const body = new Uint8Array(await upstream.arrayBuffer());
+  let source;
+  if (request.method === "HEAD") source = await videoMetadata(request, env);
+  if (!source) source = await loadVideo(request, env);
+  if (!source.ok) return json(source.status === 404 ? 404 : 502, { error: source.status === 404 ? "not_found" : "asset_unavailable" });
+  const type = videoTypeFor(new URL(request.url).pathname) || source.contentType || "application/octet-stream";
+  if (request.method === "HEAD") {
+    return new Response(null, { status: 200, headers: {
+      "content-type": type, "content-length": String(source.size ?? source.body.byteLength), "accept-ranges": "bytes",
+      "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer", "cross-origin-resource-policy": "same-origin",
+      ...(source.etag ? { etag: source.etag } : {}),
+    } });
+  }
+  const { body } = source;
   const size = body.byteLength;
-  const etag = upstream.headers.get("etag");
+  const etag = source.etag;
   const base = {
-    "content-type": videoTypeFor(new URL(request.url).pathname) || upstream.headers.get("content-type") || "application/octet-stream",
+    "content-type": type,
     "accept-ranges": "bytes",
     // 与 public/_headers 给其余素材的一致：地址带内容指纹，所以可以放心长缓存。
     "cache-control": "public, max-age=31536000, immutable",
@@ -169,11 +232,12 @@ async function serveVideo(request, env) {
     return new Response(null, { status: 416, headers: { ...base, "content-range": `bytes */${size}` } });
   }
   if (range) {
-    const slice = body.subarray(range.start, range.end + 1);
+    // 缓存里的那块内存要长期留着：响应里交出去的是复制出来的副本，运行时拿走它不会影响下一次请求。
+    const slice = body.slice(range.start, range.end + 1);
     return new Response(slice, { status: 206, headers: {
       ...base, "content-range": `bytes ${range.start}-${range.end}/${size}`, "content-length": String(slice.byteLength) } });
   }
-  return new Response(body, { status: 200, headers: { ...base, "content-length": String(size) } });
+  return new Response(body.slice(), { status: 200, headers: { ...base, "content-length": String(size) } });
 }
 
 function invalidPage() {

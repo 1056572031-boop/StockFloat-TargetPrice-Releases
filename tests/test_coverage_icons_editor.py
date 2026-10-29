@@ -761,8 +761,7 @@ class TestEditorSearchChain(SFCase):
     def test_six_digit_code_applies_immediately_and_closes(self):
         ed = _Editor(code="sh000001")
         ed.entry.text.return_value = "600519"
-        with mock.patch.object(sf_universe, "ensure_ready"), \
-                mock.patch.object(sf_universe, "index_ready", return_value=False):
+        with mock.patch.object(sf_universe, "ensure_ready"):
             ed.do_search()
         self.assertEqual(ed.applied, ["sh600519"])
         self.assertTrue(ed.closed)
@@ -777,17 +776,15 @@ class TestEditorSearchChain(SFCase):
     def test_unknown_code_is_rejected_once_the_dictionary_is_ready(self):
         """v1.4.18 建议#5：误输不存在的代码会把当前股票覆盖成 "--" 并清空目标价。
 
-        `covers_segment` 必须一起桩掉：这条用例判的是"**字典管的段**里查无此码"，
-        而 123456 前缀是 12（可转债）—— 字典不管那段，代码会改走行情探针那条支路，
-        于是走哪条支路取决于别的用例留下了什么桩（随机顺序档实测暴露：seed=20261012
-        下它退化成"探针抛 AssertionError → 直接放行"，判据就白写了）。
+        2026-10-29 订正：这条用例曾经还桩了 `covers_segment` 与 `index_ready`，
+        但编辑窗从 v1.4.50 起不再调用它们，存在性只由行情探针回答（字典只负责
+        "确认存在"）。那两处补丁什么也没做，却让旧注释显得仍然成立，已删除。
+        这里判据是：探针明确答"无此代码"时拒绝替换、不关窗。
         """
         ed = _Editor(code="sh000001")
         ed.entry.text.return_value = "123456"
         from sf_network import QuoteDataError
         with mock.patch.object(sf_universe, "ensure_ready"), \
-                mock.patch.object(sf_universe, "covers_segment", return_value=True), \
-                mock.patch.object(sf_universe, "index_ready", return_value=True), \
                 mock.patch.object(sf_universe, "match_confident", return_value=[]), \
                 mock.patch("sf_quote.fetch_quote", side_effect=QuoteDataError("not found")):
             ed.do_search()
@@ -799,8 +796,6 @@ class TestEditorSearchChain(SFCase):
         ed = _Editor(code="sh000001")
         ed.entry.text.return_value = "600519"
         with mock.patch.object(sf_universe, "ensure_ready"), \
-                mock.patch.object(sf_universe, "covers_segment", return_value=True), \
-                mock.patch.object(sf_universe, "index_ready", return_value=True), \
                 mock.patch.object(sf_universe, "match_confident",
                                   return_value=[("sh600519", "贵州茅台")]):
             ed.do_search()
@@ -819,8 +814,7 @@ class TestEditorSearchChain(SFCase):
         ed = _Editor(code="sh000001")
         ed.on_apply = lambda c: (_ for _ in ()).throw(RuntimeError("config ro"))
         ed.entry.text.return_value = "600519"
-        with mock.patch.object(sf_universe, "ensure_ready"), \
-                mock.patch.object(sf_universe, "index_ready", return_value=False):
+        with mock.patch.object(sf_universe, "ensure_ready"):
             ed.do_search()
         self.assertIn("替换失败", ed.hint_text)
         self.assertFalse(ed.closed, "切股失败还关掉窗口 = 用户以为已经换好了")
@@ -912,8 +906,12 @@ class TestEditorSearchChain(SFCase):
         ed._on_search_done([("sh600519", "超" * 40),
                             ("sh600520", "长" * 40)], 1)
         self.assertTrue(labels)
+        # 2026-10-29：改按像素省略名称、代码永远完整（旧写法按 24 字符一刀切，
+        # 长名称会把代码裁掉，两条同名候选就分不出来了）。
         self.assertLessEqual(len(labels[0]), 25, "超长名称会撑破固定宽度弹窗")
-        self.assertTrue(labels[0].endswith("…"))
+        self.assertIn("…", labels[0])
+        self.assertTrue(labels[0].endswith("sh600519"), "代码必须完整保留")
+        self.assertTrue(labels[1].endswith("sh600520"))
         del real_button
 
     def test_clicking_a_candidate_reuses_the_same_duplicate_guard(self):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""人脸在场守卫 v1.4.40 新增 —— 画面里出现第二张脸时，通知主窗收起到 Dock。
+"""人脸在场守卫 v1.4.40 新增 —— 画面里出现第二个人（脸或上半身）时，通知主窗收起到 Dock。
 
 分成两层，故意不合并：
   · `PresenceArbiter`：纯决策（迟滞状态机）。不碰 ObjC、不碰 Qt、不碰时间以外的
@@ -10,8 +10,10 @@
 隐私硬约束（改这个文件之前先读这三条）：
   1. 视频帧只在采集回调的调用栈里存在，不写盘、不入网络、不进日志、不进任何
      列表缓存；日志里只允许出现整数计数和状态名。
-  2. 这里做的是**人脸检测**（框出有几个），不是**人脸识别**（是谁）。没有模板、
-     没有特征向量，因此不存在"把某个人的脸绑进配置"的风险，也解释不了"是谁"。
+  2. 这里做的是**人脸与上半身检测**（框出有几个人），不是**身份识别**（是谁）。没有模板、
+     没有特征向量，因此不存在"把某个人绑进配置"的风险，也解释不了"是谁"。
+     （2026-10-29 起也认上半身：授权框正文、README 隐私句与本条必须同步改，三处只写"脸"
+     就是对用户少说了一半；改其中一处时三处一起看。）
   3. 摄像头一开，macOS 菜单栏的绿色占用灯就会亮，且**无法隐藏**（系统强制）。
      这个功能做不到"悄悄地看"。v1.4.51/52 之后界面上不再常驻状态行与菜单灰字
      （用户口径），所以"保护到底在不在跑"的落点是：菜单栏那颗绿灯（肉眼）、
@@ -36,15 +38,21 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from sf_constants import (FACE_GUARD_CAMERA_FPS, FACE_GUARD_CAMERA_PRESET,
+from sf_constants import (FACE_GUARD_BODY_CONF_MIN, FACE_GUARD_BODY_MAX_FAILS,
+                          FACE_GUARD_BODY_MIN_W, FACE_GUARD_BODY_PAIR_MARGIN,
+                          FACE_GUARD_BURST_BUDGET,
+                          FACE_GUARD_BURST_WINDOW_SEC,
+                          FACE_GUARD_CAMERA_FPS, FACE_GUARD_CAMERA_PRESET,
                           FACE_GUARD_CONF_MIN, FACE_GUARD_DWELL_SEC,
                           FACE_GUARD_EDGE_CONF_MIN, FACE_GUARD_EDGE_SHRINK,
                           FACE_GUARD_EDGE_TOUCH, FACE_GUARD_EXPEDITE_BUDGET,
                           FACE_GUARD_EXPEDITE_SEC, FACE_GUARD_HIDE_HITS,
                           FACE_GUARD_MAX_IDLE_SEC, FACE_GUARD_MENU_TEXT,
-                          FACE_GUARD_NEAR_FACE_W, FACE_GUARD_REASK_COOLDOWN_SEC,
-                          FACE_GUARD_RESTORE_HITS, FACE_GUARD_TICK_SEC)
-from sf_logging import log_line, log_line_throttled, log_swallow
+                          FACE_GUARD_NEAR_FACE_SCALE_MIN, FACE_GUARD_NEAR_FACE_W,
+                          FACE_GUARD_REASK_COOLDOWN_SEC,
+                          FACE_GUARD_RESTORE_DWELL_SEC, FACE_GUARD_RESTORE_HITS,
+                          FACE_GUARD_TICK_SEC, FACE_GUARD_WIDE_ZOOM)
+from sf_logging import feature_enabled, log_line, log_line_throttled, log_swallow
 
 # ---- 决策输出：调用方只认这三个字符串 ----
 EVENT_NONE = ""
@@ -177,17 +185,33 @@ def count_faces(observations, conf_min: float = FACE_GUARD_CONF_MIN,
       · 窄视角机器上，3 米外且正好被切一半的人可能仍过得了打折后的弱闸门 ——
         这是"贴边也算"与"1.5 米才算"同时成立时的必然残差，取值推导写在常量旁边。
     """
-    total = 0
+    unplaced, rects = qualifying_faces(observations, conf_min, edge_conf_min, near_w_min)
+    return unplaced + len(rects)
+
+
+def qualifying_faces(observations, conf_min: float = FACE_GUARD_CONF_MIN,
+                     edge_conf_min: float = FACE_GUARD_EDGE_CONF_MIN,
+                     near_w_min: float = FACE_GUARD_NEAR_FACE_W
+                     ) -> Tuple[int, List[Tuple[float, float, float, float]]]:
+    """`count_faces` 的判定本体：返回 (没有几何的达标脸数, 有几何的达标脸框列表)。
+
+    拆出来的原因：上半身检测要拿"哪些脸已经算数、各在画面哪里"去给身体框去重
+    （同一个人的脸框和身体框只能算一个人）。读不到把握分或读不到几何的脸算一张
+    但没有位置，所以单列成第一个返回值；`count_faces` 的结果恒等于两者之和。
+    判定规则全部留在这里一份，`count_faces` 不再有自己的副本。
+    """
+    unplaced = 0
+    rects: List[Tuple[float, float, float, float]] = []
     for ob in observations or []:
         try:
             conf = float(ob.confidence())
         except Exception:
-            total += 1
+            unplaced += 1
             continue
         r = _box_rect(ob)
         if r is None:
             if conf >= conf_min:
-                total += 1
+                unplaced += 1
             continue
         edge = _touches_edge(r)
         if conf < (edge_conf_min if edge else conf_min):
@@ -195,8 +219,126 @@ def count_faces(observations, conf_min: float = FACE_GUARD_CONF_MIN,
         floor = near_w_min * (FACE_GUARD_EDGE_SHRINK if edge else 1.0)
         if r[2] < floor:
             continue
-        total += 1
-    return total
+        rects.append(r)
+    return unplaced, rects
+
+
+_BODY_GEO_FAILS = 0     # 读不到上半身框几何的累计次数（只进诊断包，是个整数）
+
+
+def body_geometry_failures() -> int:
+    """给诊断包读的整数计数：上半身框的几何读取有没有悄悄坏过（与脸框分开记）。"""
+    return _BODY_GEO_FAILS
+
+
+def _body_rect(ob) -> Optional[Tuple[float, float, float, float]]:
+    """上半身检测框的归一化 (x, y, 宽, 高)（原点左下）；读不到返回 None。
+
+    与 `_box_rect` 分开：脸框几何读不到有它自己的计数和口径，混记会让
+    `geometry_failures` 说不清是哪一路坏了。读不到的身体框**直接不计**（宁可少算）：
+    身体框是新增的、只会让收窗更容易发生的一路，读不出来时不能自动获得计数资格。
+    """
+    global _BODY_GEO_FAILS
+    try:
+        b = ob.boundingBox()
+        return (float(b[0][0]), float(b[0][1]), float(b[1][0]), float(b[1][1]))
+    except Exception as exc:
+        _BODY_GEO_FAILS += 1
+        log_line_throttled("face_guard.body_geometry_unreadable",
+                           "face_guard 读不到上半身框几何（累计 %d 次），该框不计：%r"
+                           % (_BODY_GEO_FAILS, exc), level="WARNING", every=30)
+        return None
+
+
+def qualifying_bodies(observations, conf_min: float = FACE_GUARD_BODY_CONF_MIN,
+                      min_w: float = FACE_GUARD_BODY_MIN_W,
+                      near_scale: float = 1.0
+                      ) -> List[Tuple[float, float, float, float]]:
+    """过滤出算数的上半身框。读不到把握分或几何的框不计。
+
+    宽度下限随取景放宽同比缩放（`near_scale` = 本会话距离闸门 / 默认距离闸门）。
+    左右任一边贴到画面边界的框，宽度下限按 `FACE_GUARD_EDGE_SHRINK` 折算（被边界切掉
+    一部分的人，框宽同样会缩）；上下边不参与：坐得近的人上半身天然顶到画面底部，
+    那不代表被切窄。
+    """
+    out: List[Tuple[float, float, float, float]] = []
+    for ob in observations or []:
+        try:
+            conf = float(ob.confidence())
+        except Exception:
+            continue
+        if conf < conf_min:
+            continue
+        r = _body_rect(ob)
+        if r is None:
+            continue
+        t = FACE_GUARD_EDGE_TOUCH
+        side_edge = r[0] <= t or r[0] + r[2] >= 1.0 - t
+        floor = min_w * near_scale * (FACE_GUARD_EDGE_SHRINK if side_edge else 1.0)
+        if r[2] < floor:
+            continue
+        out.append(r)
+    return out
+
+
+def _max_pairs(adjacency: List[List[int]], right_size: int) -> int:
+    """二分图最大匹配（脸 → 包含其中心的身体框）。规模是个位数，递归增广足够。"""
+    owner = [-1] * right_size
+
+    def _augment(u: int, seen: set) -> bool:
+        for v in adjacency[u]:
+            if v in seen:
+                continue
+            seen.add(v)
+            if owner[v] == -1 or _augment(owner[v], seen):
+                owner[v] = u
+                return True
+        return False
+
+    return sum(1 for u in range(len(adjacency)) if _augment(u, set()))
+
+
+def count_people(face_observations, body_observations,
+                 conf_min: float = FACE_GUARD_CONF_MIN,
+                 edge_conf_min: float = FACE_GUARD_EDGE_CONF_MIN,
+                 near_w_min: float = FACE_GUARD_NEAR_FACE_W) -> Tuple[int, int]:
+    """返回 (算数的脸数, 算数的人数)。人数 = 脸数 + 没有被任何脸认领的上半身框。
+
+    去重规则：一张脸认领一个"框住了它中心点"的身体框（身体框四边各外扩
+    `FACE_GUARD_BODY_PAIR_MARGIN`，数据与取舍写在常量旁），**一对一**。只做"包含"判断会少算：
+    调研里 5.2%（18/347）的脸中心同时落进两个以上身体框，必须做匹配而不是逐个判断。
+    有任何一张脸读不到几何时（`qualifying_faces` 的第一个返回值 > 0）无法配对，
+    此时**不使用身体框**，人数就等于脸数 —— 宁可退回原口径，也不让主人自己被数成两个人。
+    已知会错的场景（如实记账）：前后重叠且后者身体没检出会少算；一个人的脸中心落在
+    自己身体框之外（大幅侧倾）会多算；海报与屏幕里的人像同样被当成人。
+    """
+    unplaced, face_rects = qualifying_faces(face_observations, conf_min,
+                                            edge_conf_min, near_w_min)
+    faces = unplaced + len(face_rects)
+    if unplaced > 0 or not body_observations:
+        return faces, faces
+    scale = near_w_min / FACE_GUARD_NEAR_FACE_W if FACE_GUARD_NEAR_FACE_W else 1.0
+    bodies = qualifying_bodies(body_observations, near_scale=scale)
+    if not bodies:
+        return faces, faces
+    adjacency: List[List[int]] = []
+    m = FACE_GUARD_BODY_PAIR_MARGIN
+    for fx, fy, fw, fh in face_rects:
+        cx, cy = fx + fw / 2.0, fy + fh / 2.0
+        adjacency.append([j for j, (bx, by, bw, bh) in enumerate(bodies)
+                          if bx - m <= cx <= bx + bw + m and by - m <= cy <= by + bh + m])
+    paired = _max_pairs(adjacency, len(bodies))
+    return faces, faces + (len(bodies) - paired)
+
+
+def effective_count(faces: int, people: int) -> int:
+    """喂给迟滞状态机的数：≥2 个人就原样给；否则只认脸。
+
+    只见一个身体、没见到脸（背对、低头、遮挡）时给 0，而不是 1：这一帧既不能触发收窗
+    （只有一个人），也不能推进"主人回到座位"的恢复计数 —— 离开座位的主人若留下身体
+    被误检，把行情亮出来正是这个功能要防的事（见 `PresenceArbiter` 类文档第二条）。
+    """
+    return people if people >= 2 else faces
 
 
 class PresenceArbiter:
@@ -218,13 +360,17 @@ class PresenceArbiter:
                  restore_hits=FACE_GUARD_RESTORE_HITS,
                  tick_sec=FACE_GUARD_TICK_SEC,
                  max_idle_sec=FACE_GUARD_MAX_IDLE_SEC,
-                 dwell_sec=FACE_GUARD_DWELL_SEC):
+                 dwell_sec=FACE_GUARD_DWELL_SEC,
+                 restore_dwell_sec=FACE_GUARD_RESTORE_DWELL_SEC):
         self.hide_hits = int(hide_hits)
         self.restore_hits = int(restore_hits)
         self.tick_sec = float(tick_sec)
         self.max_idle_sec = float(max_idle_sec)
-        # 驻留时长（用户原话：第二个人脸需停留在半径内 >0.38 秒才收窗，恢复同理反推）
+        # 收窗驻留（用户 2026-10-12 原话：第二个人脸需停留 >0.38 秒才收窗；
+        # 2026-10-29 用户要求检出更快，收窗侧的数值见 sf_constants.FACE_GUARD_DWELL_SEC）。
         self.dwell_sec = float(dwell_sec)
+        # 恢复驻留：与收窗分开，提速只作用于收窗，恢复保持保守（见常量旁说明）。
+        self.restore_dwell_sec = float(restore_dwell_sec)
         self.reset()
 
     def reset(self):
@@ -300,7 +446,7 @@ class PresenceArbiter:
         if self.hidden_by_guard:
             if (self._restore_streak >= self.restore_hits
                     and self._one_since is not None
-                    and t - self._one_since >= self.dwell_sec):
+                    and t - self._one_since >= self.restore_dwell_sec):
                 self.hidden_by_guard = False
                 self.hide_at = None
                 self._idle_reported = False
@@ -362,6 +508,16 @@ def _load_frameworks() -> Tuple[Optional[Dict[str, Any]], str]:
             cls[key] = got
     except Exception as exc:
         return None, "系统类查找失败: %r" % (exc,)
+    # 上半身检测类是**可选**的：取不到只意味着退回只数脸，不能让整个功能起不来。
+    try:
+        body_cls = objc.lookUpClass("VNDetectHumanRectanglesRequest")
+        if body_cls is not None:
+            cls["VNDetectHumanRectanglesRequest"] = body_cls
+    except Exception as exc:
+        # 装载函数会被授权查询、重试等路径反复调用，同一原因只首条必记、其后限流。
+        log_line_throttled("face_guard.body_class_missing",
+                           "face_guard 上半身检测类不可用，只数脸：%r" % (exc,),
+                           level="WARNING", every=30)
     return cls, ""
 
 
@@ -591,6 +747,23 @@ class FacePresenceMonitor:
         导致 offscreen SIGSEGV 的事故（v1.4.33 收口），这里刻意保持单向。
     """
 
+    # 类级默认值：绕过 __init__ 构造的测试替身也读得到；会话级的值由实例覆盖。
+    # applied_profile 故意默认 None 而不是 {}：可变默认值会被所有实例共享。
+    applied_profile: Optional[Dict[str, Any]] = None
+    near_w_min = FACE_GUARD_NEAR_FACE_W      # 本会话实际生效的距离闸门（取景放宽后会变小）
+    burst_frames = 0                         # 累计逐帧复检次数（诊断包用）
+    _burst_until = 0.0
+    _burst_left = 0
+    _burst_window = 0.0
+    # 上半身检测的会话级账（只含整数与布尔，不含画面内容）
+    body_frames = 0            # 脸+人体合跑成功的帧数
+    body_assisted = 0          # 身体框改变了喂给判定的数（有效计数 > 脸数）的帧数
+    body_detect_errors = 0     # 合跑失败、靠只数脸救回来的帧数
+    body_disabled = False      # 连续失败后本会话放弃人体检测
+    _body_fail_streak = 0
+    # (设备, 改之前的变焦, 改之后读回的变焦)：会话结束时还原用，None = 没改过
+    _zoom_restore: Optional[Tuple[Any, float, float]] = None
+
     def __init__(self, tick_sec: float = FACE_GUARD_TICK_SEC,
                  conf_min: float = FACE_GUARD_CONF_MIN,
                  on_sample=None):
@@ -773,7 +946,16 @@ class FacePresenceMonitor:
         with self._lock:
             self.frames = 0
             self.detect_errors = 0
-        log_line("face_guard running tick=%.1fs conf=%.2f" % (self.tick_sec, self.conf_min))
+            # 上半身检测的账同样按会话归零；上一段会话里"放弃了人体检测"不带进新会话。
+            self.body_frames = 0
+            self.body_assisted = 0
+            self.body_detect_errors = 0
+            self.body_disabled = False
+            self._body_fail_streak = 0
+        log_line("face_guard running tick=%.1fs conf=%.2f body=%s"
+                 % (self.tick_sec, self.conf_min,
+                    "on" if (self._cls or {}).get("VNDetectHumanRectanglesRequest") is not None
+                    and feature_enabled("face_guard_body") else "off"))
         return self.state
 
     def stop(self, wait: bool = True) -> bool:
@@ -836,6 +1018,12 @@ class FacePresenceMonitor:
         with self._lock:
             self.frames = 0
             self.detect_errors = 0
+            self.body_frames = 0
+            self.body_assisted = 0
+            self.body_detect_errors = 0
+            self.body_disabled = False
+            self._body_fail_streak = 0
+            self.burst_frames = 0
             self._sample = (0, 0.0)
         return True
 
@@ -966,6 +1154,104 @@ class FacePresenceMonitor:
         # 手工写一个朝向反而可能把帧转成 90°，而 Vision 对旋转过的脸检出率会掉 ——
         # 真要出问题（实机验证时数不到脸）再按实测结果决定是否需要显式朝向。
         session.startRunning()
+        # 取景放宽放在会话真正跑起来之后：切预设可能顺带重置变焦，只有此刻读到的才是
+        # 实际生效值。它自己 fail-open，这里再兜一层，绝不因为放宽取景把会话弄挂。
+        try:
+            self._apply_wide_view(device)
+        except Exception as exc:
+            log_swallow("sf_presence._build_session(wide view)", exc)
+
+    def _apply_wide_view(self, device) -> None:
+        """把数字变焦拉回 1.0（用户 2026-10-29 要求"摄像头默认开广角"），fail-open。
+
+        做三件事并全部留痕到 `applied_profile`：读变焦倍数 → 在配置锁里改成
+        `FACE_GUARD_WIDE_ZOOM` → **读回**实际生效值。只有读回值确实更小，才把距离闸门
+        按 after/before 同比缩小（脸变小了，"1.5 米"对应的占比也同比变小）；
+        设了没生效、读不到、锁被拒，都保持原闸门，不能出现"闸门放宽了但取景没变"。
+        """
+        self.near_w_min = FACE_GUARD_NEAR_FACE_W
+        self._zoom_restore = None
+        applied = self.applied_profile
+        if applied is None:
+            applied = {}
+            self.applied_profile = applied
+        applied.update({"zoom_before": None, "zoom_after": None, "zoom_applied": False,
+                        "zoom_restored": False})
+        try:
+            before = float(device.videoZoomFactor())
+        except Exception as exc:
+            log_line("face_guard 读不到变焦倍数，取景维持默认：%r" % (exc,), "WARNING")
+            return
+        applied["zoom_before"] = before
+        applied["zoom_after"] = before
+        if before <= FACE_GUARD_WIDE_ZOOM + 1e-6:
+            return                              # 已经是最宽，不动
+        try:
+            res = device.lockForConfiguration_(None)
+        except Exception as exc:
+            log_line("face_guard 设备配置锁获取失败（取景维持默认）：%r" % (exc,), "WARNING")
+            return
+        if not (res[0] if isinstance(res, tuple) else res):
+            log_line("face_guard 设备配置锁被拒（取景维持默认）", "WARNING")
+            return
+        try:
+            device.setVideoZoomFactor_(float(FACE_GUARD_WIDE_ZOOM))
+        except Exception as exc:
+            log_line("face_guard 变焦 %.2f→%.2f 被设备拒绝（取景维持默认）：%r"
+                     % (before, FACE_GUARD_WIDE_ZOOM, exc), "WARNING")
+        finally:
+            try:
+                device.unlockForConfiguration()
+            except Exception as exc:
+                log_swallow("sf_presence._apply_wide_view.unlock", exc)
+        try:
+            after = float(device.videoZoomFactor())
+        except Exception as exc:
+            log_line("face_guard 变焦设置后读不回，距离闸门维持原值：%r" % (exc,), "WARNING")
+            return
+        applied["zoom_after"] = after
+        if after < before - 1e-6:
+            applied["zoom_applied"] = True
+            self._zoom_restore = (device, before, after)
+            scale = max(float(FACE_GUARD_NEAR_FACE_SCALE_MIN), after / before)
+            self.near_w_min = FACE_GUARD_NEAR_FACE_W * scale
+            log_line("face_guard 取景放宽：变焦 %.2f→%.2f，距离闸门 %.4f→%.4f"
+                     % (before, after, FACE_GUARD_NEAR_FACE_W, self.near_w_min))
+        else:
+            log_line("face_guard 变焦设置未生效（%.2f→读回 %.2f），距离闸门维持原值"
+                     % (before, after), "WARNING")
+
+    def _restore_zoom(self) -> None:
+        """会话结束时把我们改过的数字变焦还原。fail-open，绝不阻碍停会话。
+
+        变焦是设备上的属性，不一定随会话消失；不还原的话，之后别的应用（视频通话等）
+        打开同一个摄像头可能继承被我们拉到 1.0 的画面。只在读到的当前值仍等于我们设下的值
+        时才还原：中途被别的程序改过，就不去覆盖它。
+        """
+        saved = self._zoom_restore
+        self._zoom_restore = None
+        if saved is None:
+            return
+        device, before, after = saved
+        try:
+            current = float(device.videoZoomFactor())
+            if abs(current - after) > 1e-6:
+                log_line("face_guard 不还原变焦：当前 %.2f 已不是我们设的 %.2f" % (current, after))
+                return
+            res = device.lockForConfiguration_(None)
+            if not (res[0] if isinstance(res, tuple) else res):
+                log_line("face_guard 还原变焦时设备配置锁被拒", "WARNING")
+                return
+            try:
+                device.setVideoZoomFactor_(float(before))
+            finally:
+                device.unlockForConfiguration()
+            applied = self.applied_profile
+            if applied is not None:
+                applied["zoom_restored"] = True
+            log_line("face_guard 已还原变焦 %.2f→%.2f" % (after, before))
+        except Exception as exc:
+            log_swallow("sf_presence._restore_zoom", exc)
 
     def _apply_power_profile(self, session, device) -> None:
         """把采集的功耗画像压到"数脸够用"的档位（v1.4.54，先实测再动）。
@@ -1091,13 +1377,15 @@ class FacePresenceMonitor:
         if not self._frame_generation_active(generation):
             return
         now = time.monotonic()
-        if now - self._last_detect < self.tick_sec:
+        if now - self._last_detect < self.tick_sec and not self._burst_open(now):
             return                  # 按节拍丢弃，占空比压到 ~2%
         self._last_detect = now
         cls = self._cls
         if cls is None or sample_buffer is None:
             self._count_detect_error("空帧（sample buffer 为 None）", generation)
             return
+        body_obs: list = []
+        body_ran = False
         try:
             req = cls["VNDetectFaceRectanglesRequest"].alloc().init()
             handler = cls["VNImageRequestHandler"].alloc().initWithCMSampleBuffer_options_(
@@ -1105,9 +1393,34 @@ class FacePresenceMonitor:
             if handler is None or req is None:
                 self._count_detect_error("Vision 请求或 handler 构造失败", generation)
                 return
-            if not vision_request_succeeded(handler.performRequests_error_([req], None)):
-                self._count_detect_error("VNImageRequestHandler 拒绝这一帧", generation)
-                return
+            body_req = self._make_body_request(cls)
+            combined_ok = False
+            if body_req is not None:
+                try:
+                    combined_ok = vision_request_succeeded(
+                        handler.performRequests_error_([req, body_req], None))
+                except Exception as exc:
+                    log_swallow("sf_presence._on_frame.body_combined", exc)
+            if combined_ok:
+                try:
+                    body_obs = list(body_req.results() or [])
+                except Exception as exc:
+                    # Vision 已经数出了脸，只有"取人体结果"坏了时不能把整帧脸结果一起丢掉：
+                    # 退回只数脸，并按人体失败记账；连续失败会按既有口径放弃人体检测。
+                    log_swallow("sf_presence._on_frame.body_results", exc)
+                    self._note_body_failure(generation)
+                else:
+                    body_ran = True
+                    self._note_body_success()
+            else:
+                # 人体请求不能拖累已有的脸保护：同一帧退回只数脸再试一次。
+                if not vision_request_succeeded(handler.performRequests_error_([req], None)):
+                    # 连只数脸也失败，是通用检测错误，不怪人体请求。
+                    self._count_detect_error("VNImageRequestHandler 拒绝这一帧", generation)
+                    return
+                if body_req is not None:
+                    # 合跑失败而单跑脸成功，才说明问题出在人体请求上。
+                    self._note_body_failure(generation)
             observations = list(req.results() or [])
         except Exception as exc:
             # 采集线程里抛出去就是崩溃，但绝不能变成"功能静默失效"：
@@ -1116,7 +1429,13 @@ class FacePresenceMonitor:
                 log_swallow("sf_presence._on_frame.detect", exc)
             return
         # 帧数据到此为止：只留一个整数。
-        count = count_faces(observations, self.conf_min)
+        if body_ran:
+            faces, people = count_people(observations, body_obs, self.conf_min,
+                                         near_w_min=self.near_w_min)
+        else:
+            faces = count_faces(observations, self.conf_min, near_w_min=self.near_w_min)
+            people = faces
+        count = effective_count(faces, people)
         # 标定用的一根浮点棒子：画面里最大那张达标脸占画面宽的比例。
         # 「1.5 米」这条闸门要靠镜头视角才能换成米，而视角在这台机器上读不到
         # （见 FACE_GUARD_NEAR_FACE_W 旁边那段），所以把比例留在诊断包里，
@@ -1131,6 +1450,10 @@ class FacePresenceMonitor:
             self.last_face_width = widest
             self.frames += 1
             first = self.frames == 1
+            if body_ran:
+                self.body_frames += 1
+                if count > faces:
+                    self.body_assisted += 1
         if self._arm_expedite(now, count):
             with self._lock:
                 self.expedited += 1
@@ -1146,7 +1469,69 @@ class FacePresenceMonitor:
             # 这一行是"整条采集链真的通了"的锚点：AVFoundation 发帧 →
             # CMSampleBuffer 进 Vision → 数出脸。日志里搜 `face_guard 首帧` 就知道
             # 卡在哪一段；v1.4.40~1.4.49 期间这条锚点不存在，所以每一轮都只能靠猜。
-            log_line("face_guard 首帧已计数：%d 张脸" % count)
+            log_line("face_guard 首帧已计数：%d 个人（脸或上半身）" % count)
+
+    def _make_body_request(self, cls):
+        """造上半身检测请求；不可用（类缺失、开关关、本会话已放弃、构造失败）返回 None。
+
+        返回 None 的任何情形，调用方都只数脸，行为与没有这个功能时一致。
+        """
+        if self.body_disabled:
+            return None
+        body_cls = cls.get("VNDetectHumanRectanglesRequest")
+        if body_cls is None or not feature_enabled("face_guard_body"):
+            return None
+        try:
+            body_req = body_cls.alloc().init()
+            if body_req is None:
+                self._note_body_failure(None)
+                return None
+            body_req.setUpperBodyOnly_(True)
+            return body_req
+        except Exception as exc:
+            log_swallow("sf_presence._make_body_request", exc)
+            self._note_body_failure(None)
+            return None
+
+    def _note_body_success(self) -> None:
+        """人体请求跑通一帧：连续失败计数清零（只统计"连续"）。"""
+        if self._body_fail_streak:
+            with self._lock:
+                self._body_fail_streak = 0
+
+    def _note_body_failure(self, generation: "int | None") -> None:
+        """人体请求拖垮了这一帧：计数，连续达到上限就在本会话里放弃它（只数脸）。"""
+        with self._lock:
+            if generation is not None and not self._frame_generation_active(generation):
+                return
+            self.body_detect_errors += 1
+            self._body_fail_streak += 1
+            give_up = (self._body_fail_streak >= int(FACE_GUARD_BODY_MAX_FAILS)
+                       and not self.body_disabled)
+            if give_up:
+                self.body_disabled = True
+            n = self.body_detect_errors
+        if give_up:
+            log_line("face_guard 上半身检测连续失败 %d 次（累计 %d），本会话改为只数脸"
+                     % (FACE_GUARD_BODY_MAX_FAILS, n), "WARNING")
+
+    def _burst_open(self, now: float) -> bool:
+        """疑似第二人窗口内，允许绕过节拍多检测一帧（带每秒预算）。
+
+        只在"本该被节拍丢掉"的帧上被问到，所以它消耗的预算就是额外多付的检测次数。
+        窗口由 `_arm_expedite` 在计数升到 2 张以上的那一刻打开，计数回落立刻关。
+        """
+        if now >= self._burst_until:
+            return False
+        if now - self._burst_window >= 1.0:
+            self._burst_window = now
+            self._burst_left = int(FACE_GUARD_BURST_BUDGET)
+        if self._burst_left <= 0:
+            return False
+        self._burst_left -= 1
+        with self._lock:
+            self.burst_frames += 1
+        return True
 
     def _arm_expedite(self, now: float, count: int) -> bool:
         """计数变了就把下一次检测提前（v1.4.56，见常量旁注释）。
@@ -1156,6 +1541,14 @@ class FacePresenceMonitor:
         """
         prev = self._prev_count
         self._prev_count = count
+        # 逐帧复检窗口：计数刚升到 2 张以上才开，回落到 2 张以下立刻关。
+        if count >= 2:
+            # 只认"已知从一人变成两人"：首次样本就是两张脸时没有变化证据，仍走
+            # 普通节拍，既不把启动瞬间的误检当成加速理由，也不破坏稳态节拍的功耗边界。
+            if prev is not None and prev < 2:
+                self._burst_until = now + FACE_GUARD_BURST_WINDOW_SEC
+        else:
+            self._burst_until = 0.0
         if now - self._expedite_window >= 1.0:
             self._expedite_window = now
             self._expedite_left = int(FACE_GUARD_EXPEDITE_BUDGET)
@@ -1213,6 +1606,7 @@ class FacePresenceMonitor:
                 session.stopRunning()
             except Exception as exc:
                 log_swallow("sf_presence._teardown", exc)
+        self._restore_zoom()
         self._session = None
         self._input = None
         self._output = None
@@ -1240,4 +1634,9 @@ class FacePresenceMonitor:
         with self._lock:
             self._sample = (0, 0.0)
         self._last_detect = 0.0
+        self._burst_until = 0.0
+        # 上一段会话的人数不能带进下一段：否则新会话的第一个样本会拿旧人数当"变化前"，
+        # 把"启动瞬间就是两个人"误判成"刚从一个人变成两个人"而开逐帧复检窗口。
+        self._prev_count = None
+        self.near_w_min = FACE_GUARD_NEAR_FACE_W
         self.running_since = 0.0

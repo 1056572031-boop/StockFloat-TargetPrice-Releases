@@ -76,7 +76,11 @@ class UpdateFlowController:
                 host._update_manual_wait = True
                 # A new explicit click renews the request, even after cancelling its wait box.
                 host._update_check_aborted = False
-                host._show_checking_dialog()
+                # 与下面发起新检查的分支同理：等待框只是提示，它出错不能让这次点击没有回音。
+                try:
+                    host._show_checking_dialog()
+                except Exception as exc:
+                    self.swallow("sf_update_flow.show_checking_dialog", exc)
                 self.log("update check click reused in-flight check")
             return
         if host._update_downloading:
@@ -94,7 +98,14 @@ class UpdateFlowController:
         # 6 小时复查与失败退避都必须是静默的 —— 系统弹窗会把应用带到最前，
         # 看盘时抢一次焦点比慢一点更糟。（加强后的既有用例当场逮到过这个。）
         if manual:
-            host._show_checking_dialog()
+            # 等待框只是提示，不是检查的前提：它内部会惰性 import 系统弹窗模块，
+            # 安装包在程序运行中被换掉时归档读出坏数据（实测 zlib "Error -3"），
+            # 异常若冒出去，检查既没发起、上面两个状态位又留在 True 直到被判过期。
+            # 失败只留痕，照常往下发起检查（AGENTS §6 第 9 条，不许静默）。
+            try:
+                host._show_checking_dialog()
+            except Exception as exc:
+                self.swallow("sf_update_flow.show_checking_dialog", exc)
 
         self._backend(host).check(manual)
 

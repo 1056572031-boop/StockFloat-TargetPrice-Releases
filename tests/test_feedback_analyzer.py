@@ -60,6 +60,76 @@ class FeedbackAnalyzerTests(SFCase):
             self.assertIn("value=1", text)
             self.assertIn("问题描述为空", text)
 
+    def _fallback_report(self, completed_at, **summary):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = self._feedback_state(capture_completed_at=completed_at,
+                                         summary={"price_is_fallback": True, **summary})
+            return analyze_archive(self._archive(root, state), root / "reports")
+
+    def test_price_fallback_inside_a_trading_session_is_still_a_warning(self):
+        # 2026-10-20 是周二；UTC 02:00 = 北京 10:00，连续竞价中。
+        report = self._fallback_report("2026-10-20T02:00:00Z")
+        self.assertEqual([(f["code"], f["message"]) for f in report["findings"]],
+                         [("runtime_warning", "price_is_fallback")])
+        self.assertEqual(report["conclusion"], "suspected_problem")
+
+    def test_price_fallback_while_the_market_is_closed_is_information_only(self):
+        # 午休 12:00、收盘后 15:45、盘前 08:00（北京时间）和周六盘中，各自都只是说明。
+        for completed_at in ("2026-10-20T04:00:00Z", "2026-10-20T07:45:00Z",
+                             "2026-10-20T00:00:00Z", "2026-10-24T02:00:00Z"):
+            with self.subTest(completed_at=completed_at):
+                report = self._fallback_report(completed_at)
+                self.assertEqual([f["code"] for f in report["findings"]],
+                                 ["price_fallback_market_closed"])
+                self.assertEqual(report["findings"][0]["severity"], "info")
+                self.assertEqual(report["conclusion"], "insufficient_evidence")
+
+    def test_session_edges_follow_the_product_market_status(self):
+        # 产品的 market_status 两端都含：11:30 与 15:00 整点仍算连续竞价，一分钟后才休市。
+        for completed_at, expected in (("2026-10-20T03:30:00Z", "runtime_warning"),
+                                       ("2026-10-20T03:31:00Z", "price_fallback_market_closed"),
+                                       ("2026-10-20T07:00:00Z", "runtime_warning"),
+                                       ("2026-10-20T07:01:00Z", "price_fallback_market_closed"),
+                                       ("2026-10-20T01:30:00Z", "runtime_warning")):
+            with self.subTest(completed_at=completed_at):
+                report = self._fallback_report(completed_at)
+                self.assertEqual(report["findings"][0]["code"], expected)
+
+    def test_unparseable_capture_time_keeps_the_original_warning(self):
+        # 没法确定休市时宁可多报：缺时区、乱写的时间都按开市处理。
+        # 极值日期能解析却换算溢出，同样按开市处理，不许把分析带崩。
+        for completed_at in ("2026-10-20T08:00:00", "not-a-time",
+                             "9999-12-31T23:59:59Z", "0001-01-01T00:00:00+14:00"):
+            with self.subTest(completed_at=completed_at):
+                report = self._fallback_report(completed_at)
+                self.assertIn("runtime_warning", {f["code"] for f in report["findings"]})
+
+    def test_state_without_a_capture_time_cannot_prove_the_market_was_closed(self):
+        # 清单里有采集时间（午休），但 state.json 自己没写：不能据此判休市，仍按原口径报警。
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = self._feedback_state(summary={"price_is_fallback": True})
+            del state["capture_completed_at"]
+            path = root / "feedback.zip"
+            build_archive(path, {"state.json": json.dumps(state), "problem.txt": ""},
+                          app_version="1.4.94", bundle_id="com.skyrocket.app", run_id="run-1",
+                          omitted=[], truncated=[],
+                          capture_started_at="2026-10-20T04:00:00Z",
+                          capture_completed_at="2026-10-20T04:00:00Z")
+            report = analyze_archive(path, root / "reports")
+            pairs = {(f["code"], f["message"]) for f in report["findings"]}
+            self.assertIn(("runtime_warning", "price_is_fallback"), pairs)
+            self.assertNotIn("price_fallback_market_closed", {code for code, _ in pairs})
+
+    def test_closed_market_does_not_hide_the_other_runtime_warnings(self):
+        report = self._fallback_report("2026-10-20T07:45:00Z", net_ok=False, minute_stale=True)
+        codes = [(f["code"], f["message"]) for f in report["findings"]]
+        self.assertIn(("runtime_warning", "net_ok"), codes)
+        self.assertIn(("runtime_warning", "minute_stale"), codes)
+        self.assertNotIn(("runtime_warning", "price_is_fallback"), codes)
+        self.assertEqual(report["conclusion"], "suspected_problem")
+
     def test_privacy_filter_does_not_hide_real_failure_or_current_warning(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -276,6 +346,39 @@ class FullEvidenceAnalyzerTests(SFCase):
                         self.assertEqual(finding["severity"], "info")
                     else:
                         self.assertEqual(finding["severity"], "warning")
+
+    def _notify_unknown_message(self, notify, log_run="old-run"):
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.analyze(Path(directory), {
+                "debug.log": self.log(log_run, "synthetic line").encode(),
+                "notify.json": json.dumps(notify).encode()})
+            finding = next(row for row in report["findings"] if row["code"] == "notify_authorization_unknown")
+            return finding["severity"], finding["message"]
+
+    def test_never_answered_notification_status_is_described_as_no_answer_not_refusal(self):
+        never = {"authorization": "unknown",
+                 "authorization_cache": {"value": "unknown", "fresh": False, "age_sec": None},
+                 "pending": {"query_in_flight": False}}
+        severity, message = self._notify_unknown_message(never)
+        self.assertEqual(severity, "info")
+        self.assertIn("没有收到过系统的授权答复", message)
+        self.assertIn("不等于用户拒绝授权", message)
+
+    def test_notification_status_keeps_the_generic_wording_when_the_evidence_is_incomplete(self):
+        base = {"authorization": "unknown",
+                "authorization_cache": {"value": "unknown", "fresh": False, "age_sec": None},
+                "pending": {"query_in_flight": False}}
+        variants = {
+            "query_in_flight": {**base, "pending": {"query_in_flight": True}},
+            "has_answered_before": {**base, "authorization_cache": {"value": "unknown", "age_sec": 12.5}},
+            "no_pending_block": {"authorization": "unknown", "authorization_cache": base["authorization_cache"]},
+            "no_cache_block": {"authorization": "unknown", "pending": {"query_in_flight": False}},
+        }
+        for name, notify in variants.items():
+            with self.subTest(case=name):
+                _severity, message = self._notify_unknown_message(notify)
+                self.assertIn("原因尚不能确定", message)
+                self.assertNotIn("没有收到过系统的授权答复", message)
 
     def test_chinese_report_escapes_description_logs_and_collection_text(self):
         hostile = '</pre><script>alert(1)</script>\n# forged\n[click](https://example.invalid)'

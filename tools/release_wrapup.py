@@ -38,6 +38,7 @@ from typing import Any
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 gate_stamp = importlib.import_module("tools.gate_stamp")
+release_identity = importlib.import_module("tools.release_identity")
 
 ARCHIVE_DIR = "outputs/release-candidates"
 INDEX_NAME = "archive-index.json"
@@ -125,12 +126,23 @@ def manifest_of(record: Path) -> Path:
     return path
 
 
-def plan_archive(tree: Path, version: str) -> list[tuple[Path, str]]:
+def folder_name(version: str, label: str | None) -> str:
+    try:
+        return release_identity.archive_folder_name(version, label)
+    except ValueError as exc:
+        raise WrapupError(str(exc)) from exc
+
+
+def plan_archive(tree: Path, version: str, label: str | None = None) -> list[tuple[Path, str]]:
     """(source file, destination name inside the archive folder) for every file to keep."""
-    folder = tree / ARCHIVE_DIR / ("v" + version)
+    folder = tree / ARCHIVE_DIR / folder_name(version, label)
     receipt = read_json(folder / "post_release.json")
     if receipt.get("version") != version:
         raise WrapupError("post_release.json is for version %r, not %s" % (receipt.get("version"), version))
+    if receipt.get("archive_label") != label:
+        raise WrapupError("post_release.json carries archive label %r but %r was asked for; "
+                          "use the same --label the receipt was made with"
+                          % (receipt.get("archive_label"), label))
     for key in ("candidate_sha256", "candidate_manifest_sha256"):
         if not isinstance(receipt.get(key), str) or not receipt[key]:
             raise WrapupError("post_release.json carries no %s" % key)
@@ -152,10 +164,14 @@ def dump_index(index: dict[str, Any]) -> str:
     return json.dumps(index, indent=1, sort_keys=True, ensure_ascii=False)
 
 
-def archive(repo: Path, tree: Path, version: str, apply: bool) -> dict[str, int]:
-    """Copy the receipt-matched evidence into the repo archive and index it (idempotent)."""
-    plan = plan_archive(tree, version)
-    folder = repo / ARCHIVE_DIR / ("v" + version)
+def archive(repo: Path, tree: Path, version: str, apply: bool, label: str | None = None) -> dict[str, int]:
+    """Copy the receipt-matched evidence into the repo archive and index it (idempotent).
+
+    label: a same-version re-release archives into vX.Y.Z-label next to the earlier vX.Y.Z folder,
+    which is never overwritten."""
+    plan = plan_archive(tree, version, label)
+    name_of_folder = folder_name(version, label)
+    folder = repo / ARCHIVE_DIR / name_of_folder
     index_path = repo / ARCHIVE_DIR / INDEX_NAME
     index = read_json(index_path)
     known = {entry["to"]: entry["sha256"] for entry in index["files"]}
@@ -163,7 +179,7 @@ def archive(repo: Path, tree: Path, version: str, apply: bool) -> dict[str, int]
     for source, name in plan:
         digest = sha256_file(source)
         dest = folder / name
-        to = "%s/v%s/%s" % (ARCHIVE_DIR, version, name)
+        to = "%s/%s/%s" % (ARCHIVE_DIR, name_of_folder, name)
         if dest.exists() and sha256_file(dest) != digest:
             raise WrapupError("%s already exists with different bytes; it is never overwritten" % to)
         if known.get(to, digest) != digest:
@@ -189,9 +205,9 @@ def archive(repo: Path, tree: Path, version: str, apply: bool) -> dict[str, int]
     if apply and added:
         index["files"].extend(added)
         if tree != repo:
-            index["notes"].append("v%s entries were copied (not moved) from the isolated release tree "
+            index["notes"].append("%s entries were copied (not moved) from the isolated release tree "
                                   "%s on archived_at; 'from' is relative to that tree's root."
-                                  % (version, tree.name))
+                                  % (name_of_folder, tree.name))
         index_path.write_text(dump_index(index), encoding="utf-8")
     print("%s: copy %d, index %d, already archived %d" % ("applied" if apply else "dry-run (no --apply)",
                                                           summary["copy"], summary["index"], summary["keep"]))
@@ -721,6 +737,13 @@ def version_arg(text: str) -> str:
     return text
 
 
+def label_arg(text: str) -> str:
+    try:
+        return release_identity.validate_archive_label(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -728,6 +751,8 @@ def main(argv: list[str] | None = None) -> int:
     arch.add_argument("version", type=version_arg)
     arch.add_argument("--tree", required=True, type=Path, help="release tree holding the evidence")
     arch.add_argument("--repo", type=Path, default=Path.cwd(), help="repository to archive into")
+    arch.add_argument("--label", type=label_arg,
+                      help="same-version re-release: archive into vX.Y.Z-LABEL instead of vX.Y.Z")
     arch.add_argument("--apply", action="store_true")
     ret = sub.add_parser("retire", help="move a finished linked worktree to the Trash")
     ret.add_argument("--tree", required=True, type=Path)
@@ -760,7 +785,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "push":
             push(repo, args.branch, args.to, args.apply)
         elif args.command == "archive":
-            archive(repo, Path(os.path.realpath(args.tree)), args.version, args.apply)
+            archive(repo, Path(os.path.realpath(args.tree)), args.version, args.apply, args.label)
         else:
             retire(repo, Path(os.path.realpath(args.tree)), args.base, args.allow, args.trash,
                    args.remote, args.apply)

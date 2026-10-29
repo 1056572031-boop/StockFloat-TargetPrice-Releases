@@ -402,5 +402,90 @@ class CheckTraceabilityTest(SFCase):
                         "点击被复用这件事本身也要可查")
 
 
+class CheckingDialogIsNotAPrerequisiteTest(SFCase):
+    """「正在检查」框只是提示：它出错不能拖垮检查本身。
+
+    用户机器上的实录：安装包在程序运行中被换掉，惰性 import 系统弹窗模块时
+    归档读出坏数据（zlib "Error -3 incorrect header check"），异常一路冒出，
+    检查没发起，在飞标记又留在真值，直到被判过期才放开。
+    """
+
+    def _run_manual_check(self, show_checking):
+        """跑一次手动检查，返回 (线程启动次数, 被留痕的 (位置, 异常) 列表, 宿主)。"""
+        swallowed = []
+        host = _fake(_show_checking_dialog=show_checking)
+        with patch("stock_float_window.threading.Thread") as thread, \
+             patch.object(stock_float_window, "log_swallow",
+                          lambda where, exc, *a, **k: swallowed.append((where, exc))):
+            _check_bg(host, manual=True)
+        return thread.return_value.start.call_count, swallowed, host
+
+    def test_dialog_failure_still_starts_the_check_and_leaves_a_trace(self):
+        import zlib
+        failure = zlib.error("Error -3 while decompressing data: incorrect header check")
+
+        def broken_dialog(self):
+            raise failure
+
+        started, swallowed, _host = self._run_manual_check(broken_dialog)
+        self.assertEqual(started, 1, "等待框抛错也必须照常发起检查")
+        self.assertEqual(swallowed, [("sf_update_flow.show_checking_dialog", failure)],
+                         "失败要留一条带位置的痕迹，不许静默吞掉")
+
+    def test_flags_stay_consistent_after_a_failed_dialog(self):
+        """框失败后在飞状态与"检查已发起"一致：第二次点击被接住，回包放开后能重来。"""
+        import zlib
+
+        def broken_dialog(self):
+            raise zlib.error("incorrect header check")
+
+        _started, _swallowed, host = self._run_manual_check(broken_dialog)
+        with patch("stock_float_window.threading.Thread") as thread:
+            _check_bg(host, manual=False)
+        thread.assert_not_called()      # 检查确实在飞，没有另起第二个请求
+
+        _handle_result(host, False, None, None)   # 回包到达，状态位放开
+        with patch("stock_float_window.threading.Thread") as thread:
+            _check_bg(host, manual=False)
+        self.assertEqual(thread.return_value.start.call_count, 1,
+                         "回包之后必须能再发起检查，不能被框的失败锁死")
+
+    def test_dialog_failure_on_a_click_that_reuses_the_inflight_check_is_traced_not_raised(self):
+        import zlib
+        failure = zlib.error("Error -3 while decompressing data: incorrect header check")
+        swallowed = []
+
+        def broken_dialog(self):
+            raise failure
+
+        host = _fake(_show_checking_dialog=broken_dialog, **_IN_FLIGHT)
+        with patch("stock_float_window.threading.Thread") as thread, \
+             patch.object(stock_float_window, "log_swallow",
+                          lambda where, exc, *a, **k: swallowed.append((where, exc))):
+            _check_bg(host, manual=True)          # 不抛
+        thread.assert_not_called()                # 仍然复用在飞的检查，不另起请求
+        self.assertEqual(swallowed, [("sf_update_flow.show_checking_dialog", failure)])
+        # 点击已记在账上：那次检查回包时照常兑现成「当前已是最新版本」。
+        messages = []
+        host = _fake(messages=messages, _show_checking_dialog=broken_dialog, **_IN_FLIGHT)
+        with patch("stock_float_window.threading.Thread"), \
+             patch.object(stock_float_window, "log_swallow", lambda *a, **k: None):
+            _check_bg(host, manual=True)
+        _handle_result(host, False, None, None)
+        self.assertEqual(messages, [("检查更新", "当前已是最新版本。")])
+
+    def test_working_dialog_behaves_as_before(self):
+        feedback = []
+        swallowed = []
+        host = _fake(feedback=feedback)
+        with patch("stock_float_window.threading.Thread") as thread, \
+             patch.object(stock_float_window, "log_swallow",
+                          lambda where, exc, *a, **k: swallowed.append((where, exc))):
+            _check_bg(host, manual=True)
+        self.assertEqual(feedback, ["checking"])
+        self.assertEqual(thread.return_value.start.call_count, 1)
+        self.assertEqual(swallowed, [], "框正常时不应有任何留痕")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -127,6 +127,9 @@ class TestPollOffMarket(unittest.TestCase):
             patch.object(m, "start_icon_worker", lambda: None),
             patch.object(m.FloatWindow, "_force_top", lambda self: None),
             patch.object(m.FloatWindow, "_setup_reopen_handler", lambda self: None),
+            # 本类只验间隔决策，不需要常驻线程。放任它起来会用假接口拉到空数据，
+            # 留下 1 次失败记录并让间隔变成重试档，结果取决于线程跑到哪一步。
+            patch.object(m.QuoteRuntimeController, "start", lambda *a, **k: None),
         ]
         for p in self._patches:
             p.start()
@@ -146,7 +149,8 @@ class TestPollOffMarket(unittest.TestCase):
         self.assertEqual(POLL_INTERVAL_OFF_MARKET, 3600.0)
 
     def test_poll_interval_off_market_returns_3600(self):
-        """非交易时段 _poll_interval 返回 3600s（不再 60s）"""
+        """非交易时段、上一次拉取成功时 _poll_interval 返回 3600s（不再 60s）。
+        失败后的短间隔重试见 test_off_market_refresh；这里验的是健康状态。"""
         self.win._is_trading_time = lambda now=None: False
         self.assertEqual(self.win._poll_interval(), POLL_INTERVAL_OFF_MARKET)
 

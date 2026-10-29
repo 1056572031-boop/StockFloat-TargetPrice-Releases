@@ -18,7 +18,9 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -408,6 +410,12 @@ class TestMinuteFallback(QuoteCase):
 # --------------------------------------------------------------------------
 
 class TestMinutePrimaryToFallback(QuoteCase):
+    def setUp(self):
+        super().setUp()
+        # 备源成功的日志有进程级节流：别的用例留下的计数会把本类要看的"首条"压掉
+        sf_quote._reset_minute_fallback()   # discipline-ok(R5): 节流计数与手表只有这个复位口
+        self.addCleanup(sf_quote._reset_minute_fallback)   # discipline-ok(R5): 同上
+
     def test_empty_primary_during_trading_hours_falls_back(self):
         """盘中空分时不是可展示的成功结果：备用源有数据就得切过去。"""
         with mock.patch.object(sf_quote, "_fetch_minute_primary", return_value=[]), \
@@ -451,6 +459,132 @@ class TestMinutePrimaryToFallback(QuoteCase):
             sf_quote.fetch_minute("sh600519")
         self.assertEqual(bump.call_count, 0, "主源空点集不算格式异常")
         reset.assert_any_call("minute")
+
+
+class _UnprintableError(Exception):
+    """__str__ 本身会抛：日志里取异常文案不能因此丢掉整行。"""
+
+    def __str__(self):
+        raise RuntimeError("no str")
+
+
+class TestMinuteFallbackLogThrottle(SFCase):
+    """分时备源成功的日志：首条必记，其后按时间节流并附累计，主源拿到数据后归零。
+
+    背景：旧写法每次备源成功都写一行 WARNING，一台用户机器的 debug.log 里累计三千多条，
+    约占全部历史警告的七成，把真日志挤掉。时间一律走虚拟单调时钟，不真等。
+    """
+
+    CODE = "sh600519"
+    OK_LINE = "minute fallback(tencent->eastmoney) ok"
+
+    def setUp(self):
+        super().setUp()
+        self.clock = [1000.0]          # 虚拟单调时钟，起点非零
+        self.logs = []
+        self.primary_exc = OSError("primary down")
+        self.primary_ok = False
+        self.fallback_cost = 0.25      # 备源这一次花的虚拟秒数（0.25 在浮点里精确）
+        fake_time = types.SimpleNamespace(monotonic=lambda: self.clock[0])
+        for p in (mock.patch.object(sf_quote, "time", fake_time),
+                  mock.patch.object(sf_quote, "log_line",
+                                    lambda msg, level="INFO": self.logs.append(msg)),
+                  mock.patch.object(sf_quote, "log_line_throttled",
+                                    lambda key, msg, level="WARNING": None),
+                  mock.patch.object(sf_quote, "_is_trading_time", return_value=True),
+                  mock.patch.object(sf_quote, "_fetch_minute_primary", self._primary),
+                  mock.patch.object(sf_quote, "fetch_minute_fallback", self._fallback)):
+            self.track_patch(p)
+        sf_quote._reset_minute_fallback()   # discipline-ok(R5): 节流计数与手表只有这个复位口
+        self.addCleanup(sf_quote._reset_minute_fallback)   # discipline-ok(R5): 同上
+
+    def _primary(self, code):
+        if self.primary_ok:
+            return [("0931", 1.0, None)]
+        raise self.primary_exc
+
+    def _fallback(self, code):
+        self.clock[0] += self.fallback_cost
+        return [("0931", 2.0, None)]
+
+    def _fire(self, times=1, gap=1.0):
+        for _ in range(times):
+            self.clock[0] += gap
+            sf_quote.fetch_minute(self.CODE)
+
+    def _ok_lines(self):
+        return [m for m in self.logs if m.startswith(self.OK_LINE)]
+
+    def _reason(self):
+        """最后一条日志里 primary= 之后的整段文字。"""
+        return self._ok_lines()[-1].split("primary=", 1)[1]
+
+    def test_first_fallback_is_always_logged_with_reason_and_cost(self):
+        self._fire()
+        lines = self._ok_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("code=%s" % self.CODE, lines[0])
+        self.assertIn("n=1", lines[0])
+        self.assertIn("fallback_ms=250", lines[0])
+        self.assertIn("OSError: primary down", self._reason())
+
+    def test_repeats_inside_the_window_are_suppressed_then_counted(self):
+        self._fire(times=5)
+        self.assertEqual(len(self._ok_lines()), 1)
+        self.clock[0] += sf_quote.DEGRADED_SOURCE_LOG_SEC
+        self._fire()
+        lines = self._ok_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("n=6", lines[-1])
+
+    def test_primary_recovery_makes_the_next_episode_log_its_first_line(self):
+        self._fire(times=3)
+        self.assertEqual(len(self._ok_lines()), 1)
+        self.primary_ok = True
+        self._fire()
+        self.primary_ok = False
+        self._fire()          # 距上一条还不到窗口，但主源活过一次，必须重新记首条
+        lines = self._ok_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("n=1", lines[-1])
+
+    def test_unprintable_primary_error_still_produces_the_line(self):
+        self.primary_exc = _UnprintableError()
+        self._fire()
+        self.assertEqual(len(self._ok_lines()), 1)
+        self.assertIn("_UnprintableError", self._reason())
+
+    def test_reason_drops_url_query_and_is_length_bounded(self):
+        self.primary_exc = OSError("GET https://qt.example/q?token=SECRET&k=1 failed")
+        self._fire()
+        line = self._ok_lines()[-1]
+        for fragment in ("SECRET", "token=", "k=1"):
+            self.assertNotIn(fragment, line, "日志里不许出现请求地址的查询串")
+        self.sub_reset()
+        self.primary_exc = OSError("x" * 500)
+        self._fire()
+        self.assertLessEqual(len(self._reason()), len("OSError: ") + sf_quote.MINUTE_FALLBACK_REASON_MAX + 3)
+
+    def sub_reset(self):
+        """同一用例里要看第二个"首条"：清日志与节流计数。"""
+        self.logs.clear()
+        sf_quote._reset_minute_fallback()   # discipline-ok(R5): 节流计数与手表只有这个复位口
+
+    def test_concurrent_fallbacks_do_not_lose_the_count(self):
+        def worker():
+            for _ in range(5):
+                sf_quote.fetch_minute(self.CODE)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(len(self._ok_lines()), 1, "同一窗口内多线程也只记首条")
+        self.clock[0] += sf_quote.DEGRADED_SOURCE_LOG_SEC
+        sf_quote.fetch_minute(self.CODE)
+        self.assertIn("n=21", self._ok_lines()[-1], "20 次并发加 1 次：计数一次都不能丢")
 
 
 class TestApiUrlOverrides(QuoteCase):

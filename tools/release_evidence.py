@@ -331,7 +331,9 @@ def write_qualification(root: Path, value: dict[str, Any], path: Path) -> None:
 
 
 def complete(root: Path, version: str, limitations: dict[str, list[str]], state: Path,
-             readback: Path, walkthrough: Path, evidence_path: Path | None = None) -> Path:
+             readback: Path, walkthrough: Path, evidence_path: Path | None = None,
+             label: str | None = None) -> Path:
+    folder = evidence.release_identity.archive_folder_name(version, label)  # 标签不合法时动手之前就拒绝
     pre_path = record_path(root, version)
     value = evidence.load(pre_path)
     fingerprint = evidence.source_snapshot(root)["fingerprint"]
@@ -348,9 +350,9 @@ def complete(root: Path, version: str, limitations: dict[str, list[str]], state:
     value["intent"] += "（发布后独立读回与装机版走查）"
     value["scope"] = [pre_path.name, manifest_path(root, version).name,
                       record_path(root, version, True).name, manifest_path(root, version, True).name,
-                      f"outputs/release-candidates/v{version}/online-manifest.json",
-                      f"outputs/release-candidates/v{version}/post_release.json",
-                      f"outputs/release-candidates/v{version}/publish.log"]
+                      f"outputs/release-candidates/{folder}/online-manifest.json",
+                      f"outputs/release-candidates/{folder}/post_release.json",
+                      f"outputs/release-candidates/{folder}/publish.log"]
     value["unverified_limitations"] = limitations["complete"]
     value["verification_evidence"] += [
         {"command": command_text(read_receipt[1]["argv"]), "exit_code": 0,
@@ -434,6 +436,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--readback", type=Path)
     value.add_argument("--walkthrough", type=Path)
     value.add_argument("--evidence-dir", type=Path)
+    value.add_argument("--label", help="同版本号再发布时的归档标签，范围里的归档文件夹随之变为 vX.Y.Z-标签")
     value.add_argument("--repo")
     value.add_argument("--sha")
     value.add_argument("--timeout", type=float, default=600.0)
@@ -468,7 +471,8 @@ def main(argv: list[str] | None = None) -> int:
         required = (args.state, args.readback, args.walkthrough)
         if any(item is None for item in required):
             raise EvidenceError("complete 必须提供 --state、--readback、--walkthrough")
-        complete(root, version, limitations, args.state, args.readback, args.walkthrough, args.evidence_dir)
+        complete(root, version, limitations, args.state, args.readback, args.walkthrough, args.evidence_dir,
+                 args.label)
         return 0
     except (EvidenceError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(f"release_evidence: {exc}", file=sys.stderr)

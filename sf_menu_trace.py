@@ -185,6 +185,10 @@ def _close_reason(s):
         return "app_deactivated"
     if s["first_press"] == "outside":
         return "outside_click"
+    # 鼠标停在某一项上（hover 有名字），但过滤器一次按下、一次按键都没收到，程序前台也没变：
+    # 与「真的没有任何线索」分开记，方便区分「按下根本没送到菜单」和「什么都没发生」。
+    if s["hover"] != "none" and s["presses"] == 0 and s["keys"] == 0 and s["first_press"] is None:
+        return "hover_no_press"
     return "unknown"
 
 

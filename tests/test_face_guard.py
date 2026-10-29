@@ -559,7 +559,7 @@ class TestFrameRetention(SFCase):
         self.assertEqual(mon.frames, 2)
         anchors = [x for x in lines if "首帧" in str(x)]
         self.assertEqual(len(anchors), 1, "首帧锚点应当恰好一行，got %r" % lines)
-        self.assertIn("2 张脸", str(anchors[0]),
+        self.assertIn("2 个人", str(anchors[0]),
                       "锚点要带上数到的脸数，事后才知道链通了、判据对不对")
 
     def test_stop_clears_counters_and_snapshot(self):
@@ -1121,6 +1121,7 @@ class _WindowWiringSupport:
         a = self.win._face_guard_arbiter            # discipline-ok(R5): 关驻留只能从这张表上关
         if a is not None:
             a.dwell_sec = 0.0
+            a.restore_dwell_sec = 0.0                # discipline-ok(R5): 恢复侧驻留也要从这张表上关
         return d
 
     def _poll(self, times=1):
@@ -1236,7 +1237,7 @@ class TestWindowWiring(_WindowWiringSupport, SFCase):
         self._enable()
         self.win._face_guard_arbiter.dwell_sec = sf_presence.FACE_GUARD_DWELL_SEC  # discipline-ok(R5): 恢复产品值给状态文案用
         line = self._status_line()
-        for frag in ("0.38", "贴边", "距离"):
+        for frag in ("%g" % sf_presence.FACE_GUARD_DWELL_SEC, "贴边", "距离"):
             self.assertIn(frag, line, "生效规则少了一条，外面只能靠猜：%r" % frag)
 
     def test_diagnostics_carry_every_bar_that_judges_a_face(self):
@@ -1981,36 +1982,40 @@ class TestEdgeAndDistanceRules(SFCase):
         self.assertNotIn(EVENT_HIDE, events, "远处的人不该触发收窗")
 
     def test_owner_plus_near_guest_hides(self):
-        """两张近脸 + 驻留满 0.38 秒 → 收窗。差 0.1 秒都不许动。"""
+        """两张近脸 + 收窗驻留满 → 收窗；差一瞬都不许动。"""
         faces = [_ObsBox(0.85, x=0.05, w=0.30), _ObsBox(0.80, x=0.40, w=0.10)]
+        dwell = sf_presence.FACE_GUARD_DWELL_SEC
         a = PresenceArbiter()
         self.assertEqual(a.feed(count_faces(faces), now=0.0), EVENT_NONE)
-        self.assertEqual(a.feed(count_faces(faces), now=0.25), EVENT_NONE,
-                         "连击满了但驻留没满（0.25 < 0.38）就收窗，驻留这条白加")
-        self.assertEqual(a.feed(count_faces(faces), now=0.50), EVENT_HIDE,
-                         "驻留满 0.38 秒后必须真的收窗")
+        self.assertEqual(a.feed(count_faces(faces), now=dwell - 0.01), EVENT_NONE,
+                         "连击满了但驻留没满就收窗，驻留这条白加")
+        self.assertEqual(a.feed(count_faces(faces), now=dwell), EVENT_HIDE,
+                         "驻留满后必须真的收窗")
 
 
 class TestDwellAndEventDriven(SFCase):
     """驻留时长与"数完就判"这两条新行为（2026-10-12 二次复核 F1 的落地）。"""
 
     def test_dwell_is_measured_from_the_first_time_two_faces_are_seen(self):
+        dwell = sf_presence.FACE_GUARD_DWELL_SEC
         a = PresenceArbiter()
         a.feed(2, now=0.0)
-        self.assertEqual(a.feed(2, now=0.37), EVENT_NONE, "差一瞬也要等满")
-        self.assertEqual(a.feed(2, now=0.38), EVENT_HIDE)
+        self.assertEqual(a.feed(2, now=dwell - 0.01), EVENT_NONE, "差一瞬也要等满")
+        self.assertEqual(a.feed(2, now=dwell), EVENT_HIDE)
 
     def test_dwell_restart_after_a_gap(self):
         """中途掉回一张脸，驻留计时必须重新开始 —— 不然闪烁的误检能攒满 0.38 秒。"""
+        d = sf_presence.FACE_GUARD_DWELL_SEC
         a = PresenceArbiter()
         a.feed(2, now=0.0)
-        a.feed(1, now=0.30)
-        self.assertEqual(a.feed(2, now=0.50), EVENT_NONE,
+        a.feed(1, now=d * 0.8)
+        t = d * 1.3
+        self.assertEqual(a.feed(2, now=t), EVENT_NONE,
                          "断过一次之后仍按 0.0 起算 = 计时没重置")
-        self.assertEqual(a.feed(2, now=0.60), EVENT_NONE,
-                         "重连后 0.1 秒就收窗：驻留起点没跟着重来")
-        self.assertEqual(a.feed(2, now=0.90), EVENT_HIDE,
-                         "从最后一次真正看到两张脸起算满 0.38 秒，才该动手")
+        self.assertEqual(a.feed(2, now=t + d * 0.25), EVENT_NONE,
+                         "重连后只过了驻留的四分之一就收窗：驻留起点没跟着重来")
+        self.assertEqual(a.feed(2, now=t + d + 0.01), EVENT_HIDE,
+                         "从最后一次真正看到两张脸起算满驻留时长，才该动手")
 
     def test_restore_also_waits_for_the_dwell(self):
         a = PresenceArbiter()

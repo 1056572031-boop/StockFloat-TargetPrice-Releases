@@ -32,9 +32,12 @@ DOCS = ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md", "docs/INSTALL.md",
 CREDENTIALS = re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
                          rb"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 PERSONAL_MAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@(?:qq|foxmail|gmail|icloud|outlook|hotmail)\.com")
-# 前后两侧都排除十六进制字母：锁文件里的 sha256 哈希是随机十六进制串，其中任意一段 11 位数字
-# 都可能恰好以 13~19 开头。原先只在后面排除，哈希里“字母 + 13xxxxxxxxx + 空格”会被误判成手机号。
-PHONE = re.compile(rb"(?<![0-9.,a-fA-F+\-])1[3-9][0-9]{9}(?![0-9.,a-fA-F])")
+# 只允许两种仓库已使用、可辨认的完整 SHA-256 字段绕开手机号检查：pip 锁文件的
+# --hash=sha256:<64位> 与质量清单的 "token": "0644:<64位>"。裸 64 位十六进制串
+# 无法证明自己是哈希，不能以隐私检查漏检为代价放行。
+PIP_SHA256 = re.compile(rb"--hash=sha256:[0-9a-fA-F]{64}(?![0-9a-fA-F])")
+MANIFEST_SHA256 = re.compile(rb'"token"\s*:\s*"[0-7]{4}:[0-9a-fA-F]{64}(?![0-9a-fA-F])')
+PHONE = re.compile(rb"(?<![0-9.,+\-])1[3-9][0-9]{9}(?![0-9.,])")
 NUMERIC_CONTACT = re.compile(
     r"(?i)(?:qq|phone|mobile|personal[_ -]?id|电话|手机|旧号码|个人号码)"
     r"[\s:=\"']*([0-9]{5,12})(?![0-9])".encode())
@@ -94,7 +97,9 @@ def privacy_problems(data: bytes, home: str, secrets=()) -> list[str]:
     public_data = re.sub(
         rb"(?<![A-Za-z0-9_./:@\-])" + re.escape(PUBLIC_FEEDBACK_ORIGIN)
         + rb"(?=/|[\s\"'`<>)]|$)", b"https://feedback.invalid", public_data)
-    if PHONE.search(public_data):
+    # 只在上述两种完整字段被整段替换之后再查手机号；字段之外的文字一律照常检查。
+    phone_scan = MANIFEST_SHA256.sub(b'"token": "<digest>', PIP_SHA256.sub(b"--hash=sha256:<digest>", public_data))
+    if PHONE.search(phone_scan):
         bad.append("personal phone number")
     if NUMERIC_CONTACT.search(public_data):
         bad.append("personal numeric contact")

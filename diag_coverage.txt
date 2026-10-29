@@ -206,3 +206,7 @@ skip sf_quote_loop pure scheduling and retry calculations inherited from the pre
 version 1.4.92
 skip sf_quote_loop pure scheduling and retry calculations; host runtime and network logs report observable outcomes
 skip sf_editor transient editor and search workers expose search rejects through universe diagnostics and native surface state through glass.json; no additional permanent business state is owned
+version 1.4.109
+skip sf_editor 换股搜索窗是临时窗口，本版新增的"交易所前缀与代码不符"拒绝原因经 sf_universe.note_reject("prefix_no_match") 记入 universe 诊断；候选列表与键盘焦点不是常驻状态。
+skip sf_quote_loop 新增的收盘后重试间隔是纯函数；它读取的连续失败次数 _quote_fail 与 _minute_fail 已由 sf_diagnostic_capture 导出；睡眠唤醒探测器的基线只活在各自的轮询线程里，唤醒补拉会在 debug.log 留一行 wake from sleep detected（仅行情循环写，分时循环不写）。
+skip sf_feedback_analyzer 离线分析函数，只被维护者本机的反馈管理工具调用；本版新增的是"休市时兜底价只算信息"的判断，结论写入案件报告，不进入用户诊断附件。

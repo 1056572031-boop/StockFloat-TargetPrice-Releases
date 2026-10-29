@@ -20,6 +20,24 @@ import release_identity  # noqa: E402
 import public_release as public  # noqa: E402
 
 
+class ArchiveLabelRule(SFCase):
+    """同版本号再发布的归档标签：全仓只有 release_identity 一处决定文件夹叫什么。"""
+
+    def test_folder_name_is_unchanged_without_a_label_and_suffixed_with_one(self):
+        sample = "sample"  # the helper joins strings; it does not parse the version
+        self.assertEqual(release_identity.archive_folder_name(sample), "vsample")
+        self.assertEqual(release_identity.archive_folder_name(sample, "stable"), "vsample-stable")
+        self.assertEqual(release_identity.archive_folder_name(sample, "re-2"), "vsample-re-2")
+
+    def test_labels_that_could_escape_or_collide_are_rejected(self):
+        bad = ("", "Stable", "a/b", "..", "../x", "a b", "-x", "x-", "a--b", "a.b", "中文", "ａｂ", "x" * 25, None, 5)
+        for label in bad:
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                release_identity.validate_archive_label(label)
+        self.assertEqual(release_identity.validate_archive_label("x" * release_identity.ARCHIVE_LABEL_MAX),
+                         "x" * release_identity.ARCHIVE_LABEL_MAX)
+
+
 class PublicReleaseCase(SFCase):
     def test_current_document_resource_checks_match_the_documents_before_packaging(self):
         import release_feature_check as features
@@ -398,7 +416,9 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
         rejected = (old_phone, b"phone=" + old_phone, b"QQ: " + old_id,
                     b"old owner " + owner,
                     b"https://example.com/" + C.RELEASE_REPO.encode(),
-                    b"prefix" + C.SUPPORT_EMAIL.encode())
+                    b"prefix" + C.SUPPORT_EMAIL.encode(),
+                    # 号码两侧恰好是十六进制字母的普通文字不是哈希，不能因此放行。
+                    b"sha256 abc" + old_phone + b"def")
         for value in rejected:
             with self.subTest(value=value):
                 self.assertTrue(public.privacy_problems(value, "unused"))
@@ -406,27 +426,59 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
                     b"https://raw.githubusercontent.com/" + C.RELEASE_REPO.encode() + b"/main/file",
                     b"https://api.github.com/repos/" + C.RELEASE_REPO.encode(),
                     b"run 387" + b"04366170", b"value 11.000000000000002",
-                    b"sha256 abc" + old_phone + b"def", b"20261016001")
+                    b"20261016001")
         for value in accepted:
             with self.subTest(value=value):
                 self.assertEqual(public.privacy_problems(value, "unused"), [])
 
-    def test_phone_check_ignores_digit_runs_inside_hex_digests_but_not_real_numbers(self):
-        # 锁文件里的 sha256 是随机十六进制串，其中一段 11 位数字可能恰好以 13~19 开头，前后都紧贴十六进制字符。
-        # 2026-10-28 工具链升级后的 requirements.lock 就这样被误判成手机号，公开导出因此被拦。
+    def test_phone_check_ignores_digit_runs_inside_full_sha256_digests_but_not_real_numbers(self):
+        # 锁文件及质量清单都含完整 SHA-256 指纹，随机 11 位数字可能恰好以 13~19 开头。
         phone = b"138" + b"00138000"
-        # 样本取真实误报的形状：哈希里“非 e/E 的十六进制字母 + 11 位数字 + 空格或换行”（数字在前或十六进制字母在后，旧规则本来就放行）。
-        digests = (b"--hash=sha256:6f868af552c0ceb2d19220b8cbcc2be096ca26163ac30e682a" + phone + b" \\\n",
-                   b"--hash=sha256:c2c48a36bd" + phone + b"\n",
-                   b"--hash=sha256:" + b"f" + phone + b" ")
-        for value in digests:
-            with self.subTest(value=value):
-                self.assertEqual(public.privacy_problems(value, "unused"), [])
+
+        def digest(position, letter=b"f", prefix=b""):
+            """造一枚 64 位指纹，11 位数字落在指定位置，两侧紧贴十六进制字母。"""
+            body = {"start": phone + letter * 53, "middle": letter * 26 + phone + letter * 27,
+                    "end": letter * 53 + phone}[position]
+            self.assertEqual(len(body), 64)
+            return prefix + body
+
+        # 仓库里真实出现的两种完整字段：pip 锁文件，和质量清单里带文件权限前缀的 token。
+        for prefix, tails in ((b"--hash=sha256:", (b" \\\n", b"\n", b" ")),
+                              (b'"token": "0644:', (b'"\n', b'",\n'))):
+            for position in ("start", "middle", "end"):
+                for letter in (b"a", b"f", b"c"):
+                    for tail in tails:
+                        value = digest(position, letter, prefix) + tail
+                        with self.subTest(prefix=prefix, position=position, letter=letter, tail=tail):
+                            self.assertEqual(public.privacy_problems(value, "unused"), [])
         # 真正的号码照样拦：独立出现、被标点或常见文字包住都算。
         for value in (phone, b"phone=" + phone, b"tel: " + phone, b"(" + phone + b")",
                       "联系".encode() + phone + "。".encode()):
             with self.subTest(value=value):
                 self.assertTrue(public.privacy_problems(value, "unused"))
+
+    def test_hex_letter_next_to_a_number_is_not_a_digest_exemption(self):
+        # 2026-10-29 每日复核发现：把任意 a-f 当豁免会让 phone=a1380... 这类普通文字漏进公开快照。
+        # 只有完整的 --hash=sha256:<64 位> 字段里的数字可以放行，其余文字照常检查。
+        phone = b"138" + b"00138000"
+        for value in (b"phone=a" + phone, b"phone=f" + phone, b"id: c" + phone + b" ",
+                      b"x" + phone + b"abc", b"a" + phone + b"f"):
+            with self.subTest(value=value):
+                self.assertIn("personal phone number", public.privacy_problems(value, "unused"))
+        # 字段长度不对、不是 sha256 字段，或只是一串裸的 64 位十六进制，都不享受豁免。
+        short = b"--hash=sha256:" + b"f" * 20 + phone + b"f" * 23
+        long = b"--hash=sha256:" + b"f" * 30 + phone + b"f" * 24
+        other = b"--hash=md5:" + b"f" * 20 + phone + b"f" * 1
+        bare = b"f" * 26 + phone + b"f" * 27
+        bare_zero = b"0644:" + b"f" * 26 + phone + b"f" * 27
+        wrong_key = b'"note": "0644:' + b"f" * 26 + phone + b"f" * 27
+        self.assertEqual((len(short) - 14, len(long) - 14, len(bare)), (54, 65, 64))
+        for value in (short, long, other, bare, bare_zero, wrong_key):
+            with self.subTest(value=value):
+                self.assertIn("personal phone number", public.privacy_problems(value, "unused"))
+        # 同一行里哈希字段之外的号码不会被哈希“带过”。
+        mixed = b"--hash=sha256:" + b"f" * 64 + b" phone=" + phone
+        self.assertIn("personal phone number", public.privacy_problems(mixed, "unused"))
 
     def test_phone_shaped_github_owner_is_exempt_only_in_namespace(self):
         owner = b"138" + b"00138000" + b"-maintainer"

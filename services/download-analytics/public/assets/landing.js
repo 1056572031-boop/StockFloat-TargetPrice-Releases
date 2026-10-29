@@ -28,15 +28,18 @@
   var IO = window.IntersectionObserver;
   var reduce = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
   var reduced = function () { return !!(reduce && reduce.matches); };
-  // 网络状况：开了"省流量"或只有 2G 级网络时，不拉大视频，第 4 张只显示静止图，首屏视频也不播；
-  // 3G 级网络照常，但不热身、预读距离缩短、视频用小档。Safari 和 Firefox 读不到这些信息（navigator.connection 为空），
-  // 按"不慢"处理——它们拿到的视频小档只有 0.4MB 上下，大档（高清屏）也只有 1.3MB 上下，热身的代价有限。
+  // 网络状况：只有访客自己在浏览器里开了"省流量"（saveData）才算省流量：第 4 张只显示静止图，首屏视频也不播。
+  // effectiveType 是浏览器按最近请求的往返时间估出来的，不是访客的选择：服务端首字节慢几秒，Chrome 就会把一条
+  // 正常的宽带估成 2g（2026-10-29 实测：没限速、没开省流量，rtt 1500 → "2g"，第 4 张视频因此一个字节都没下）。
+  // 所以 3g / 2g / slow-2g 一律只算"慢"：视频用小档、不热身、预读距离缩短，但照常播放。
+  // Safari 和 Firefox 读不到这些信息（navigator.connection 为空），按"不慢"处理——
+  // 它们拿到的视频小档只有 0.4MB 上下，大档（高清屏）也只有 1.3MB 上下，热身的代价有限。
   var conn = (typeof navigator !== "undefined" && (navigator.connection || navigator.mozConnection || navigator.webkitConnection)) || null;
   var kind = "", saver = false, slow = false, lead = "800px 0px";
   function readNetwork() {
     kind = (conn && conn.effectiveType) || "";
-    saver = !!(conn && (conn.saveData || kind === "slow-2g" || kind === "2g"));
-    slow = saver || kind === "3g";
+    saver = !!(conn && conn.saveData);
+    slow = saver || kind === "3g" || kind === "2g" || kind === "slow-2g";
     lead = (slow ? 200 : 800) + "px 0px";
   }
   readNetwork();
@@ -81,7 +84,7 @@
 
   // 首屏视频：带透明通道、一直循环。不写 autoplay、preload=none，所以脚本不叫它之前一个字节都不下：
   //  放行后、且已经装上的图都到位了（或 6 秒兜底），才开始读和播，让首屏图片先用满带宽；
-  //  系统开了"减少动态效果"、省流量或 2G 时一直不播，只显示封面；滚出屏幕就暂停，不白占解码和电量。
+  //  系统开了"减少动态效果"或访客开了省流量时一直不播，只显示封面；滚出屏幕就暂停，不白占解码和电量。
   var video = document.getElementById("mv");
   var heroOn = true, heroGo = false, heroChecking = false, pending = 0;
   function syncMotion() {
@@ -169,7 +172,8 @@
   //  接近视野（放行后的预读距离内）：装上封面并显示视频，或在静态模式下装上静止图；
   //  进入视野（露出 35%）：开始播，离开就暂停。
   // 视频分两档：屏幕上显示宽度乘像素密度不超过 1600（手机、普通屏）用 1470 宽的小档，更大的高清屏用 2940 宽的大档；
-  // 3G 一律小档。静态模式 = 系统开了"减少动态效果"、省流量/2G、或浏览器没有 IntersectionObserver：只显示静止图，视频不下载。
+  // 慢网（3g / 2g / slow-2g 的估算）一律小档。静态模式 = 系统开了"减少动态效果"、访客开了省流量、或浏览器没有
+  // IntersectionObserver：只显示静止图，视频不下载。网络估算偏慢不属于静态模式（见上面 readNetwork 的说明）。
   var fig = document.getElementById("s4");
   var scene = document.getElementById("sv");
   var still = document.getElementById("ss");

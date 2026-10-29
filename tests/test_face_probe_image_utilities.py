@@ -25,6 +25,7 @@ PNG 那份用**测试里独立实现的编码器**造出各种滤波器类型的
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import pathlib
@@ -187,6 +188,169 @@ class ImageProbeCliCase(SFCase):
                 mock.patch.object(vfp.sf_presence, "count_faces", return_value=0), \
                 mock.patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(vfp.run_image(image.name), 1)
+
+
+class _SeenBox:
+    """检测框替身：只有 confidence() 与 boundingBox()，形状同 PyObjC 桥出来的。"""
+
+    def __init__(self, x, y, w, h, conf=0.85):
+        self._r, self._c = ((x, y), (w, h)), conf
+
+    def confidence(self):
+        return self._c
+
+    def boundingBox(self):
+        return self._r
+
+
+class _BodyProbeRequest:
+    def __init__(self, observations=()):
+        self.observations = list(observations)
+
+    def alloc(self):
+        return self
+
+    def init(self):
+        return self
+
+    def setUpperBodyOnly_(self, flag):
+        self.upper_body_only = bool(flag)
+
+    def results(self):
+        return list(self.observations)
+
+
+class _BodyProbeHandler:
+    def __init__(self, ok=True):
+        self.ok = ok
+
+    def alloc(self):
+        return self
+
+    def initWithURL_options_(self, _url, _options):
+        return self
+
+    def performRequests_error_(self, _requests, _error):
+        return self.ok
+
+
+class RunBodyCase(SFCase):
+    """`--body` 档：脸 + 上半身静态图核验。跳过必须退 2，不能冒充通过。"""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="face-probe-body-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.image = self.tmp / "scene.png"
+        self.image.write_bytes(b"not a real png")        # 只要存在；Vision 是假的
+        self.owner_face = _SeenBox(0.30, 0.25, 0.30, 0.30)
+        self.owner_body = _SeenBox(0.20, 0.0, 0.50, 0.90, 0.80)
+        self.guest_body = _SeenBox(0.72, 0.0, 0.26, 0.90, 0.80)
+
+    def _classes(self, faces=(), bodies=(), ok=True, with_body=True):
+        classes = {"VNDetectFaceRectanglesRequest": _BodyProbeRequest(faces),
+                   "VNImageRequestHandler": _BodyProbeHandler(ok)}
+        if with_body:
+            classes["VNDetectHumanRectanglesRequest"] = _BodyProbeRequest(bodies)
+        return classes
+
+    def _run(self, classes, expect, path=None, loaded=True):
+        foundation = types.SimpleNamespace(
+            NSURL=types.SimpleNamespace(fileURLWithPath_=lambda p: p))
+        ret = (classes, "") if loaded else (None, "没装")
+        with mock.patch.object(vfp.sf_presence, "_load_frameworks", return_value=ret), \
+                mock.patch.dict(sys.modules, {"Foundation": foundation}), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            code = vfp.run_body(path or str(self.image), expect)
+        return code, out.getvalue()
+
+    def test_frameworks_unavailable_is_a_skip_not_a_pass(self):
+        code, _ = self._run(None, 1, loaded=False)
+        self.assertEqual(code, 2)
+
+    def test_machine_without_the_body_class_is_a_skip_not_a_pass(self):
+        code, _ = self._run(self._classes(with_body=False), 1)
+        self.assertEqual(code, 2)
+
+    def test_missing_asset_is_a_skip_not_a_pass(self):
+        code, _ = self._run(self._classes(), 1, path=str(self.tmp / "missing.png"))
+        self.assertEqual(code, 2)
+
+    def test_vision_rejection_fails_instead_of_passing_on_empty_results(self):
+        code, _ = self._run(self._classes(ok=False), 1)
+        self.assertEqual(code, 1)
+
+    def test_owner_alone_counts_one_person(self):
+        classes = self._classes([self.owner_face], [self.owner_body])
+        code, text = self._run(classes, 1)
+        self.assertEqual(code, 0)
+        self.assertIn("通过", text)
+
+    def test_body_request_asks_for_the_upper_body_only(self):
+        """要的是上半身而不是全身：这个标志决定框的形状，也就决定宽度下限与配对是否成立。"""
+        classes = self._classes([self.owner_face], [self.owner_body])
+        self._run(classes, 1)
+        flag = classes["VNDetectHumanRectanglesRequest"].upper_body_only
+        self.assertTrue(flag)
+
+    def test_owner_plus_a_guest_seen_only_from_behind_counts_two(self):
+        classes = self._classes([self.owner_face], [self.owner_body, self.guest_body])
+        code, _ = self._run(classes, 2)
+        self.assertEqual(code, 0)
+
+    def test_wrong_count_fails_in_both_directions(self):
+        classes = self._classes([self.owner_face], [self.owner_body, self.guest_body])
+        code, text = self._run(classes, 1)
+        self.assertEqual(code, 1, "单人照数成两个人必须判不通过")
+        self.assertIn("不通过", text)
+        code, _ = self._run(self._classes([self.owner_face], [self.owner_body]), 2)
+        self.assertEqual(code, 1, "两人照只数到一个人也必须判不通过")
+
+    def test_face_without_any_body_box_is_reported_as_such(self):
+        code, text = self._run(self._classes([self.owner_face], []), 1)
+        self.assertEqual(code, 0)
+        self.assertIn("无身体框", text)
+
+    def test_cli_routes_body_to_run_body_with_the_expectation(self):
+        with mock.patch.object(vfp, "run_body", return_value=0) as run_body:
+            code = vfp.main(["--body", "one.png", "--expect-people", "1"])
+        self.assertEqual(code, 0)
+        run_body.assert_called_once_with("one.png", 1)
+
+    def _self_test(self, **patches):
+        """在进程内跑核验器自检：框架换成假类、素材路径指向不存在，不碰真 Vision 与人脸照。"""
+        classes = self._classes()
+        stack = [mock.patch.object(vfp.sf_presence, "_load_frameworks", return_value=(classes, "")),
+                 mock.patch.object(vfp, "DEFAULT_IMAGE", str(self.tmp / "no-such.png"))]
+        stack += [mock.patch.object(vfp, name, value) for name, value in patches.items()]
+        with contextlib.ExitStack() as es:
+            for p in stack:
+                es.enter_context(p)
+            out = es.enter_context(mock.patch("sys.stdout", new_callable=io.StringIO))
+            code = vfp.self_test()
+        return code, out.getvalue()
+
+    def test_self_test_passes_on_the_real_judges(self):
+        code, text = self._self_test()
+        self.assertEqual(code, 0, text)
+
+    def test_self_test_catches_a_judge_that_always_passes(self):
+        """判据永远说通过：单人照数成两个人、两人照只数到一个人都会被放过，自检必须红。"""
+        code, text = self._self_test(judge_body=lambda people, expect: "pass")
+        self.assertEqual(code, 1)
+        self.assertIn("单人照数成两个人", text)
+        self.assertIn("两人照只数到一个人", text)
+
+    def test_self_test_catches_a_judge_that_always_fails(self):
+        """判据永远说失败：数对了也红，这一档每轮必红，没人会再跑它，自检必须点名。"""
+        code, text = self._self_test(judge_body=lambda people, expect: "fail")
+        self.assertEqual(code, 1)
+        self.assertIn("数对的人数判成失败", text)
+
+    def test_self_test_catches_a_run_body_that_passes_without_an_asset(self):
+        code, text = self._self_test(run_body=lambda *a, **k: 0)
+        self.assertEqual(code, 1)
+        self.assertIn("run_body 仍返回 0", text)
 
 
 class PngReadCase(SFCase):

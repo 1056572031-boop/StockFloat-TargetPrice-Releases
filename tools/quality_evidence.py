@@ -31,6 +31,11 @@ if _gate_spec is None or _gate_spec.loader is None:
     raise ImportError("无法加载 gate_stamp")
 gate_stamp = importlib.util.module_from_spec(_gate_spec)
 _gate_spec.loader.exec_module(gate_stamp)
+_identity_spec = importlib.util.spec_from_file_location("release_identity", ROOT / "tools" / "release_identity.py")
+if _identity_spec is None or _identity_spec.loader is None:
+    raise ImportError("无法加载 release_identity")
+release_identity = importlib.util.module_from_spec(_identity_spec)
+_identity_spec.loader.exec_module(release_identity)
 
 REQUIRED = ("change_id", "intent", "scope", "acceptance", "acceptance_map",
             "verification_evidence", "artifact_fingerprint", "unverified_limitations")
@@ -938,8 +943,11 @@ def publish_log_markers(installed_app: Path, version: str) -> list[str]:
 
 
 def post_release_record(root: Path, candidate: Path, release_log: Path,
-                        installed_app: Path) -> Path:
-    """Retrospective readback, not a newly minted historical execution receipt."""
+                        installed_app: Path, label: str | None = None) -> Path:
+    """Retrospective readback, not a newly minted historical execution receipt.
+
+    label：同一版本号再发布（例如把已发的 Beta 同号转正）时，上一轮的 vX.Y.Z 归档文件夹已在主线上、
+    不会被覆盖；带标签则写进并列的 vX.Y.Z-标签，不带标签与以往逐字相同。"""
     import plistlib
 
     if str(ROOT) not in sys.path:
@@ -954,7 +962,7 @@ def post_release_record(root: Path, candidate: Path, release_log: Path,
         sf_update.parse_version(version)
     except sf_update.UpdateError as exc:
         raise ValueError("发布后记录版本无效") from exc
-    output = root / "outputs" / "release-candidates" / ("v" + version)
+    output = root / "outputs" / "release-candidates" / release_identity.archive_folder_name(version, label)
     target = output / "post_release.json"
     if target.exists():
         raise ValueError("不覆盖现有发布后记录")
@@ -1013,6 +1021,7 @@ def post_release_record(root: Path, candidate: Path, release_log: Path,
     value = {"schema_version": 1, "stage": "post_release", "status": "incomplete",
              "version": version, "recorded_at": now(),
              "evidence_kind": "retrospective_readback_not_execution_receipt",
+             **({"archive_label": label} if label is not None else {}),
              "candidate_sha256": sha256_file(candidate),
              "candidate_manifest_sha256": sha256_file(bound_path),
              "release_source": {key: bound["source"][key]
@@ -1078,6 +1087,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--release-log", type=Path)
     parser.add_argument("--installed-app", type=Path, default=Path("/Applications/Skyrocket.app"))
+    parser.add_argument("--label", help="同版本号再发布时的归档标签（写入 outputs/release-candidates/vX.Y.Z-标签）")
     raw = list(sys.argv[1:] if argv is None else argv)
     command_args = raw[raw.index("--") + 1:] if "--" in raw else []
     args = parser.parse_args(raw[:raw.index("--")] if "--" in raw else raw)
@@ -1090,7 +1100,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "post-release":
             if args.release_log is None:
                 raise ValueError("post-release 需要 --release-log")
-            print(post_release_record(root, path, args.release_log, args.installed_app))
+            print(post_release_record(root, path, args.release_log, args.installed_app, args.label))
             return 0
         if args.command == "init":
             if path.exists():

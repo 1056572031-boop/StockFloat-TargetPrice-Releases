@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import worker, {
   allowedAsset, cachedLatestVersion, compareVersions, dayKey, dmgBytesFor, downloadEventId, downloadPath, isAutomatedRequest,
-  landingCacheControl, latestVersion, page, parseRange, releaseUrl, videoTypeFor,
+  landingCacheControl, latestVersion, page, parseRange, releaseUrl, resetVideoMemo, videoTypeFor,
 } from "../src/index.mjs";
 
 class FakeDB {
@@ -174,12 +174,21 @@ test("static assets fall back to the ASSETS binding when the Pages route exclusi
 // ---- 视频分段请求：Pages 静态层不支持 Range，Safari 播 <video> 依赖 206，所以视频由 Worker 切片 ----
 const CLIP = Uint8Array.from({ length: 100 }, (_, index) => index);
 
-function videoContext({ etag = '"clip-v1"', missing = false } = {}) {
+// headLength：静态层对 HEAD 给出 content-length（真实的 Pages 会给），且 HEAD 不带正文；
+// bodies：按路径给不同大小的内容；failFirst：第一次 GET 返回 500，用来证明失败不会被缓存。
+function videoContext({ etag = '"clip-v1"', missing = false, headLength = false, bodies = {}, failFirst = false, gate = null } = {}) {
+  resetVideoMemo(); // 缓存活在模块里，每个用例从空开始，互不影响
   const seen = [];
+  let failed = false;
   return { ...env("secret"), seen, ASSETS: { fetch: async req => {
     seen.push({ method: req.method, range: req.headers.get("range"), ifNoneMatch: req.headers.get("if-none-match"), path: new URL(req.url).pathname });
-    return missing ? new Response("nope", { status: 404 })
-      : new Response(CLIP, { status: 200, headers: { "content-type": "application/octet-stream", ...(etag ? { etag } : {}) } });
+    if (missing) return new Response("nope", { status: 404 });
+    if (failFirst && req.method === "GET" && !failed) { failed = true; return new Response("boom", { status: 500 }); }
+    if (gate) await gate();
+    const data = bodies[new URL(req.url).pathname] || CLIP;
+    const headers = { "content-type": "application/octet-stream", ...(etag ? { etag } : {}) };
+    if (req.method === "HEAD") return new Response(null, { status: 200, headers: headLength ? { ...headers, "content-length": String(data.byteLength) } : headers });
+    return new Response(data, { status: 200, headers });
   } } };
 }
 
@@ -267,6 +276,122 @@ test("HEAD on a video reports the size and range support without a body", async 
   assert.equal(response.headers.get("content-length"), "100");
   assert.equal(response.headers.get("accept-ranges"), "bytes");
   assert.equal(response.body, null);
+});
+
+// ---- 读取放大：Safari 播放时会连发很多个小 Range 请求，每个都不能再把整份视频读一遍 ----
+const gets = context => context.seen.filter(item => item.method === "GET").length;
+const FP = "?v=0123456789"; // 构建器写入的内容指纹参数
+
+test("many small range requests for one fingerprinted video read the static layer once", async () => {
+  const context = videoContext();
+  for (const range of ["bytes=0-1", "bytes=0-9", "bytes=50-59", "bytes=-3", "bytes=90-"]) {
+    const response = await worker.fetch(request(`/assets/clip.webm${FP}`, { headers: { range } }), context);
+    assert.equal(response.status, 206, range);
+  }
+  assert.equal(gets(context), 1, "五次分段请求只该读一次上游");
+  const whole = await worker.fetch(request(`/assets/clip.webm${FP}`), context);
+  assert.equal((await bytesOf(whole)).length, 100);
+  assert.equal(gets(context), 1, "整份请求同样走缓存");
+});
+
+test("simultaneous first requests share one in-flight read instead of each reading the file", async () => {
+  let release;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  const context = videoContext({ gate: async () => { markStarted(); await hold; } });
+  const pending = ["bytes=0-1", "bytes=10-19", "bytes=-5"].map(range =>
+    worker.fetch(request(`/assets/clip.webm${FP}`, { headers: { range } }), context));
+  await started; // 不靠固定等待：第一条读取真正抵达上游后才断言其余请求已经合并
+  assert.equal(gets(context), 1, "放行之前就只该有一次上游读取，其余请求等它");
+  release();
+  const responses = await Promise.all(pending);
+  assert.deepEqual(responses.map(response => response.status), [206, 206, 206]);
+  assert.deepEqual(await bytesOf(responses[1]), [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+  assert.equal(gets(context), 1);
+});
+
+test("a video address without the content fingerprint is never cached", async () => {
+  const context = videoContext();
+  for (const path of ["/assets/clip.webm", "/assets/clip.webm?v=short", "/assets/clip.webm?v=zzzzzzzzzz", "/assets/clip.webm?x=0123456789"]) {
+    context.seen.length = 0;
+    for (let i = 0; i < 2; i += 1) await worker.fetch(request(path, { headers: { range: "bytes=0-1" } }), context);
+    assert.equal(gets(context), 2, `${path} 没有合格的指纹，不能借缓存看见旧内容`);
+  }
+});
+
+test("different fingerprints are cached separately, so a new build never serves the old video", async () => {
+  const context = videoContext();
+  await worker.fetch(request("/assets/clip.webm?v=aaaaaaaaaa", { headers: { range: "bytes=0-1" } }), context);
+  await worker.fetch(request("/assets/clip.webm?v=bbbbbbbbbb", { headers: { range: "bytes=0-1" } }), context);
+  await worker.fetch(request("/assets/clip.webm?v=aaaaaaaaaa", { headers: { range: "bytes=0-1" } }), context);
+  assert.equal(gets(context), 2);
+});
+
+test("a failed read is not cached, so the next request tries again", async () => {
+  const context = videoContext({ failFirst: true });
+  const first = await worker.fetch(request(`/assets/clip.webm${FP}`, { headers: { range: "bytes=0-1" } }), context);
+  assert.equal(first.status, 502);
+  const second = await worker.fetch(request(`/assets/clip.webm${FP}`, { headers: { range: "bytes=0-1" } }), context);
+  assert.equal(second.status, 206, "上一次失败不能把这个地址永久判成坏的");
+  assert.equal(gets(context), 2);
+});
+
+test("HEAD asks only for metadata when the static layer reports a length, and falls back to a full read when it does not", async () => {
+  const withLength = videoContext({ headLength: true });
+  const head = await worker.fetch(request(`/assets/clip.webm${FP}`, { method: "HEAD" }), withLength);
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get("content-length"), "100");
+  assert.equal(head.headers.get("accept-ranges"), "bytes");
+  assert.equal(head.headers.get("etag"), '"clip-v1"');
+  assert.equal(head.body, null);
+  assert.equal(gets(withLength), 0, "有可信长度时 HEAD 不该读视频正文");
+  const without = videoContext({ headLength: false });
+  const fallback = await worker.fetch(request(`/assets/clip.webm${FP}`, { method: "HEAD" }), without);
+  assert.equal(fallback.headers.get("content-length"), "100", "拿不到长度才退回读完整文件，长度仍然正确");
+  assert.equal(gets(without), 1);
+  const missing = await worker.fetch(request("/assets/missing.webm", { method: "HEAD" }), videoContext({ missing: true }));
+  assert.equal(missing.status, 404);
+  const headUnsupported = videoContext();
+  const originalFetch = headUnsupported.ASSETS.fetch;
+  headUnsupported.ASSETS.fetch = async req => req.method === "HEAD"
+    ? new Response(null, { status: 405 }) : originalFetch(req);
+  const fallbackAfter405 = await worker.fetch(request(`/assets/clip.webm${FP}`, { method: "HEAD" }), headUnsupported);
+  assert.equal(fallbackAfter405.status, 200);
+  assert.equal(gets(headUnsupported), 1, "静态层不支持 HEAD 时退回完整读取，而不是把正常视频报成 502");
+});
+
+test("the in-memory copy is bounded: an oversized file is not kept, and old entries are dropped when the total is exceeded", async () => {
+  const MB = 1024 * 1024;
+  const context = videoContext({ bodies: {
+    "/assets/huge.webm": new Uint8Array(8 * MB + 1),
+    "/assets/a.webm": new Uint8Array(8 * MB), "/assets/b.webm": new Uint8Array(8 * MB),
+    "/assets/c.webm": new Uint8Array(8 * MB), "/assets/d.webm": new Uint8Array(8 * MB),
+  } });
+  const hit = path => worker.fetch(request(`${path}${FP}`, { headers: { range: "bytes=0-1" } }), context);
+  await hit("/assets/huge.webm"); await hit("/assets/huge.webm");
+  assert.equal(gets(context), 2, "超过单个文件上限的视频不进缓存");
+  context.seen.length = 0;
+  for (const name of ["a", "b", "c"]) await hit(`/assets/${name}.webm`);
+  for (const name of ["a", "b", "c"]) await hit(`/assets/${name}.webm`);
+  assert.equal(gets(context), 3, "总量刚好在上限内：三份都留在缓存里");
+  await hit("/assets/d.webm"); // 第四份让总量超限，最早的 a 被淘汰
+  context.seen.length = 0;
+  await hit("/assets/d.webm"); await hit("/assets/c.webm");
+  assert.equal(gets(context), 0, "较新的仍在缓存里");
+  await hit("/assets/a.webm");
+  assert.equal(gets(context), 1, "最早的被淘汰后要重新读取");
+});
+
+test("a response body is a private copy, so changing it cannot corrupt the cached video", async () => {
+  const context = videoContext();
+  const first = new Uint8Array(await (await worker.fetch(request(`/assets/clip.webm${FP}`), context)).arrayBuffer());
+  first.fill(255);
+  const slice = new Uint8Array(await (await worker.fetch(request(`/assets/clip.webm${FP}`, { headers: { range: "bytes=0-3" } }), context)).arrayBuffer());
+  slice.fill(255);
+  const again = await bytesOf(await worker.fetch(request(`/assets/clip.webm${FP}`), context));
+  assert.deepEqual(again.slice(0, 4), [0, 1, 2, 3]);
+  assert.equal(gets(context), 1);
 });
 
 test("If-Range only keeps the partial answer when it equals the strong ETag, otherwise the whole file is sent", async () => {
@@ -993,6 +1118,42 @@ test("the stylesheet keeps the narrow-screen fix and the fallbacks, and the fall
     assert.ok(css.indexOf(marker) > lastBase, `${marker} 必须排在被它覆盖的基础规则之后，否则同优先级下基础规则会赢`);
   }
   assert.match(page("1.4.104", 27_472_418), /<noscript><p class="nojs-note">无法开始下载？<a href="https:\/\/github\.com\/[^"]+\/releases\/tag\//, "没有脚本时也要有备用下载入口");
+});
+
+// 2026-10-29 用户要求：删掉「不用输入命令」「两点都满足才能装」「装好后的桌面」三句文案；
+// 4 个卖点的标题与副标题上下排列、水平居中。删掉「装好后的桌面」那个 h2 之后，卖点标题要升成 h2，
+// 否则页面标题层级会从 h1 直接跳到 h3，用读屏软件按标题跳转的人会少掉一级。
+test("the landing page no longer shows the three removed lines, and its heading outline never skips a level", () => {
+  const body = page("1.4.104", 27_472_418);
+  for (const gone of ["不用输入命令", "两点都满足才能装", "装好后的桌面"]) {
+    assert.ok(!body.includes(gone), `${gone} 已按要求删除，不能再出现在页面里`);
+  }
+  assert.doesNotMatch(body, /class="sub"/, "那两句的承载标签也不能留着空壳");
+  const levels = [...body.matchAll(/<h([1-6])[\s>]/g)].map(hit => Number(hit[1]));
+  assert.ok(levels.length >= 9, "标题数量不对，下面的层级检查会变成空转");
+  for (let i = 1; i < levels.length; i++) {
+    assert.ok(levels[i] - levels[i - 1] <= 1, `第 ${i + 1} 个标题 h${levels[i]} 紧跟在 h${levels[i - 1]} 后面，跳级了`);
+  }
+  const blocks = body.match(/<div class="sc-txt">[\s\S]*?<\/div>/g) || [];
+  assert.equal(blocks.length, 4, "4 个卖点各有一组标题加副标题");
+  for (const block of blocks) {
+    assert.match(block, /^<div class="sc-txt"><h2>[^<]+<\/h2><p>[^<]+<\/p><\/div>$/, "每组都是 h2 在上、副标题 p 在下");
+  }
+});
+
+// node 里没有排版引擎，量不出居中，这里只守样式表里承载「上下、居中」和「间距只作用于两个标题」的那几条写法；
+// 实际排版另在无头 Chrome 里量过（卖点文字中心 = 页面中心，常见问题标题下方仍是 20px）。
+test("the selling-point text stacks title over subtitle in the centre, and the 28px heading gap only reaches the two install headings", async () => {
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(fileURLToPath(new URL("../public/assets/landing.css", import.meta.url)), "utf8");
+  assert.match(css, /\.sc-txt\{[^}]*flex-direction:column[^}]*align-items:center[^}]*text-align:center/, "标题副标题上下排列且水平居中");
+  assert.doesNotMatch(css, /\.sc-txt\{[^}]*flex-wrap/, "不能退回同一行并排");
+  assert.match(css, /\.sc-txt h2\{/, "卖点标题是 h2");
+  assert.doesNotMatch(css, /\.sc-txt h3/, "旧的 h3 写法不能残留");
+  assert.match(css, /#install>h2,#check>h2\{margin-bottom:28px\}/, "两个安装类标题下方保持 28px");
+  assert.doesNotMatch(css, /\.band>h2\{/, "不能写成对所有 band 生效：常见问题的 20px 会被盖掉");
+  assert.match(css, /\.mb20\{margin-bottom:20px\}/, "常见问题标题下方的 20px 要留着");
+  assert.doesNotMatch(css, /\.sub[ ,{]/, "已删除的小字行样式不能残留");
 });
 
 test("statistics days follow the Beijing calendar", () => {
