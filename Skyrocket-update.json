@@ -1,19 +1,19 @@
 {
   "schema": 1,
   "channel": "stable",
-  "stage": "stable",
-  "version": "1.4.108",
-  "published_at": "2026-10-29T03:03:04Z",
+  "stage": "beta",
+  "version": "1.4.109",
+  "published_at": "2026-10-29T15:20:42Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 反馈上传在多个请求同时进行时更稳定，减少重复等待和重复提交。\n2. 下载页打开更快，图片和视频会按需要逐步加载，减少首次等待。\n3. 下载页在 Safari 等浏览器中的视频播放和下载跳转更可靠。\n4. 本版起标记为稳定版，右键菜单里的版本号不再带 Beta。",
+  "notes": "1. 收盘后打开程序，直接显示真实收盘价和涨跌幅，不用手动刷新。\n2. 收盘后刷新失败，或电脑睡眠唤醒后，会很快重新取行情。\n3. 换股时按输入的交易所前缀搜索；前缀不对则列出同号股票和指数供选择，支持方向键和回车。\n4. 切换股票再切回，目标价不再消失。\n5. 自动隐藏窗口看不到脸时也认上半身，收起等待缩短。\n6. 下载页精简文字，慢网速下视频也能播放。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.108-macos.zip",
-    "size": 26470324,
-    "sha256": "874e23c8e8c548a044bbbef70f322fc1c4e83a784e8cd7922f28d8a412697884"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.109-macos.zip",
+    "size": 26496565,
+    "sha256": "28daf216b4cc986b369186b518ce69e5f5eabd3358c365e88a4d8d140a7b0500"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "4EiD7oP4L1PJW9OUkcHzPfCvPzOZ2jWGUXHjBB4Uyjhf/gEo0OVoLpSW/jhQs+o03RYr6GbDufxbNQ5bW3CSBw=="
+    "value": "kRyjiM5Xdt4yMyhRrIpzsr0nZi6GzSyP+WWB9u6oEBgBU2CoH4Hk8kPWW1liVMznoFqYNoCwmkRtpNt+pNXpBA=="
   }
 }
