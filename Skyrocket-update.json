@@ -1,19 +1,19 @@
 {
   "schema": 1,
   "channel": "stable",
-  "stage": "beta",
+  "stage": "stable",
   "version": "1.4.108",
-  "published_at": "2026-10-28T19:37:58Z",
+  "published_at": "2026-10-29T03:03:04Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 反馈上传在多个请求同时进行时更稳定，减少重复等待和重复提交。\n2. 下载页打开更快，图片和视频会按需要逐步加载，减少首次等待。\n3. 下载页在 Safari 等浏览器中的视频播放和下载跳转更可靠。",
+  "notes": "1. 反馈上传在多个请求同时进行时更稳定，减少重复等待和重复提交。\n2. 下载页打开更快，图片和视频会按需要逐步加载，减少首次等待。\n3. 下载页在 Safari 等浏览器中的视频播放和下载跳转更可靠。\n4. 本版起标记为稳定版，右键菜单里的版本号不再带 Beta。",
   "archive": {
     "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.108-macos.zip",
-    "size": 26470580,
-    "sha256": "af173141734f4137767c32496c025e3c52fbf3911fa0094d014f8fbb55768972"
+    "size": 26470324,
+    "sha256": "874e23c8e8c548a044bbbef70f322fc1c4e83a784e8cd7922f28d8a412697884"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "0K/XpltFauvHLhUNY/FY8IV6McfGpj+kOA8vh21mFtDQnEhHLHb2nq4of6AMNA8/nyBb3FDzB8H/IrLitoPYCA=="
+    "value": "4EiD7oP4L1PJW9OUkcHzPfCvPzOZ2jWGUXHjBB4Uyjhf/gEo0OVoLpSW/jhQs+o03RYr6GbDufxbNQ5bW3CSBw=="
   }
 }
