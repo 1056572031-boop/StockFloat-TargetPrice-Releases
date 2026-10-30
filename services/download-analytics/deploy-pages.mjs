@@ -139,7 +139,8 @@ for (let attempt = 0; attempt < 6 && !liveOk; attempt += 1) {
     const assetNames = ["landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "file-pdf.png", "file-dmg.png", "file-zip.png",
       "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-2-alert.webp", "scene-3-fullscreen.webp", "scene-4-hide.webp",
       "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm", "scene-4-hide-1470.mp4", "scene-4-hide-1470.webm",
-      ...["scene-1-switch", "scene-2-alert", "scene-3-fullscreen", "scene-4-hide", "scene-4-hide-poster"].flatMap(base => [720, 1280, 2100].map(width => `${base}-${width}.webp`))];
+      "scene-2-alert-poster.webp", "scene-2-alert.mp4", "scene-2-alert.webm", "scene-2-alert-1470.mp4", "scene-2-alert-1470.webm",
+      ...["scene-1-switch", "scene-2-alert", "scene-2-alert-poster", "scene-3-fullscreen", "scene-4-hide", "scene-4-hide-poster"].flatMap(base => [720, 1280, 2100].map(width => `${base}-${width}.webp`))];
     const referenced = new Map();
     for (const match of pageBody.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=([0-9a-f]{10})/g)) referenced.set(match[1], match[2]);
     const assets = await mapLimit(assetNames, READBACK_CONCURRENCY, async name => {
@@ -184,7 +185,9 @@ for (let attempt = 0; attempt < 6 && !liveOk; attempt += 1) {
       "hero-replay-poster.webp": "image/webp", "hero-replay-60fps.webm": "video/webm", "hero-replay-60fps-hevc.mov": "video/quicktime",
       "scene-1-switch.webp": "image/webp", "scene-2-alert.webp": "image/webp", "scene-3-fullscreen.webp": "image/webp", "scene-4-hide.webp": "image/webp",
       "scene-4-hide-poster.webp": "image/webp", "scene-4-hide.mp4": "video/mp4", "scene-4-hide.webm": "video/webm",
-      "scene-4-hide-1470.mp4": "video/mp4", "scene-4-hide-1470.webm": "video/webm" };
+      "scene-4-hide-1470.mp4": "video/mp4", "scene-4-hide-1470.webm": "video/webm",
+      "scene-2-alert-poster.webp": "image/webp", "scene-2-alert.mp4": "video/mp4", "scene-2-alert.webm": "video/webm",
+      "scene-2-alert-1470.mp4": "video/mp4", "scene-2-alert-1470.webm": "video/webm" };
     for (const name of assetNames) if (/-(?:720|1280|2100)\.webp$/.test(name)) expectedTypes[name] = "image/webp";
     const assetsOk = cssRefsOk && assets.every(asset => asset.status === 200 && asset.bytes > 0 && asset.type.includes(expectedTypes[asset.name])
       && /immutable/.test(asset.cache) && /max-age=\d{7,}/.test(asset.cache) && asset.hashOk);

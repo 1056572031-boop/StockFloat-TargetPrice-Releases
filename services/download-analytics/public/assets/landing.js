@@ -167,16 +167,13 @@
     lazies.forEach(function (img) { fetchImage(img, "data-src", "data-srcset"); });
   }
 
-  // 第 4 张卖点图是循环视频，分三步：
+  // 第 2 张和第 4 张卖点图是循环视频（各自独立绑定，互不影响），每张分三步：
   //  热身（访客动过页面、且离视野 1200px 内、网络不慢）：按屏幕挑一档视频装上源并把 preload 改成 auto，真滚到时已经有数据；
   //  接近视野（放行后的预读距离内）：装上封面并显示视频，或在静态模式下装上静止图；
   //  进入视野（露出 35%）：开始播，离开就暂停。
-  // 视频分两档：屏幕上显示宽度乘像素密度不超过 1600（手机、普通屏）用 1470 宽的小档，更大的高清屏用 2940 宽的大档；
+  // 视频分两档：屏幕上显示宽度乘像素密度不超过 1600（手机、普通屏）用 1470 宽的小档，更大的高清屏用大档（第 2 张 2100 宽，第 4 张 2940 宽）；
   // 慢网（3g / 2g / slow-2g 的估算）一律小档。静态模式 = 系统开了"减少动态效果"、访客开了省流量、或浏览器没有
   // IntersectionObserver：只显示静止图，视频不下载。网络估算偏慢不属于静态模式（见上面 readNetwork 的说明）。
-  var fig = document.getElementById("s4");
-  var scene = document.getElementById("sv");
-  var still = document.getElementById("ss");
   var pickFrom = function (set, need) {
     var best = "", bestWidth = 0, largest = "", largestWidth = 0;
     (set || "").split(",").forEach(function (item) {
@@ -188,109 +185,116 @@
     });
     return best || largest;
   };
-  if (fig && scene && still) {
-    var near = !IO;
-    var onScreen = false;
-    var prepared = false;
-    var preparedTier = "";
-    var staticMode = function () { return saver || !IO || reduced(); };
-    var wantedTier = function () {
-      var need = (fig.clientWidth || 0) * (window.devicePixelRatio || 1);
-      return (slow || need <= 1600) ? "s" : "l";
-    };
-    var prepare = function () {
-      var tier = wantedTier();
-      if (prepared && preparedTier === tier) return;
-      var need = (fig.clientWidth || 0) * (window.devicePixelRatio || 1);
-      if (!prepared) {
-        prepared = true;
-        var poster = pickFrom(scene.getAttribute("data-posterset"), need) || scene.getAttribute("data-poster");
-        scene.removeAttribute("data-posterset");
-        scene.removeAttribute("data-poster");
-        if (poster) scene.setAttribute("poster", poster);
-      }
-      scene.querySelectorAll("source").forEach(function (source) {
-        if (source.getAttribute("data-tier") === tier) source.setAttribute("src", source.getAttribute("data-src"));
-        else source.removeAttribute("src");
-      });
-      preparedTier = tier;
-      scene.load();
-    };
-    var unload = function () {
-      if (!prepared) return;
-      scene.querySelectorAll("source").forEach(function (source) { source.removeAttribute("src"); });
-      prepared = false;
-      preparedTier = "";
-      scene.setAttribute("preload", "none");
-      // pause()/hidden 不保证浏览器会取消已经开始的 preload；清源再 load 才能真的停掉后续下载。
-      scene.load();
-    };
-    var arm = function () {
-      if (!near) return;
-      if (staticMode()) {
-        scene.hidden = true;
-        still.hidden = false;
-        fetchImage(still, "data-still", "data-stillset");
-      } else {
-        prepare();
-        still.hidden = true;
-        scene.hidden = false;
-      }
-    };
-    var syncScene = function () {
-      arm();
-      if (near && onScreen && !staticMode()) {
-        var playing = scene.play();
-        if (playing && playing.catch) playing.catch(function () {});
-      } else {
-        scene.pause();
-      }
-    };
-    if (IO) {
-      var nearIO = null;
-      var warmIO = null;
-      var watchNear = function (margin) {
-        if (nearIO) nearIO.disconnect();
-        nearIO = new IO(function (entries) {
-          entries.forEach(function (entry) { near = entry.isIntersecting; });
+  function bindScene(figId, sceneId, stillId) {
+    var fig = document.getElementById(figId);
+    var scene = document.getElementById(sceneId);
+    var still = document.getElementById(stillId);
+    if (fig && scene && still) {
+      var near = !IO;
+      var onScreen = false;
+      var prepared = false;
+      var preparedTier = "";
+      var staticMode = function () { return saver || !IO || reduced(); };
+      var wantedTier = function () {
+        var need = (fig.clientWidth || 0) * (window.devicePixelRatio || 1);
+        return (slow || need <= 1600) ? "s" : "l";
+      };
+      var prepare = function () {
+        var tier = wantedTier();
+        if (prepared && preparedTier === tier) return;
+        var need = (fig.clientWidth || 0) * (window.devicePixelRatio || 1);
+        if (!prepared) {
+          prepared = true;
+          var poster = pickFrom(scene.getAttribute("data-posterset"), need) || scene.getAttribute("data-poster");
+          scene.removeAttribute("data-posterset");
+          scene.removeAttribute("data-poster");
+          if (poster) scene.setAttribute("poster", poster);
+        }
+        scene.querySelectorAll("source").forEach(function (source) {
+          if (source.getAttribute("data-tier") === tier) source.setAttribute("src", source.getAttribute("data-src"));
+          else source.removeAttribute("src");
+        });
+        preparedTier = tier;
+        scene.load();
+      };
+      var unload = function () {
+        if (!prepared) return;
+        scene.querySelectorAll("source").forEach(function (source) { source.removeAttribute("src"); });
+        prepared = false;
+        preparedTier = "";
+        scene.setAttribute("preload", "none");
+        // pause()/hidden 不保证浏览器会取消已经开始的 preload；清源再 load 才能真的停掉后续下载。
+        scene.load();
+      };
+      var arm = function () {
+        if (!near) return;
+        if (staticMode()) {
+          scene.hidden = true;
+          still.hidden = false;
+          fetchImage(still, "data-still", "data-stillset");
+        } else {
+          prepare();
+          still.hidden = true;
+          scene.hidden = false;
+        }
+      };
+      var syncScene = function () {
+        arm();
+        if (near && onScreen && !staticMode()) {
+          var playing = scene.play();
+          if (playing && playing.catch) playing.catch(function () {});
+        } else {
+          scene.pause();
+        }
+      };
+      if (IO) {
+        var nearIO = null;
+        var warmIO = null;
+        var watchNear = function (margin) {
+          if (nearIO) nearIO.disconnect();
+          nearIO = new IO(function (entries) {
+            entries.forEach(function (entry) { near = entry.isIntersecting; });
+            syncScene();
+          }, { rootMargin: margin });
+          nearIO.observe(fig);
+        };
+        var watchWarm = function () {
+          if (slow || !intended || warmIO) return;
+          warmIO = new IO(function (entries) {
+            entries.forEach(function (entry) {
+              if (!entry.isIntersecting || staticMode()) return;
+              prepare();
+              scene.setAttribute("preload", "auto");
+              warmIO.unobserve(fig);
+            });
+          }, { rootMargin: "1200px 0px" });
+          warmIO.observe(fig);
+        };
+        watchNear("0px");
+        whenReleased(function () { watchNear(lead); });
+        new IO(function (entries) {
+          entries.forEach(function (entry) { onScreen = entry.isIntersecting; });
           syncScene();
-        }, { rootMargin: margin });
-        nearIO.observe(fig);
-      };
-      var watchWarm = function () {
-        if (slow || !intended || warmIO) return;
-        warmIO = new IO(function (entries) {
-          entries.forEach(function (entry) {
-            if (!entry.isIntersecting || staticMode()) return;
-            prepare();
-            scene.setAttribute("preload", "auto");
-            warmIO.unobserve(fig);
-          });
-        }, { rootMargin: "1200px 0px" });
-        warmIO.observe(fig);
-      };
-      watchNear("0px");
-      whenReleased(function () { watchNear(lead); });
-      new IO(function (entries) {
-        entries.forEach(function (entry) { onScreen = entry.isIntersecting; });
+        }, { threshold: 0.35 }).observe(fig);
+        whenIntended(watchWarm);
+        whenNetworkChanges(function () {
+          if (released) watchNear(lead);
+          if (slow && warmIO) { warmIO.disconnect(); warmIO = null; }
+          if (slow) scene.setAttribute("preload", "none");
+          if (staticMode()) unload();
+          // 已因热身装过源、但还没进 near 时，arm() 不会跑；网络变慢也必须立刻从大档换回小档。
+          if (prepared && !staticMode()) prepare();
+          syncScene();
+          watchWarm();
+        });
+      } else {
         syncScene();
-      }, { threshold: 0.35 }).observe(fig);
-      whenIntended(watchWarm);
-      whenNetworkChanges(function () {
-        if (released) watchNear(lead);
-        if (slow && warmIO) { warmIO.disconnect(); warmIO = null; }
-        if (slow) scene.setAttribute("preload", "none");
-        if (staticMode()) unload();
-        // 已因热身装过源、但还没进 near 时，arm() 不会跑；网络变慢也必须立刻从大档换回小档。
-        if (prepared && !staticMode()) prepare();
-        syncScene();
-        watchWarm();
-      });
-    } else {
-      syncScene();
+      }
+      if (reduce && reduce.addEventListener) reduce.addEventListener("change", syncScene);
     }
-    if (reduce && reduce.addEventListener) reduce.addEventListener("change", syncScene);
   }
+  bindScene("s2", "sv2", "ss2");
+  bindScene("s4", "sv", "ss");
 
   // 丢图时保留场景底色并留痕，不让一张外部素材把整块卖点变成空白。
   document.querySelectorAll("img").forEach(function (img) {

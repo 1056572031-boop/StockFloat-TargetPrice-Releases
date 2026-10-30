@@ -53,15 +53,43 @@ test("the build injects the version and the real DMG size, inlines the template 
     const { videoTypeFor } = await import(pathToFileURL(join(out, "_worker.js")).href);
     for (const video of videos) assert.ok(videoTypeFor(`/assets/${video}`), `${video} 的扩展名 Worker 不认识，会被当成普通素材放过去`);
     for (const name of ["landing.css", "landing.js", "atmo.svg", "installer-icon.png", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp",
-      "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm", "app-icon.png"]) {
+      "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm", "scene-2-alert-poster.webp", "scene-2-alert.mp4", "scene-2-alert.webm",
+      "scene-2-alert-1470.mp4", "scene-2-alert-1470.webm", "app-icon.png"]) {
       assert.ok(existsSync(join(out, "assets", name)), `${name} 没有进产物`);
     }
     assert.ok(videos.includes("scene-4-hide.mp4") && videos.includes("scene-4-hide.webm"), "第四张卖点图的两份视频要被当成视频（走 Worker 分段），不能被当成普通素材排除");
+    for (const name of ["scene-2-alert.mp4", "scene-2-alert.webm", "scene-2-alert-1470.mp4", "scene-2-alert-1470.webm"])
+      assert.ok(videos.includes(name), `${name} 要被当成视频（走 Worker 分段），第二张卖点图也是视频`);
     assert.equal(readFileSync(join(out, "assets", "app-icon.png")).length, 900, "app-icon.png 来自导出程序的输出");
     assert.ok(existsSync(join(out, "_headers")));
   } finally {
     rmSync(work, { recursive: true, force: true });
     rmSync(dmgDir, { recursive: true, force: true });
+  }
+});
+
+// 部署后的读回清单（deploy-pages.mjs 的 assetNames）必须与构建出的页面实际引用的素材完全一致：
+// 漏一项，那份素材上线后坏了也没人发现（第 2 张视频接入时就漏过一次，改完测试仍全绿）；多一项，读回会白白 404。
+// 为什么读源码字符串：deploy-pages.mjs 一导入就会开始真实部署，没有可以直接调用的函数，只能把数组字面量取出来求值。
+test("the deploy readback list names exactly the assets the built page references", () => {
+  const src = readFileSync(join(serviceDir, "deploy-pages.mjs"), "utf8");
+  const start = src.indexOf("const assetNames = [");
+  assert.ok(start >= 0, "找不到 assetNames，读回清单被改名或删了");
+  const end = src.indexOf("];", start) + 1;
+  const names = new Function(src.slice(start, end).replace("const assetNames =", "return"))();
+  assert.ok(names.length >= 30, "读回清单不该这么短，否则下面的对拍是空转");
+  assert.equal(new Set(names).size, names.length, "读回清单里不能有重复项");
+  const { work, out } = build({ SF_DMG_PATH: "/nonexistent/Skyrocket-V9.8.7.dmg", HOME: mkdtempSync(join(tmpdir(), "dl-home-")) });
+  try {
+    const worker = readFileSync(join(out, "_worker.js"), "utf8");
+    const referenced = new Set([...worker.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=[0-9a-f]{10}/g)].map(match => match[1]));
+    assert.ok(referenced.size >= 30, "页面引用的素材数不对，正则可能失效");
+    assert.deepEqual(names.filter(name => !referenced.has(name)).sort(), [], "读回了页面并不引用的素材");
+    assert.deepEqual([...referenced].filter(name => !names.includes(name)).sort(), [], "页面引用了、但部署后没有读回的素材");
+    const shipped = new Set(readdirSync(join(out, "assets")));
+    assert.deepEqual(names.filter(name => !shipped.has(name)), [], "读回清单里有产物里不存在的文件");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
   }
 });
 
@@ -74,7 +102,8 @@ test("every asset reference carries the content hash of the file it points to, a
     const refs = [...worker.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=([0-9a-f]{10})/g)];
     const names = new Set(refs.map(match => match[1]));
     // landing.css 已内联进页面，页面不再引用它的地址（文件仍随产物发布，旧页面缓存里的引用不会 404）。
-    for (const name of ["landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm", "file-dmg.png"]) {
+    for (const name of ["landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm",
+      "scene-2-alert.webp", "scene-2-alert-poster.webp", "scene-2-alert.mp4", "scene-2-alert.webm", "scene-2-alert-1470.mp4", "scene-2-alert-1470.webm", "file-dmg.png"]) {
       assert.ok(names.has(name), `页面里对 ${name} 的引用必须带指纹`);
     }
     for (const [, name, hash] of refs) assert.equal(hash, sha(join(first.out, "assets", name)), `${name} 的指纹必须等于文件内容的哈希`);

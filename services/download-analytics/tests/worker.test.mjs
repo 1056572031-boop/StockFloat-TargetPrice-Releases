@@ -484,9 +484,12 @@ test("the register says the alert banner has a dark backing layer and states the
   const register = readFileSync(fileURLToPath(new URL("../ASSETS.md", import.meta.url)), "utf8");
   const row = register.split("\n").find(line => line.startsWith("| `scene-2-alert.webp` |")) || "";
   assert.match(row, /黑色衬底/, "第二张必须写明横幅垫了衬底");
-  assert.match(row, /7\.6:1/, "必须写明量出来的对比度");
+  assert.match(row, /7\.9:1/, "必须写明量出来的标题行对比度");
+  assert.match(row, /7\.5:1/, "必须写明量出来的正文行对比度");
   assert.match(row, /4\.4:1/, "必须写明垫衬底前的对比度，数字才有参照");
-  assert.match(row, /横幅以外的像素没有改动/, "必须写明只动了横幅");
+  assert.match(row, /抹掉了烧在里面的通知、窗口价格行、分时图和底部统计行/, "2026-10-30 重做后必须如实写明动过哪些地方，不能再说“横幅以外没有改动”");
+  assert.doesNotMatch(row, /横幅以外的像素没有改动/, "那句话在重做之后不再成立");
+  assert.match(row, /菜单栏里的日期时间仍是旧图的“10月27日”/, "必须写明菜单栏日期没改");
 });
 
 test("the page has a skip link, one main landmark and a footer landmark, in that order", () => {
@@ -500,7 +503,7 @@ test("the page has a skip link, one main landmark and a footer landmark, in that
   assert.equal((body.match(/id="main"/g) || []).length, 1);
 });
 
-test("the hero plays the recorded replay, falls back to a still frame, and the four scene images load lazily with their size written down", () => {
+test("the hero plays the recorded replay, falls back to a still frame, and the lazy scene images load lazily with their size written down", () => {
   const body = page("1.4.104", 27_472_418);
   const video = body.match(/<video id="mv"[^>]*>[\s\S]*?<\/video>/)?.[0] || "";
   assert.match(video, /muted loop playsinline preload="none"/, "无声循环内联；preload=none：脚本不叫它之前一个字节都不下");
@@ -509,10 +512,10 @@ test("the hero plays the recorded replay, falls back to a still frame, and the f
   assert.ok(video.indexOf("video/quicktime") < video.indexOf("video/webm"), "Safari 的 HEVC 源要排在 WebM 前面，Chrome 会跳过它");
   assert.match(body, /<img class="still" src="\/assets\/hero-replay-poster\.webp"[^>]*alt="[^"]*非实时[^"]*"/, "减少动态效果时显示的静止图");
   assert.match(video, /aria-label="[^"]*真实分钟线回放 非实时[^"]*"/, "读屏用户能听到这是回放、非实时");
-  // 前三张是脚本懒加载的图片：HTML 里只有占位图 + data-src，真地址靠脚本在接近视野时换上；
-  // 第四张是循环视频（下一条用例单独守），所以这里按 scene-1..3 的 data-src 取。
-  const shots = body.match(/<img class="lz" src="data:[^"]*" data-src="\/assets\/scene-[1-3]-[a-z]+\.webp"[^>]*>/g) || [];
-  assert.equal(shots.length, 3);
+  // 第 1、3 张是脚本懒加载的图片：HTML 里只有占位图 + data-src，真地址靠脚本在接近视野时换上；
+  // 第 2、4 张是循环视频（后面的用例各自守），所以这里只取 scene-1 和 scene-3 的 data-src。
+  const shots = body.match(/<img class="lz" src="data:[^"]*" data-src="\/assets\/scene-[13]-[a-z]+\.webp"[^>]*>/g) || [];
+  assert.equal(shots.length, 2);
   for (const tag of shots) {
     assert.match(tag, /width="2940" height="1912"/, "屏下场景图写明宽高，避免版面跳动");
     assert.match(tag, /decoding="async"/);
@@ -522,9 +525,9 @@ test("the hero plays the recorded replay, falls back to a still frame, and the f
     assert.deepEqual(set.split(", ").map(item => item.split(" ")[1]), ["720w", "1280w", "2100w", "2940w"], "四档宽度，最大一档是原图");
     assert.match(tag, /sizes="\(min-width:1120px\) 1040px, \(min-width:981px\) calc\(100vw - 80px\), calc\(100vw - 48px\)"/, "sizes 要与版面一致：容器最宽 1040，窄屏两侧留白 40 和 24");
   }
-  assert.equal(new Set(shots.map(tag => tag.match(/scene-\d/)[0])).size, 3, "三张用三张不同的图");
+  assert.equal(new Set(shots.map(tag => tag.match(/scene-\d/)[0])).size, 2, "两张用两张不同的图");
   // 没有脚本时占位图会让图空着，所以每张都要有 noscript 里的真图；真地址不能只存在于 data-src 里。
-  for (const name of ["scene-1-switch", "scene-2-alert", "scene-3-fullscreen"]) {
+  for (const name of ["scene-1-switch", "scene-3-fullscreen"]) {
     assert.match(body, new RegExp(`<noscript><img src="/assets/${name}\\.webp" srcset="[^"]+" sizes="[^"]+" width="2940" height="1912"[^>]*></noscript>`), `${name} 缺 noscript 备份`);
   }
   assert.doesNotMatch(body, /<img src="\/assets\/scene-[1-3]-[a-z]+\.webp"[^>]*>(?!<\/noscript>)/, "场景图不能再以真地址直接出现在 HTML 里，否则会随首屏一起下载");
@@ -543,6 +546,45 @@ test("the first screen preloads its cover image at high priority and keeps the d
   for (const name of ["file-pdf", "file-dmg", "file-zip", "installer-icon"]) {
     assert.match(body, new RegExp(`<img src="/assets/${name}\\.png"[^>]*loading="lazy"`), `${name} 在屏下，应延后加载`);
   }
+});
+
+test("the second scene is a looping video that waits for the viewer, keeps a poster, and has a still frame for reduced motion", () => {
+  const body = page("1.4.104", 27_472_418);
+  const video = body.match(/<video id="sv2"[^>]*>[\s\S]*?<\/video>/)?.[0] || "";
+  assert.ok(video, "第 2 张卖点图应是 id=sv2 的视频");
+  assert.match(video, /muted loop playsinline/, "无声循环内联播放");
+  assert.match(video, /preload="none"/, "没滚到就不下载");
+  assert.doesNotMatch(video, /autoplay/, "播放时机交给脚本");
+  assert.match(video, /width="2940" height="1912"/, "写明宽高，加载前后版面不跳动，也与前后两张等宽");
+  assert.doesNotMatch(video, /\sposter=/, "不能直接写 poster 属性，否则封面随首屏一起下载");
+  assert.match(video, /data-poster="\/assets\/scene-2-alert-poster\.webp(?:\?v=[0-9a-f]{10})?"/, "封面地址（构建后带指纹，模板里不带）");
+  const posterSet = video.match(/data-posterset="([^"]+)"/)?.[1] || "";
+  assert.deepEqual(posterSet.split(", ").map(item => item.split(" ")[1]), ["720w", "1280w", "2100w", "2940w"], "封面也分档");
+  assert.ok(posterSet.split(", ").every(item => /^\/assets\/scene-2-alert-poster(?:-\d+)?\.webp(?:\?v=[0-9a-f]{10})? \d+w$/.test(item)), "每一档封面的地址形状");
+  const sources = [...video.matchAll(/<source ([^>]*)>/g)].map(match => match[1]);
+  assert.equal(sources.length, 4);
+  assert.ok(sources.every(attrs => !/\ssrc=|^src=/.test(attrs) && /data-src="\/assets\/scene-2-alert[^"]*\.(?:mp4|webm)(?:\?v=[0-9a-f]{10})?"/.test(attrs)), "四个源都只有 data-src");
+  assert.deepEqual(sources.map(attrs => attrs.match(/data-tier="(\w)"/)[1]), ["s", "s", "l", "l"], "每档里 mp4 在前 webm 在后");
+  assert.match(sources[0], /scene-2-alert-1470\.mp4/);
+  assert.match(sources[1], /scene-2-alert-1470\.webm/);
+  assert.match(sources[2], /scene-2-alert\.mp4/);
+  assert.match(sources[3], /scene-2-alert\.webm/);
+  assert.match(video, /<video id="sv2" hidden /, "脚本接管前视频是隐藏的");
+  assert.ok(video.indexOf("video/mp4") < video.indexOf("video/webm"), "Safari 的 HEVC 源要排在 WebM 前面");
+  assert.match(video, /codecs="hvc1"/);
+  assert.match(video, /aria-label="[^"]*到价[^"]*真实分钟线[^"]*示意数据[^"]*"/, "读屏用户能听到画面讲了什么、数据是真实分钟线回放、整体是示意");
+  assert.match(body, /<figure class="sc-shot" id="s2"><video id="sv2"/, "容器 id=s2 是脚本观察的对象");
+  const still = body.match(/<img class="lz" id="ss2"[^>]*>/)?.[0] || "";
+  assert.match(still, /data-still="\/assets\/scene-2-alert\.webp(?:\?v=[0-9a-f]{10})?"/, "静止图的真地址只存在 data-still 里");
+  assert.match(still, /data-stillset="[^"]*720w[^"]*1280w[^"]*2100w[^"]*2940w"/, "静止图也分档");
+  assert.match(still, /alt="[^"]*到价[^"]*"/, "静止图有替代文字");
+  assert.match(still, /width="2940" height="1912"/);
+  assert.doesNotMatch(still, /\ssrc="\/assets\/|\ssrcset=/, "静止图加载时只是占位");
+  assert.match(body, /<noscript><img src="\/assets\/scene-2-alert\.webp(?:\?v=[0-9a-f]{10})?"[^>]*width="2940" height="1912"[^>]*alt="[^"]*到价[^"]*"><\/noscript>/, "没有脚本时：视频是隐藏的，改显静止图");
+  assert.equal((body.match(/id="sv2"/g) || []).length, 1);
+  assert.equal((body.match(/id="s2"/g) || []).length, 1);
+  assert.ok(body.indexOf('id="s2"') < body.indexOf('id="s4"'), "第 2 张在第 4 张前面，版面顺序不变");
+  assert.doesNotMatch(body, /<img src="\/assets\/scene-2-alert\.webp[^>]*>(?!<\/noscript>)/, "第 2 张不能再是不会动的普通图片");
 });
 
 test("the fourth scene is a looping video that waits for the viewer, keeps a poster, and has a still frame for reduced motion", () => {
@@ -635,7 +677,8 @@ test("every restored file without clearance is marked as such in its own row, an
   const rows = name => register.split("\n").find(line => line.startsWith(`| \`${name}\` |`)) || "";
   for (const name of ["hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "hero-replay-poster.webp",
     "scene-1-switch.webp", "scene-2-alert.webp", "scene-3-fullscreen.webp", "scene-4-hide.webp", "scene-4-hide-poster.webp",
-    "scene-4-hide.mp4", "scene-4-hide.webm", "file-pdf.png", "file-dmg.png", "file-zip.png"]) {
+    "scene-4-hide.mp4", "scene-4-hide.webm", "scene-2-alert-poster.webp", "scene-2-alert.mp4", "scene-2-alert.webm",
+    "scene-2-alert-1470.mp4", "scene-2-alert-1470.webm", "file-pdf.png", "file-dmg.png", "file-zip.png"]) {
     assert.match(rows(name), /未取得授权/, `${name} 的登记行必须写明没有授权`);
   }
   assert.match(rows("scene-3-fullscreen.webp"), /壁纸 13/, "第三张必须写明用的是哪张壁纸");

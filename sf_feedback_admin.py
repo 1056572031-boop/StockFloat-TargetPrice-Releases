@@ -16,6 +16,10 @@ from sf_feedback import FeedbackProtocolError, _atomic_replace, validate_archive
 from sf_feedback_github import KEY_PATTERN, MAX_RELEASE_ASSETS, REPOSITORY
 from sf_feedback_analyzer import ANALYZER_BUILD_ID, DEFAULT_RULESET, _canonical_hash
 
+# 操作员标记为“不再关心”的案件。代理不再下载、分析、修复它，桌面导出也只取 ready，所以它不会再出现；
+# 回执和已有报告原样保留，取消忽略即可恢复。
+IGNORED = "ignored"
+
 
 def _limits():
     resource.setrlimit(resource.RLIMIT_CPU, (15, 15))
@@ -136,6 +140,45 @@ class FeedbackAgent:
         finally:
             lock.close()
 
+    def set_ignored(self, case_ids, ignored=True):
+        """把案件标为已忽略，或取消忽略。与 run_once 共用同一把锁，代理正在跑时拒绝，不抢写队列。
+
+        忽略只改状态，不删回执、报告和已下载的反馈包。取消忽略时有报告的回到 ready
+        （缓存失效会被下一轮自动重新分析），没有报告的回到 pending。
+        """
+        wanted = []
+        for case_id in case_ids:
+            if (not isinstance(case_id, str) or not case_id.startswith("feedback-")
+                    or not KEY_PATTERN.fullmatch(case_id[len("feedback-"):])):
+                raise FeedbackProtocolError("案件编号格式不正确")
+            wanted.append(case_id)
+        lock = self._local_path("agent.lock").open("a")
+        try:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise FeedbackProtocolError("已有反馈代理正在运行") from None
+            changed, unchanged, missing = [], [], []
+            with self._db() as db:
+                for case_id in dict.fromkeys(wanted):
+                    row = db.execute("SELECT status, report FROM queue WHERE case_id=?", (case_id,)).fetchone()
+                    if row is None:
+                        missing.append(case_id)
+                        continue
+                    status, report = row
+                    if ignored:
+                        target = IGNORED
+                    else:
+                        target = "ready" if report else "pending"
+                    if (status == IGNORED) != ignored:
+                        db.execute("UPDATE queue SET status=?, error=NULL WHERE case_id=?", (target, case_id))
+                        changed.append(case_id)
+                    else:
+                        unchanged.append(case_id)
+            return {"changed": changed, "unchanged": unchanged, "missing": missing}
+        finally:
+            lock.close()
+
     def _run_locked(self):
         release = self.api.inbox()
         assets = self.api.assets(release["id"])
@@ -173,12 +216,16 @@ class FeedbackAgent:
         with self._db() as db:
             rows = db.execute("SELECT case_id, receipt, status, report FROM queue").fetchall()
         ready, failed = [], []
+        ignored = 0
         for case_id, raw_receipt, status, previous_report in rows:
             if (not isinstance(case_id, str) or not case_id.startswith("feedback-")
                     or not KEY_PATTERN.fullmatch(case_id[len("feedback-"):])):
                 with self._db() as db:
                     db.execute("UPDATE queue SET status='failed', error='InvalidCaseIdentity' WHERE case_id IS ?", (case_id,))
                 failed.append("invalid_local_case")
+                continue
+            if status == IGNORED:
+                ignored += 1
                 continue
             if status == "discovery_failed":
                 failed.append(case_id)
@@ -232,7 +279,8 @@ class FeedbackAgent:
         unreceipted = sum(1 for name in names
                           if name.startswith("feedback-") and name.endswith(".zip")
                           and name[:-len(".zip")] + ".receipt.json" not in names)
-        return {"ready": ready, "failed": failed, "discovered": len(rows), "unreceipted_zips": unreceipted,
+        return {"ready": ready, "failed": failed, "discovered": len(rows), "ignored": ignored,
+                "unreceipted_zips": unreceipted,
                 "capacity": {"asset_count": len(assets), "asset_limit": MAX_RELEASE_ASSETS,
                              "remaining_asset_slots": max(0, MAX_RELEASE_ASSETS - len(assets)),
                              "slots_per_new_case": 2, "near_limit": len(assets) >= MAX_RELEASE_ASSETS - 100}}

@@ -91,7 +91,7 @@ Only what the first screen needs is fetched with the page; everything else waits
   the new page no longer references it. The deploy readback checks that the header hash equals the
   hash of the single inline `<style>` on the live page. A Worker module may only export functions
   (a string constant makes the Cloudflare runtime refuse to start), which the build test enforces.
-- Scene images 1 to 3 and the fourth scene's still image ship as a 1x1 transparent GIF (`src`)
+- Scene images 1 and 3 and the still images of the second and fourth scenes ship as a 1x1 transparent GIF (`src`)
   plus the real paths in `data-src` / `data-srcset` / `data-still`. `landing.js` swaps them in near
   the viewport. Each has a 720 / 1280 / 2100 wide WebP (quality 90) besides the 2940 wide original,
   and `sizes` mirrors the layout, so a phone or a 1x screen downloads a 40 to 125KB picture instead
@@ -109,10 +109,13 @@ Only what the first screen needs is fetched with the page; everything else waits
   after the page has loaded and the images already requested have arrived (or after 6 seconds),
   so the first-screen images get the whole bandwidth. It stays on the cover image with data saver,
   2G or reduced motion, and pauses while off screen.
-- The fourth scene's video poster is `data-poster` / `data-posterset` and becomes `poster` near the
-  viewport. The video has two tiers: 1470 wide (about 0.4MB HEVC, 0.7MB VP9) when displayed width
-  times pixel density is at most 1600 or on 3G, and 2940 wide (1.3MB HEVC, 1.7MB VP9) for high
-  density screens. The `<source>` elements carry only `data-src`; the script writes `src` for the
+- The second and fourth scenes are looping videos bound by the same `bindScene(figure, video, still)`
+  function in `landing.js` (ids `s2` / `sv2` / `ss2` and `s4` / `sv` / `ss`), each with its own
+  near / on-screen / warm-up state. The video poster is `data-poster` / `data-posterset` and becomes
+  `poster` near the viewport. Each video has two tiers: 1470 wide when displayed width times pixel
+  density is at most 1600 or on 3G, and a large tier for high density screens. Fourth scene: 0.4MB
+  HEVC / 0.7MB VP9 small, 2940 wide 1.3MB HEVC / 1.7MB VP9 large. Second scene: 0.4MB HEVC / 0.6MB VP9
+  small, 2100 wide 0.6MB HEVC / 0.9MB VP9 large. The `<source>` elements carry only `data-src`; the script writes `src` for the
   chosen tier and calls `load()` once. Both large files were re-encoded from the earlier crf15 /
   crf22 masters (structural similarity 0.9925 / 0.9906, 390 frames unchanged), see `ASSETS.md`.
 - Warm-up (setting `preload="auto"` so data is there when the visitor arrives) needs real input
@@ -120,8 +123,8 @@ Only what the first screen needs is fetched with the page; everything else waits
   enough: restoring the scroll position after a reload and anchor jumps fire it too. Safari and
   Firefox expose no `navigator.connection`, so they are treated as not slow; the small tier keeps
   that cost low. Warm-up never happens on 3G, 2G, data saver or reduced motion.
-- With reduced motion, data saver, 2G, or no `IntersectionObserver`, the fourth scene shows its
-  still image and the video is never requested.
+- With reduced motion, data saver, 2G, or no `IntersectionObserver`, the second and fourth scenes
+  show their still images and the videos are never requested.
 
 Measured on a local build (Chrome, cache off, 3 runs each, simulated 1.6Mbps / 150ms; the
 old figures are the build before this work):
@@ -191,12 +194,17 @@ the page shows the version alone rather than an old size. `src/landing.mjs` is i
 ## Media that is here without clearance
 
 Since 2026-10-28 the page uses the B25 mock-up media as designed: the hero is a looping video of
-real 2026-10-27 minute-line data of one A-share stock rendered by the product (its name and code
-replaced by the placeholders 股票名称 / 038492; the price path is still real) (WebM for Chrome, HEVC MOV for
+real 2026-10-28 minute-line data of one A-share stock rendered by the product, replaying 10:54 to 13:19
+as the gain climbs from +3.00% to +8.14% (its name and code replaced by the placeholders 股票名称 / 038492;
+the price path is still real; the digit roll in this video is slower and smoother than the product's own
+0.18 s roll, with motion blur, so it is a demonstration and not a recording) (WebM for Chrome, HEVC MOV for
 Safari, a still poster for reduced motion), and the four desktop scenes are rendered images (the
-fourth, "someone is next to you", is a 6.5 s looping 60 fps video, HEVC for Safari and VP9 WebM for
-the rest, that only starts once it is scrolled into view and shows a still frame under reduced
-motion; its camera-view panel and silhouettes are illustrations, the product shows no camera
+second, "you set the price, it watches", is a 5 s looping 60 fps video of 12 real minute bars of one
+A-share stock from 2026-10-30, one bar per 0.4 s, so it runs far faster than the market; the chart and
+bottom figures are drawn by the product's own renderer, the target price 1380.00 is illustrative and
+matches a real crossing at 13:31, and the menu bar still shows the old date; the fourth, "someone is next to you", is a 6.5 s looping 60 fps video; both are HEVC for Safari and VP9 WebM for
+the rest, only start once scrolled into view and show a still frame under reduced
+motion; the fourth's camera-view panel and silhouettes are illustrations, the product shows no camera
 image) with
 the Apple menu bar and Dock glass (its icons are pale flat blocks with the product's own icon
 in one slot, no Apple app icons) over four CC0 wallpaper photos from Wikimedia Commons (the CC0

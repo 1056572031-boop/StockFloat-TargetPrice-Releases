@@ -44,8 +44,24 @@ def main():
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--gh", default=shutil.which("gh"))
     parser.add_argument("--desktop-dir", type=Path)
+    parser.add_argument("--ignore", nargs="+", metavar="CASE_ID",
+                        help="把这些案件标为已忽略：不再下载、分析，也不再导出到桌面（只改本地队列，不联网）")
+    parser.add_argument("--unignore", nargs="+", metavar="CASE_ID",
+                        help="取消忽略，案件回到队列（只改本地队列，不联网）")
     args = parser.parse_args()
     os.umask(0o077)
+    if args.ignore or args.unignore:
+        if args.ignore and args.unignore:
+            parser.error("--ignore 与 --unignore 不能同时使用")
+        try:
+            outcome = FeedbackAgent(None, args.data_dir).set_ignored(
+                args.ignore or args.unignore, ignored=bool(args.ignore))
+        except Exception as exc:
+            print(json.dumps({"error": "queue_update_failed", "error_type": type(exc).__name__,
+                              "message": str(exc)}, ensure_ascii=False))
+            return 1
+        print(json.dumps(outcome, ensure_ascii=False))
+        return int(bool(outcome["missing"]))
     if not args.gh or not Path(args.gh).is_absolute():
         parser.error("an absolute administrator gh executable is required")
     notifications = FeedbackNotifications(args.data_dir)

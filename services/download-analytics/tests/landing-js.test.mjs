@@ -31,7 +31,7 @@ function makeEl(attrs = {}) {
 }
 
 function harness({ hash = "", withAlt = true, withCta = true, withVideo = false, withScene = false, lazies = 0, observer = true,
-  reduced = false, playRejects = false, connection = null, readyState = "loading", dpr = 1, width = 1040 } = {}) {
+  reduced = false, playRejects = false, connection = null, readyState = "loading", dpr = 1, width = 1040, withScene2 = false, width2 = 1040 } = {}) {
   const listeners = { window: {}, cta: [], go: [], motion: [] };
   const makeVideo = (attrs = {}) => Object.assign(makeEl(attrs), {
     plays: 0, pauses: 0,
@@ -50,6 +50,18 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
   const fig = makeEl();
   fig.clientWidth = width;
   const still = makeEl({ src: BLANK, "data-still": "/assets/scene-4-hide.webp", "data-stillset": "/assets/s-720.webp 720w, /assets/s.webp 2940w" });
+  // 第 2 张卖点图也是循环视频：同样的结构，另一组元素，和第 4 张各自独立。
+  const scene2 = makeVideo({ preload: "none", "data-poster": "/assets/scene-2-alert-poster.webp",
+    "data-posterset": "/assets/q-720.webp 720w, /assets/q-1280.webp 1280w, /assets/q-2100.webp 2100w, /assets/q.webp 2940w" });
+  scene2.hidden = true;
+  scene2.loads = 0;
+  scene2.load = () => { scene2.loads += 1; };
+  const sources2 = [["s", "/assets/w-1470.mp4"], ["s", "/assets/w-1470.webm"], ["l", "/assets/w.mp4"], ["l", "/assets/w.webm"]]
+    .map(([tier, src]) => makeEl({ "data-tier": tier, "data-src": src }));
+  scene2.querySelectorAll = selector => (selector === "source" ? sources2 : []);
+  const fig2 = makeEl();
+  fig2.clientWidth = width2;
+  const still2 = makeEl({ src: BLANK, "data-still": "/assets/scene-2-alert.webp", "data-stillset": "/assets/t-720.webp 720w, /assets/t.webp 2940w" });
   const lazy = Array.from({ length: lazies }, (_, i) => makeEl({ src: BLANK, "data-src": `/assets/scene-${i + 1}.webp`,
     "data-srcset": `/assets/scene-${i + 1}-720.webp 720w, /assets/scene-${i + 1}.webp 2940w` }));
   // 假的"进入视口"观察器：记下回调、选项和被观察的元素，由用例按"角色"手动喊进来了/出去了。
@@ -65,7 +77,10 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
     lazy: o => o.options.threshold === undefined && o.targets.some(t => lazy.includes(t)),
     near: o => o.targets.includes(fig) && o.options.threshold === undefined && o.options.rootMargin !== "1200px 0px",
     on: o => o.targets.includes(fig) && o.options.threshold === 0.35,
-    warm: o => o.options.rootMargin === "1200px 0px",
+    warm: o => o.options.rootMargin === "1200px 0px" && o.targets.includes(fig),
+    near2: o => o.targets.includes(fig2) && o.options.threshold === undefined && o.options.rootMargin !== "1200px 0px",
+    on2: o => o.targets.includes(fig2) && o.options.threshold === 0.35,
+    warm2: o => o.options.rootMargin === "1200px 0px" && o.targets.includes(fig2),
   };
   // 同一角色可能先后建过几个观察器（放宽预读距离时旧的会被 disconnect），找的永远是当前还活着的那个。
   const all = role => observers.filter(o => roles[role](o));
@@ -91,7 +106,8 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
   };
   const go = { addEventListener: (type, fn) => listeners.go.push([type, fn]) };
   const registry = { page, cta: withCta ? cta : null, alt: withAlt ? alt : null, goalt: go, mv: withVideo ? video : null,
-    s4: withScene ? fig : null, sv: withScene ? scene : null, ss: withScene ? still : null };
+    s4: withScene ? fig : null, sv: withScene ? scene : null, ss: withScene ? still : null,
+    s2: withScene2 ? fig2 : null, sv2: withScene2 ? scene2 : null, ss2: withScene2 ? still2 : null };
   const document = {
     readyState,
     getElementById: id => registry[id] || null,
@@ -105,7 +121,7 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
     requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
   };
   // 默认不提供 matchMedia：老浏览器和旧用例都要能跑；要测动效偏好时才挂上。
-  if (withVideo || withScene) window.matchMedia = () => motion;
+  if (withVideo || withScene || withScene2) window.matchMedia = () => motion;
   if (observer) window.IntersectionObserver = FakeObserver;
   const context = { document, window, location: { hash } };
   if (connectionState) context.navigator = { connection: connectionState };
@@ -135,7 +151,7 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
   // 首屏视频的开始：页面加载完成、没有在途的图、等两帧。
   const startHero = () => { load(); flush(); };
   const fallback = () => { const t = timers.find(item => item.ms === 6000); if (t) t.fn(); };
-  return { page, cta, alt, summary, go, listeners, timers, imgs, click, context, video, scene, still, fig, lazy, sources, motion, connection: connectionState, connectionListeners, observers, all, find, fire, changeMotion, changeConnection, load, scroll, intent, flush, startHero, fallback };
+  return { page, cta, alt, summary, go, listeners, timers, imgs, click, context, video, scene, still, fig, scene2, still2, fig2, sources2, lazy, sources, motion, connection: connectionState, connectionListeners, observers, all, find, fire, changeMotion, changeConnection, load, scroll, intent, flush, startHero, fallback };
 }
 
 test("clicking the download link marks the page as started and does not cancel the download", () => {
@@ -341,6 +357,90 @@ test("flipping the motion setting before the scene video was ever on screen must
   h.fire("near", true);
   h.fire("on", true);
   assert.equal(h.scene.plays, 1, "滚进屏幕之后才播");
+});
+
+test("the second scene video is bound on its own: it does not touch the network on load, and scrolling it in plays only it", () => {
+  const h = harness({ withScene: true, withScene2: true });
+  assert.equal(h.scene2.plays, 0);
+  assert.equal(h.scene2.getAttribute("preload"), "none");
+  assert.equal(h.scene2.getAttribute("poster"), null, "没接近视野前不装封面");
+  assert.equal(h.scene2.hidden, true);
+  assert.equal(h.still2.getAttribute("src"), BLANK);
+  assert.equal(h.still2.getAttribute("data-still"), "/assets/scene-2-alert.webp");
+  assert.ok(h.sources2.every(source => source.getAttribute("src") === null), "加载时第 2 张的视频源不写 src");
+  assert.deepEqual(h.find("on2").targets, [h.fig2], "观察的是第 2 张的容器");
+  assert.notEqual(h.find("on2"), h.find("on"), "两张各有各的观察器");
+  h.fire("near2", true);
+  assert.equal(h.scene2.getAttribute("poster"), "/assets/q-1280.webp");
+  assert.deepEqual(h.sources2.map(source => source.getAttribute("src")), ["/assets/w-1470.mp4", "/assets/w-1470.webm", null, null], "宽 1040 乘密度 1 用小档");
+  assert.equal(h.scene2.loads, 1);
+  assert.equal(h.scene2.hidden, false);
+  assert.equal(h.still2.hidden, true);
+  h.fire("on2", true);
+  assert.equal(h.scene2.plays, 1, "第 2 张进屏就播");
+  assert.equal(h.scene.plays, 0, "第 4 张没进屏，不能跟着播");
+  assert.equal(h.scene.loads, 0, "也不能被装源");
+  assert.ok(h.sources.every(source => source.getAttribute("src") === null), "第 4 张的源保持空");
+  assert.equal(h.scene.getAttribute("poster"), null);
+  h.fire("near", true);
+  h.fire("on", true);
+  assert.equal(h.scene.plays, 1);
+  assert.equal(h.scene2.plays, 1, "第 4 张开始播，不影响第 2 张的计数");
+  const scene4Paused = h.scene.pauses;
+  const scene2Paused = h.scene2.pauses;
+  h.fire("on2", false);
+  assert.equal(h.scene2.pauses, scene2Paused + 1, "第 2 张滚出屏幕就暂停");
+  assert.equal(h.scene.pauses, scene4Paused, "第 4 张还在屏幕里，不能被第 2 张的离开一起暂停");
+  assert.equal(h.scene.plays, 1);
+});
+
+test("the two scene videos choose their tier from their own displayed width", () => {
+  const h = harness({ withScene: true, withScene2: true, width: 1040, width2: 2000 });
+  h.fire("near", true);
+  h.fire("near2", true);
+  assert.deepEqual(h.sources.map(source => source.getAttribute("src")), ["/assets/v-1470.mp4", "/assets/v-1470.webm", null, null], "第 4 张宽 1040：小档");
+  assert.deepEqual(h.sources2.map(source => source.getAttribute("src")), [null, null, "/assets/w.mp4", "/assets/w.webm"], "第 2 张宽 2000：大档");
+  assert.equal(h.scene2.getAttribute("poster"), "/assets/q-2100.webp", "封面也按它自己的宽度挑");
+  assert.equal(h.scene.getAttribute("poster"), "/assets/p-1280.webp");
+});
+
+test("with reduced motion on, the second scene shows its own still picture and neither video is loaded", () => {
+  const h = harness({ withScene: true, withScene2: true, reduced: true });
+  h.fire("near2", true);
+  h.fire("on2", true);
+  assert.equal(h.scene2.plays, 0);
+  assert.equal(h.scene2.getAttribute("poster"), null);
+  assert.equal(h.scene2.hidden, true);
+  assert.equal(h.still2.hidden, false);
+  assert.equal(h.still2.getAttribute("src"), "/assets/scene-2-alert.webp", "改显第 2 张自己的静止图");
+  assert.equal(h.still2.getAttribute("data-still"), null);
+  assert.equal(h.still.getAttribute("src"), BLANK, "第 4 张没接近视野，静止图仍是占位");
+  assert.equal(h.scene.getAttribute("poster"), null);
+  h.changeMotion(false);
+  assert.equal(h.scene2.plays, 1, "关掉减少动态效果后，还在屏幕里的第 2 张接着播");
+  assert.equal(h.scene.plays, 0, "还没接近视野的第 4 张不会被设置变化拉起来");
+});
+
+test("a page that only has the second scene video still works, and one without it is left alone", () => {
+  const only = harness({ withScene2: true });
+  only.fire("near2", true);
+  only.fire("on2", true);
+  assert.equal(only.scene2.plays, 1);
+  const none = harness({ withScene: true });
+  none.fire("near", true);
+  none.fire("on", true);
+  assert.equal(none.scene.plays, 1, "没有第 2 张的页面照常工作");
+  assert.equal(none.all("near2").length, 0, "不会为不存在的容器建观察器");
+});
+
+test("a browser without IntersectionObserver shows both still pictures and never downloads either video", () => {
+  const old = harness({ withScene: true, withScene2: true, observer: false });
+  assert.equal(old.scene2.plays, 0);
+  assert.equal(old.scene2.loads, 0);
+  assert.equal(old.scene2.hidden, true);
+  assert.equal(old.still2.hidden, false);
+  assert.equal(old.still2.getAttribute("src"), "/assets/scene-2-alert.webp");
+  assert.equal(old.still.getAttribute("src"), "/assets/scene-4-hide.webp");
 });
 
 test("a blocked play() on the scene video is caught", async () => {

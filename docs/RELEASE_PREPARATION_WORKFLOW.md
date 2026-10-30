@@ -838,6 +838,11 @@ release-preparation-vX.Y.Z/
   - **`complete` 按“相对仓库根的文件名”找读回和走查的收据**：读回报告和走查的 `result.json` 放在树外或 `build/` 子目录时找不到。做法是各补一份 `quality_evidence.py run` 收据，命令实际打开真实文件判定，参数里带上裸文件名，本次这样通过；这是匹配规则的限制，不是对结果的二次证明。
   - **同版本再发布会撞上归档**：`post_release.json` 在主线已存在上一轮的同名文件，`quality_evidence.py post-release` 报“不覆盖现有发布后记录”，`release_wrapup.py archive` 找不到与旧哈希对应的新质量记录。v1.4.108 当时没有生成稳定版的 `post_release.json`，稳定版证据并列放进 `outputs/release-candidates/v1.4.108-stable/` 并手工写索引，旧 Beta 的记录原样保留。该缺口已补：`post-release`、`complete`、`archive` 现在都认 `--label`（见 P6 第 6 条），下次同号再发布按它走，不必手工写索引；已归档的 `v1.4.108-stable` 是手工产物，没有 `archive_label` 字段，不要拿它去重跑 `archive --label`。
 
+- v1.4.109 的执行经验（2026-10-30 实跑，下列各条均有本轮日志和收据）:
+  - **6.1 下载入口读回必须等四类发行资产齐全**：`--publish-prepared` 先完成 OTA ZIP 和清单切换，再进入 6.1；此时页面与应用 ZIP 已可读，但 DMG、公开源码 ZIP、SHA256 清单仍要到 6.2 才上传。第一次 6.1 因这三项返回 404 停住，不能把页面本身通过写成下载入口通过。补做 6.2 的 `public_release.py --publish` 后，6.1 才按原判据通过；未来若保持这个脚本顺序，应把“资产完整性”与“页面读回”分开，或在 6.1 前确保四类资产均已存在。
+  - **发布读回工具的证据路径匹配很严格**：质量收据命令必须使用工具要求的相对路径文本；发布后读回文件使用新 `--out` 后，`release_evidence complete` 默认还会在 `quality-evidence-v<版本>-complete/` 找收据，需显式传候选证据目录。对嵌套的 `build/release-evidence-.../readback.json`，完成工具按“包含目标路径”的规则可能找不到，实跑用只读命令打开真实文件并把裸文件名作为参数生成收据，才完成绑定。失败的收据和原始读回报告都保留，不覆盖、不改写。
+  - **发布分支必须先合入主线再收树**：本轮先归档并推送了主线的归档提交，但发布分支的 7 个源码/文档文件仍未进入 `feat/target-price`，`retire` 正确拒绝并提示“tree HEAD ... commits would be lost”。随后在干净集成树合并发布提交，完整钩子 6552 项通过后才快进主线、推送并收掉发布树；以后把“归档提交”和“发布准备提交”的合入一起完成后再执行 `retire`。
+
 ## 六、主树被占用时的独立发布树
 
 触发条件：`commit_preflight` 或质量闸门指出主树里有不属于本版的未跟踪文件，且它们属于其他会话、
