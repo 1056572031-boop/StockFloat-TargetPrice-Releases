@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.109",
-  "published_at": "2026-10-29T15:20:42Z",
+  "version": "1.4.110",
+  "published_at": "2026-11-04T16:43:35Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 收盘后打开程序，直接显示真实收盘价和涨跌幅，不用手动刷新。\n2. 收盘后刷新失败，或电脑睡眠唤醒后，会很快重新取行情。\n3. 换股时按输入的交易所前缀搜索；前缀不对则列出同号股票和指数供选择，支持方向键和回车。\n4. 切换股票再切回，目标价不再消失。\n5. 自动隐藏窗口看不到脸时也认上半身，收起等待缩短。\n6. 下载页精简文字，慢网速下视频也能播放。",
+  "notes": "1. 目标价提醒更稳：行情暂时存不下时不会误清已设目标价，可能漏提醒时会提示。\n2. 删光已存目标价后，“立即生效”可以点了。\n3. 主板 ST 股按 10% 涨跌停计算，指数不再套用涨跌停。\n4. 行情数据被截断时不再显示错误价格，0.00% 不再变红绿。\n5. 锁屏唤醒后，自动隐藏窗口能正常恢复。\n6. 取消下载更新不再弹失败框。\n7. 本版需要 macOS 14.4 或更高版本。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.109-macos.zip",
-    "size": 26496565,
-    "sha256": "28daf216b4cc986b369186b518ce69e5f5eabd3358c365e88a4d8d140a7b0500"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.110-macos.zip",
+    "size": 27246358,
+    "sha256": "f1b2234c4ddbda11b609cde3b6db62a0c9ae9dc89597e3bdf68e032cc1354c27"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "kRyjiM5Xdt4yMyhRrIpzsr0nZi6GzSyP+WWB9u6oEBgBU2CoH4Hk8kPWW1liVMznoFqYNoCwmkRtpNt+pNXpBA=="
+    "value": "UecNVoXKj2gG2gBB3tF0FBewvyLIWTkAMIwZU1pTNXuR/24Ej+PpN6Yut5tzml+9YvCObj3i/ishJrKLWWVvAw=="
   }
 }
