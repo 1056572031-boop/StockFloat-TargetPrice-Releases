@@ -500,7 +500,7 @@ class TestHelperVerificationHome(SFCase):
         proc = subprocess.run(args + list(extra), capture_output=True, text=True,
                               timeout=30, env=dict(os.environ, TMPDIR=str(self.root),
                                                    **(env_extra or {})))
-        payload = json.loads(self.result.read_text()) if self.result.exists() else {}
+        payload = json.loads(self.result.read_text()) if self.result.is_file() else {}
         return proc, payload
 
     def test_rejects_unsafe_home_and_target_before_touching_old_app(self):
@@ -621,6 +621,38 @@ class TestHelperVerificationHome(SFCase):
         self.assertEqual(payload.get("status"), "installed")
         calls = log.read_bytes().split(b"\0\0")[:-1]
         self.assertEqual([c.decode().split("\0") for c in calls], [self.expected_args()])
+
+    def test_installed_result_write_failure_preserves_new_app_and_rollbacks(self):
+        helper, log = self.instrument_helper()
+        old_plist = (self.target / "Contents/Info.plist").read_bytes()
+        older = self.apps / ".Skyrocket.app.rollback-1"
+        older.mkdir()
+        blocker = self.root / "not-a-directory"
+        blocker.write_text("block")
+        self.result = blocker / "result.json"
+        proc, payload = self.invoke(self.home, helper=helper)
+        self.assertNotEqual(proc.returncode, 0, "写入结果失败不能报告成功")
+        self.assertIn("installed_result_write_failed", proc.stderr)
+        self.assertEqual(payload, {})
+        self.assertIn("9.9.9", (self.target / "Contents/Info.plist").read_text())  # discipline-ok(R1): 固定夹具版本，确认新包保留。
+        rollbacks = list(self.apps.glob(".Skyrocket.app.rollback-*"))
+        self.assertEqual(len(rollbacks), 2)
+        self.assertTrue(older.is_dir())
+        self.assertTrue(any((p / "Contents/Info.plist").is_file() and
+                            (p / "Contents/Info.plist").read_bytes() == old_plist
+                            for p in rollbacks))
+        self.assertEqual(len(log.read_bytes().split(b"\0\0")[:-1]), 1)
+
+    def test_result_destination_directory_is_not_reported_as_installed(self):
+        helper, _ = self.instrument_helper()
+        self.result.mkdir()
+        proc, payload = self.invoke(self.home, helper=helper)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("installed_result_write_failed", proc.stderr)
+        self.assertEqual(payload, {})
+        self.assertEqual(list(self.result.iterdir()), [])
+        self.assertIn("9.9.9", (self.target / "Contents/Info.plist").read_text())  # discipline-ok(R1): 固定夹具版本，确认新包保留。
+        self.assertEqual(len(list(self.apps.glob(".Skyrocket.app.rollback-*"))), 1)
 
     def test_failed_restart_and_rollback_launch_use_identical_environment(self):
         helper, log = self.instrument_helper(fail_first=True)

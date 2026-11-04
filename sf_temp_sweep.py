@@ -30,11 +30,16 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+from xml.parsers.expat import ExpatError
 
 from sf_constants import (APP_DISPLAY_NAME, BUNDLE_ID, LEGACY_APP_DISPLAY_NAMES,
                           LEGACY_BUNDLE_IDS)
 
 SUFFIX = ".stale"
+# 2026-11-02 走查 F-C-03：plistlib 对 XML 语法错误（截断 / 非 XML 的 <...>）抛
+# ExpatError，它既不是 ValueError 也不是 OSError 的子类，旧的 except 元组接不住。
+# 临时目录里别家 app 的一份坏 Info.plist 就能让整轮清扫中止。统一按"Info.plist 读不到"处理。
+_PLIST_READ_ERRORS = (OSError, ValueError, plistlib.InvalidFileException, ExpatError)
 APP_DIR_NAME = APP_DISPLAY_NAME + ".app"
 # Info.plist 缺失时的兜底识别名单（见模块 docstring 第 2 条）。
 # v1.4.55 起把**旧包名**也算进来：改名前留在 /tmp 里的那些完整可启动副本同样会被
@@ -115,7 +120,7 @@ def bundle_identifier(app_dir: str) -> str | None:
     try:
         with open(plist, "rb") as handle:
             data = plistlib.load(handle)
-    except (OSError, ValueError, plistlib.InvalidFileException):
+    except _PLIST_READ_ERRORS:
         return None
     value = data.get("CFBundleIdentifier") if isinstance(data, dict) else None
     return value if isinstance(value, str) else None
@@ -134,7 +139,7 @@ def version_of(app_dir: str) -> str:
             data = plistlib.load(handle)
         value = data.get("CFBundleShortVersionString")
         return str(value) if value else "?"
-    except (OSError, ValueError, plistlib.InvalidFileException):
+    except _PLIST_READ_ERRORS:
         return "?"
 
 
@@ -148,12 +153,27 @@ def is_launchable(app_dir: str) -> bool:
         return False
 
 
+def _note(log, message: str) -> None:
+    """写一行留痕；回调为空或自己抛错都不影响调用方（清扫不能被日志拖垮）。"""
+    if log is None:
+        return
+    try:
+        log(message)
+    except Exception:
+        pass
+
+
 def find_stale_apps(roots: list[str], bundle_id: str = BUNDLE_ID,
-                    max_depth: int = DEFAULT_MAX_DEPTH) -> list[tuple[str, str]]:
+                    max_depth: int = DEFAULT_MAX_DEPTH,
+                    log=None) -> list[tuple[str, str]]:
     """在临时目录里找出本程序的残留 .app，返回 (路径, 识别方式) 列表。
 
     认 `bundle_id` **以及**改名的前代 id（`LEGACY_BUNDLE_IDS`）—— 同一款产品的
     两代标识；第三方 app 仍然一个都不碰（AGENTS §3.1 那五条边界原样保留）。
+
+    `log`（可选，一行文本回调）：2026-11-02 走查 F-C-03 起，单个 .app 上的任何意外异常
+    只跳过这一份并经它留痕，不再中止整轮扫描。本模块刻意不 import sf_logging
+    （tools/sweep_temp_apps.py 要在没有 PyQt6 的系统 python3 上跑），所以用回调。
     """
     own_ids = {bundle_id} | set(LEGACY_BUNDLE_IDS)
     found: list[tuple[str, str]] = []
@@ -171,13 +191,16 @@ def find_stale_apps(roots: list[str], bundle_id: str = BUNDLE_ID,
                 path = os.path.join(base, name)
                 try:
                     identifier = bundle_identifier(path)
-                except OSError:
+                    if identifier in own_ids:
+                        if is_launchable(path):
+                            found.append((path, "bundle-id"))
+                    elif identifier is None and name in OWN_APP_NAMES and is_launchable(path):
+                        found.append((path, "Info.plist 缺失，按包名识别"))
+                except Exception as exc:
+                    # 单个 .app 的任何失败只影响它自己：跳过并留痕，其余副本照常处理。
+                    # 跳过 = 不改名，所以这里不会放宽"只动自己产品"的边界。
+                    _note(log, "temp-sweep skip unreadable app %s: %r" % (path, exc))
                     continue
-                if identifier in own_ids:
-                    if is_launchable(path):
-                        found.append((path, "bundle-id"))
-                elif identifier is None and name in OWN_APP_NAMES and is_launchable(path):
-                    found.append((path, "Info.plist 缺失，按包名识别"))
     # 调用方传入重叠根时同一副本会被扫到多次；这里按 realpath 去重，保证一份副本
     # 只被改名一次，第二次的 FileNotFoundError 不会被误记成"改名失败"（复核 F1）。
     unique: dict[str, tuple[str, str]] = {}
@@ -205,16 +228,11 @@ def sweep_temporary_copies(roots: list[str] | None = None, log=None) -> int:
     """
 
     def note(message: str) -> None:
-        if log is None:
-            return
-        try:
-            log(message)
-        except Exception:
-            pass
+        _note(log, message)
 
     changed = 0
     try:
-        hits = find_stale_apps(roots if roots is not None else temp_roots())
+        hits = find_stale_apps(roots if roots is not None else temp_roots(), log=note)
         skip = running_bundle_paths()
     except OSError as exc:
         note("temp-sweep scan failed: %r" % (exc,))

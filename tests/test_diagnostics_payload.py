@@ -167,6 +167,21 @@ class PayloadCase(DiagnosticsBranchCase):
         self.assertIn("stale_resets", res)
         self.assertIn("install_result", res)
 
+    def test_a_failed_update_download_reaches_the_package_without_the_home_path(self):
+        """下载失败此前只写 debug.log；磁盘写入失败的原因里还会带本机路径，包里不许出现。"""
+        update = sf_update.UpdateInfo("9.9.9", "1. x", "https://github.com/o/r/a.zip", 1, "b" * 64)
+        leaked = os.path.join(self.home, "Library", "updates", "part.zip")
+        with mock.patch.object(self.win, "_show_update_message"), \
+                mock.patch.object(self.win, "_close_update_flow_box"):
+            self.win._handle_update_download(  # discipline-ok(R5): 下载回调的唯一入口
+                update, None, sf_update.UpdateFatal("本地磁盘写入失败: [Errno 28] %s" % leaked))
+        files = self._export()
+        got = json.loads(files["runtime.json"])["update"]["last_download"]
+        self.assertEqual((got["outcome"], got["fatal"], got["error_type"]),
+                         ("failed", True, "UpdateFatal"))
+        self.assertIn("Errno 28", got["error"], "原因本身要留下，只抹掉路径")
+        self.assertNotIn(self.home, files["runtime.json"], "家目录不许随诊断包外发")
+
     def test_inventory_counts_a_hidden_rollback_package(self):
         """台账 S38 原文：「诊断包里没有 /Applications 占用这一项」。"""
         apps = os.path.join(self.tmp, "Applications")
@@ -322,6 +337,19 @@ class PayloadCase(DiagnosticsBranchCase):
                        "unsupported", "disabled", "no_bundle")
                       + tuple(x for x in () if x.startswith("unknown")))
 
+    def test_face_guard_upper_body_and_view_keys_keep_their_types(self):
+        """上半身辅助与取景标定的现场：装机后开发者要靠这几个键判断"有没有误数、变焦生不生效"。
+
+        少一个键或类型变了，诊断包里就只剩"没有数据"，和"一切正常"同形。"""
+        fg = json.loads(self._export()["runtime.json"])["face_guard"]
+        for key in ("body_available", "body_disabled"):
+            self.assertIsInstance(fg[key], bool, key)
+        for key in ("body_frames", "body_assisted", "body_detect_errors", "body_geometry_failures"):
+            self.assertIsInstance(fg[key], int, key)
+            self.assertNotIsInstance(fg[key], bool, key)
+        self.assertIsInstance(fg["max_face_width"], float)
+        self.assertIsInstance(fg["applied_profile"], dict)
+
     def test_guard_timer_active_follows_the_real_timer(self):
         """AGENTS §5.2 要求"凡是停掉一张回调表、又指望它自己醒的写法，必须有一条
         断言那张表活性的判据"—— 装机版远程读不到就等于判据只在测试里活着。"""
@@ -365,6 +393,118 @@ class PayloadCase(DiagnosticsBranchCase):
         self.assertEqual(body["codes"]["sz000001"], 1)
         self.assertEqual(body["codes"][""], 1, "无主条目要能看出来，它归顶层股票")
         self.assertEqual(body["codes"]["?"], 1, "非 dict 的脏数据单独计数")
+
+    def test_targets_json_reports_the_pending_tick_queue(self):
+        """"我的提醒怎么没响"：行情只在内存里、登记目录读不出来，这两种现场此前包里问不出来。"""
+        import sf_config
+        from sf_quote_delivery import TargetTickBuffer
+        with tempfile.TemporaryDirectory() as directory:
+            config = os.path.join(directory, "config.json")
+            with mock.patch.object(sf_config, "CONFIG_PATH", config), \
+                    mock.patch.object(sf_config, "CONFIG_BACKUP_PATH", config + ".bak"):
+                ticks = TargetTickBuffer(persistent_path=os.path.join(directory, "ticks.sqlite"))
+                self.win._target_ticks = ticks  # discipline-ok(R5): 注入隔离持久队列，诊断读的就是它。
+                ticks.retain_unsaved(self.win.code, sf_quote.QuoteData({"price": "101"}, "20261015100000"))
+                held = json.loads(self._export()["targets.json"])["tick_queue"]
+                with mock.patch("os.listdir", side_effect=PermissionError("denied")):
+                    unreadable = json.loads(self._export()["targets.json"])["tick_queue"]
+        self.assertTrue(held["persistent"])
+        self.assertEqual(held["unsaved"], 1)
+        self.assertEqual(held["unsaved_codes"], {self.win.code: 1})
+        self.assertEqual(held["held_markers"], [self.win.code])
+        self.assertEqual(held["registry"], "ACTIVE")
+        self.assertEqual(unreadable["registry"], "UNKNOWN",
+                         "登记目录读不出来是会让保存和过期清理被挡住的现场，包里必须点名")
+
+    def test_targets_json_names_the_registry_directory_and_other_stocks_markers(self):
+        """登记只查当前股票时，别的股票的暂存行情拦着过期清理，包里却看不出来。"""
+        import sf_config
+        from sf_quote_delivery import TargetTickBuffer
+        with tempfile.TemporaryDirectory() as directory:
+            config = os.path.join(directory, "config.json")
+            with mock.patch.object(sf_config, "CONFIG_PATH", config), \
+                    mock.patch.object(sf_config, "CONFIG_BACKUP_PATH", config + ".bak"):
+                ticks = TargetTickBuffer(persistent_path=os.path.join(directory, "ticks.sqlite"))
+                self.win._target_ticks = ticks  # discipline-ok(R5): 注入隔离持久队列，诊断读的就是它。
+                before = json.loads(self._export()["targets.json"])["tick_queue"]
+                ticks.retain_unsaved("sz000001", sf_quote.QuoteData({"price": "9"}, "20261015100000"))
+                ticks.retain_unsaved(self.win.code, sf_quote.QuoteData({"price": "10"}, "20261015100001"))
+                after = json.loads(self._export()["targets.json"])["tick_queue"]
+        self.assertEqual(before["registry_dir"], {"exists": False, "writable": True})
+        self.assertEqual(before["registry"], "INACTIVE", "没有任何登记时当前股票的状态")
+        self.assertEqual(before["registry_others"], {})
+        self.assertTrue(after["registry_dir"]["exists"])
+        self.assertEqual(after["registry"], "ACTIVE", "当前股票自己的登记仍走 registry 字段")
+        self.assertEqual(after["registry_others"], {"sz000001": "ACTIVE"},
+                         "当前股票已在 registry 字段里，不能再混进别的股票那一栏")
+
+    def test_an_unwritable_registry_location_is_not_hidden_behind_inactive(self):
+        """登记目录建不出来时，状态查询读到的是"目录不存在"，和一切正常同形。"""
+        import sf_config
+        from sf_quote_delivery import TargetTickBuffer
+        if os.geteuid() == 0:
+            self.skipTest("root 不受目录权限约束，这条现场造不出来")
+        with tempfile.TemporaryDirectory() as directory:
+            config = os.path.join(directory, "config.json")
+            with mock.patch.object(sf_config, "CONFIG_PATH", config), \
+                    mock.patch.object(sf_config, "CONFIG_BACKUP_PATH", config + ".bak"):
+                self.win._target_ticks = TargetTickBuffer(  # discipline-ok(R5): 注入隔离持久队列。
+                    persistent_path=os.path.join(directory, "ticks.sqlite"))
+                os.chmod(directory, 0o500)
+                try:
+                    body = json.loads(self._export()["targets.json"])["tick_queue"]
+                finally:
+                    os.chmod(directory, 0o700)
+        self.assertEqual(body["registry"], "INACTIVE", "前提：状态查询在这种现场里确实答不出异常")
+        self.assertEqual(body["registry_dir"], {"exists": False, "writable": False})
+
+    def test_targets_json_reports_disk_queue_size_without_opening_it(self):
+        """磁盘队列积压要看得出来；只读文件属性，绝不打开数据库（这个库用默认日志模式）。"""
+        import sqlite3
+        from sf_quote_delivery import TargetTickBuffer
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "ticks.sqlite")
+            self.win._target_ticks = TargetTickBuffer(persistent_path=path)  # discipline-ok(R5): 注入隔离持久队列。
+            missing = json.loads(self._export()["targets.json"])["tick_queue"]["disk_queue"]
+            with open(path, "wb") as handle:
+                handle.write(b"x" * 100)
+            with mock.patch("sqlite3.connect", side_effect=AssertionError("诊断导出打开了磁盘队列库")):
+                present = json.loads(self._export()["targets.json"])["tick_queue"]["disk_queue"]
+            leftovers = os.listdir(directory)
+        self.assertEqual(missing, {"exists": False})
+        self.assertEqual((present["exists"], present["bytes"], present["journal_bytes"]), (True, 100, 0))
+        self.assertIsInstance(present["age_sec"], float)
+        self.assertFalse([name for name in leftovers if name.endswith(("-wal", "-shm", "-journal"))],
+                         "读积压情况不许创建旁路文件")
+        self.assertNotIn(directory, json.dumps(present), "只报大小与时间，不带路径")
+
+    def test_disk_queue_state_names_unreadable_files_instead_of_hiding_them(self):
+        """读不出来和不存在是两回事：前者必须点名，后者才是 exists False。"""
+        real_stat = os.stat
+
+        def stat_blocking(*blocked):
+            def fake(target, *args, **kwargs):
+                if str(target) in blocked:
+                    raise PermissionError("denied")
+                return real_stat(target, *args, **kwargs)
+            return fake
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "ticks.sqlite")
+            with open(path, "wb") as handle:
+                handle.write(b"x" * 10)
+            with mock.patch("os.stat", stat_blocking(path)):
+                main_denied = m._disk_queue_state(path)  # discipline-ok(R5): 被测的就是这个私有辅助函数。
+            with mock.patch("os.stat", stat_blocking(path + "-journal")):
+                journal_denied = m._disk_queue_state(path)  # discipline-ok(R5): 被测的就是这个私有辅助函数。
+        self.assertEqual(main_denied, {"exists": None, "error": "PermissionError"})
+        self.assertEqual((journal_denied["exists"], journal_denied["bytes"]), (True, 10))
+        self.assertIsNone(journal_denied["journal_bytes"], "旁路文件读不出来要报未知，不能当成 0")
+
+    def test_targets_json_tick_queue_is_marked_off_without_a_persistent_queue(self):
+        self.win._target_ticks = None  # discipline-ok(R5): 无持久队列是另一种合法现场。
+        body = json.loads(self._export()["targets.json"])["tick_queue"]
+        self.assertEqual(body, {"persistent": False})
 
     # ---- 诚实性：取不到值不许静默 ----
 

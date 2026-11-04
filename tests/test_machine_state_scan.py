@@ -237,6 +237,17 @@ class GateRefusesWhenItCannotSee(SFCase):
     def test_self_test_passes(self):
         self.assertEqual(gate.self_test(), 0, "--self-test 抓不到自己种的错")
 
+    def test_self_test_leaves_no_temp_directories_behind(self):
+        """2026-11-02 走查 F-J-06：自检原先 mkdtemp 两次且从不清理（约 60 个文件的目录 + 一个小目录）。
+
+        把临时目录根指到一个全新的目录，自检跑完它必须仍是空的。
+        """
+        with tempfile.TemporaryDirectory(prefix="sf_mss_scratch_") as scratch:
+            with mock.patch.object(tempfile, "tempdir", scratch), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(gate.self_test(), 0)
+            self.assertEqual(sorted(p.name for p in pathlib.Path(scratch).iterdir()), [])
+
     def test_unknown_flag_is_a_usage_error(self):
         """AGENTS §3.1：未知参数不许落到默认动作（否则「默认写盘/默认放行」会被误当成判定）。"""
         with self.assertRaises(SystemExit) as ctx:

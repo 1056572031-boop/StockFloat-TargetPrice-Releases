@@ -77,6 +77,30 @@ class RuntimeSessionLedgerTests(SFCase):
             self.ledger.mark_prompt(assessment.session_id, "opened_feedback")
         self.assertFalse(self.begin("c" * 32).should_prompt)
 
+    def test_launch_crash_is_not_prompted_one_launch_later(self):
+        """2026-11-02 走查 F-E-01：启动阶段就没了的会话，不能在"再下一次"启动时被当成
+        上次没正常退出而弹窗——那之间用户明明正常用过、正常退出过。"""
+        self.begin("a" * 32)                                   # a：启动阶段就崩了
+        self.assertEqual(self.begin("b" * 32).category, "startup_incomplete")
+        self.ledger.mark_frame_ready("b" * 32)
+        self.ledger.mark_healthy("b" * 32)
+        self.ledger.mark_clean_exit("b" * 32)
+        assessment = self.begin("c" * 32)
+        self.assertFalse(assessment.should_prompt,
+                         "a 的启动失败已按 startup_incomplete 处理过，不该再翻出来问")
+        self.assertEqual(assessment.session_id, "b" * 32)
+        # 诊断口径不变：它仍如实出现在 unfinished() 里。
+        self.assertIn("a" * 32, [row["session_id"] for row in self.ledger.unfinished()])
+
+    def test_real_unfinished_session_behind_a_launch_crash_still_prompts(self):
+        """对照：launching 之前那次真·异常中断（frame_ready 未退出）仍要被问到。"""
+        self.begin("a" * 32)
+        self.ledger.mark_frame_ready("a" * 32)                 # a：画出首帧后异常中断
+        self.begin("b" * 32)                                   # b：启动阶段又崩了
+        assessment = self.begin("c" * 32)
+        self.assertEqual((assessment.session_id, assessment.category, assessment.should_prompt),
+                         ("a" * 32, "post_frame_unfinished", True))
+
     def test_clean_exit_never_prompts(self):
         self.begin()
         self.ledger.mark_frame_ready("a" * 32)
@@ -150,21 +174,90 @@ class RuntimeSessionLedgerTests(SFCase):
         self.assertTrue(self.ledger.path.exists())
         self.assertEqual(self.ledger.current()["session_id"], "a" * 32)
 
-    def test_non_busy_open_failure_is_quarantined_and_recreated(self):
-        self.ledger.path.write_bytes(b"broken")
-        real_create = self.ledger._create  # discipline-ok(R5): 仅此私有工厂能种一次非 busy 打开失败。
-        calls = 0
+    def _failing_connect(self, message):
+        """让真实的 _create 在写 ledger_meta 那一步抛 OperationalError(message)：
+        与磁盘满 / I/O 错误 / 配额用尽时 SQLite 的真实表现同形（见 /tmp 探针 R5c）。"""
+        real_connect = sqlite3.connect
 
-        def fail_once(path):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise sqlite3.OperationalError("disk I/O error")
-            return real_create(path)
+        class _Proxy:
+            def __init__(self, inner):
+                self._inner = inner
 
-        with mock.patch.object(self.ledger, "_create", side_effect=fail_once):
-            self.assertIsNone(self.begin("b" * 32))
+            def execute(self, sql, *args):
+                if sql.startswith("INSERT OR REPLACE INTO ledger_meta"):
+                    raise sqlite3.OperationalError(message)
+                return self._inner.execute(sql, *args)
+
+            def close(self):
+                self._inner.close()
+
+        return mock.patch("sf_run_session.sqlite3.connect",
+                          side_effect=lambda *a, **k: _Proxy(real_connect(*a, **k)))
+
+    def test_disk_full_or_io_error_is_not_mistaken_for_corruption(self):
+        """2026-11-02 走查 F-C-04：磁盘满 / I/O 错误只说明环境暂时不行，健康账本不许被隔离。
+
+        旧实现把一切非 busy 的 OperationalError 当损坏：健康账本被改名成 .corrupt-*、
+        换一份空账本，"上次异常中断"的线索随之丢失。
+        """
+        self.begin()
+        self.ledger.mark_frame_ready("a" * 32)
+        self.ledger.mark_healthy("a" * 32)          # a：没有 clean_exit 的健康会话
+        for message in ("database or disk is full", "disk I/O error",
+                        "unable to open database file"):
+            with self.subTest(message), self._failing_connect(message), \
+                    mock.patch("sf_run_session.os.replace") as replace:
+                with self.assertRaisesRegex(SessionLedgerError, "unavailable"):
+                    self.begin("b" * 32)
+            replace.assert_not_called()
+            self.assertEqual(list(self.root.glob("run-session.sqlite3.corrupt-*")), [],
+                             "环境类失败不许产生隔离文件")
+            self.assertEqual(self.ledger.current()["session_id"], "a" * 32,
+                             "原账本必须原封不动")
+        # 环境恢复后，下一次启动仍能看到"上次没正常退出"的那条历史。
+        assessment = self.begin("c" * 32)
+        self.assertEqual((assessment.category, assessment.should_prompt), ("unfinished", True))
+
+    def test_real_corruption_is_still_quarantined_and_recreated(self):
+        """对照：真损坏（DatabaseError: file is not a database）仍改名留住现场并重建。"""
+        self.ledger.path.write_bytes(b"broken" * 2000)
+        self.assertIsNone(self.begin("b" * 32))
         self.assertEqual(self.ledger.current()["session_id"], "b" * 32)
+        self.assertEqual(len(list(self.root.glob("run-session.sqlite3.corrupt-*"))), 1)
+
+    def test_create_propagates_integrity_error_without_quarantining(self):
+        connection = mock.Mock()
+        connection.execute.side_effect = sqlite3.IntegrityError("constraint failed")
+        with mock.patch("sf_run_session.sqlite3.connect", return_value=connection), \
+                mock.patch("sf_run_session.os.replace") as replace:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "constraint failed"):
+                self.ledger._create(self.ledger.path)  # discipline-ok(R5): 直接覆盖 _create 的异常分类。
+        connection.close.assert_called_once()
+        replace.assert_not_called()
+
+    def test_create_propagates_programming_error_without_quarantining(self):
+        connection = mock.Mock()
+        connection.execute.side_effect = sqlite3.ProgrammingError("bad SQL")
+        with mock.patch("sf_run_session.sqlite3.connect", return_value=connection), \
+                mock.patch("sf_run_session.os.replace") as replace:
+            with self.assertRaisesRegex(sqlite3.ProgrammingError, "bad SQL"):
+                self.ledger._create(self.ledger.path)  # discipline-ok(R5): 直接覆盖 _create 的异常分类。
+        connection.close.assert_called_once()
+        replace.assert_not_called()
+
+    def test_unknown_database_error_does_not_quarantine_existing_ledger(self):
+        self.begin()
+        original = self.ledger.path.read_bytes()
+        connection = mock.Mock()
+        connection.execute.side_effect = sqlite3.DatabaseError("unclassified database failure")
+        with mock.patch("sf_run_session.sqlite3.connect", return_value=connection), \
+                mock.patch("sf_run_session.os.replace") as replace:
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "unclassified"):
+                self.begin("b" * 32)
+        connection.close.assert_called_once()
+        replace.assert_not_called()
+        self.assertEqual(self.ledger.path.read_bytes(), original)
+        self.assertEqual(self.ledger.current()["session_id"], "a" * 32)
 
     def test_recovery_refuses_to_replace_a_database_that_becomes_busy(self):
         self.ledger.path.write_bytes(b"broken")

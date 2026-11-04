@@ -82,7 +82,7 @@ def plan(py: str, version: str, branch: str, app: Path,
     给了 record（本轮已绑定的质量记录）才在最前面加上第 6 步：用 publish_update_release.py --resume 接着做
     上传之后的清单切换，线上已有同名版本 ZIP 且字节一致才复用，否则照旧拒绝覆盖。"""
     steps = [
-        ("6.1-download-entry", True, ["bash", "-c", "cd services/download-analytics && node deploy-pages.mjs"]),
+        ("6.1-download-entry", True, ["bash", "-c", "cd services/download-analytics && SF_DEPLOY_PROVENANCE=auto node deploy-pages.mjs"]),
         ("6.2-render-guide", True, [py, "tools/render_install_guide.py"]),
         ("6.2-check-guide", True, [py, "tools/render_install_guide.py", "--check"]),
         ("6.2-public-release", True, [py, "tools/public_release.py", "--publish"]),

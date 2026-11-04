@@ -527,7 +527,12 @@ class BoxBlurCase(SFCase):
         px = self._flat(0)
         set_px(px, self.W, 0, 0, (255, 255, 255, 255))       # 最左上角
         out = box_blur(px, self.W, self.H, 2)
-        self.assertEqual(get_px(out, self.W, 0, 0), get_px(out, self.W, 0, 0))
+        # 2026-11-02 走查 F-J-05：原写 assertEqual(get_px(0,0), get_px(0,0)) 是同一表达式比自己、永远真。
+        # 期望值按定义独立算：r=2 的 5×5 窗口，边界外的取样钳制到边上，所以窗口里有 3×3=9 格都是那个亮点，
+        # 角点 = 255 × 9 / 25 向下取整 = 91。钳制写错（越界当 0、或回绕到对边）会得到 10 或别的数。
+        corner = 255 * 9 // 25
+        self.assertEqual(get_px(out, self.W, 0, 0), (corner, corner, corner, 255),
+                         "角点不是 255×9/25：边界取样没有钳制到边上")
         self.assertGreater(get_px(out, self.W, 1, 1)[0], 0,
                            "角上的亮斑应往里渗；渗不到说明窗口被截没了")
         self.assertTrue(all(0 <= v <= 255 for v in out), "越界读会让像素出现回绕值")

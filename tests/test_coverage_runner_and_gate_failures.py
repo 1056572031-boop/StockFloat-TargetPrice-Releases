@@ -41,6 +41,16 @@ def invoke(fn, *args):
 
 
 class FeedbackUserDataProtection(SFCase):
+    def test_icon_modification_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "_support_dir", return_value=directory):
+            before = snapshot_user_data()
+            icon = pathlib.Path(directory) / "icon.png"
+            icon.write_bytes(b"icon")
+            created = snapshot_user_data()
+            self.assertTrue(any("icon.png" in item for item in diff_user_data(before, created)))
+            os.utime(icon, ns=(icon.stat().st_atime_ns, icon.stat().st_mtime_ns + 1))
+            self.assertTrue(any("icon.png" in item for item in diff_user_data(created, snapshot_user_data())))
+
     def test_gui_session_is_held_by_the_runner_and_survives_fixture_window_closure(self):
         from PyQt6.QtWidgets import QApplication, QWidget
 

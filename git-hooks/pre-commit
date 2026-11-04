@@ -41,6 +41,11 @@ export SF_LANES
 # END lanes_default
 echo "== [pre-commit] 并行车道: ${SF_LANES:-关闭（串行）} =="
 
+# 2026-11-02 走查 F-J-03：这三个是 run_tests.sh 留给测试用的短路开关（探针模式下取到守卫/锁就
+# exit 0、一条用例不跑、不落关卡戳）。shell 里残留一个，钩子就会对着零用例打印“允许提交”，
+# 所以真正的提交关卡调用前必须洗掉；测试里直接调 run_tests.sh 的探针用例自己设变量，不经这里。
+unset SF_GUARD_PROBE SF_LOCK_PROBE SF_LOCK_PROBE_DIR
+
 echo "== [pre-commit] 运行发版测试关卡 run_tests.sh =="
 ./run_tests.sh \
   || { echo "!! [pre-commit] 测试未通过，已阻止提交（请先修复并重跑 ./run_tests.sh 通过后再提交）"; exit 1; }

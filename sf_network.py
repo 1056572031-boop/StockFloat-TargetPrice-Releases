@@ -367,7 +367,19 @@ def http_get(url, gbk=True, timeout=HTTP_TIMEOUT, retries=HTTP_RETRIES, headers=
     拒绝抛 OSError，让产品既有“主备都失败”的兜底路线如实呈现，而不是伪造行情数据。
 
     v1.3.65：新增 pooled 参数。`pooled=False` 明确跳过共享连接池，改用独立 urllib
-    请求；搜索的东财兜底采用该策略，避免占用行情请求的可复用连接。"""
+    请求。⚠ 2026-11-02 走查 F-A-08 订正：当初写的"搜索的东财兜底采用该策略"与实际不符——
+    **当前全仓没有任何生产调用点传 pooled=False**（`eastmoney_search_bj` 也走连接池，只有
+    测试在用这个参数），所以下面的请求次数以默认（池路径 + urllib 回落）为准。
+
+    **一次 http_get 实际发出的请求次数**（不改行为，只写清楚，预算口径见 AGENTS §5.3）：
+      - 默认路径：连接池先发，共最多 retries+1 次尝试；不可重试的 4xx（403/404/410 等，
+        见 `_retryable`）池路径只发 1 次就放弃；408/425/429 与 5xx、连接异常发满 retries+1 次。
+      - 池路径失败后（`ResponsePolicyError` 除外）回落 urllib **再发 1 次**（此时重试次数 0）。
+        所以 403 实发 **2 次**（1 池 + 1 urllib），retries=2 时 429/5xx 实发 **4 次**
+        （3 池 + 1 urllib）。
+      - `pooled=False` 或连接池特性关闭：只走 urllib 并用满 retries —— 不可重试的 4xx 发 1 次，
+        可重试的发 retries+1 次。
+      - `ResponsePolicyError`（响应超限/被截断/重定向违规）直接上抛：不重试、不回落。"""
     if os.environ.get("SF_REJECT_NETWORK") == "1":
         raise OSError("network disabled for controlled walkthrough")
     global _LAST_HTTP_STATUS
@@ -428,7 +440,11 @@ def http_get(url, gbk=True, timeout=HTTP_TIMEOUT, retries=HTTP_RETRIES, headers=
                 # v1.2.95 走查补漏：上面只免掉了"重试前的睡眠"，却没跳出循环 ——
                 # 连接池被关闭（pool_attempted=False）时 fb_retries 仍是全局 retries，
                 # 一个 403 会在同一次 http_get 里照发 3 次请求，正与注释的承诺相反。
-                # 不可重试的状态码直接 break，只发这一次。
+                # 不可重试的状态码直接 break，urllib 这一段只发这一次。
+                # 2026-11-02 走查 F-A-08：注意这只管 **urllib 这一段**。默认路径下池路径已先发过
+                # 1 次，所以对调用方而言 403 总共是 2 次、429/5xx(retries=2) 是 4 次
+                # （见 http_get 文档字符串"实际发出的请求次数"）；这是 §5.3 已拍板的预算口径，
+                # 本处只订正说法，没有改任何重试行为。
                 if not _retryable(he.code):
                     break
                 if attempt < fb_retries:

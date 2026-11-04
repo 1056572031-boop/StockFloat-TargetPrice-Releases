@@ -145,8 +145,11 @@ app = BUNDLE(
         'CFBundleShortVersionString': APP_VERSION,
         'CFBundleVersion': APP_VERSION,
         'CFBundleInfoDictionaryVersion': '6.0',
-        # Qt 6.11 binaries require macOS 13; the release gate verifies every arm64 image.
-        'LSMinimumSystemVersion': '13.0',
+        # Qt 6.12 binding and framework binaries measure minos 14.4 (Qt 6.11 was 13.0);
+        # the release gate verifies every arm64 image, so this declaration must match
+        # the packed Mach-O minos exactly — 14.0 would let 14.0-14.3 users install a
+        # build that then fails to launch. Bumped 2026-10-31 with the PyQt6 6.12.0 upgrade.
+        'LSMinimumSystemVersion': '14.4',
         'LSArchitecturePriority': ['arm64'],
         'NSHighResolutionCapable': True,
         # v1.4.40 人脸在场守卫：缺这个键，程序一旦伸手要摄像头就会被系统当场终止

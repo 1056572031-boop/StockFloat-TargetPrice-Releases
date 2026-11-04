@@ -153,7 +153,7 @@ class MinuteRecoveryStateAudit(_Host):
 
     def test_old_cache_curve_is_not_seeded_during_trading(self):
         self.win.minute_points = []
-        snapshot = {"code": CODE, "quote": {"price": "116", "pct": "0"},
+        snapshot = {"code": CODE, "quote": {"price": "116", "pct": "0", "name": "测试", "code": "600183"},
                     "minute": POINTS, "day": TODAY, "minute_day": YESTERDAY}
         with mock.patch.dict(os.environ, {"SF_SEED_FIRST_SCREEN": "1"}), \
                 mock.patch.object(window, "load_last_quote", return_value=snapshot):
@@ -161,7 +161,7 @@ class MinuteRecoveryStateAudit(_Host):
         self.assertEqual(self.win.minute_points, [])
 
     def test_same_day_cache_is_marked_unconfirmed_until_live_success(self):
-        snapshot = {"code": CODE, "quote": {"price": "116", "pct": "0"},
+        snapshot = {"code": CODE, "quote": {"price": "116", "pct": "0", "name": "测试", "code": "600183"},
                     "minute": POINTS, "day": TODAY, "minute_day": TODAY}
         with mock.patch.dict(os.environ, {"SF_SEED_FIRST_SCREEN": "1"}), \
                 mock.patch.object(window, "load_last_quote", return_value=snapshot):

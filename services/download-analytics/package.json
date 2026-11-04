@@ -7,6 +7,9 @@
     "test": "node --test tests/*.test.mjs",
     "check": "../feedback-worker/node_modules/.bin/wrangler deploy --dry-run --config wrangler.jsonc --outdir /tmp/skyrocket-downloads-dryrun",
     "preview": "node pages-control.mjs preview",
+    "ship": "node pages-control.mjs ship",
+    "status": "node pages-control.mjs status",
+    "reconcile": "node pages-control.mjs reconcile",
     "rollback": "node pages-control.mjs rollback"
   }
 }

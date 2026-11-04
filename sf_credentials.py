@@ -1,5 +1,6 @@
 """Private API URLs use the system Keychain; built-in public URL templates remain in JSON."""
 import hashlib
+import os
 import re
 import threading
 from contextlib import contextmanager
@@ -149,7 +150,8 @@ def seal_url(url, keychain):
 
 def resolve_config_urls(path, config, *, keychain=None):
     """Seal and read back before replacing JSON; never remove a usable original on failure."""
-    from sf_config import _atomic_write_json, _read_json_or_none
+    from sf_config import (_atomic_write_json, _read_json_or_none,
+                           config_transaction, config_unavailable)
     keychain = keychain or MacKeychain()
     entries = config.get("api_urls", {})
     if not isinstance(entries, dict):
@@ -199,15 +201,16 @@ def resolve_config_urls(path, config, *, keychain=None):
             _last_error = type(exc).__name__
             log_line("private API secure storage unavailable (%s); original configuration preserved"
                      % _last_error, "WARNING")
-    if may_write:
+    if may_write and not config_unavailable() and not os.path.islink(path):
         if stored != entries:
-            # Preserve fields saved since the caller took its startup snapshot.
-            payload = _read_json_or_none(path)
-            if (isinstance(payload, dict) and payload.get("api_urls") == entries
-                    and not (isinstance(payload.get("version"), int)
-                             and payload["version"] > CONFIG_SCHEMA_VERSION)):
-                payload["api_urls"] = stored
-                _atomic_write_json(path, payload)
+            with config_transaction(path):
+                payload = _read_json_or_none(path)
+                if (not os.path.islink(path) and isinstance(payload, dict)
+                        and payload.get("api_urls") == entries
+                        and not (isinstance(payload.get("version"), int)
+                                 and payload["version"] > CONFIG_SCHEMA_VERSION)):
+                    payload["api_urls"] = stored
+                    _atomic_write_json(path, payload)
         backup_path = path + ".bak"
         backup = _read_json_or_none(backup_path)
         if (isinstance(backup, dict) and isinstance(backup.get("api_urls"), dict)
@@ -228,6 +231,10 @@ def resolve_config_urls(path, config, *, keychain=None):
                         log_line("private API backup secure storage unavailable (%s); backup preserved"
                                  % _last_error, "WARNING")
             if backup_api != backup["api_urls"]:
-                backup["api_urls"] = backup_api
-                _atomic_write_json(backup_path, backup)
+                with config_transaction(path):
+                    current = _read_json_or_none(backup_path)
+                    if (not os.path.islink(backup_path) and current == backup
+                            and not os.path.islink(path) and not config_unavailable()):
+                        current["api_urls"] = backup_api
+                        _atomic_write_json(backup_path, current)
     return resolved

@@ -36,10 +36,12 @@ v1.2.81 优化（P1/P2）：
   - 删除/添加均只改内存，需点「立即生效」才落盘（统一暂存模型，避免误删即丢）。
 """
 
+import math
 import unicodedata
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QPoint, QRect
+from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QFontMetrics, QGuiApplication,
+                         QPainterPath, QPolygonF)
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QSizePolicy)
 
@@ -59,6 +61,7 @@ from sf_glass import (GlassMixin, PopupLineEdit, paint_popup_surface, popup_styl
 from sf_logging import log_line, log_swallow
 from sf_quote import price_decimals
 from sf_editor import MainCloseButton
+from renderer import smooth_round_rect_path
 
 TARGET_INPUT_W = POPUP_TARGET_INPUT_W  # 与替换股票共用 100px 输入宽度
 PANEL_W = 206          # 容纳 100px 输入框、标签、加号与左右留白的最小面板宽度
@@ -201,7 +204,7 @@ class TargetPanel(GlassMixin, QWidget):
     def __init__(self, code, name, on_apply, on_clear,
                  current_code_fn=None, current_price_fn=None,
                  parent=None, width=None,
-                 limits_fn=None):
+                 limits_fn=None, on_apply_empty=None, initial_alerts=None):
         super().__init__(parent)
         self._init_glass_state()    # v1.2.87：复用毛玻璃（非 macOS 自动降级）
         # 无边框、置顶、工具窗（与悬浮窗一致风格）
@@ -221,6 +224,7 @@ class TargetPanel(GlassMixin, QWidget):
         self._price_decimals = price_decimals(code)
         self.on_apply = on_apply          # callback(list_of_alerts) -> bool
         self.on_clear = on_clear          # callback() -> bool（清空，不请求授权）
+        self.on_apply_empty = on_apply_empty
         self.current_code_fn = current_code_fn  # callable() -> 当前股票代码
         self.current_price_fn = current_price_fn  # callable() -> 当前价（P1-2/3）
         # 待生效列表：打开时从 config 载入；+/- 与清空只改内存，[立即生效] 才落盘
@@ -238,7 +242,7 @@ class TargetPanel(GlassMixin, QWidget):
         self._distance_timer = QTimer(self)
         self._distance_timer.setInterval(250)
         self._distance_timer.timeout.connect(self._refresh_distance)
-        self._reload()
+        self._reload(initial_alerts)
         self._refresh_list()
         # 状态行保留空白占位（高度恒定），避免出提示时面板跳高
         self._set_status("", "info")
@@ -441,7 +445,7 @@ class TargetPanel(GlassMixin, QWidget):
         # 直接比较 None 与 str 会抛 TypeError，导致 has_unsaved_changes() 崩溃。
         return tuple(sorted(sig, key=lambda x: (x[0], x[1])))
 
-    def _reload(self):
+    def _reload(self, initial_alerts=None):
         """从 config 载入当前目标价，并记录磁盘签名。
 
         v1.2.81（P1-4）：保留同方向多条不同价位的条目；仅去重「完全相同的槽位」
@@ -450,7 +454,7 @@ class TargetPanel(GlassMixin, QWidget):
         try:
             # v1.4.59（S4 彻底解）：存储里现在同时留着别的股票的条目，
             # 面板只许显示这一只的 —— 否则切过来会看见别家的目标价。
-            saved = load_alerts(self.code) or []
+            saved = (load_alerts(self.code) if initial_alerts is None else initial_alerts) or []
         except Exception as exc:
             # 配置损坏/正在被写入时读不到：按空列表处理，面板照常打开。
             # 但必须留痕：这个兜底同样会吞掉"签名对不上"这一类写错，而它的表现是
@@ -469,6 +473,7 @@ class TargetPanel(GlassMixin, QWidget):
             seen.add(key)
             slots.append(s)
         self._pending = slots
+        self._saved_alerts = [dict(a) for a in saved if isinstance(a, dict)]
         self._saved_sig = self._signature(slots, self._price_decimals)
 
     def has_unsaved_changes(self):
@@ -756,9 +761,13 @@ class TargetPanel(GlassMixin, QWidget):
         hit 状态负责，不能通过锁死整个保存入口实现。
         """
         enabled = bool(self._pending)
+        # 2026-11-02 走查 F-B-02：把已保存的条目逐个 ✕ 删光后，列表为空但磁盘上还有——这是一次
+        # 「待生效的清空」，「立即生效」必须可点，否则唯一出路是回滚，用户明明删了目标价照样提醒。
+        # 「清空」按钮仍只在列表非空时可点（它是整片清空，列表已空没有对象）。
+        can_apply = enabled or self.has_unsaved_changes()
         try:
             self.btn_clear.setEnabled(enabled)
-            self.btn_apply.setEnabled(enabled)
+            self.btn_apply.setEnabled(can_apply)
             self.btn_apply.setToolTip("")
         except Exception as _swallow_exc:
             # 留痕理由：应用/清空按钮的可用性没改成，点了没反应也查不到线索（AGENTS §6 第 9 条：兜异常不许静默）
@@ -974,7 +983,10 @@ class TargetPanel(GlassMixin, QWidget):
         if self._locked:
             return
         if not self._pending:
-            self._set_status("", "info")
+            if self.has_unsaved_changes():
+                self._apply_empty()
+            else:
+                self._set_status("", "info")
             return
         # D25：股票已切换则拒绝保存，避免把旧股目标价写到新股上
         if self.current_code_fn is not None:
@@ -1002,6 +1014,31 @@ class TargetPanel(GlassMixin, QWidget):
         self._mark_saved()
         # 保存成功即关闭：不显示“已生效”或通知授权状态提示，避免成功反馈
         # 停留在编辑弹窗内干扰操作。保存失败、切股等阻断场景仍保持原有提示并留在面板。
+        self.close()
+
+    def _apply_empty(self):
+        """将面板打开时的条目逐条删除，不影响之后新增的条目。"""
+        if self.current_code_fn is not None:
+            try:
+                cur = self.current_code_fn()
+            except Exception as exc:
+                log_line("target panel current code error: %r" % (exc,), "WARNING")
+                self._set_status("无法确认股票，请重新打开后重试", "error")
+                return
+            if not cur or cur != self.code:
+                self._set_status("已切换股票，请重新设置", "error")
+                return
+        self._disarm_clear()
+        try:
+            ok = self.on_apply_empty(self._saved_alerts, self._price_decimals) if self.on_apply_empty else False
+        except Exception as exc:
+            log_line("target panel apply-empty error: %r" % (exc,), "WARNING")
+            self._set_status("保存失败，请重试", "error")
+            return
+        if not ok:
+            self._set_status("保存失败，请重新打开后重试", "error")
+            return
+        self._mark_saved()
         self.close()
 
     def _finish_and_close(self, delay_ms):
@@ -1072,6 +1109,7 @@ class TargetPanel(GlassMixin, QWidget):
             self._set_status("清空失败，请重试", "error")
             return
         self._pending = []
+        self._saved_alerts = []
         self.edit_up.clear()
         self.edit_dn.clear()
         self._disarm_clear()
@@ -1166,3 +1204,299 @@ class TargetPanel(GlassMixin, QWidget):
         except Exception as _swallow_exc:
             # 留痕理由：布局就绪后的重刷没做完：列表不刷新、省略号按错宽度截断（AGENTS §6 第 9 条：兜异常不许静默）
             log_swallow("target_panel.showEvent", _swallow_exc)
+
+
+class TargetBubble(QWidget):
+    """铃铛专用自绘气泡（效果图 B 版）：待触发 / 已触发两组，每行「方向词｜价位｜距现价%」。
+
+    窗口比可见的气泡本体大一圈透明边（MARGIN_*），用来画柔影和指向铃铛的小三角。
+    所有尺寸与定位接口（show_below / body_rect_global）都以「本体」为准，调用方不必关心这圈边。
+    """
+    # ---- 本体（单位 px，取自效果图 B 的实测值）----
+    PAD_X = 12
+    PAD_TOP = 9
+    PAD_BOTTOM = 10
+    RADIUS = 10
+    MIN_CONTENT_W = 112         # 内容区最小宽（不含左右内边距）
+    HEADER_H = 15
+    HEADER_GAP = 3
+    ROW_H = 22
+    SEP_GAP_TOP = 7             # 两组之间：细线上方 7、下方 6
+    SEP_GAP_BOTTOM = 6
+    COL_GAP = 6
+    PCT_GAP = 14                # 价位与百分比之间，在列距之外再留的空
+    # ---- 底边对齐（2026-10-23 效果图 B 方案）----
+    # 三列共用一条基线，但「涨到/跌到」的笔画底部实测比数字低约 1px（8 倍屏量：方向词 1.125、价位与百分比
+    # 都是 0.125，差 1.0），所以方向词整体上提 WORD_RAISE，让可见的底边落在同一条线上。
+    # 组标题「待触发/已触发」的文字底边比基线低 HEADER_INK_OVER（实测 1.0），前面的圆点底边与它齐平。
+    # 两个数是按这两套字体量出来的设计取值；换字体或字号要重量，不要凭感觉改。
+    WORD_RAISE = 1.0
+    HEADER_INK_OVER = 1.0
+    DOT_SIZE = 6
+    # ---- 与铃铛的关系 ----
+    GAP_TO_ICON = 8             # 本体边到铃铛图标边；悬停底板比图标各大 4px，三角尖端正好顶到底板
+    CARET_H = 4.25
+    CARET_INSET = 15            # 三角中心离本体左右边至少这么远，避开 10px 圆角
+    SCREEN_EDGE = 4             # 本体离屏幕可用区域边缘至少留的空
+    # ---- 透明外圈：柔影与三角都画在这里 ----
+    MARGIN_X = 16
+    MARGIN_TOP = 12
+    MARGIN_BOTTOM = 24
+    # ---- 颜色（涨跌色取 sf_constants 的具名 token，与主界面 RED / GREEN 同一来源，同屏只此一种红）----
+    UP_COLOR = QColor(UP_RED_HEX)
+    DOWN_COLOR = QColor(DOWN_GREEN_HEX)
+    PENDING_DOT_COLOR = QColor("#f5c542")     # 与铃铛「待触发」同色
+    HIT_DOT_COLOR = QColor("#9aa2b8")         # 与铃铛「已触发」同色
+    HEADER_COLOR = QColor(FG_DIM_HEX)
+    HIT_TEXT_COLOR = QColor(FG_HINT_HEX)
+    BODY_COLOR = QColor(29, 30, 28, 245)
+    RING_COLOR = QColor(255, 255, 255, 26)
+    SEP_COLOR = QColor(255, 255, 255, 20)
+
+    def __init__(self):
+        super().__init__(None)
+        # WindowTransparentForInput 才是让「原生窗口」点击穿透的开关（macOS 上对应 NSWindow 的
+        # ignoresMouseEvents）。下面那条 WA_TransparentForMouseEvents 只管 Qt 内部的事件传递，
+        # 2026-10-23 实测不加这个标志时 ignoresMouseEvents=False：气泡窗口带透明外圈，顶边落在铃铛
+        # 感应区下半部分，鼠标停在那里会「进入」气泡窗口 -> 主窗收到离开 -> 气泡收起 -> 鼠标回到
+        # 主窗 -> 再弹出，来回闪。两个都留着：前者管原生层，后者管 Qt 层。
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.WindowStaysOnTopHint
+                            | Qt.WindowType.WindowTransparentForInput)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # 提示气泡不得截获顶部按钮点击
+        self._rows: dict[str, list[tuple]] = {"pending": [], "hit": []}
+        self._body_w = self._body_h = 0
+        self._flipped = False
+        self._caret_x = 0.0          # 三角中心，本体坐标系（不含透明外圈）
+        self._relayout()
+
+    @staticmethod
+    def _fonts():
+        """每次现建：字体可能在气泡之后才注册（load_bundled_fonts），缓存会固化兜底字体的度量。"""
+        price = QFont(NUM_FONT)
+        price.setPixelSize(15)
+        price.setBold(True)
+        pct = QFont(NUM_FONT)
+        pct.setPixelSize(11)
+        pct.setBold(True)
+        word = QFont("PingFang SC")
+        word.setPixelSize(11)
+        header = QFont("PingFang SC")
+        header.setPixelSize(10)
+        header.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.4)
+        return price, pct, word, header
+
+    def _columns(self):
+        """三列各自的宽度；没有任何百分比时第三列为 0，整块自动收成两列。"""
+        price_f, pct_f, word_f, _header_f = self._fonts()
+        rows = self._rows["pending"] + self._rows["hit"]
+        word_w = max((QFontMetrics(word_f).horizontalAdvance("涨到"),
+                      QFontMetrics(word_f).horizontalAdvance("跌到")))
+        price_w = max((QFontMetrics(price_f).horizontalAdvance(r[1]) for r in rows), default=0)
+        pct_w = max((self._stable_advance(pct_f, r[2]) for r in rows), default=0)
+        return word_w, price_w, pct_w
+
+    @staticmethod
+    def _stable_advance(font, text):
+        """文字宽度：每个数字都按「最宽的那个数字」量。
+
+        内置数字字体的数字不等宽（实测 11 号粗体：「1」宽 4px，「0/3/4/6/8/9」宽 6px），
+        百分比随行情每跳一次，直接量字符串会让整块气泡在 1~2px 之间来回变宽变窄，
+        居中对齐使左边缘跟着横向抖。按最宽数字量之后，只要位数、符号、小数点相同，
+        宽度就恒定；画的时候仍用真实字形右对齐，所以看到的字形不变。"""
+        fm = QFontMetrics(font)
+        widest = max("0123456789", key=fm.horizontalAdvance)
+        return sum(fm.horizontalAdvance(widest if c.isdigit() else c) for c in text)
+
+    def _relayout(self):
+        _price_f, _pct_f, _word_f, header_f = self._fonts()
+        word_w, price_w, pct_w = self._columns()
+        content_w = word_w + self.COL_GAP + price_w
+        if pct_w:
+            content_w += self.COL_GAP + self.PCT_GAP + pct_w
+        hfm = QFontMetrics(header_f)
+        header_w = max((hfm.horizontalAdvance(t) + 12
+                        for t, k in (("待触发", "pending"), ("已触发", "hit")) if self._rows[k]),
+                       default=0)
+        self._body_w = int(math.ceil(max(content_w, header_w, self.MIN_CONTENT_W))) + 2 * self.PAD_X
+        h = self.PAD_TOP + self.PAD_BOTTOM
+        groups = [k for k in ("pending", "hit") if self._rows[k]]
+        for k in groups:
+            h += self.HEADER_H + self.HEADER_GAP + self.ROW_H * len(self._rows[k])
+        if len(groups) == 2:
+            h += self.SEP_GAP_TOP + 1 + self.SEP_GAP_BOTTOM
+        self._body_h = max(h, 40)
+        self.setFixedSize(self._body_w + 2 * self.MARGIN_X,
+                          self._body_h + self.MARGIN_TOP + self.MARGIN_BOTTOM)
+        self.update()
+
+    def setRows(self, pending, hit):
+        """设置两组行数据，每行 (is_up, 价位文本, 百分比文本)。内容没变就什么都不做，返回是否变化。"""
+        new = {"pending": [tuple(r) for r in (pending or [])],
+               "hit": [tuple(r) for r in (hit or [])]}
+        if new == self._rows:
+            return False
+        self._rows = new
+        self._relayout()
+        return True
+
+    def rows(self):
+        return {k: list(v) for k, v in self._rows.items()}
+
+    @staticmethod
+    def _available_rect(anchor_global):
+        """锚点所在屏幕的可用区域（已去掉菜单栏与 Dock）。取不到屏幕就返回一个极大的矩形，等于不收拢。"""
+        try:
+            scr = QGuiApplication.screenAt(anchor_global) or QGuiApplication.primaryScreen()
+            if scr is not None:
+                return scr.availableGeometry()
+        except Exception as _swallow_exc:
+            log_swallow("target_panel.TargetBubble._available_rect", _swallow_exc)
+        return QRect(-100000, -100000, 200000, 200000)
+
+    def body_rect_global(self):
+        """可见气泡本体在屏幕坐标里的矩形（不含透明外圈）。"""
+        top_left = self.mapToGlobal(QPoint(self.MARGIN_X, self.MARGIN_TOP))
+        return QRect(top_left.x(), top_left.y(), self._body_w, self._body_h)
+
+    def is_flipped(self):
+        """True 表示整块翻到了铃铛上方（下方放不下），小三角朝下。"""
+        return self._flipped
+
+    def caret_center_global_x(self):
+        return self.mapToGlobal(QPoint(0, 0)).x() + self.MARGIN_X + self._caret_x
+
+    def show_below(self, anchor_global, icon_top_y=None):
+        """气泡本体水平中心对准铃铛中心，顶边在铃铛图标下方 GAP_TO_ICON。
+
+        anchor_global 是铃铛图标底边中心；icon_top_y 是图标上沿的屏幕 y，只用于下方放不下时
+        翻到上方（不传就永不翻转）。靠近屏幕左右边时本体向内收拢，小三角仍留在铃铛正下方/上方，
+        只在离本体圆角不足 CARET_INSET 时才被迫偏离。
+        """
+        area = self._available_rect(anchor_global)
+        edge = self.SCREEN_EDGE
+        bw, bh = self._body_w, self._body_h
+        ax = anchor_global.x()
+        left = int(round(ax - bw / 2.0))
+        left = max(area.left() + edge, min(left, area.right() + 1 - edge - bw))
+        top = anchor_global.y() + self.GAP_TO_ICON
+        flipped = False
+        if icon_top_y is not None and top + bh > area.bottom() + 1 - edge:
+            above = icon_top_y - self.GAP_TO_ICON - bh
+            if above >= area.top() + edge:
+                flipped, top = True, above
+        self._flipped = flipped
+        self._caret_x = float(max(self.CARET_INSET, min(ax - left, bw - self.CARET_INSET)))
+        target = QPoint(left - self.MARGIN_X, int(top) - self.MARGIN_TOP)
+        if self.isVisible() and self.pos() == target:
+            # 已经开着、位置也没变（行情只是把数字换了）：只重绘，不再移动、不再重新显示与置顶。
+            # 探针实测：活跃行情下每秒 6~7 次文字变化，旧写法每次都走一遍 move+show+raise_。
+            self.update()
+            return
+        self.move(target)
+        self.update()
+        self.show()
+        self.raise_()
+
+    def _shape_path(self):
+        """本体圆角矩形 + 指向铃铛的小三角，合成一条轮廓（描边时三角与本体之间没有接缝）。"""
+        w, h, c = float(self._body_w), float(self._body_h), self._caret_x
+        body = smooth_round_rect_path(0, 0, w, h, self.RADIUS)
+        k = self.CARET_H
+        if self._flipped:
+            tri = QPolygonF([QPointF(c - k - 1, h - 1), QPointF(c, h + k), QPointF(c + k + 1, h - 1)])
+        else:
+            tri = QPolygonF([QPointF(c - k - 1, 1), QPointF(c, -k), QPointF(c + k + 1, 1)])
+        caret = QPainterPath()
+        caret.addPolygon(tri)
+        caret.closeSubpath()
+        return body.united(caret)
+
+    def _paint_shadow(self, p):
+        """两层柔影（贴边收口 + 向下散开）。Qt 没有现成模糊，用一组逐层外扩、alpha 递减的圆角矩形逼近高斯。"""
+        w, h = float(self._body_w), float(self._body_h)
+        # (纵向偏移, 高斯 σ, 最深处 alpha 0~1)，对应效果图 0 1px 2px / 0 8px 20px
+        for dy, sigma, peak in ((1.0, 1.0, 0.28), (8.0, 10.0, 0.30)):
+            prev = 0.0                                  # 已叠在外侧的累计覆盖
+            for i in range(8, -9, -1):                  # 从最外层往里：+2σ … -2σ，每 σ/4 一层
+                d = i * sigma / 4.0
+                # 「刚好在这一层边缘内侧」那一带应有的累计覆盖；越往里越深，所以逐层递增
+                cum = peak * 0.5 * math.erfc((d - sigma / 8.0) / (sigma * math.sqrt(2.0)))
+                # 累计覆盖逐层严格递增且恒小于 peak（< 1），这一层的 alpha 因此恒为正，不需要再防 0
+                layer = 1.0 - (1.0 - cum) / (1.0 - prev)
+                prev = cum
+                rect = QRectF(-d, dy - d, w + 2 * d, h + 2 * d)
+                if rect.width() <= 0 or rect.height() <= 0:
+                    continue
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(0, 0, 0, max(1, int(round(layer * 255)))))
+                radius = max(0.0, self.RADIUS + d)
+                p.drawRoundedRect(rect, radius, radius)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.translate(self.MARGIN_X, self.MARGIN_TOP)
+        self._paint_shadow(p)
+        shape = self._shape_path()
+        p.fillPath(shape, self.BODY_COLOR)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(self.RING_COLOR, 1))
+        p.drawPath(shape)
+        self._paint_rows(p)
+        p.end()
+
+    def _paint_rows(self, p):
+        """组标题 + 每行三列。三列共用同一条文字基线（取价位字体的度量，方向词与百分比跟着它），
+        方向词再上提 WORD_RAISE 抵掉汉字笔画的下探，使三列可见底边齐平；标题圆点底边与标题文字底边齐平。"""
+        price_f, pct_f, word_f, header_f = self._fonts()
+        word_w, price_w, pct_w = self._columns()
+        hfm, pfm = QFontMetrics(header_f), QFontMetrics(price_f)
+        x_word = float(self.PAD_X)
+        x_price = x_word + word_w + self.COL_GAP
+        x_pct_right = x_price + price_w + self.COL_GAP + self.PCT_GAP + pct_w
+        row_off = (self.ROW_H - (pfm.ascent() + pfm.descent())) / 2.0 + pfm.ascent()
+        head_off = (self.HEADER_H - (hfm.ascent() + hfm.descent())) / 2.0 + hfm.ascent()
+        y = float(self.PAD_TOP)
+        groups = [(k, t, dot) for k, t, dot in (
+            ("pending", "待触发", self.PENDING_DOT_COLOR), ("hit", "已触发", self.HIT_DOT_COLOR))
+            if self._rows[k]]
+        for gi, (key, title, dot) in enumerate(groups):
+            base = y + head_off
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(dot)
+            # 圆点底边与标题文字的可见底边齐平（文字底边 = 基线 + HEADER_INK_OVER）。
+            # 标题基线常落在半像素上（实测 20.5）：2 倍屏上刚好是设备像素边界，1 倍屏上文字会被取整而圆点
+            # 按半像素抗锯齿，差出 1px，所以圆点底边按所在设备的像素向上取整。
+            # 缩放取两处的较大值：直接画到窗口时 device() 报真实倍率；render() 到 2 倍图片时 device() 仍是
+            # 窗口本身（实测报 1.0），真实缩放只在 deviceTransform() 里（报 2.0）。
+            dpr = max(1.0, p.device().devicePixelRatioF(), p.deviceTransform().m11())
+            dot_bottom = math.ceil((base + self.HEADER_INK_OVER) * dpr - 1e-6) / dpr
+            p.drawEllipse(QRectF(self.PAD_X, dot_bottom - self.DOT_SIZE, self.DOT_SIZE, self.DOT_SIZE))
+            p.setFont(header_f)
+            p.setPen(self.HEADER_COLOR)
+            p.drawText(QPointF(self.PAD_X + 12, base), title)
+            y += self.HEADER_H + self.HEADER_GAP
+            for is_up, price_text, pct_text in self._rows[key]:
+                base = y + row_off
+                if key == "hit":
+                    color = self.HIT_TEXT_COLOR
+                else:
+                    color = self.UP_COLOR if is_up else self.DOWN_COLOR
+                p.setPen(color)
+                p.setFont(word_f)
+                p.drawText(QPointF(x_word, base - self.WORD_RAISE), "涨到" if is_up else "跌到")
+                p.setFont(price_f)
+                p.drawText(QPointF(x_price, base), price_text)
+                if pct_text:
+                    p.setFont(pct_f)
+                    adv = QFontMetrics(pct_f).horizontalAdvance(pct_text)
+                    p.drawText(QPointF(x_pct_right - adv, base), pct_text)
+                y += self.ROW_H
+            if gi < len(groups) - 1:
+                y += self.SEP_GAP_TOP
+                p.setPen(QPen(self.SEP_COLOR, 1))
+                p.drawLine(QPointF(self.PAD_X, y + 0.5), QPointF(self._body_w - self.PAD_X, y + 0.5))
+                y += 1 + self.SEP_GAP_BOTTOM

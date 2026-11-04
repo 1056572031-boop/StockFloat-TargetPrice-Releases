@@ -183,6 +183,25 @@ class GateJudgesTheRealRepo(SFCase):
             self.assertIn(name, declared, "%s 写在版本段外面，闸门根本读不到" % name)
 
 
+    def test_gate_and_collector_share_one_product_module_rule(self):
+        """2026-11-02 走查 F-G-06：闸门说"自动采集会带走它"的前提是 collect() 真扫它。
+
+        闸门把根目录全部 `.py` 当产品模块，而采集层此前只认 `sf_` 前缀加两个点名文件，
+        `targets` / `target_panel` 因此被闸门放行、实际一个字节都不进 state.json。
+        两个判据：① 根目录每个产品模块都必须被采集层的判定认下（新增顶层模块忘了登记当场红）；
+        ② 真 import 之后 `collect()` 的 modules 段里确实有 target_panel 与 targets。
+        """
+        import sf_diag
+        import target_panel      # noqa: F401  # discipline-ok: 就是要让它出现在 sys.modules 里
+        import targets           # noqa: F401  # discipline-ok: 同上
+        missing = [name for name in gate.product_modules(ROOT)
+                   if not sf_diag.is_product_module(name)]
+        self.assertEqual(missing, [],
+                         "这些顶层模块闸门当产品模块、采集层却不扫：%s" % missing)
+        scanned = sf_diag.collect()["modules"]
+        for name in ("target_panel", "targets"):
+            self.assertIn(name, scanned, "%s 已 import 却不在自动采集的模块段里" % name)
+
     def test_check_refuses_instead_of_passing_when_the_ruler_is_broken(self):
         """扫描范围空掉时必须**拒绝下结论**（refuse 非空），而不是给一个"通过"。
         台账 G24 那一族：空输入当通过。"""
@@ -228,6 +247,22 @@ class GateSelfCheck(SFCase):
         text = (ROOT / "tools" / "diag_coverage_check.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(text.count("\n        # S"), 11,
                                 "种错条数少于一开始立的十一处：闸门失去了一段可失败性")
+
+    def test_self_test_cli_reports_success(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(gate.main(["--self-test"]), 0)
+        self.assertIn("12 处种错全部抓到", output.getvalue())
+
+    def test_self_test_reports_a_broken_collector(self):
+        original = gate.check
+        def broken(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if kwargs.get("changed") == {"helper_state"}:
+                result["auto_only"] = ["helper_state"]
+            return result
+        with patch.object(gate, "check", side_effect=broken):
+            self.assertGreater(gate.self_test(ROOT), 0)
 
     def test_empty_round_passes_with_a_warning_instead_of_a_false_accusation(self):
         """复核 F1：本轮没有产品模块改动时，闸门必须**如实标注并放行**，而不是把清单

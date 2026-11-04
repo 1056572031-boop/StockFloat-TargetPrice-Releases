@@ -20,6 +20,11 @@ sys.path.insert(0, os.path.join(_ROOT, "tools"))
 
 import sweep_temp_apps as sweep  # noqa: E402
 
+try:
+    from _base import SFCase
+except ImportError:
+    from tests._base import SFCase
+
 
 def _make_app(parent, name, bundle_id, version="1.3.97", with_binary=True):
     """造一个最小 .app 目录：Contents/Info.plist(+可选可执行文件)。"""
@@ -139,3 +144,70 @@ class TestScanScope(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMalformedInfoPlistDoesNotAbortTheSweep(SFCase):
+    """2026-11-02 走查 F-C-03：plistlib 对 XML 语法错误抛 ExpatError（既不是 ValueError
+    也不是 OSError 的子类），旧写法没接住 —— 临时目录里只要躺着一份第三方 app 的截断
+    Info.plist，整轮清扫（含本程序旧副本）就在 find_stale_apps 里中止、什么都没改名。
+    """
+
+    TRUNCATED = (b'<?xml version="1.0"?><plist version="1.0"><dict>'
+                 b'<key>CFBundleIdentifier</key>')
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory(prefix="sf_sweep_bad_")
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+
+    def _broken_third_party(self, parent="a_broken"):
+        app = _make_app(os.path.join(self.root, parent), "Broken.app", None)
+        with open(os.path.join(app, "Contents", "Info.plist"), "wb") as handle:
+            handle.write(self.TRUNCATED)
+        return app
+
+    def test_truncated_xml_plist_reads_as_missing(self):
+        import sf_temp_sweep
+        app = self._broken_third_party()
+        self.assertIsNone(sf_temp_sweep.bundle_identifier(app))
+        self.assertEqual(sf_temp_sweep.version_of(app), "?")
+
+    def test_sweep_still_neutralizes_own_copy_next_to_a_broken_third_party_app(self):
+        import sf_temp_sweep
+        broken = self._broken_third_party("a_broken")
+        own = _make_app(os.path.join(self.root, "z_own"), "实时股价-目标价版.app",
+                        sf_temp_sweep.BUNDLE_ID)
+        with patch.object(sf_temp_sweep, "running_bundle_paths", return_value=set()):
+            changed = sf_temp_sweep.sweep_temporary_copies([self.root], log=lambda _m: None)
+        self.assertEqual(changed, 1, "畸形 plist 不得让整轮清扫中止")
+        self.assertTrue(os.path.isdir(own + ".stale"), "本程序旧副本应被改名中性化")
+        self.assertTrue(os.path.isdir(broken), "第三方 app 一个字都不许动（边界 2）")
+
+    def test_own_copy_with_broken_plist_falls_back_to_name_recognition(self):
+        """自家副本的 plist 本身被截断：等同 Info.plist 读不到，走按包名识别。"""
+        import sf_temp_sweep
+        own = _make_app(os.path.join(self.root, "x"), "实时股价-目标价版.app", None)
+        with open(os.path.join(own, "Contents", "Info.plist"), "wb") as handle:
+            handle.write(self.TRUNCATED)
+        hits = sf_temp_sweep.find_stale_apps([self.root])
+        self.assertEqual([path for path, _reason in hits], [own])
+
+    def test_unexpected_error_on_one_app_is_logged_and_skipped(self):
+        """单个 .app 上任何意外异常都只跳过这一份并留痕，其余副本照常处理。"""
+        import sf_temp_sweep
+        bad = _make_app(os.path.join(self.root, "a_bad"), "Bad.app", sf_temp_sweep.BUNDLE_ID)
+        own = _make_app(os.path.join(self.root, "z_own"), "实时股价-目标价版.app",
+                        sf_temp_sweep.BUNDLE_ID)
+        real = sf_temp_sweep.bundle_identifier
+
+        def flaky(app_dir):
+            if app_dir == bad:
+                raise RuntimeError("boom on one app")
+            return real(app_dir)
+
+        notes = []
+        with patch.object(sf_temp_sweep, "bundle_identifier", side_effect=flaky):
+            hits = sf_temp_sweep.find_stale_apps([self.root], log=notes.append)
+        self.assertEqual([path for path, _reason in hits], [own])
+        self.assertTrue(any("Bad.app" in n for n in notes), "跳过的那份必须留痕：%r" % (notes,))

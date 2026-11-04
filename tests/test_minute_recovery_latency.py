@@ -172,7 +172,7 @@ class GuardIsNotTheDataLock(_Host):
 
     def test_seed_first_screen_path_also_bypasses_the_guard(self):
         """冷启动预填同样不许等在飞请求上（它也读 minute_points）。"""
-        snap = {"code": "600183", "quote": {"price": 122.11, "pct": -1.64},
+        snap = {"code": "600183", "quote": {"name": "测试股票", "code": "600183", "price": 122.11, "pct": -1.64},
                 "minute": [["1107", 121.63, 123.47]], "day": "2026-10-12"}
         # sf_constants 在测试隔离态把预填整个关掉（SF_SEED_FIRST_SCREEN=0），
         # 不设回 1 的话这条用例测的是"函数直接 return"，守卫那半句会假绿。

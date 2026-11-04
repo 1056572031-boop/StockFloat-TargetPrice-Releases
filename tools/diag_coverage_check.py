@@ -204,6 +204,12 @@ def state_bearing_modules(root: pathlib.Path) -> set[str]:
     """模块级存在**真运行态**的模块（auto 档判据：命中词表 且 会被改写）。"""
     out: set[str] = set()
     for name in product_modules(root):
+        # 2026-11-02 走查 F-G-06：auto 档的前提是 `sf_diag.collect()` 真会扫这个模块。
+        # 判定直接用采集层自己的 `is_product_module`，不在闸门里再抄一份名单 ——
+        # 两份名单漂开时（采集层不认 target_panel/targets，闸门却当它们已被自动采集）
+        # 闸门就在宽松那一侧说假话。
+        if not sf_diag.is_product_module(name):
+            continue
         tree = module_tree(root, name)
         if tree is None:
             continue
@@ -280,7 +286,9 @@ def instance_held_modules(trees: dict[str, ast.Module],
         origin = table.get(cls)
         if origin is None and cls in class_index.get("stock_float_window", set()):
             origin = "stock_float_window"
-        if origin and cls in class_index.get(origin, set()):
+        # 同上（F-G-06）：实例所属模块必须是采集层会爬的产品模块。
+        if (origin and cls in class_index.get(origin, set())
+                and sf_diag.is_product_module(origin)):
             out.add(origin)
     return out
 
@@ -577,7 +585,7 @@ def self_test(root: pathlib.Path | None = None) -> int:
     # `fn()` 无参（本工具的种错全在临时目录里造微型仓库，用不到真仓库根）。
     # 签名不一致的后果实测过——它抛 TypeError，而同进程清单把"抛异常"记成失败，
     # 于是新工具进清单这件事本身先红一次。
-    """八处种错必须全部被抓到，外加三条正向对照（防"闸门只会红"）。"""
+    """十二处种错必须全部被抓到，外加三条正向对照（防"闸门只会红"）。"""
     import shutil
     import tempfile
     failures = 0
@@ -679,6 +687,19 @@ def self_test(root: pathlib.Path | None = None) -> int:
         if r["ok"] or not r["declaration_problems"]:
             note("S11 未抓到：空轮次把清单解析错误一起放过了")
 
+        # S12 改动模块有状态、被主程序 import，但名字不在采集层的产品模块判定里
+        #     （collect() 不扫它）-> auto 档不许认，必须落到 undeclared（F-G-06：
+        #     闸门与采集层各存一份名单，漂开时闸门在宽松一侧说谎）
+        files = dict(base)
+        files["helper_state.py"] = ("POLL_INTERVAL_H = 1\n_last_fail_count = 0\n"
+                                    "def bump():\n    global _last_fail_count\n"
+                                    "    _last_fail_count += 1\n")
+        files["stock_float_window.py"] = base["stock_float_window.py"].replace(
+            "import sf_glass", "import sf_glass\nimport helper_state")
+        r = check(build(files), version="9.9.9", changed={"helper_state"})
+        if "helper_state" in r["auto_only"] or "helper_state" not in r["undeclared"]:
+            note("S12 未抓到：采集层根本不扫的模块被算成已被自动采集（%s）" % r["auto_only"])
+
         # S10 申报一个已经被导出面读到的模块 -> 必须红（攒免检牌那一族）
         files = dict(base)
         files[DECL_FILE] = "version 9.9.9\nskip sf_notify 顺手报一条\n"
@@ -696,7 +717,7 @@ def main(argv: list[str]) -> int:
         prog="diag_coverage_check.py",
         description="本轮改动的产品模块是否都被诊断包覆住（发版链 3.9 关）")
     parser.add_argument("--report", action="store_true", help="只看分布，不判定")
-    parser.add_argument("--self-test", action="store_true", help="十一处种错必须全被抓到")
+    parser.add_argument("--self-test", action="store_true", help="十二处种错必须全被抓到")
     parser.add_argument("--range", dest="rev_range", default="", help="覆盖本轮区间 A..B")
     parser.add_argument("--baseline", dest="baseline", default="",
                         help="上一版已发布的源码提交（取自发布记录的 source.head），区间=它..HEAD；"
@@ -715,7 +736,7 @@ def main(argv: list[str]) -> int:
         if failures:
             print("诊断覆盖闸门自检失败 %d 处" % failures)
             return 1
-        print("诊断覆盖闸门自检通过：11 处种错全部抓到，3 条正向对照成立")
+        print("诊断覆盖闸门自检通过：12 处种错全部抓到，3 条正向对照成立")
         return 0
 
     if known.report:

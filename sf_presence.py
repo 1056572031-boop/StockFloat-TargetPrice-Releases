@@ -885,7 +885,11 @@ class FacePresenceMonitor:
         if cls is None:
             self.state = STATE_UNSUPPORTED
             self.last_error = why
-            log_line("face_guard unsupported: %s" % why, "WARNING")
+            # 2026-11-02 走查 F-G-02：这类只能由用户改系统设置，主窗按 10 秒节拍重试，
+            # 逐次写 WARNING 一天数千行；与同函数 needs_auth / session_failed 同口径节流。
+            log_line_throttled("face_guard.unsupported",
+                               "face_guard unsupported: %s" % why,
+                               level="WARNING", every=30)
             return self.state
         self._cls = cls
 
@@ -899,7 +903,10 @@ class FacePresenceMonitor:
             # 不静默降级成"看起来开了其实没跑"：状态直接给界面显示，并留日志。
             self.state = status
             self.last_error = "摄像头权限为 %s" % status
-            log_line("face_guard %s" % status, "WARNING")
+            # 2026-11-02 走查 F-G-02：同上，按 status 分 key，首条必记、其后每 30 次一条。
+            log_line_throttled("face_guard.%s" % status,
+                               "face_guard %s" % status,
+                               level="WARNING", every=30)
             return self.state
         if status == "undetermined":
             # **不再在启动时向系统请求权限**（2026-10-09 用户明确要求"去掉这个弹窗提示"）。
@@ -923,7 +930,9 @@ class FacePresenceMonitor:
         if device is None:
             self.state = STATE_NO_CAMERA
             self.last_error = "没有可用的摄像头设备"
-            log_line("face_guard no camera", "WARNING")
+            # 2026-11-02 走查 F-G-02：同上。
+            log_line_throttled("face_guard.no_camera", "face_guard no camera",
+                               level="WARNING", every=30)
             return self.state
 
         try:

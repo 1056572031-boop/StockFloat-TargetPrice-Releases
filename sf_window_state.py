@@ -53,6 +53,7 @@ class UpdateFlowState:
     manual_wait: bool = False
     last_check_at: float = 0.0
     last_result: Any = None
+    last_download: Any = None
     stale_resets: int = 0
     check_aborted: bool = False
     failure_count: int = 0

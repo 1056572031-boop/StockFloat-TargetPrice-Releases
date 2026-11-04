@@ -432,3 +432,52 @@ class TestFetchFailureIsAudible(_CalendarTestBase):
         out, msgs, throttled = self._fetch(returns=body)
         self.assertEqual(out, {"2027-03-05"})
         self.assertEqual((msgs, throttled), ([], 0), "成功路径不许刷失败日志")
+
+
+class TestCacheFailuresLeaveATrace(_CalendarTestBase):
+    """2026-11-02 走查 F-A-06：日历缓存读写失败与后台预热异常不许零痕迹。
+
+    缓存文件不存在是正常的（未来月份第一次用）；文件在却读不出来、写不进去、
+    或后台预热线程抛了异常，此前三处都是静默 `except: pass`，用户那边表现为
+    "法定假日被当交易日"，日志与诊断包里却什么都查不到。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.swallowed = []
+        patcher = mock.patch.object(
+            sf_calendar, "log_swallow",
+            side_effect=lambda where, exc, *a, **k: self.swallowed.append(where))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_missing_cache_file_is_silent(self):
+        self.assertEqual(sf_calendar._load_month_cache("2027-02"), set())  # discipline-ok(R5): 直接验证缓存读取失败的返回值
+        self.assertEqual(self.swallowed, [], "第一次用某个未来月份没有缓存是正常情况")
+
+    def test_corrupt_cache_file_is_logged_and_degrades_to_empty(self):
+        with open(sf_calendar._month_cache_path("2027-02"), "w", encoding="utf-8") as f:  # discipline-ok(R5): 在隔离路径注入损坏缓存
+            f.write("{ not json")
+        self.assertEqual(sf_calendar._load_month_cache("2027-02"), set())  # discipline-ok(R5): 直接验证损坏缓存的降级结果
+        self.assertEqual(self.swallowed, ["sf_calendar._load_month_cache"])
+
+    def test_cache_without_holidays_is_logged(self):
+        with open(sf_calendar._month_cache_path("2027-02"), "w", encoding="utf-8") as f:  # discipline-ok(R5): 在隔离路径注入空假日缓存
+            json.dump({"holidays": []}, f)
+        self.assertEqual(sf_calendar._load_month_cache("2027-02"), set())  # discipline-ok(R5): 直接验证空假日缓存的降级结果
+        self.assertEqual(self.swallowed, ["sf_calendar._load_month_cache"])
+
+    def test_cache_write_failure_is_logged_but_memory_cache_still_set(self):
+        with mock.patch.object(sf_calendar, "_atomic_write_json", side_effect=OSError("disk full")):
+            sf_calendar._save_month_cache("2027-02", {"2027-02-06"})  # discipline-ok(R5): 直接触发缓存写盘失败
+        self.assertEqual(self.swallowed, ["sf_calendar._save_month_cache"])
+        self.assertEqual(sf_calendar._month_cache["2027-02"], {"2027-02-06"},  # discipline-ok(R5): 验证写盘失败后内存缓存仍保留
+                         "写盘失败不能连内存缓存一起丢")
+
+    def test_background_warm_failure_is_logged_and_releases_the_slot(self):
+        with mock.patch.object(sf_calendar, "_ensure_month", side_effect=RuntimeError("boom")):
+            thread = sf_calendar._warm_async("2027-03")  # discipline-ok(R5): 直接触发后台预热异常路径
+            self.assertIsNotNone(thread)
+            thread.join(5.0)
+        self.assertEqual(self.swallowed, ["sf_calendar._warm_async"])
+        self.assertNotIn("2027-03", sf_calendar._inflight, "异常路径也必须释放在途占位")  # discipline-ok(R5): 在途占位没有公开读取口

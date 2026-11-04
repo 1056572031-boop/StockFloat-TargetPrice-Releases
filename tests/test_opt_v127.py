@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """v1.2.27 优化回归测试：
-- 3.1 北交所 30% / 主板 ST 5% / 科创创业 20% / 主板 10% 涨跌停阈值本地兜底（quote_status）
+- 3.1 北交所 30% / 科创创业 20% / 主板 10% 涨跌停阈值本地兜底（quote_status）；
+  主板 ST 原为 5%，2026-07-06 起并入 10%（走查 F-A-01）；指数无涨跌停
 - 3.2 4 位北交所老代码归一化（normalize_code）
 覆盖：行情源无涨跌停字段时按板块兜底、官方字段优先、停牌判定不被本地估算污染。
 """
@@ -66,12 +67,45 @@ class TestQuoteStatusBoardFallback(unittest.TestCase):
         q = self._q("600519", "某主板", 11.00, 10.0)
         self.assertEqual(sf_quote.quote_status(q, _TRADE), "涨停")
 
-    def test_main_board_st_5pct(self):
+    def test_main_board_st_10pct_since_20260706(self):
+        # 2026-11-02 走查 F-A-01：沪深交易所交易规则 2026 年修订，自 2026-07-06 起
+        # 主板 ST/*ST 涨跌幅限制由 5% 放宽为 10%（与普通主板一致）。旧口径把 ST 钉成
+        # 5%：+5% 会被误报"涨停"，真正的涨停价（+10%）反而不报。
         q = self._q("600001", "ST某股", 10.50, 10.0)
-        self.assertEqual(sf_quote.quote_status(q, _TRADE), "涨停")
-        # ST 5%：+4% 未到涨停
-        q2 = self._q("600001", "ST某股", 10.40, 10.0)
+        self.assertIsNone(sf_quote.quote_status(q, _TRADE), "+5% 不再是主板 ST 的涨停价")
+        q2 = self._q("600001", "*ST某股", 11.00, 10.0)
+        self.assertEqual(sf_quote.quote_status(q2, _TRADE), "涨停")
+        q3 = self._q("600001", "ST某股", 9.00, 10.0)
+        self.assertEqual(sf_quote.quote_status(q3, _TRADE), "跌停")
+
+    def test_index_codes_have_no_limit(self):
+        # 2026-11-02 走查 F-A-01：指数没有涨跌停。旧写法对 sh000001 / sz399006 一律套 10%，
+        # 指数当日涨 10% 会被画上"涨停"徽标。
+        q = self._q("sh000001", "上证指数", 3740.0, 3400.0)
+        self.assertIsNone(sf_quote.quote_status(q, _TRADE))
+        q2 = self._q("sz399006", "创业板指", 2200.0, 2000.0)
         self.assertIsNone(sf_quote.quote_status(q2, _TRADE))
+        q3 = self._q("sz399006", "创业板指", 1800.0, 2000.0)
+        self.assertIsNone(sf_quote.quote_status(q3, _TRADE))
+        self.assertEqual(sf_quote._estimate_limit_prices(q), (0.0, 0.0))  # discipline-ok(R5): 直接验证指数的本地估算结果
+        self.assertEqual(sf_quote._board_rate("sh000300", "沪深300"), 0.0)  # discipline-ok(R5): 板块费率没有公开读取口
+        self.assertEqual(sf_quote._board_rate("sz399001", "深证成指"), 0.0)  # discipline-ok(R5): 板块费率没有公开读取口
+
+    def test_sz000_stock_is_not_mistaken_for_an_index(self):
+        # sh000xxx 是上证系列指数，但 sz000xxx 是深市主板股票（如 sz000001 平安银行），
+        # 判定必须带着交易所前缀，不能只看 000 开头。
+        q = self._q("sz000001", "平安银行", 11.0, 10.0)
+        self.assertEqual(sf_quote.quote_status(q, _TRADE), "涨停")
+        q2 = self._q("sz000001", "平安银行", 9.0, 10.0)
+        self.assertEqual(sf_quote.quote_status(q2, _TRADE), "跌停")
+        self.assertEqual(sf_quote._board_rate("sz000001", "平安银行"), 10.0)  # discipline-ok(R5): 板块费率没有公开读取口
+        # 未带前缀的 6 位代码按股票处理（无法判断是否指数时不兜成"无涨跌停"）
+        self.assertEqual(sf_quote._board_rate("000001", "平安银行"), 10.0)  # discipline-ok(R5): 板块费率没有公开读取口
+        # 板块口径不受影响
+        self.assertEqual(sf_quote._board_rate("sz300750", "宁德时代"), 20.0)  # discipline-ok(R5): 板块费率没有公开读取口
+        self.assertEqual(sf_quote._board_rate("sh688001", "x"), 20.0)  # discipline-ok(R5): 板块费率没有公开读取口
+        self.assertEqual(sf_quote._board_rate("bj920001", "x"), 30.0)  # discipline-ok(R5): 板块费率没有公开读取口
+        self.assertEqual(sf_quote._board_rate("sz300750", "*ST某创"), 20.0)  # discipline-ok(R5): 板块费率没有公开读取口
 
     def test_official_fields_priority(self):
         # 行情源提供官方涨跌停价时优先用官方字段，本地估算不覆盖
@@ -106,13 +140,20 @@ class TestQuoteStatusBoardFallback(unittest.TestCase):
         up, down = sf_quote._estimate_limit_prices({"code": "bj830799", "name": "x", "pre_close": 10.0})
         self.assertEqual(up, 13.00)
         self.assertEqual(down, 7.00)
+        # 主板 ST 自 2026-07-06 起 10%（F-A-01，见 test_main_board_st_10pct_since_20260706）
         up, down = sf_quote._estimate_limit_prices({"code": "600001", "name": "ST某", "pre_close": 10.0})
-        self.assertEqual(up, 10.50)
+        self.assertEqual(up, 11.00)
+        self.assertEqual(down, 9.00)
         up, down = sf_quote._estimate_limit_prices({"code": "688001", "name": "x", "pre_close": 10.0})
         self.assertEqual(up, 12.00)
         # 昨收非法 → 不兜底
         self.assertEqual(sf_quote._estimate_limit_prices({"code": "600001", "pre_close": 0}), (0.0, 0.0))
         self.assertEqual(sf_quote._estimate_limit_prices({"code": "600001", "pre_close": None}), (0.0, 0.0))
+        # 指数没有涨跌停：只认带交易所前缀的指数代码；深市主板 000xxx 仍是股票，按 10% 估
+        # discipline-ok(R5): _estimate_limit_prices 是本文件既有被测入口，公开面没有等价入口
+        self.assertEqual(sf_quote._estimate_limit_prices({"code": "sh000300", "pre_close": 10.0}), (0.0, 0.0))  # discipline-ok(R5): 同上，被测的就是这个内部估算入口
+        self.assertEqual(sf_quote._estimate_limit_prices({"code": "sz399001", "pre_close": 10.0}), (0.0, 0.0))  # discipline-ok(R5): 同上
+        self.assertEqual(sf_quote._estimate_limit_prices({"code": "sz000001", "pre_close": 10.0}), (11.0, 9.0))  # discipline-ok(R5): 同上
 
 
 class TestNormalizeCodeBj4Digit(unittest.TestCase):

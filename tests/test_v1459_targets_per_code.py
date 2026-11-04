@@ -108,6 +108,93 @@ class StoreIsPerCode(SFCase):
                              sf_config.ALERT_STORE_MAX_TOTAL + 3)
 
 
+    def test_prune_removes_the_oldest_written_stock_not_the_newest(self):
+        """2026-11-02 走查 F-B-01：存储顺序是「刚写入的排最前」，剪枝必须从尾部（最早写入）下手。
+
+        旧写法取 dormant_codes[0]，剪掉的恰是刚切走的那只，注释与日志却都写着“保留最近 12 只”。
+        """
+        for i in range(16):
+            code = "sh6000%02d" % i
+            sf_config.save_alerts([_alert(code, 10.0 + i)], code=code)
+        kept = {str(a["code"]) for a in self._raw()}
+        self.assertEqual(len(kept), sf_config.ALERT_STORE_MAX_CODES + 1,
+                         "休眠股票留满上限，再加上当前这一只")
+        self.assertIn("sh600015", kept, "刚写入的那只（当前股票）不许被剪")
+        self.assertIn("sh600014", kept, "刚切走的那只是最近写入的休眠股票，不许先被剪")
+        self.assertNotIn("sh600000", kept, "最早写入的那只才是被剪对象")
+
+    def test_prune_drops_expired_dormant_before_any_live_one(self):
+        """2026-11-02 走查 F-B-01：别的股票的过期条目没有任何清理路径，攒满 12 只后会把
+        今天刚设的有效目标价挤掉。超限时先丢已过期的休眠条目，有效的最后才动。"""
+        for i in range(sf_config.ALERT_STORE_MAX_CODES):
+            code = "sh6001%02d" % i
+            sf_config.save_alerts([_alert(code, 10.0 + i, day="2020-01-02")], code=code)
+        sf_config.save_alerts([_alert("sh600519", 1600.0)], code="sh600519")
+        sf_config.save_alerts([_alert("sz000001", 11.0)], code="sz000001")
+        mine = sf_config.load_alerts("sh600519")
+        self.assertEqual([a["target"] for a in mine], [1600.0],
+                         "切走后，今天刚设的有效目标价必须还在，被丢的应是早已过期的旧条目")
+
+    def test_invalid_dormant_entry_is_not_considered_expired(self):
+        self.assertFalse(sf_config._session_is_past(None))  # discipline-ok(R5): 非法输入需保守处理而不能当成过期。
+
+    def test_prune_keeps_unconfirmed_recent_session(self):
+        import targets
+        for i in range(sf_config.ALERT_STORE_MAX_CODES + 1):
+            code = "sh6002%02d" % i
+            day = "2020-01-02" if i == sf_config.ALERT_STORE_MAX_CODES else "2099-12-31"
+            with patch.object(targets, "is_trading_day_confirmed", return_value=None):
+                self.assertTrue(sf_config.save_alerts([_alert(code, day=day)], code=code))
+        with patch.object(targets, "is_trading_day_confirmed", return_value=None):
+            self.assertTrue(sf_config.save_alerts([_alert("sz000001")], code="sz000001"))
+        self.assertTrue(sf_config.load_alerts("sh600212"))
+
+    def test_prune_uses_beijing_close_not_local_date(self):
+        from datetime import datetime, timedelta, timezone
+        import targets
+        now = datetime(2026, 11, 2, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        for i in range(sf_config.ALERT_STORE_MAX_CODES + 1):
+            code = "sh6003%02d" % i
+            day = "2026-11-02" if i == sf_config.ALERT_STORE_MAX_CODES else "2099-12-31"
+            with patch.object(targets, "is_trading_day_confirmed", return_value=True), \
+                 patch.object(targets, "_beijing_now", return_value=now), \
+                 patch.object(sf_config.time, "strftime", return_value="2026-11-03"):
+                self.assertTrue(sf_config.save_alerts([_alert(code, day=day)], code=code))
+        with patch.object(targets, "is_trading_day_confirmed", return_value=True), \
+             patch.object(targets, "_beijing_now", return_value=now), \
+             patch.object(sf_config.time, "strftime", return_value="2026-11-03"):
+            self.assertTrue(sf_config.save_alerts([_alert("sz000001")], code="sz000001"))
+        self.assertTrue(sf_config.load_alerts("sh600312"))
+    def test_prune_preserves_holiday_target_rolled_to_future_session(self):
+        from datetime import datetime, timedelta, timezone
+        import targets
+        now = datetime(2026, 10, 2, 16, tzinfo=timezone(timedelta(hours=8)))
+        holiday = _alert("sh600001", day="2026-10-01")
+        expired = _alert("sh600002", day="2026-09-30")
+        with patch.object(sf_config, "ALERT_STORE_MAX_CODES", 1), \
+             patch.object(targets, "_beijing_now", return_value=now), \
+             patch.object(targets, "is_trading_day_confirmed",
+                          side_effect=lambda day: day.isoformat() != "2026-10-01"), \
+             patch.object(targets, "next_trading_day",
+                          return_value=datetime(2026, 10, 5).date()):
+            self.assertTrue(sf_config.save_alerts([expired], code="sh600002"))
+            self.assertTrue(sf_config.save_alerts([holiday], code="sh600001"))
+            self.assertTrue(sf_config.save_alerts([_alert("sz000001")], code="sz000001"))
+        self.assertEqual(sf_config.load_alerts("sh600001"), [holiday])
+        self.assertEqual(sf_config.load_alerts("sh600002"), [])
+
+    def test_prune_report_uses_the_same_expiry_decision_as_retention(self):
+        first = _alert("sh600001")
+        oldest = _alert("sh600002")
+        with patch.object(sf_config, "ALERT_STORE_MAX_CODES", 1), \
+             patch.object(sf_config, "_session_is_past", side_effect=[False, False, True, False]), \
+             patch.object(sf_config, "_record_store_prune") as record:
+            kept, dropped = sf_config._prune_store([], [first, oldest])  # discipline-ok(R5): 注入判定变化以覆盖裁剪事务。
+        self.assertEqual(kept, [first])
+        self.assertEqual(dropped, 1)
+        self.assertEqual(record.call_args.args, (1, ["sh600002"]))
+
+
 class WindowAdoptsTargetsPerCode(SFCase):
     """主窗这一侧：切股之后内存与面板显示的是新股票的条目，切回来还在。"""
 

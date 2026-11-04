@@ -49,6 +49,19 @@ def timed(call, iterations, rounds):
             "iterations_per_round": iterations}
 
 
+def fingerprint_sha256(image, key):
+    """把一帧渲染结果压成 sha256 指纹；QImage 没有像素数据时明确报错。
+
+    PyQt6 6.12 的存根把 `constBits()` 标成 `voidptr | None`（图像无数据时真的会
+    拿到 None）。显式拦住，否则这里抛 AttributeError，报错长得像"探针自己崩了"
+    而不是"这一帧根本没画出来"。
+    """
+    bits = image.constBits()
+    if bits is None:
+        raise OSError("QImage.constBits() 返回 None：%s 没有可读取的像素数据" % key)
+    return hashlib.sha256(bits.asstring(image.sizeInBytes())).hexdigest()
+
+
 def measure(iterations, rounds, image_dir=None):
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     sys.path.insert(0, str(ROOT))
@@ -148,7 +161,9 @@ def measure(iterations, rounds, image_dir=None):
                         getattr(window, name)(painter, w)
                     painter.end()
                     key = "%s-%dx%d-%dx" % (backend, w, h, ratio)
-                    fingerprints[key] = hashlib.sha256(image.constBits().asstring(image.sizeInBytes())).hexdigest()
+                    # 本行只在真实渲染基准里执行；指纹与 None 守卫由
+                    # fingerprint_sha256 的单测覆盖（tests/test_perf_fingerprint_guard.py）。
+                    fingerprints[key] = fingerprint_sha256(image, key)  # pragma: no cover
                     if image_dir:
                         image_dir.mkdir(parents=True, exist_ok=True)
                         if not image.save(str(image_dir / (key + ".png"))):

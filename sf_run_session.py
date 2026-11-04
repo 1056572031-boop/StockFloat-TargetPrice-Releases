@@ -127,8 +127,14 @@ def _snapshot(connection: sqlite3.Connection) -> dict[str, Any] | None:
     rows = _rows(connection)
     if not rows:
         return None
+    # 2026-11-02 走查 F-E-01：停在 launching 的会话（启动阶段就没了）已经按
+    # startup_incomplete 在"下一次启动"处理过（不弹窗）；它不能再留在 pending 里，否则
+    # 之后任何一次启动都会把它当"上次没正常退出"再问一遍——而那之间用户明明正常用过。
+    # `unfinished()`（诊断导出用）不走这里，仍如实列出它们。
     unasked = [row for row in rows[1:]
-               if row["prompt_state"] == PROMPT_NONE and row["phase"] not in _TERMINAL_PHASES]
+               if row["prompt_state"] == PROMPT_NONE
+               and row["phase"] not in _TERMINAL_PHASES
+               and row["phase"] != PHASE_LAUNCHING]
     return {"current": rows[0], "pending": unasked[-1] if unasked else None}
 
 
@@ -152,7 +158,13 @@ class RuntimeSessionLedger:
         except sqlite3.OperationalError as exc:
             if _is_busy(exc):
                 raise SessionLedgerError("session ledger is busy") from exc
-            connection = None
+            # 2026-11-02 走查 F-C-04：非 busy 的 OperationalError（磁盘满 / I/O 错误 /
+            # 打不开 / 只读）说的是**环境**暂时不行，不是这份账本坏了。旧写法把它当损坏走
+            # 隔离，会把一份健康账本（含"上次异常中断"的线索）改名挪走再建空账本。
+            # 现在照实抛出、不动原文件；只有真损坏（DatabaseError：not a database /
+            # malformed，或 schema 不符）才由 _create 返回 None 走隔离。
+            raise SessionLedgerError(
+                "session ledger storage is unavailable (%s); ledger left untouched" % exc) from exc
         if connection is not None:
             return connection
         return self._quarantine_and_recreate()
@@ -203,9 +215,16 @@ class RuntimeSessionLedger:
         except (sqlite3.Error, SessionLedgerError) as exc:
             if connection is not None:
                 connection.close()
-            if isinstance(exc, sqlite3.OperationalError) and _is_busy(exc):
+            if isinstance(exc, sqlite3.OperationalError):
+                # busy 与其它环境类失败都原样上抛，由调用方决定（见 _open_write 的 F-C-04 注释）：
+                # 这里返回 None 就等于宣布"账本损坏、请隔离"。
                 raise
-            return None
+            if isinstance(exc, SessionLedgerError):
+                return None
+            code = getattr(exc, "sqlite_errorcode", None)
+            if isinstance(code, int) and (code & 0xff) in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
+                return None
+            raise
         if fresh:
             os.chmod(path, 0o600)
         return connection

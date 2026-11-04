@@ -62,6 +62,12 @@ _LAST_QUOTE_SOURCE = None     # 最近一次成功行情来源："tencent"/"sina
 
 class QuoteData(dict):
     """Keep provider time outside the stable, public quote dictionary keys."""
+    target_revision: object
+    _target_store_record: tuple[str, str, int]
+    _plain_quote: bool
+    _plain_original: dict
+    _target_unprotected: bool
+
     def __init__(self, values, timestamp=""):
         super().__init__(values)
         self.source_time: datetime.datetime | None = None
@@ -77,7 +83,7 @@ class QuoteData(dict):
 
 def quote_is_current(quote, now=None):
     """Real responses require source time; ordinary dict callers keep compatibility."""
-    if not isinstance(quote, QuoteData):
+    if not isinstance(quote, QuoteData) or getattr(quote, "_plain_quote", False):
         return True
     stamp = quote.source_time
     if stamp is None:
@@ -169,7 +175,8 @@ def degraded_source_streak():
 
 
 def _reset_degraded_source():
-    """主源恢复成功时调用（仅 fetch_quote 主源分支一处）：连击与日志手表一起归零。
+    """主源恢复成功（且行情当下有效，F-A-02）时调用（仅 fetch_quote 主源分支一处）：
+    连击与日志手表一起归零。
 
     连击（_degraded_streak）归零是"主源又活了"；手表（_degraded_last_log）归零是
     让**下一次**降级的第一条日志真的记下来 —— 否则下午那次降级可能被上午那条
@@ -190,8 +197,20 @@ def load_api_urls():
     非法值一律不生效并记录 WARNING 日志（防明文传输/防脏数据注入），回退内置默认。"""
     changed = []
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            d = json.load(f)
+        # 2026-11-02 走查 F-C-02：与 load_config / sf_credentials 同一读法（utf-8-sig）。
+        # 原先 `open(..., encoding="utf-8")` 遇到用户用记事本/文本编辑另存带来的 BOM
+        # 直接 JSONDecodeError，被下面的 except 静默吞掉——load_config 读得出来（目标价、
+        # 窗口位置都在），自定义行情接口却整段不生效，且没有任何日志。
+        import os
+        from sf_config import _read_json_or_none
+        d = _read_json_or_none(CONFIG_PATH)
+        if not isinstance(d, dict):
+            if os.path.exists(CONFIG_PATH):
+                # 文件在但读不出 dict（损坏 / 无读取权限 / 顶层非对象）：回落内置默认，
+                # 但必须留一条痕，不再 `pass`。配置文件不存在是正常场景，保持静默。
+                log_line("api_urls: config %s 存在但读不出 JSON 对象，自定义接口未加载，"
+                         "沿用内置默认地址" % CONFIG_PATH, "WARNING")
+            return changed
         api = d.get("api_urls")
         if not isinstance(api, dict):
             return changed
@@ -217,7 +236,8 @@ def load_api_urls():
             globals()[gname] = v
             changed.append(key)
     except Exception:
-        # 配置缺失/损坏/无读取权限都是正常场景，静默回落内置默认地址，不阻断启动。
+        # 配置读不出来的情形已在上面留 WARNING；走到这里的是 resolve_config_urls
+        # （钥匙串等）之类的异常，回落内置默认地址、不阻断启动，细节由该模块自己记日志。
         pass
     if changed:
         log_line("api_urls loaded from config: %s" % ",".join(changed), "INFO")
@@ -422,6 +442,17 @@ def _sina_list_symbol(code):
     return c                          # sh600519 / sz000001 / bj...
 
 
+def _require_payload_terminator(data, which):
+    """2026-11-02 走查 F-A-05：腾讯/新浪的完整回包都以 `";` 收尾（其后至多是空白）。
+
+    解析前 rstrip 会把结尾的引号分号换行一并去掉，截断在某个数值字段中间的文本
+    （昨收 `149`、最低 `148`）字段数与数值校验照样通过，错价格就进了界面与目标价判定。
+    缺结束符一律按"内容不像行情"处理（QuoteDataError），主源由 fetch_quote 切备源。"""
+    if not data.rstrip().endswith('";'):
+        raise QuoteDataError("%s payload truncated (no closing quote+semicolon): ...%r"
+                             % (which, data.rstrip()[-40:]))
+
+
 def fetch_quote_fallback(code):
     """备用行情源（新浪 hq.sinajs.cn）：主源异常/网络失败时降级。
     返回与 _fetch_quote_primary 同构 dict；解析失败抛 QuoteDataError。
@@ -430,6 +461,7 @@ def fetch_quote_fallback(code):
                     headers={"User-Agent": "Mozilla/5.0", "Referer": SINA_REFERER})
     if '="' not in data:
         raise QuoteDataError("fallback malformed payload: %r" % data[:80])
+    _require_payload_terminator(data, "fallback")
     payload = data.split('="', 1)[1].rstrip('";\n')
     fields = payload.split(",")
     # 新浪字段：0名称 1今开 2昨收 3现价 4最高 5最低 ...
@@ -488,7 +520,13 @@ def fetch_quote(code):
     try:
         q = _fetch_quote_primary(code)
         _reset_format_error("quote")
-        _reset_degraded_source()          # 主源活着：降级连击归零
+        # 2026-11-02 走查 F-A-02：只有主源给的是**当下有效**的行情才算"活着"并归零降级账。
+        # 主源能解析、但源时间戳陈旧（交易时段超过 120 秒等）时，下游 ensure_current_quote
+        # 会改用备源并记一次降级——这里若无条件复位，就成了每轮"先清零再 +1"：连击永远是 1、
+        # 日志手表每轮归零（每轮一行 WARNING），长期跑备源这件事在诊断包里反而查不到。
+        # 没有 ensure 的调用方（编辑器校验代码）拿到的主源行情若是有效的，照旧复位。
+        if quote_is_current(q):
+            _reset_degraded_source()      # 主源活着：降级连击归零
         _LAST_QUOTE_SOURCE = "tencent"
         return q
     except QuoteDataError as exc:
@@ -538,6 +576,7 @@ def _fetch_quote_primary(code):
     data = http_get(QUOTE_URL % code)
     if '="' not in data:
         raise QuoteDataError("malformed payload: %r" % data[:80])
+    _require_payload_terminator(data, "primary")
     payload = data.split('="', 1)[1].rstrip('";\n')
     fields = payload.split("~")
     # 3.1 北交所等板块字段容错：不同板块返回字段数不一致，仅强校验首部必填
@@ -680,22 +719,28 @@ def market_status(now=None):
     return "已收盘", FG_DIM
 
 def _board_rate(code, name):
-    """按代码板块/名称返回涨跌停幅度（百分比）；无法识别返回 0（不兜底）。
+    """按代码板块返回涨跌停幅度（百分比）；无法识别或没有涨跌停返回 0（不兜底）。
     规则（3.1 v1.2.27）：北交所(bj前缀/4/8/920开头)±30%、科创688/689、创业300/301±20%、
-    主板±10%；ST 的 5% 仅对普通主板生效——创业/科创/北交所的 ST 仍按板块幅度。
+    主板±10%。2026-11-02 走查 F-A-01 两处口径订正：
+    ① 沪深主板 ST/*ST 自 2026-07-06 起与普通主板一样是 10%（沪深交易所交易规则
+       2026 年修订，此前 5%），所以不再按名称里的 ST 降档；创业/科创/北交所的 ST 本来
+       就按板块幅度；
+    ② 指数没有涨跌停：只认带交易所前缀的 sh000xxx（上证系列指数）与 sz399xxx（深证
+       系列指数）返回 0；sz000xxx 是深市主板股票（如 sz000001 平安银行）不受影响，
+       不带前缀的 6 位代码无法判断，仍按股票处理（拿不准的宁可按板块估算，不扩大"无涨跌停"）。
     判断依据为代码前缀，稳而不误判：4/8/920 开头仅北交所、688/689 仅科创板、
     300/301 仅创业板，均无其他板块冲突。"""
     c = (code or "").strip().lower()
     digits = c[2:] if c[:2] in ("sh", "sz", "bj") else c
     if not digits.isdigit():
         return 0.0
+    if (c.startswith("sh") and digits.startswith("000")) or (
+            c.startswith("sz") and digits.startswith("399")):
+        return 0.0
     if c.startswith("bj") or digits.startswith(("4", "8", "920")):
         return 30.0
     if digits.startswith(("688", "689", "300", "301")):
         return 20.0
-    n = (name or "").upper()
-    if "ST" in n:
-        return 5.0
     return 10.0
 
 
@@ -784,7 +829,7 @@ def quote_status(q, now=None):
             if limit_up_raw > 0 or limit_down_raw > 0 or volume > 0:
                 return "停牌"
     # 涨停/跌停：优先用行情源字段；两者均缺失（如新浪备用源无涨跌停字段）时，
-    # 用本地板块估算兜底（3.1 v1.2.27：北交所30% / 主板ST 5% / 科创20% / 主板10%）。
+    # 用本地板块估算兜底（3.1 v1.2.27：北交所30% / 科创创业20% / 主板10%；主板 ST 自 2026-07-06 起也是 10%；指数无涨跌停）。
     limit_up, limit_down = limit_prices(q)
     if limit_up > 0 and price > 0 and price >= limit_up:
         return "涨停"

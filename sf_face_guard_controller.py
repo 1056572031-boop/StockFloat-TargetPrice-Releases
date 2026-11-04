@@ -119,7 +119,10 @@ class FaceGuardController:
             # 复核 F1：中断（采不到画面）不是用户改了主意，窗口还收在 Dock 里等自动恢复。
             # 这里若一起 reset 掉 hidden_by_guard，30 秒后重试时就会被判成"用户自己收的、
             # 不用看守"而再次停表 —— 自动恢复从此死掉，而菜单上写的还是"等它松开"。
-            if reason == "stalled":
+            # 2026-11-02 走查 F-G-01：锁屏/休眠（"screen off"）同样只是暂停采集，不是用户改了主意，
+            # 窗口还收在 Dock 里等解锁后自动恢复；只认 "stalled" 时，每天必经的一次锁屏
+            # 就把"被守卫收起"抹掉，解锁后 sync 判成"没东西要看守"，自动恢复从此死掉。
+            if reason in ("stalled", "screen off"):
                 a.clear_streaks()
             else:
                 a.reset()

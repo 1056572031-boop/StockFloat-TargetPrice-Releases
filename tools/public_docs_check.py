@@ -7,6 +7,7 @@ import hashlib
 from pathlib import Path
 import re
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -24,6 +25,43 @@ REQUIRED = {
     "SECURITY.md": ("支持范围", "私下报告漏洞", "security/advisories/new", "校验失败"),
     "NOTICE.md": ("PyQt6", "GPLv3", "D-DIN"),
 }
+
+# 2026-11-02 走查 F-J-01：README 的下载链接与校验文件名也必须是本版。
+# 1.4.109 发版只改了 README 的版本头与变更列表，下载行停在 1.4.108，而旧判据只查
+# “第一个 vX.Y.Z”与 INSTALL.md 的文件名，于是新用户点下载拿到上一版、还按上一版的校验文件核对。
+README_ARTIFACT_PATTERNS = (
+    ("dmg file name", r"Skyrocket-V(\d+\.\d+\.\d+)\.dmg"),
+    ("checksum file name", r"Skyrocket-(\d+\.\d+\.\d+)-SHA256SUMS\.txt"),
+)
+
+
+def artifact_version_problems(name: str, text: str, version: str) -> list[str]:
+    """Every download/dmg/checksum version token in ``text`` must equal ``version``."""
+    bad = []
+    visible = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    visible = re.sub(r"(?ms)^\s*(```|~~~).*?^\s*\1[^\n]*$", "", visible)
+    links = re.findall(r"\[([^\]]+)\]\(([^\s)]+)\)", visible)
+    urls = [url for _, url in links
+            if (urlsplit(url).scheme, urlsplit(url).netloc, urlsplit(url).path)
+            == ("https", "skyrocket-downloads.pages.dev", "/download")]
+    if not urls:
+        bad.append("%s: missing current download link" % name)
+    for label, url in links:
+        if (re.search(r"Skyrocket-V\d+\.\d+\.\d+\.dmg", label, re.I)
+                or urlsplit(url).path.lower().endswith(".dmg")) and url not in urls:
+            bad.append("%s: download link has unexpected destination" % name)
+    for url in urls:
+        query = parse_qs(urlsplit(url).query, keep_blank_values=True)
+        if (query.get("version") != [version]
+                or query.get("asset") != [f"Skyrocket-V{version}.dmg"]):
+            bad.append("%s: download link has incorrect version or asset" % name)
+    for label, pattern in README_ARTIFACT_PATTERNS:
+        found = re.findall(pattern, text)
+        if not found:
+            bad.append("%s: missing current %s" % (name, label))
+        for token in sorted(set(found) - {version}):
+            bad.append("%s: %s points to v%s, not v%s" % (name, label, token, version))
+    return bad
 
 
 def problems(root: Path, version: str) -> list[str]:
@@ -47,6 +85,8 @@ def problems(root: Path, version: str) -> list[str]:
         versions = re.findall(r"\bv(\d+\.\d+\.\d+)", texts.get(name, ""))
         if not versions or versions[0] != version:
             bad.append(name + ": current version does not match " + version)
+    if "README.md" in texts:
+        bad.extend(artifact_version_problems("README.md", texts["README.md"], version))
     license_file = root / "LICENSE"
     if not license_file.is_file() or hashlib.sha256(license_file.read_bytes()).hexdigest() != GPL_SHA256:
         bad.append("LICENSE: missing or not the complete GPLv3 text")
@@ -96,7 +136,10 @@ def self_test() -> int:
         for broken in (original.replace("v" + APP_VERSION, "v0.0.0", 1),
                        original.replace("未签名、未公证", "omitted"),
                        original + "\n/Users/real-user/private/file\n",
-                       original + "\n%s\n"):
+                       original + "\n%s\n",
+                       original.replace("V" + APP_VERSION + ".dmg", "V0.0.0.dmg"),
+                       original.replace("version=" + APP_VERSION, "version=0.0.0"),
+                       original.replace("Skyrocket-" + APP_VERSION + "-SHA256SUMS", "Skyrocket-0.0.0-SHA256SUMS")):
             readme.write_text(broken, encoding="utf-8")
             if not problems(root, APP_VERSION):
                 return 1

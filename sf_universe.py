@@ -45,6 +45,7 @@ from sf_constants import (UNIVERSE_MAX_PAGES, UNIVERSE_MIN_INTERVAL,
                           UNIVERSE_PAGE_RETRIES, UNIVERSE_PAGE_SIZE,
                           UNIVERSE_PATH, UNIVERSE_TIMEOUT, UNIVERSE_TTL,
                           UNIVERSE_WORKERS)
+from sf_logging import log_line_throttled, log_swallow
 
 # 测试环境一律停用（与 sf_constants 的落盘隔离同款兜底，但这里还要防"真实字典
 # 污染打桩结果"：用例给 http_get 打桩后调 search_stocks，若字典先命中，返回的
@@ -75,7 +76,8 @@ _by_name = {}         # name -> full_code（重名时保留先出现的）
 _loaded = False       # 是否已尝试过从磁盘加载
 _refresh_started = False
 _last_attempt = 0.0
-_last_error = None
+_last_error: str | None = None
+_server_total = 0     # 本轮刷新里服务端 data.total 的最大值（_fetch_page 顺手记下，0=没见到）
 
 
 def _market_of(code):
@@ -157,7 +159,7 @@ def _index(rows):
 
 def load(force=False):
     """从磁盘加载字典。失败（文件不存在/损坏/结构不符）返回 False 并静默。"""
-    global _loaded
+    global _loaded, _last_error
     if _DISABLED:
         return False
     with _lock:
@@ -167,11 +169,19 @@ def load(force=False):
         try:
             with open(UNIVERSE_PATH, "r", encoding="utf-8") as f:
                 obj = json.load(f)
-        except Exception:
+        except FileNotFoundError:
+            return False                  # 首次启动还没有缓存：正常，不是故障
+        except Exception as exc:
+            # 2026-11-02 走查 F-A-06：缓存存在却读不出来（损坏/权限/编码）此前零痕迹，
+            # 用户只看到"搜索永远走联网"。留痕并写进 _last_error（诊断包 stats() 可读）。
+            _last_error = "load failed: %r" % (exc,)
+            log_swallow("sf_universe.load", exc)
             return False
         raw = (obj or {}).get("rows") if isinstance(obj, dict) else obj
         if not isinstance(raw, list) or len(raw) < 1000:
             # 少于 1000 条视为残缺（正常约 5900 条），宁可退回联网也不用半张表
+            _last_error = "cache unusable: %s" % (
+                "rows=%d (<1000)" % len(raw) if isinstance(raw, list) else "rows is not a list")
             return False
         rows = []
         for item in raw:
@@ -182,8 +192,10 @@ def load(force=False):
             if isinstance(full, str) and isinstance(name, str) and full and name:
                 rows.append((full, name))
         if len(rows) < 1000:
+            _last_error = "cache unusable: valid rows=%d (<1000)" % len(rows)
             return False
         _index(rows)
+        _last_error = None
         return True
 
 
@@ -214,7 +226,21 @@ def _fetch_page(host, pn, pz=UNIVERSE_PAGE_SIZE):
     data = http_get(_page_url(host, pn, pz),
                     gbk=False, timeout=UNIVERSE_TIMEOUT, retries=0)
     obj = json.loads(data)
-    return ((obj or {}).get("data") or {}).get("diff") or []
+    body = (obj or {}).get("data") or {}
+    _note_server_total(body.get("total"))
+    return body.get("diff") or []
+
+
+def _note_server_total(value):
+    """记下服务端报的总条数（取最大值）。翻页触顶判定要拿它对账；读不出来就当没有。"""
+    global _server_total
+    try:
+        total = int(value)
+    except (TypeError, ValueError):
+        return
+    with _lock:
+        if total > _server_total:
+            _server_total = total
 
 
 def _pick_host():
@@ -228,9 +254,28 @@ def _pick_host():
     return None
 
 
+def _existing_row_count():
+    """现有字典的条数：内存里有就用内存，否则读落盘文件；都没有按 0。"""
+    with _lock:
+        if _rows:
+            return len(_rows)
+    try:
+        with open(UNIVERSE_PATH, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except FileNotFoundError:
+        return 0
+    except Exception as exc:
+        log_swallow("sf_universe._existing_row_count", exc)
+        return 0
+    raw = (obj or {}).get("rows") if isinstance(obj, dict) else obj
+    return len(raw) if isinstance(raw, list) else 0
+
+
 def _refresh_once():
     """拉全量并落盘。任何异常都吞掉，由调用方决定下一次重试。"""
-    global _last_error
+    global _last_error, _server_total
+    with _lock:
+        _server_total = 0
     host = _pick_host()
     if not host:
         _last_error = "no usable host"
@@ -273,6 +318,23 @@ def _refresh_once():
         _last_error = "incomplete pages: %s" % ",".join(map(str, sorted(failed_pages)))
         return False
 
+    # 2026-11-02 走查 F-A-04：翻页触顶检测。全 A 超过 UNIVERSE_MAX_PAGES * 页大小 条后，
+    # 按代码排序最靠后的段（920xxx 北交所）会被悄悄截掉，旧行为是 `_last_error` 仍为 None、
+    # 日志没有一行。两条证据任一成立都算：最后一页是满页（后面可能还有），或实取条数少于
+    # 服务端 data.total。
+    fetched = sum(len(diff or []) for diff in pages.values())
+    last_page = pages.get(UNIVERSE_MAX_PAGES) or []
+    with _lock:
+        server_total = _server_total
+    capped = len(last_page) >= UNIVERSE_PAGE_SIZE or (server_total > 0 and fetched < server_total)
+    if capped:
+        _last_error = ("page cap reached: fetched %d rows in %d pages (last page %d rows, "
+                       "server total %s)" % (fetched, UNIVERSE_MAX_PAGES, len(last_page),
+                                             server_total or "unknown"))
+        log_line_throttled("universe.page_cap",
+                           "证券字典翻页触顶，名单不完整：%s —— 按代码排序靠后的段（如 920 北交所）"
+                           "可能缺失；UNIVERSE_MAX_PAGES 需要放宽" % _last_error, "WARNING", 24)
+
     rows = []
     seen = set()
     for diff in pages.values():
@@ -293,6 +355,10 @@ def _refresh_once():
     if len(rows) < UNIVERSE_MIN_ROWS:
         # 缺页不写盘：宁可用旧字典，也不能把一张残缺的表当作完整表用
         _last_error = "too few rows: %d" % len(rows)
+        return False
+    if capped and _existing_row_count():
+        # 条数更多也不能证明旧证券仍在；触顶时保留已有缓存。
+        _last_error = "%s; kept the existing cache" % _last_error
         return False
     # 原子写：先写临时文件再 replace，避免写一半崩掉留下坏文件。
     # 临时名必须每次唯一：两个程序实例同时刷新时，固定的 ".tmp" 会互相
@@ -315,6 +381,8 @@ def _refresh_once():
         return False
     with _lock:
         _index(rows)
+        if not capped:
+            _last_error = None
     return True
 
 

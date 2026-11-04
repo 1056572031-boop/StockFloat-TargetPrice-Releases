@@ -65,7 +65,7 @@ def _support_dir():
 # 用户数据清单：这些是**用户的东西**，测试再脏也不能碰。
 # debug.log 自 v1.3.67 起已由 SF_LOG_PATH 隔离，留在这里是双保险：
 # 将来谁加了一条没隔离的写盘路径，这里立刻报警。
-_USER_DATA = ["config.json", "securities.json", "debug.log"]
+_USER_DATA = ["config.json", "securities.json", "debug.log", "icon.png"]
 _GUI_APP: object | None = None
 
 
@@ -94,7 +94,7 @@ def user_log_state(name: str = "debug.log", support_dir: str | None = None):
         st = os.stat(_user_data_path(name, support_dir))
     except OSError:
         return None
-    return {"inode": st.st_ino, "size": st.st_size, "mtime": st.st_mtime}
+    return {"inode": st.st_ino, "size": st.st_size, "mtime": st.st_mtime, "mtime_ns": st.st_mtime_ns}
 
 
 def _iter_lines(path: str, offset: int = 0):
@@ -244,7 +244,7 @@ def _snapshot_user_data():
     snap: dict[str, tuple[int, int] | None] = {}
     for name in _USER_DATA:
         state = user_log_state(name)
-        snap[name] = None if state is None else (state["size"], int(state["mtime"]))
+        snap[name] = None if state is None else (state["size"], state["mtime_ns"] if name == "icon.png" else int(state["mtime"]))
     def visit_feedback(path, name):
         try:
             st = os.lstat(path)
@@ -697,7 +697,7 @@ def focused_environment():
         overrides = {name: os.path.join(directory, filename) for name, filename in (
             ("SF_CONFIG_PATH", "config.json"), ("SF_LAST_QUOTE_PATH", "quote.json"),
             ("SF_UNIVERSE_PATH", "universe.json"), ("SF_LOG_PATH", "debug.log"),
-            ("SF_SINGLE_SOCK", "single.sock"))}
+            ("SF_ICON_PATH", "icon.png"), ("SF_SINGLE_SOCK", "single.sock"))}
         overrides.update(SF_UNIVERSE_DISABLE="1", SF_SEED_FIRST_SCREEN="0")
         previous = {name: os.environ.get(name) for name in overrides}
         os.environ.update(overrides)
@@ -779,8 +779,17 @@ def main(argv=None):
     if args.module:
         with focused_environment(), network_guard_environment():
             return run_tests(args.module)
-    with network_guard_environment():
-        return run_tests()
+    with tempfile.TemporaryDirectory(prefix="sf_icon_test_") as directory:
+        previous_icon = os.environ.get("SF_ICON_PATH")
+        os.environ["SF_ICON_PATH"] = os.path.join(directory, "icon.png")
+        try:
+            with network_guard_environment():
+                return run_tests()
+        finally:
+            if previous_icon is None:
+                os.environ.pop("SF_ICON_PATH", None)
+            else:
+                os.environ["SF_ICON_PATH"] = previous_icon
 
 
 def run_tests(modules=None):
@@ -884,7 +893,7 @@ def _run_tests(modules=None):
     if dirty:
         emit_dirty_detail(dirty, log_start)
     else:
-        print("用户数据未改动（config / securities / debug.log / feedback）")
+        print("用户数据未改动（config / securities / debug.log / icon / feedback）")
     # 耗时只是观测：放在判定之前打印，但不参与 verdict，写盘失败也不改变结论。
     under_coverage = coverage_active()
     for line in render_durations(ledger, main_wall, under_coverage):

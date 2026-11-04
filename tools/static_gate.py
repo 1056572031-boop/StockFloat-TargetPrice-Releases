@@ -202,6 +202,16 @@ def run_mypy() -> tuple[collections.Counter, str]:
             "mypy 无法在本工程解释器里 import（exit=%d）：%s —— 类型层根本没跑，"
             "闸门拒绝把这算作通过" % (probe.returncode,
                                      (probe.stdout + probe.stderr).strip()[-200:]))
+    # PyQt6 6.12.0 的官方存根有 19 处非法 PEP 570 写法（`*args: T, /)`，`/` 排在
+    # `*args` 之后），CPython 的 ast.parse 与 mypy 2.4.0/2.4.1 都拒绝；mypy 遇到它
+    # 会 exit=2 终止（"errors prevented further checking"），整条类型层一行不跑。
+    # 配置层实测绕不过（ignore_errors / follow_imports=skip / --exclude .venv 均无效），
+    # 所以这里先做**幂等修复**再检查：只把 `/` 挪回合法位置，类型信息不丢，上游修好后
+    # 自动 no-op。修复失败一律抛出 —— 沿用本闸门"检查器跑不起来＝不通过"的规矩。
+    rep = _run([sys.executable, str(ROOT / "tools" / "repair_pyqt6_stubs.py")])
+    if rep.returncode != 0:
+        raise RuntimeError("PyQt6 存根修复未成功 exit=%d（类型层不可信，闸门失败）：\n%s"
+                           % (rep.returncode, (rep.stdout + rep.stderr)[-800:]))
     cp = _run([sys.executable, "-m", "mypy", "--no-error-summary",
                "--check-untyped-defs", "--ignore-missing-imports",
                "--follow-imports=silent",

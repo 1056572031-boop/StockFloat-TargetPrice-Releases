@@ -117,14 +117,24 @@ _SECRET_HINTS = ("token", "key", "secret", "sign", "password", "passwd", "creden
 # 为什么不在这里 isinstance 判 Qt 基类：见下面 _skip_value 的说明（为取诊断而
 # import GUI 框架是倒因为果），所以判据用类型名形状。
 PROD_PACKAGE_PREFIX = ("sf_",)
+# 不带 `sf_` 前缀的产品顶层模块。2026-11-02 走查 F-G-06：此前只点名了 stock_float_window 与
+# renderer，而 `targets` / `target_panel`（目标价模块，TargetBubble 近期从主窗搬进了
+# target_panel）同样是产品代码，自动采集层却既不扫它们的模块级状态、也不爬它们的实例，
+# 诊断覆盖闸门（tools/diag_coverage_check.py）反而把它们当成"已被自动采集"放行。
+# 现在判定只有这一份：闸门直接调 `is_product_module`，不再各存一份名单。
+PROD_TOPLEVEL_MODULES = frozenset({"stock_float_window", "renderer", "targets", "target_panel"})
 
 
-def _looks_prod(module_name: str) -> bool:
-    """判断一个 `__module__` 是不是本程序自己的代码（用于决定要不要爬进它的实例）。"""
+def is_product_module(module_name: str) -> bool:
+    """判断一个 `__module__` 是不是本程序自己的代码（用于决定要不要爬进它的实例）。
+
+    **公开**是因为诊断覆盖闸门的 auto 档就是靠它判"collect() 真的会扫这个模块"——
+    采集层与闸门共用这一个函数，名单才不会再漂移。
+    """
     if not module_name:
         return False
     head = module_name.split(".")[0]
-    if head == "stock_float_window" or head == "renderer":
+    if head in PROD_TOPLEVEL_MODULES:
         return True
     return head.startswith(PROD_PACKAGE_PREFIX)
 
@@ -278,7 +288,7 @@ def is_state_holder(value: Any) -> bool:
     """值是一个"我们自己造的实例" —— 里面很可能有状态，但自动层不替人决定。"""
     if is_data(value) or callable(value) or isinstance(value, type):
         return False
-    return _looks_prod(getattr(type(value), "__module__", "") or "")
+    return is_product_module(getattr(type(value), "__module__", "") or "")
 
 
 def encode(value: Any, needles: tuple[Needle, ...], depth: int,
@@ -388,7 +398,7 @@ def _module_names() -> list[str]:
             continue
         if name in DESIGN_VALUE_MODULES:
             continue
-        if not _looks_prod(name):
+        if not is_product_module(name):
             continue
         if getattr(module, "__name__", "") == name:
             out.append(name)
@@ -450,7 +460,7 @@ def _child_objects(owner: Any) -> Iterable[Any]:
             continue
         if value is None or callable(value):
             continue
-        if _looks_prod(getattr(type(value), "__module__", "") or ""):
+        if is_product_module(getattr(type(value), "__module__", "") or ""):
             out.append(value)
     return out[:MAX_OBJECTS]
 

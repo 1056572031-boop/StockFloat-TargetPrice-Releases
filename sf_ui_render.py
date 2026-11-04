@@ -140,7 +140,14 @@ def _fmt_hl(s):
 
 
 def _pct_color(v):
-    """涨跌幅着色唯一实现：正红 / 负绿 / 零灰（A 股惯例，与涨同色）。"""
+    """涨跌幅着色唯一实现：正红 / 负绿 / 零灰（A 股惯例，与涨同色）。
+
+    2026-11-02 走查 F-D-04：颜色按**取整后显示的文字**判，不按原始浮点判 ——
+    |v|<0.005 时 fmt_pct 显示 "0.00%"，此前颜色仍按符号给红/绿，于是出现
+    "0.00%" 配红字。直接比对 fmt_pct 的结果，不在这里复制它的 0.005 阈值。
+    """
+    if fmt_pct(v) == "0.00%":
+        return FG_DIM
     return RED if v > 0 else (GREEN if v < 0 else FG_DIM)
 
 
@@ -1203,6 +1210,10 @@ class RenderMixin:
                     color = FLASH_PRICE
                 else:
                     color = self._trend_color()
+                    disp_pct = getattr(self, "_disp_pct", None)
+                    if (disp_pct is not None and not getattr(self, "_pct_unknown", False)
+                            and fmt_pct(disp_pct) == "0.00%"):
+                        color = FG_NAME
                 price = ("%%.%df" % self._anim_decimals) % self._disp_price
                 # 本版 走查 S8：布局量的是"这一帧真正会被画出来的串"，不是插值中间串。
                 price_drawn = self._roll_drawn_string("price", price)

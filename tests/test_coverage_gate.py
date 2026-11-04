@@ -193,10 +193,12 @@ class TestBaselineLoading(SFCase):
         # 这里若还留着 84，谁都能把基线改回 84 而全量照绿 —— 正是台账 G12 给
         # static_gate 记过的那条"只降不升只写在文档里，代码没有比较分支"。
         # 抬档要两处一起改（基线 + 这一行），降档则必须在这里先说明理由。
-        self.assertGreaterEqual(data["product_floor"], 89,
-                                "产品档下限不许低于 89（2026-10-13 负责人拍板；AGENTS §6 第 10 条的棘轮方向）")
-        self.assertGreaterEqual(data["chain_floor"], 60,
-                                "链上档下限异常小，基线八成被清空了：%r" % data)
+        # 2026-11-02 走查 F-J-02：基线 2026-10-26 已抬到产品 94 / 链上 87，而这里还停在 89 / 60，
+        # 把基线改回 89/60 这条用例照绿（「抬档要两处一起改」的约定漂移了）。现在与基线一致。
+        self.assertGreaterEqual(data["product_floor"], 94,
+                                "产品档下限不许低于 94（2026-10-26 抬档；AGENTS §6 第 10 条的棘轮方向）")
+        self.assertGreaterEqual(data["chain_floor"], 87,
+                                "链上档下限不许低于 87（2026-10-26 抬档），或基线被清空了：%r" % data)
 
 
 class TestDataAvailability(SFCase):
@@ -235,6 +237,21 @@ class TestDataAvailability(SFCase):
 
 
 class TestSelfTestIsReal(SFCase):
+    def test_self_test_rejects_loader_accepting_missing_baseline(self):
+        original = CG.load_baseline
+
+        def accept_missing(path):
+            if path.name == "nope.json":
+                return {}
+            return original(path)
+
+        output = io.StringIO()
+        with patch.object(CG, "load_baseline", side_effect=accept_missing), \
+                redirect_stdout(output), redirect_stderr(io.StringIO()):
+            result = CG.self_test()
+        self.assertNotEqual(result, 0)
+        self.assertIn("种错未被抓到] 基线文件不存在", output.getvalue())
+
     def test_self_test_passes_and_is_readonly(self):
         """直调自检：既要全过，又必须一个字节都不写（v1.4.61 那枚事故的形状）。"""
         buf = io.StringIO()
@@ -248,6 +265,17 @@ class TestSelfTestIsReal(SFCase):
         self.assertNotIn("种错未被抓到", out, "有变异样本没被抓到：\n%s" % out)
         self.assertEqual(CG.BASELINE.read_bytes(), BASELINE_BYTES,
                          "自检写了基线 —— 它必须只读")
+
+    def test_self_test_leaves_no_temp_directories_behind(self):
+        """2026-11-02 走查 F-J-06：第 9 项原先 mkdtemp 后从不清理，每跑一次自检留一个空目录。
+
+        把临时目录根指到一个全新的目录，自检跑完它必须仍是空的。
+        """
+        with tempfile.TemporaryDirectory(prefix="sf_cg_scratch_") as scratch:
+            with patch.object(tempfile, "tempdir", scratch), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(CG.self_test(), 0)
+            self.assertEqual(sorted(p.name for p in Path(scratch).iterdir()), [])
 
     def test_cli_self_test_exits_zero(self):
         rc, out = _run(["--self-test"])

@@ -22,6 +22,7 @@ import pathlib
 import re
 import sys
 import tempfile
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -50,6 +51,10 @@ SCAN_SKIP = ("backups/", "tools/archive/", ".venv/", "build/", "dist/", "tests/"
 DATA_DIR_ALLOWED = ("StockFloat",)
 # This directory contains publisher-only keys, not the application's user data.
 BUILD_ONLY_DATA_DIRS = {"tools/stable_signing.py": {"SkyrocketBuildSigning"}}
+
+
+def should_skip_scan(rel: str) -> bool:
+    return rel.startswith(".qoder/worktrees/") or any(p in rel for p in SCAN_SKIP)
 
 
 def read(rel: str) -> str:
@@ -122,7 +127,7 @@ class CurrentGenerationIsConsistent(SFCase):
         users = []
         for path in sorted(ROOT.rglob("*.py")):
             rel = path.relative_to(ROOT).as_posix()
-            if any(p in rel for p in SCAN_SKIP):
+            if should_skip_scan(rel):
                 continue
             for hit in data_dir_tokens(
                     path.read_text(encoding="utf-8", errors="replace")):
@@ -162,6 +167,24 @@ class BothGenerationsAreRecognized(SFCase):
 
 class CriteriaCanFail(SFCase):
     """判据本身要能红：把三种真实漏法各种一处。"""
+
+    def test_nested_worktree_is_excluded_without_excluding_project_source(self):
+        self.assertTrue(should_skip_scan(".qoder/worktrees/other/tools/stable_signing.py"))
+        self.assertFalse(should_skip_scan("tools/stable_signing.py"))
+        self.assertFalse(should_skip_scan("src/worktrees/example.py"))
+
+    def test_scan_excludes_nested_worktree_but_catches_project_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            nested = root / ".qoder" / "worktrees" / "other" / "bad.py"
+            nested.parent.mkdir(parents=True)
+            nested.write_text('x = "~/Library/Application Support/OtherDir/config"', encoding="utf-8")
+            case = CurrentGenerationIsConsistent("test_data_dir_literals_match_the_single_source")
+            with mock.patch.dict(case.test_data_dir_literals_match_the_single_source.__globals__, {"ROOT": root}):
+                case.test_data_dir_literals_match_the_single_source()
+                (root / "bad.py").write_text(nested.read_text(encoding="utf-8"), encoding="utf-8")
+                with self.assertRaises(AssertionError):
+                    case.test_data_dir_literals_match_the_single_source()
 
     def test_legacy_only_bundle_is_caught(self):
         text = 'BUNDLE_ID="%s"\n' % C.LEGACY_BUNDLE_IDS[0]

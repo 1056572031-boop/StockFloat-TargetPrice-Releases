@@ -33,7 +33,7 @@ _SAVED_GLOBALS = (
     "_DISABLED", "UNIVERSE_PATH", "_rows", "_by_code", "_by_name", "_loaded",
     "_refresh_started", "_last_attempt", "_last_error", "UNIVERSE_MAX_PAGES",
     "UNIVERSE_PAGE_GAP", "UNIVERSE_WORKERS", "UNIVERSE_MIN_ROWS",
-    "UNIVERSE_PAGE_RETRIES", "UNIVERSE_TTL", "UNIVERSE_MIN_INTERVAL",
+    "UNIVERSE_PAGE_RETRIES", "UNIVERSE_TTL", "UNIVERSE_MIN_INTERVAL", "_server_total",
 )
 
 
@@ -152,6 +152,19 @@ class TestLoad(UniverseCase):
         with open(self.path, "w", encoding="utf-8") as f:
             f.write("{not json")
         self.assertFalse(u.load())
+
+    def test_many_invalid_rows_are_rejected_with_diagnostic(self):
+        with open(self.path, "w", encoding="utf-8") as stream:
+            json.dump({"rows": [[None, None]] * 1000}, stream)
+        self.assertFalse(u.load())
+        self.assertIn("valid rows=0", u.stats()["last_error"])
+
+    def test_unreadable_existing_count_is_logged(self):
+        expected_count = 0
+        with mock.patch("builtins.open", side_effect=OSError("unreadable")), \
+                mock.patch.object(u, "log_swallow") as log:
+            self.assertEqual(u._existing_row_count(), expected_count)  # discipline-ok(R5): 验证刷新前的磁盘计数失败路径。
+        self.assertIn("_existing_row_count", log.call_args.args[0])
 
     def test_missing_file_is_refused(self):
         self.assertFalse(u.load())
@@ -401,6 +414,188 @@ class TestRefresh(UniverseCase):
         self.assertEqual([n for n in os.listdir(self.d) if n.endswith(".tmp")], [],
                          "写完后不得留下临时文件")
         del lock
+
+
+class TestLoadLeavesATrace(UniverseCase):
+    """2026-11-02 走查 F-A-06：字典缓存存在却读不出来，不许零痕迹。
+
+    首次启动没有缓存文件是正常的（静默）；文件在但损坏/读不了，用户只会看到
+    "搜索永远走联网"，日志与诊断包里什么都没有。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.swallowed = []
+        self.track_patch(mock.patch.object(
+            u, "log_swallow", side_effect=lambda where, exc, *a, **k: self.swallowed.append((where, exc))))
+
+    def test_missing_cache_file_is_silent(self):
+        self.assertFalse(u.load(force=True))
+        self.assertEqual(self.swallowed, [], "首次启动没有缓存是正常情况")
+        self.assertIsNone(u._last_error)  # discipline-ok(R5): the load failure reason has no public getter
+
+    def test_corrupt_cache_file_is_logged_and_recorded(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{ this is not json")
+        self.assertFalse(u.load(force=True))
+        self.assertEqual([w for w, _ in self.swallowed], ["sf_universe.load"])
+        self.assertIn("load failed", u._last_error)  # discipline-ok(R5): the load failure reason has no public getter
+        self.assertIn("load failed", u.stats()["last_error"], "诊断包读的就是 stats()")
+
+    def test_too_small_cache_is_recorded_without_pretending_to_be_an_exception(self):
+        self._write_rows([("sh600519", "贵州茅台")])
+        self.assertFalse(u.load(force=True))
+        self.assertIn("cache unusable", u._last_error)  # discipline-ok(R5): the load failure reason has no public getter
+        self.assertEqual(self.swallowed, [])
+
+    def test_successful_forced_load_clears_previous_load_error(self):
+        self._write_rows([])
+        self.assertFalse(u.load(force=True))
+        self.assertIn("cache unusable", u.stats()["last_error"])
+        self._write_rows([("sz%06d" % i, "股%d" % i) for i in range(1000)])
+        self.assertTrue(u.load(force=True))
+        self.assertIsNone(u.stats()["last_error"])
+
+
+class TestRefreshPageCap(UniverseCase):
+    """2026-11-02 走查 F-A-04：翻页触顶（服务端条数超过 UNIVERSE_MAX_PAGES 页）必须留痕，
+    且被截断的数据不得覆盖条数更多的旧缓存。
+
+    旧行为：全 A 超过 60 页（6000 条）后，按代码排序最靠后的 920xxx 北交所整段被悄悄截掉，
+    `_last_error` 仍是 None、日志没有一行，诊断包里也看不出字典是残的。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.logs = []
+        self.track_patch(mock.patch.object(
+            u, "log_line_throttled",
+            side_effect=lambda key, msg, level="WARNING", every=1: self.logs.append((level, msg))))
+
+    def _codes(self, n):
+        return ["60%04d" % i for i in range(n)]
+
+    def _server(self, codes):
+        """按页切片的假服务端；`_fetch_page` 返回 diff 行列表，与真实形状一致。"""
+        def fake(host, pn, pz=u.UNIVERSE_PAGE_SIZE):
+            return [{"f12": c, "f14": "股" + c} for c in codes[(pn - 1) * pz: pn * pz]]
+        return fake
+
+    def test_full_last_page_is_recorded_as_a_page_cap(self):
+        codes = self._codes(350)                     # 3 页上限只够取 300 条
+        with mock.patch.object(u, "_pick_host", return_value="h"), \
+                mock.patch.object(u, "_fetch_page", side_effect=self._server(codes)):
+            self.assertTrue(u._refresh_once(), "没有旧缓存时，截断的新表仍比没有强，照常落盘")  # discipline-ok(R5): 同步执行真实刷新以验证落盘
+        self.assertIn("page cap", u._last_error)  # discipline-ok(R5): the refresh failure reason has no public getter
+        self.assertEqual(u.stats()["count"], 300)
+        self.assertTrue([m for lvl, m in self.logs if lvl == "WARNING" and "page cap" in m],
+                        "触顶必须有一行 WARNING：%r" % (self.logs,))
+
+    def test_partial_last_page_is_not_flagged(self):
+        codes = self._codes(250)                     # 第 3 页只有 50 条 = 取完了
+        with mock.patch.object(u, "_pick_host", return_value="h"), \
+                mock.patch.object(u, "_fetch_page", side_effect=self._server(codes)):
+            self.assertTrue(u._refresh_once())  # discipline-ok(R5): 同步执行真实刷新以验证完整页
+        self.assertIsNone(u._last_error)  # discipline-ok(R5): the refresh failure reason has no public getter
+        self.assertEqual(self.logs, [])
+        self.assertEqual(u.stats()["count"], 250)
+
+    def test_capped_refresh_never_overwrites_a_larger_cache(self):
+        old_rows = [("sh" + c, "旧" + c) for c in self._codes(350)]
+        self._seed(old_rows)
+        self._write_rows(old_rows)
+        with open(self.path, "rb") as f:
+            before = f.read()
+        with mock.patch.object(u, "_pick_host", return_value="h"), \
+                mock.patch.object(u, "_fetch_page", side_effect=self._server(self._codes(400))):
+            self.assertFalse(u._refresh_once(), "截断的 300 条不得顶掉完整的 350 条")  # discipline-ok(R5): 同步执行真实刷新以验证旧缓存保留
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before, "旧缓存文件必须原样保留")
+        self.assertEqual(u.stats()["count"], 350, "内存里的旧表也不能被换成半张表")
+        self.assertIn("page cap", u._last_error)  # discipline-ok(R5): the refresh failure reason has no public getter
+
+    def test_capped_larger_refresh_preserves_old_security(self):
+        old_rows = [("bj920185", "贝特瑞")]
+        self._seed(old_rows)
+        self._write_rows(old_rows)
+        with open(self.path, "rb") as f:
+            before = f.read()
+        with mock.patch.object(u, "_pick_host", return_value="h"), \
+                mock.patch.object(u, "_fetch_page", side_effect=self._server(self._codes(400))):
+            self.assertFalse(u._refresh_once())  # discipline-ok(R5): 同步执行真实刷新以核对缓存
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(u.match_confident("920185"), old_rows)
+        self.assertIn("page cap", u.stats()["last_error"])
+
+    def test_capped_refresh_preserves_disk_cache_when_not_loaded(self):
+        old_rows = [("bj920185", "贝特瑞")]
+        self._write_rows(old_rows)
+        with open(self.path, "rb") as f:
+            before = f.read()
+        with mock.patch.object(u, "_pick_host", return_value="h"), \
+                mock.patch.object(u, "_fetch_page", side_effect=self._server(self._codes(400))):
+            self.assertFalse(u._refresh_once())  # discipline-ok(R5): 同步执行真实刷新以核对磁盘
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertFalse(u.index_ready())
+
+    def test_complete_refresh_clears_previous_error(self):
+        u._last_error = "old error"  # discipline-ok(R5): seed a previous failure in diagnostics
+        with mock.patch.object(u, "_pick_host", return_value="h"), \
+                mock.patch.object(u, "_fetch_page", side_effect=self._server(self._codes(250))):
+            self.assertTrue(u._refresh_once())  # discipline-ok(R5): 同步执行刷新以检查恢复后的诊断
+        self.assertIsNone(u.stats()["last_error"])
+
+    def test_concurrent_server_totals_keep_the_maximum(self):
+        smaller_comparing = threading.Event()
+        larger_finished = threading.Event()
+
+        class InitialTotal(int):
+            def __lt__(self, other):
+                if other == 100:
+                    smaller_comparing.set()
+                    larger_finished.wait(0.5)
+                return super().__lt__(other)
+
+        u._server_total = InitialTotal(0)  # discipline-ok(R5): 注入比较对象以强制线程交错
+
+        def record_larger():
+            try:
+                u._note_server_total(200)  # discipline-ok(R5): 直接驱动并发总数更新
+            finally:
+                larger_finished.set()
+
+        smaller = threading.Thread(target=u._note_server_total, args=(100,))  # discipline-ok(R5): 直接驱动并发总数更新
+        larger = threading.Thread(target=record_larger)
+        smaller.start()
+        try:
+            self.assertTrue(smaller_comparing.wait(2))
+            larger.start()
+        finally:
+            smaller.join(3)
+            if larger.ident is not None:
+                larger.join(3)
+        self.assertFalse(smaller.is_alive())
+        self.assertFalse(larger.is_alive())
+        self.assertEqual(u._server_total, 200)  # discipline-ok(R5): 检查并发最大值的内部结果
+
+    def test_server_total_larger_than_fetched_rows_is_flagged_too(self):
+        """服务端 data.total 比实取条数大 = 没取全（页大小/页数变了也能抓到）。"""
+        import json
+        import sf_network
+        codes = self._codes(260)
+
+        def fake_http(url, **kwargs):
+            pn = int(url.split("pn=")[1].split("&")[0])
+            pz = int(url.split("pz=")[1].split("&")[0])
+            diff = [{"f12": c, "f14": "股" + c} for c in codes[(pn - 1) * pz: pn * pz]]
+            return json.dumps({"data": {"total": 500, "diff": diff}})
+
+        with mock.patch.object(sf_network, "http_get", side_effect=fake_http):
+            u._refresh_once()  # discipline-ok(R5): 同步执行真实分页以验证服务端总数
+        self.assertIn("page cap", u._last_error)  # discipline-ok(R5): the refresh failure reason has no public getter
+        self.assertIn("500", u._last_error)  # discipline-ok(R5): the refresh failure reason has no public getter
 
 
 class TestRefreshAsync(UniverseCase):

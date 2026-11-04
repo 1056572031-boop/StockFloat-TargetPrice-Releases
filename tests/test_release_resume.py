@@ -110,7 +110,8 @@ class PlanTests(_TempCase):
         # 守的是顺序与命令行，而不是行为：脚本改了顺序或参数而这里没跟着改，续跑就会和脚本分叉，
         # 又没有可调用行为可断言（真跑就是真发布），所以只能读脚本文本，逐项在“上一项之后”找。
         source = (REPO / "build_release.sh").read_text(encoding="utf-8")
-        markers = ["node deploy-pages.mjs", "tools/render_install_guide.py", "tools/render_install_guide.py --check",
+        # 6.1 必须带自动出处：删掉这个环境变量，发版部署又会变成没有提交号的黑盒。
+        markers = ["SF_DEPLOY_PROVENANCE=auto node deploy-pages.mjs", "tools/render_install_guide.py", "tools/render_install_guide.py --check",
                    "tools/public_release.py --publish", 'push -q origin "HEAD:refs/heads/$SRC_BRANCH"',
                    "tools/desktop_folder_sync.py --refresh --version", "tools/smoke_frozen_app.py"]
         self.assertEqual(len(markers), len(self.steps))

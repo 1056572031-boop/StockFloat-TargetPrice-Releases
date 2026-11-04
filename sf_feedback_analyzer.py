@@ -21,7 +21,7 @@ from sf_feedback_bundle import read_diagnostics
 from sf_feedback_v3 import V3_DIAGNOSTIC_FILES, is_v3_export
 
 ANALYZER_SCHEMA_VERSION = 4
-ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v10"
+ANALYZER_BUILD_ID = "skyrocket-feedback-analyzer-github-v11"
 # A 股连续竞价时段（北京时间，含端点），与 sf_quote.market_status 的口径一致。
 # 分析器要在没有行情模块的反馈代理里单独运行，所以这里不 import 它，也不带节假日表。
 _CN_TZ = timezone(timedelta(hours=8))
@@ -148,6 +148,49 @@ def _utc_seconds(value):
         return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
     except (TypeError, ValueError):
         return None
+
+
+def _target_update_findings(files, runtime):
+    """目标价保护暂停、登记不可用、暂存行情，以及更新下载失败的线索。
+
+    只转述包里的原始事实：计数只能证明发生过，不替它认定原因；
+    旧版本的包没有这些字段时一律不出线索（缺字段不是故障）。
+    返回 [(code, 严重度, 文字)]。"""
+    found = []
+    queue = _object(_object(files.get("targets.json")).get("tick_queue"))
+    degraded = _object(queue.get("degraded"))
+    counts = {str(name)[:40]: value for name, value in _object(degraded.get("counts")).items()
+              if type(value) is int and value > 0}
+    pending_now = any(degraded.get(name) is True for name in (
+        "guard_unavailable_now", "lock_unavailable_now", "capacity_gap_now"))
+    if counts or pending_now:
+        detail = "、".join("%s=%d" % (name, counts[name]) for name in sorted(counts)[:6])
+        found.append(("target_protection_degraded", "warning",
+                      "目标价保护出现过暂停，期间的行情没有进入目标价判定（累计：%s）%s。"
+                      "计数只说明发生过，原因要结合 debug.log 里 target publication guard / "
+                      "target tick lock 的记录判断。" % (
+                          detail or "无计数", "；此刻仍未恢复" if pending_now else "")))
+    registry_dir = _object(queue.get("registry_dir"))
+    if queue.get("registry") == "UNKNOWN" or (registry_dir.get("exists") is False
+                                              and registry_dir.get("writable") is False):
+        found.append(("target_registry_unavailable", "warning",
+                      "目标价行情的跨进程登记目录读不出来或建不出来；面板保存和过期清理会被挡住，"
+                      "行情仍显示但提醒暂停。"))
+    unsaved = queue.get("unsaved")
+    if type(unsaved) is int and unsaved > 0:
+        found.append(("target_ticks_unsaved", "info",
+                      "有 %d 笔目标价行情只在内存里、还没写入磁盘队列；采集时刻之后是否已写入不能确定。" % unsaved))
+    download = _object(_object(runtime.get("update")).get("last_download"))
+    if download.get("outcome") == "failed":
+        fatal = download.get("fatal") is True
+        reason = download.get("error")
+        found.append(("update_download_failed", "warning" if fatal else "info",
+                      "最近一次更新下载失败（%s，版本 %s）：%s" % (
+                          "确定性失败，重试没有意义" if fatal else "可能是网络或校验问题",
+                          str(download.get("version") or "?")[:20],
+                          reason[:120] if isinstance(reason, str) and reason else
+                          str(download.get("error_type") or "原因未记录")[:40])))
+    return found
 
 
 def _menu_trace_analysis(runtime):
@@ -362,6 +405,8 @@ def _full_analysis(files: dict[str, Any], run_id: Any) -> dict[str, Any]:
                     "峰值 RSS 不是当前 RSS，paint 也不是屏幕 FPS，不能单独认定卡顿根因。")
     menu_summary, menu_findings, menu_gaps = _menu_trace_analysis(runtime)
     for code, severity, message in menu_findings:
+        add(code, severity, message, "snapshot")
+    for code, severity, message in _target_update_findings(files, runtime):
         add(code, severity, message, "snapshot")
     gaps.extend(menu_gaps)
     if not run_id or not groups["current"]["line_count"]:

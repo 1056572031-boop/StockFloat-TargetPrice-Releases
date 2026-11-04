@@ -359,7 +359,10 @@ class FeedbackServiceEdgeCandidates(SFCase):
                      "missing_member_conclusion": "custom-missing"}
             report = analyze_archive(archive, root / "reports", ruleset=rules)
             self.assertEqual(report["conclusion"], "custom-missing")
-            self.assertEqual(report["config_sha256"], report["config_sha256"])
+            # 2026-11-02 走查 F-J-05：原写 report[x] 比 report[x]（永远真）。配置哈希必须反映这次的
+            # required_members，所以与测试侧独立算的规范化 JSON 的 SHA-256 比。
+            self.assertEqual(report["config_sha256"],
+                             hashlib.sha256(b'{"required_members":["missing.json"]}').hexdigest())
 
     def test_analyzer_propagates_report_write_failure_and_leaves_no_report(self):
         with tempfile.TemporaryDirectory() as directory:

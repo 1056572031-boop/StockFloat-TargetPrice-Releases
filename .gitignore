@@ -56,3 +56,6 @@ services/feedback-worker/wrangler.pages.production.jsonc
 # v1.4.41 复核 F9：人脸守卫的自测素材是生成的合成图片（1.0MB PNG，git 里不可压缩且永久占体积）。
 # 留在磁盘上供实机自测用，但不入库；需要时由 tools/verify_face_presence.py 的说明重新生成。
 outputs/人脸守卫自测素材-*.png
+
+# 下载站部署日志、锁与缓存：本地状态，不进版本控制
+outputs/site-deploys/

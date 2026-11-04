@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
 """模块化拆分 v1.2.13：sf_config —— 由 stock_float_window.py 搬移生成，行为零变化。"""
 
+import fcntl
+import functools
 import json
 import os
 import re
 import shutil
+import stat
 import tempfile
+import threading
 import time
 import unicodedata
+import uuid
+from contextlib import contextmanager
 from sf_constants import (BG_MODE_DEFAULT, CONFIG_BACKUP_PATH, CONFIG_PATH,
                           CONFIG_SCHEMA_VERSION, DEFAULT_STOCK, LAST_QUOTE_PATH,
                           LEGACY_CONFIG_PATH, MAX_H, MIN_H)
@@ -19,10 +25,211 @@ from sf_utils import normalize_code
 SPLIT_SOURCE_CONFIG_PATH = os.path.expanduser(
     "~/Library/Application Support/StockFloat/config.json")
 
+_config_thread_lock = threading.RLock()
+_config_lock_state = threading.local()
+_CONFIG_LOCK_TIMEOUT = 0.5
+
+
+@contextmanager
+def config_transaction(path=None, timeout=None):
+    """Serialize cooperating configuration writers using a stable advisory lock."""
+    path = os.path.abspath(path or CONFIG_PATH)
+    timeout = _CONFIG_LOCK_TIMEOUT if timeout is None else max(0.0, timeout)
+    deadline = time.monotonic() + timeout
+    if not _config_thread_lock.acquire(timeout=timeout):
+        raise TimeoutError("configuration lock timed out")
+    descriptor = None
+    try:
+        active = getattr(_config_lock_state, "active", {})
+        if path in active:
+            yield
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path + ".lock", flags, 0o600)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise PermissionError("configuration lock is not an owned regular file")
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("configuration lock timed out")
+                time.sleep(0.02)
+        active[path] = True
+        _config_lock_state.active = active
+        try:
+            yield
+        finally:
+            del active[path]
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        _config_thread_lock.release()
+
+
+def target_tick_publisher_directory():
+    """Return the per-user directory holding in-flight publication markers."""
+    return os.path.abspath(CONFIG_PATH) + ".target-tick-publishers"
+
+
+class TickPublisherToken:
+    """One live process' claim that it may still publish ticks for a stock.
+
+    The claim must outlive the call that created it whenever the tick is still
+    only in memory, so ownership is explicit: ``close()`` releases it and is
+    idempotent, letting a caller hand the token to ``TargetTickBuffer`` instead.
+    """
+
+    __slots__ = ("_path", "_descriptor")
+
+    def __init__(self, path, descriptor):
+        self._path = path
+        self._descriptor = descriptor
+
+    def close(self):
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is not None:
+            os.close(descriptor)
+        path = self._path
+        if path is not None:
+            try:
+                os.unlink(path)
+            except FileNotFoundError as exc:
+                log_swallow("sf_config.target_tick_publisher.cleanup", exc)
+            # Forget the path only after the removal succeeded or the entry is
+            # already gone, so a failed removal can be retried by the next close().
+            self._path = None
+
+def target_tick_publisher_open(code):
+    """Register an in-flight publisher before any step that can lose the tick.
+
+    Returns ``None`` when the registry itself is unavailable; that is logged and
+    the caller must fail closed: without a marker no other process can learn that
+    a tick is in flight, so the quote may still be displayed but must not become
+    target-price input (reminders pause and the user is warned instead).
+    """
+    directory = target_tick_publisher_directory()
+    name = "%s.%s-%s-%s" % (normalize_code(code), os.getpid(), threading.get_ident(), uuid.uuid4().hex)
+    path = os.path.join(directory, name)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError as exc:
+        log_swallow("sf_config.target_tick_publisher_open", exc)
+        return None
+    try:
+        os.write(descriptor, str(os.getpid()).encode("ascii"))
+    except OSError as exc:
+        os.close(descriptor)
+        try:
+            os.unlink(path)
+        except OSError as unlink_exc:
+            log_swallow("sf_config.target_tick_publisher_open.cleanup", unlink_exc)
+        log_swallow("sf_config.target_tick_publisher_open", exc)
+        return None
+    return TickPublisherToken(path, descriptor)
+
+
+@contextmanager
+def target_tick_publisher(code):
+    """Expose an in-flight publisher across processes before lock acquisition."""
+    token = target_tick_publisher_open(code)
+    try:
+        yield token
+    finally:
+        if token is not None:
+            token.close()
+
+
+def target_tick_publisher_status(code):
+    """Return INACTIVE, ACTIVE, or UNKNOWN for a stock's publisher registry."""
+    prefix = normalize_code(code) + "."
+    directory = target_tick_publisher_directory()
+    try:
+        names = os.listdir(directory)
+    except FileNotFoundError:
+        return "INACTIVE"
+    except OSError as exc:
+        log_swallow("sf_config.target_tick_publisher_status", exc)
+        return "UNKNOWN"
+    status = "INACTIVE"
+    # Scan every entry even once one is live: stale neighbours are pruned on the
+    # way, and a name we cannot read must not shield them from that cleanup.
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            # 持有者身份取自文件名。目录项在 O_CREAT|O_EXCL 那一刻就带全名，正文却是
+            # 第二次系统调用才写的——进程被杀在两次调用之间时只剩一个空文件。若按正文
+            # 判活，这只股票会被永久算成"有人在发布"：面板保存与过期清理再也不会放行。
+            pid = int(name[len(prefix):].split("-")[0])
+            os.kill(pid, 0)
+        except ProcessLookupError as exc:
+            log_swallow("sf_config.target_tick_publisher.stale", exc)
+            # The owner is confirmed gone, so the entry protects nothing even if
+            # it cannot be removed now; the next scan retries the removal.
+            try:
+                os.unlink(path)
+            except OSError as unlink_exc:
+                log_swallow("sf_config.target_tick_publisher.stale_cleanup", unlink_exc)
+        except (OSError, ValueError, TypeError, OverflowError) as exc:
+            # OverflowError：登记名里的数字超出 C int 时 os.kill 会抛它。
+            # 认不出持有者的登记按"可能有人持有"处理，不能让整个状态查询抛出。
+            log_swallow("sf_config.target_tick_publisher_status", exc)
+            status = "ACTIVE"
+        else:
+            status = "ACTIVE"
+    return status
+
+
+def target_tick_publisher_active(code):
+    """Return whether a live process may still publish this stock."""
+    return target_tick_publisher_status(code) != "INACTIVE"
+
+
+@contextmanager
+def target_tick_transaction(*, blocking=True):
+    """Serialize tick publication with target cleanup across processes."""
+    path = os.path.abspath(CONFIG_PATH) + ".target-ticks.lock"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise PermissionError("target tick lock is not an owned regular file")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _config_write_transaction(func):
+    @functools.wraps(func)
+    def guarded(*args, **kwargs):
+        try:
+            with config_transaction():
+                return func(*args, **kwargs)
+        except Exception as exc:
+            log_line("configuration transaction failed: %r" % (exc,), "ERROR")
+            return False
+    return guarded
+
 
 def _migrate_legacy_config():
     """将拆分前正式配置优先复制到目标价目录，其次兼容旧隐藏路径；绝不删除源。"""
-    if os.path.exists(CONFIG_PATH):
+    try:
+        os.stat(CONFIG_PATH)
+        return
+    except FileNotFoundError:
+        if os.path.islink(CONFIG_PATH):
+            return
+    except OSError as exc:
+        log_line("config migration skipped: destination unavailable: %r" % (exc,), "WARNING")
         return
     source = (SPLIT_SOURCE_CONFIG_PATH
               if os.path.exists(SPLIT_SOURCE_CONFIG_PATH)
@@ -33,7 +240,7 @@ def _migrate_legacy_config():
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         with open(source, "r", encoding="utf-8") as f:
             d = json.load(f)
-        _atomic_write_json(CONFIG_PATH, d)
+        _atomic_write_json(_config_write_path(), d)
         log_line("config migrated (copied) %s -> %s" % (source, CONFIG_PATH))
     except Exception as exc:
         log_line("config migrate failed: %r" % (exc,), "WARNING")
@@ -53,10 +260,48 @@ def _read_json_or_none(path):
         而 load_alerts 又不会去读 .bak —— 用户看到的就是"目标价不见了"。
 
     utf-8-sig 对无 BOM 的普通 UTF-8 文件行为与 utf-8 完全一致，无副作用。
+
+    本函数保持"一律 None"的老契约（sf_credentials / sf_diagnostics 等外部调用点只关心
+    "拿到 dict 没有"）。需要区分"读不出来"与"读到了但内容坏"的配置读写链路，
+    一律改用 `_read_json_checked`（2026-11-02 走查 F-C-01）。
+    """
+    value = _read_json_checked(path)
+    return None if value is _UNREADABLE else value
+
+
+# 2026-11-02 走查 F-C-01：读文件这一步本身失败（权限被改、IO 错误、句柄耗尽……）不是
+# "内容损坏"。旧写法把两者都变成 None，于是主配置暂时读不出来时 load_config 会拿更旧的
+# .bak 恢复并**写回主配置**（实测 main.x 500→10、alerts 2→0），save_* 也会在这种状态下
+# 以备份为底稿覆盖主配置。专用哨兵让写路径能认出"我根本没读到"，宁可这次不保存，
+# 也不拿旧快照覆盖一份只是暂时读不了的好数据。
+_UNREADABLE = object()
+_untrusted_config_path = None
+
+
+def config_unavailable():
+    return _untrusted_config_path == CONFIG_PATH
+
+
+class ConfigUnreadableError(OSError):
+    """主配置存在但读不出来（OSError，非 FileNotFoundError）：写路径必须拒绝覆盖。"""
+
+
+def _read_json_checked(path):
+    """读 JSON，三态返回：解析出的值 / None / `_UNREADABLE`。
+
+    - 文件不存在（FileNotFoundError）→ None：首次启动的正常路径，不记警告；
+    - 读到了但不是合法 JSON（含 UnicodeDecodeError、空文件）→ None：内容损坏，
+      调用方可按既有口径回落备份；
+    - 其它 OSError（PermissionError、EIO、EMFILE、IsADirectoryError……）→ `_UNREADABLE`：
+      文件可能完好，只是这一刻读不到，调用方**不得**据此恢复/覆盖。
     """
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
+    except FileNotFoundError:
+        return _UNREADABLE if os.path.islink(path) else None
+    except OSError:
+        return _UNREADABLE
     except Exception:
         return None
 
@@ -73,9 +318,24 @@ def _base_dict_for_write(path, backup_path):
     现在：主文件不可用 → 改用备份作底稿（等于顺手把好数据救回来）；
     两者都不可用 → 保留原行为但留 ERROR，不再静默。
     """
-    if not os.path.exists(path):
+    if _untrusted_config_path == path:
+        raise ConfigUnreadableError("config must be reloaded before saving: %s" % path)
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        if os.path.islink(path):
+            raise ConfigUnreadableError("config is a dangling symlink: %s" % path)
         return {}
-    loaded = _read_json_or_none(path)
+    except OSError as exc:
+        raise ConfigUnreadableError("config stat failed: %s" % path) from exc
+    loaded = _read_json_checked(path)
+    if loaded is _UNREADABLE:
+        # 2026-11-02 走查 F-C-01：读不出来 ≠ 损坏。这里若回落备份当底稿，写回就等于
+        # 用更旧的快照覆盖一份只是暂时读不了的主配置。抛出由 save_* 的外层 except
+        # 记 ERROR 并返回 False（走既有的"保存失败"气泡），主配置原封不动。
+        log_line("%s 存在但读取失败（权限/IO 错误，不是内容损坏）：本次保存放弃，"
+                 "不用备份快照覆盖主配置" % path, "WARNING")
+        raise ConfigUnreadableError("config unreadable: %s" % path)
     if isinstance(loaded, dict):
         return loaded
     if loaded is not None:
@@ -87,6 +347,8 @@ def _base_dict_for_write(path, backup_path):
     if isinstance(bak, dict):
         log_line("%s 不可用，改用备份快照 %s 作为本次保存底稿"
                  % (path, backup_path), "WARNING")
+        bak = dict(bak)
+        bak["alerts_epoch"] = uuid.uuid4().hex
         return bak
     log_line("%s 不可用且备份快照 %s 也不可用：本次保存只写入已知字段，"
              "其余配置（目标价/自定义接口等）会丢失" % (path, backup_path), "ERROR")
@@ -126,6 +388,13 @@ def _atomic_write_json(path, payload):
             pass
         raise
 
+def _config_write_path():
+    """拒绝写入符号链接，避免覆盖链接或写穿到外部文件。"""
+    if os.path.islink(CONFIG_PATH):
+        raise ConfigUnreadableError("config is a symlink: %s" % CONFIG_PATH)
+    return CONFIG_PATH
+
+
 def _backup_config():
     """保存新配置前，把当前主配置备份为最近 1 份快照（.bak，覆盖旧快照）。
     仅在主配置已存在且可正常读取时备份；备份失败记录 WARNING 日志，但不阻断
@@ -139,11 +408,21 @@ def _backup_config():
     校验不通过时**跳过备份**（保留既有好备份）并留 WARNING，绝不覆盖。
     """
     try:
+        if _untrusted_config_path == CONFIG_PATH or os.path.islink(CONFIG_PATH):
+            return
+        if os.path.islink(CONFIG_BACKUP_PATH):
+            log_line("config backup SKIPPED: backup path is a symlink", "WARNING")
+            return
         if not os.path.exists(CONFIG_PATH):
             return
-        if not isinstance(_read_json_or_none(CONFIG_PATH), dict):
-            log_line("config backup SKIPPED：%s 当前不可解析，保留既有备份 %s 不被覆盖"
-                     % (CONFIG_PATH, CONFIG_BACKUP_PATH), "WARNING")
+        current = _read_json_checked(CONFIG_PATH)
+        if not isinstance(current, dict):
+            # 2026-11-02 走查 F-C-01：读不出来（_UNREADABLE）同样不备份 —— 此刻没读到
+            # 主配置内容，复制出去的未必是好数据；保留既有备份不被覆盖。
+            log_line("config backup SKIPPED：%s 当前%s，保留既有备份 %s 不被覆盖"
+                     % (CONFIG_PATH,
+                        "读取失败" if current is _UNREADABLE else "不可解析",
+                        CONFIG_BACKUP_PATH), "WARNING")
             return
         shutil.copy2(CONFIG_PATH, CONFIG_BACKUP_PATH)
     except Exception as exc:
@@ -264,6 +543,17 @@ def load_last_quote():
 
 
 def load_config():
+    try:
+        with config_transaction():
+            return _load_config_locked()
+    except Exception as exc:
+        global _untrusted_config_path
+        _untrusted_config_path = CONFIG_PATH
+        log_line("config transaction unavailable: %r" % (exc,), "WARNING")
+        return DEFAULT_STOCK, 120, 120, MIN_H, BG_MODE_DEFAULT
+
+
+def _load_config_locked():
     """读主配置，返回主窗启动需要的 5 元组 `(code, x, y, h, bg)`；本函数**不抛错**。
 
     四个值的口径：
@@ -277,8 +567,19 @@ def load_config():
     后果是每次启动都走恢复分支、而日志看不出恢复成没成功）。
     目标价条目不在这里 —— 它由 load_alerts 独立读写，与本 5 元组契约互不干扰。
     """
+    global _untrusted_config_path
     _migrate_legacy_config()
-    d = _as_config_dict(_read_json_or_none(CONFIG_PATH), CONFIG_PATH)
+    raw = _read_json_checked(CONFIG_PATH)
+    if raw is _UNREADABLE:
+        _untrusted_config_path = CONFIG_PATH
+        # 2026-11-02 走查 F-C-01：主配置在盘上、但这一刻读不出来（权限被改 / IO 错误 /
+        # 句柄耗尽）。这不是损坏：**不**走备份恢复（备份通常更旧），更**不**把它写回主配置
+        # （旧实现正是这样把更新的主配置覆盖成旧备份）。本次只用默认值启动；之后各 save_*
+        # 遇到同样读不出来会拒绝落盘，主配置原封不动，等下次读得出来时数据还在。
+        log_line("config.json 存在但读取失败（权限/IO 错误，不是内容损坏）：本次使用默认配置，"
+                 "不从备份恢复、也不改写主配置", "WARNING")
+        return DEFAULT_STOCK, 120, 120, MIN_H, BG_MODE_DEFAULT
+    d = _as_config_dict(raw, CONFIG_PATH)
     restored = False
     if d is None and os.path.exists(CONFIG_PATH):
         # 主配置存在但解析失败（损坏）→ 自动从最近备份快照恢复，避免用户数据全丢
@@ -311,9 +612,12 @@ def load_config():
         log_line("config bg=%s (default=%s) restored_from_backup=%s"
                  % (bg, BG_MODE_DEFAULT, restored), "WARNING")
     if restored:
+        # 恢复旧备份可能回退修订号；让恢复前打开的目标价面板失效。
+        d["alerts_revision"] = uuid.uuid4().hex
+        d["alerts_epoch"] = uuid.uuid4().hex
         # 从备份恢复成功后写回主配置，避免下次启动仍走恢复分支
         try:
-            _atomic_write_json(CONFIG_PATH, d)
+            _atomic_write_json(_config_write_path(), d)
         except Exception as exc:
             # v1.2.71：写回失败原被 `except: pass` 静默吞掉。后果是主配置一直是
             # 坏文件、每次启动都走"从备份恢复"分支，日志里只有一条 WARNING
@@ -325,6 +629,7 @@ def load_config():
             _clean_int(d.get("y", CONFIG_DEFAULT_Y), "y", CONFIG_DEFAULT_Y, CONFIG_XY_MIN, CONFIG_XY_MAX),
             h, bg)
 
+@_config_write_transaction
 def save_config(code, x, y, h=None, bg=None):
     """把主窗的位置与偏好写回 config.json。返回 bool：True=已落盘，False=没写成。
 
@@ -366,7 +671,7 @@ def save_config(code, x, y, h=None, bg=None):
             log_line("save_config: writing non-default bg=%r" % (bg,), "WARNING")
         d["bg"] = bg if bg is not None else old.get("bg", BG_MODE_DEFAULT)
         # 原子写并强制落盘：断电时不会留下半截配置或缺少目录更新。
-        _atomic_write_json(CONFIG_PATH, d)
+        _atomic_write_json(_config_write_path(), d)
         return True
     except Exception as exc:
         # v1.2.39：保存失败不再静默吞掉 —— 记录 ERROR 日志并返回 False，
@@ -391,14 +696,22 @@ FACE_GUARD_CONFIG_KEY = "face_guard"
 def load_face_guard_pref():
     """用户有没有开启人脸守卫。**默认 False**：要摄像头权限的功能不能默认打开
     （一开就亮绿灯且无法隐藏）。配置缺失/损坏或不是布尔值一律按未开启处理 —— 与"保护没在跑"
-    这个事实一致，而不是把字符串 "false" 误当成已开启。"""
-    d = _as_config_dict(_read_json_or_none(CONFIG_PATH), CONFIG_PATH)
+    这个事实一致，而不是把字符串 "false" 误当成已开启。
+
+    主配置暂时读不出来时开关未知，保持关闭，不能凭旧备份启动摄像头。
+    """
+    raw = _read_json_checked(CONFIG_PATH)
+    if raw is _UNREADABLE:
+        log_line("config.json 读取失败（权限/IO 错误），人脸守卫开关未知，本次不启用", "WARNING")
+        return False
+    d = _as_config_dict(raw, CONFIG_PATH)
     if not isinstance(d, dict):
         return False
     value = d.get(FACE_GUARD_CONFIG_KEY, False)
     return value if isinstance(value, bool) else False
 
 
+@_config_write_transaction
 def save_face_guard_pref(enabled):
     """写入用户开关；沿用 save_config 的"先备份 + 以旧配置为底稿 + 原子写"三件套。"""
     try:
@@ -411,7 +724,7 @@ def save_face_guard_pref(enabled):
             return False
         d = dict(old)
         d[FACE_GUARD_CONFIG_KEY] = bool(enabled)
-        _atomic_write_json(CONFIG_PATH, d)
+        _atomic_write_json(_config_write_path(), d)
         return True
     except Exception as exc:
         log_line("save_face_guard_pref FAILED (%s): %r"
@@ -435,7 +748,16 @@ def load_alerts(code=None):
     写入盖章成别的 code —— 原股目标价就此丢失。
     与 load_config 的 5 元组契约互不干扰（load_config 签名不变）。"""
     from sf_constants import TARGET_DIR_ABOVE, TARGET_DIR_BELOW
-    d = _as_config_dict(_read_json_or_none(CONFIG_PATH), CONFIG_PATH)
+    global _untrusted_config_path
+    if _untrusted_config_path == CONFIG_PATH:
+        log_line("配置读取失败，暂停加载目标价；恢复后请重新启动", "WARNING")
+        return []
+    raw = _read_json_checked(CONFIG_PATH)
+    if raw is _UNREADABLE:
+        _untrusted_config_path = CONFIG_PATH
+        log_line("config.json 读取失败，暂停加载目标价；恢复后请重新启动", "WARNING")
+        return []
+    d = _as_config_dict(raw, CONFIG_PATH)
     if d is None and os.path.exists(CONFIG_PATH):
         # v1.3.42 第4轮走查：与 load_config 同口径 —— 主配置解析失败时回落备份
         # 快照。原实现直接返回 []，于是配置一旦读不出来（BOM/半截 JSON），
@@ -548,28 +870,57 @@ def _dormant_of(stored, code, owner=""):
     return out
 
 
+def _session_is_past(alert):
+    """仅在顺延后的交易日已确认且超过清空时刻时视为过期。"""
+    from targets import _beijing_now, _clear_dt, is_trading_day_confirmed, roll_to_trading_day
+    if not isinstance(alert, dict):
+        return False
+    day = roll_to_trading_day(alert.get("session_date"))
+    clear_at = _clear_dt(day)
+    return (clear_at is not None
+            and is_trading_day_confirmed(clear_at.date()) is True
+            and _beijing_now() >= clear_at)
+
+
 def _prune_store(active, dormant):
-    """上限修剪只动**休眠**条目：当前股票的条目永远不因为"别人太多"被丢掉。"""
+    """上限修剪只动**休眠**条目：当前股票的条目永远不因为"别人太多"被丢掉。
+
+    2026-11-02 走查 F-B-01：存储顺序是「刚写入的排最前」（见 save_alerts 的 active + dormant），
+    所以最早写入的在尾部。旧实现从头部剪，剪掉的恰是刚切走的那只，而别的股票那些早已过期、
+    永远没人清理的条目反而占满名额。现在：先丢已过期的休眠条目（它们本来就要被清掉），
+    还超限再从尾部（最早写入）按股票剪。股票按规范代码计数，600519 与 sh600519 是同一只。
+    """
     keep = list(active) + list(dormant)
     if len(keep) <= ALERT_STORE_MAX_TOTAL:
-        codes = {str(a.get("code")) for a in dormant if str(a.get("code") or "")}
+        codes = {_canon_code(a.get("code")) for a in dormant if str(a.get("code") or "")}
         if len(codes) <= ALERT_STORE_MAX_CODES:
             return keep, 0
-    # 超了：按"股票"从头部（最早写入的）剪休眠条目，直到两只数与总数都达标
-    dormant_codes = []
-    for a in dormant:
-        c = str(a.get("code"))
-        if c not in dormant_codes:
-            dormant_codes.append(c)
     dropped = 0
     pruned_codes = []
+    # 第一步：已过期的休眠条目没有任何保留价值，先丢。
+    live = []
+    for a in dormant:
+        if _session_is_past(a):
+            c = _canon_code(a.get("code")) or str(a.get("code"))
+            if c not in pruned_codes:
+                pruned_codes.append(c)
+        else:
+            live.append(a)
+    dropped += len(dormant) - len(live)
+    dormant = live
+    # 第二步：还超限，从尾部（最早写入）按股票剪。
+    dormant_codes = []
+    for a in dormant:
+        c = _canon_code(a.get("code")) or str(a.get("code"))
+        if c not in dormant_codes:
+            dormant_codes.append(c)
     while dormant and (len(active) + len(dormant) > ALERT_STORE_MAX_TOTAL
                        or len(dormant_codes) > ALERT_STORE_MAX_CODES):
-        victim = dormant_codes[0]
+        victim = dormant_codes.pop()
         before = len(dormant)
-        dormant = [a for a in dormant if str(a.get("code")) != victim]
+        dormant = [a for a in dormant
+                   if (_canon_code(a.get("code")) or str(a.get("code"))) != victim]
         dropped += before - len(dormant)
-        dormant_codes.pop(0)
         pruned_codes.append(victim)
     if dropped:
         log_line("目标价存储超上限，已丢弃 %d 条休眠条目（保留最近 %d 只股票）"
@@ -580,7 +931,168 @@ def _prune_store(active, dormant):
     return list(active) + dormant, dropped
 
 
-def save_alerts(alerts, code=None):
+def alerts_revision(code=None):
+    """Return structural revision globally or for one stock, including legacy data."""
+    raw = _read_json_checked(CONFIG_PATH)
+    from_backup = False
+    if raw is _UNREADABLE or config_unavailable():
+        raise ConfigUnreadableError("cannot read target revision")
+    if not isinstance(raw, dict):
+        if os.path.exists(CONFIG_PATH):
+            raw = _read_json_checked(CONFIG_BACKUP_PATH)
+            if not isinstance(raw, dict):
+                raise ConfigUnreadableError("cannot read target revision from backup")
+            from_backup = True
+        else:
+            raw = {}
+    if code is not None:
+        revisions = raw.get("alerts_revisions")
+        revisions = revisions if isinstance(revisions, dict) else {}
+        owner = _canon_code(raw.get("code"))
+        wanted = _canon_code(code)
+        items = raw.get("alerts")
+        items = items if isinstance(items, list) else []
+        active = [a for a in items if isinstance(a, dict) and
+                  (_canon_code(a.get("code")) == wanted or
+                   (not str(a.get("code") or "").strip() and (not owner or owner == wanted)))]
+        structural = [{k: v for k, v in alert.items() if k != "code"} for alert in active]
+        epoch = ("backup", raw.get("alerts_epoch")) if from_backup else raw.get("alerts_epoch")
+        return (epoch, revisions.get(wanted), tuple(_alert_structure(structural)))
+    return raw.get("alerts_revision")
+
+
+def _alert_structure(alerts):
+    values = [{key: value for key, value in alert.items()
+               if key not in ("state", "last_side")}
+              for alert in alerts if isinstance(alert, dict)]
+    return sorted((json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+                   for value in values))
+
+
+@contextmanager
+def expect_alerts_unchanged(code, alerts):
+    previous = getattr(_config_lock_state, "expected_alerts", None)
+    _config_lock_state.expected_alerts = (code, alerts)
+    try:
+        yield
+    finally:
+        _config_lock_state.expected_alerts = previous
+
+
+TARGET_NOTIFICATION_OUTBOX_MAX = 1024
+_TARGET_NOTIFICATION_OUTBOX_KEY = "target_notification_outbox"
+
+
+def _outbox_base():
+    if config_unavailable() or os.path.islink(CONFIG_PATH):
+        raise ConfigUnreadableError("configuration unavailable")
+    try:
+        os.stat(CONFIG_PATH)
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ConfigUnreadableError("configuration stat failed") from exc
+    raw = _read_json_checked(CONFIG_PATH)
+    if not isinstance(raw, dict):
+        raise ConfigUnreadableError("configuration unreadable or corrupt")
+    return raw
+
+
+def _validated_outbox(value):
+    if not isinstance(value, list) or len(value) > TARGET_NOTIFICATION_OUTBOX_MAX:
+        raise ConfigUnreadableError("invalid notification outbox")
+    ids = set()
+    for event in value:
+        if not isinstance(event, dict):
+            raise ConfigUnreadableError("invalid notification event")
+        event_id = event.get("id")
+        if not isinstance(event_id, str) or not event_id.strip() or event_id in ids:
+            raise ConfigUnreadableError("invalid or duplicate notification event id")
+        ids.add(event_id)
+    return value
+
+
+def load_target_notification_outbox():
+    """Return pending events; raise ConfigUnreadableError instead of using a backup."""
+    try:
+        with config_transaction():
+            config = _outbox_base()
+            return _validated_outbox(config.get(_TARGET_NOTIFICATION_OUTBOX_KEY, []))
+    except ConfigUnreadableError:
+        raise
+    except Exception as exc:
+        raise ConfigUnreadableError("cannot read notification outbox") from exc
+
+
+@_config_write_transaction
+def sync_target_notification_outbox(expected_events):
+    """Confirm exact pending events and durably rewrite the current main config."""
+    try:
+        expected = _validated_outbox(expected_events)
+        if not expected:
+            return False
+        current = _outbox_base()
+        version = current.get("version", 1)
+        if isinstance(version, int) and version > CONFIG_SCHEMA_VERSION:
+            return False
+        events = _validated_outbox(current.get(_TARGET_NOTIFICATION_OUTBOX_KEY, []))
+        by_id = {event["id"]: event for event in events}
+        if any(by_id.get(event["id"]) != event for event in expected):
+            return False
+        with open(_config_write_path(), "rb") as current_file:
+            os.fsync(current_file.fileno())
+        if os.path.islink(CONFIG_BACKUP_PATH):
+            raise ConfigUnreadableError("notification backup is a symlink")
+        _atomic_write_json(CONFIG_BACKUP_PATH, current)
+        directory = os.path.dirname(CONFIG_PATH) or "."
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return True
+    except Exception as exc:
+        log_line("sync_target_notification_outbox FAILED: %r" % (exc,), "ERROR")
+        return False
+
+
+@_config_write_transaction
+def ack_target_notification_outbox(event_ids):
+    """Remove pending event IDs idempotently; return False on any write failure."""
+    try:
+        if not isinstance(event_ids, (list, tuple, set, frozenset)) or any(
+                not isinstance(item, str) or not item.strip() for item in event_ids):
+            return False
+        old = _outbox_base()
+        version = old.get("version", 1)
+        if isinstance(version, int) and version > CONFIG_SCHEMA_VERSION:
+            return False
+        events = _validated_outbox(old.get(_TARGET_NOTIFICATION_OUTBOX_KEY, []))
+        ids = set(event_ids)
+        remaining = [event for event in events if event["id"] not in ids]
+        if len(remaining) == len(events):
+            if os.path.exists(CONFIG_PATH):
+                with open(_config_write_path(), "rb") as current:
+                    os.fsync(current.fileno())
+                directory = os.path.dirname(CONFIG_PATH) or "."
+                fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            return True
+        updated = dict(old)
+        updated[_TARGET_NOTIFICATION_OUTBOX_KEY] = remaining
+        _backup_config()
+        _atomic_write_json(_config_write_path(), updated)
+        return True
+    except Exception as exc:
+        log_line("ack_target_notification_outbox FAILED: %r" % (exc,), "ERROR")
+        return False
+
+
+@_config_write_transaction
+def save_alerts(alerts, code=None, *, outbox_events=None):
     """「目标价」独立写入 config 的 alerts 字段（原子写 + 备份），保留其他字段。
 
     v1.4.59（S4 彻底解）：给了 `code` 时，这次写入**只替换属于这只股票的条目**，
@@ -595,15 +1107,28 @@ def save_alerts(alerts, code=None):
     本函数仅负责 alerts 字段自身的读写，不改动 save_config。"""
     try:
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        _backup_config()
-        # v1.3.42 第4轮走查：与 save_config 同口径，底稿不可解析时回落备份快照。
-        old = _base_dict_for_write(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        expected = getattr(_config_lock_state, "expected_alerts", None)
+        if expected is not None and (code != expected[0] or load_alerts(code) != expected[1]):
+            log_line("save_alerts skipped: target snapshot changed", "WARNING")
+            return False
+        # Outbox transactions must never replace the main file with an older backup.
+        if outbox_events is None:
+            _backup_config()
+            old = _base_dict_for_write(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        else:
+            old = _outbox_base()
         d = dict(old)
+        if outbox_events is not None:
+            events = _validated_outbox(old.get(_TARGET_NOTIFICATION_OUTBOX_KEY, []))
+            _validated_outbox(outbox_events)
+            d[_TARGET_NOTIFICATION_OUTBOX_KEY] = _validated_outbox(events + outbox_events)
+            _backup_config()
         old_version = old.get("version", 1)
         if isinstance(old_version, int) and old_version > CONFIG_SCHEMA_VERSION:
             log_line("save_alerts skipped: future schema version %s" % old_version, "WARNING")
             return False
-        d.pop("target_flash", None)  # 功能已移除，保存目标价时清理历史残留键
+        if outbox_events is None:
+            d.pop("target_flash", None)  # Preserve legacy save behavior.
         active = [dict(a) for a in (alerts or []) if isinstance(a, dict)]
         if code:
             for a in active:
@@ -615,10 +1140,62 @@ def save_alerts(alerts, code=None):
             # v1.4.60（复核 F1）：无 code 的旧条目属于顶层 code 那只股票，不属于"当前这只"。
             owner = str(d.get("code") or "").strip()
             dormant = _dormant_of(stored, code, owner)
-            d["alerts"], _dropped = _prune_store(active, dormant)
+            durable_enabled = (os.environ.get("SF_TARGET_TICKS_PATH") is not None or
+                               os.environ.get("SF_TARGET_TICKS_DISABLE") != "1")
+            dormant_codes = {_canon_code(a.get("code")) for a in dormant
+                             if str(a.get("code") or "")}
+            if durable_enabled:
+                combined = active + dormant
+                previous_codes = {_canon_code(a.get("code")) for a in stored
+                                  if str(a.get("code") or "")}
+                combined_codes = {_canon_code(a.get("code")) for a in combined
+                                  if str(a.get("code") or "")}
+                too_many = (len(combined) > ALERT_STORE_MAX_TOTAL and len(combined) > len(stored))
+                too_many_codes = (len(dormant_codes) > ALERT_STORE_MAX_CODES and
+                                  len(combined_codes) > len(previous_codes))
+                if too_many or too_many_codes:
+                    log_line("save_alerts refused: target storage limit while durable ticks enabled", "WARNING")
+                    return False
+                d["alerts"], dropped = combined, 0
+            else:
+                d["alerts"], dropped = _prune_store(active, dormant)
+            if dropped:
+                kept_ids = {id(item) for item in d["alerts"]}
+                affected = {_canon_code(item.get("code")) for item in dormant
+                            if id(item) not in kept_ids}
+                revisions = d.get("alerts_revisions")
+                revisions = dict(revisions) if isinstance(revisions, dict) else {}
+                for affected_code in affected:
+                    revisions[affected_code] = uuid.uuid4().hex
+                d["alerts_revisions"] = revisions
         else:
             d["alerts"] = active
-        _atomic_write_json(CONFIG_PATH, d)
+        previous_alerts = old.get("alerts")
+        previous_alerts = previous_alerts if isinstance(previous_alerts, list) else []
+        if _alert_structure(previous_alerts) != _alert_structure(d["alerts"]):
+            d["alerts_revision"] = uuid.uuid4().hex
+            if code:
+                wanted = _canon_code(code)
+                owner = _canon_code(old.get("code"))
+                previous_current = [a for a in previous_alerts if isinstance(a, dict) and
+                                    (_canon_code(a.get("code")) == wanted or
+                                     (not str(a.get("code") or "").strip() and
+                                      (not owner or owner == wanted)))]
+                previous_current = [{k: v for k, v in a.items() if k != "code"}
+                                    for a in previous_current]
+                current = [{k: v for k, v in a.items() if k != "code"} for a in active]
+                if _alert_structure(previous_current) != _alert_structure(current):
+                    revisions = d.get("alerts_revisions")
+                    revisions = dict(revisions) if isinstance(revisions, dict) else {}
+                    revisions[wanted] = uuid.uuid4().hex
+                    d["alerts_revisions"] = revisions
+            else:
+                d["alerts_epoch"] = uuid.uuid4().hex
+        _atomic_write_json(_config_write_path(), d)
+        if outbox_events is not None:
+            if os.path.islink(CONFIG_BACKUP_PATH):
+                raise ConfigUnreadableError("notification backup is a symlink")
+            _atomic_write_json(CONFIG_BACKUP_PATH, d)
         return True
     except Exception as exc:
         log_line("save_alerts FAILED: %r" % (exc,), "ERROR")

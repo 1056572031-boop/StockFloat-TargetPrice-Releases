@@ -656,6 +656,9 @@ export default {
           return await publishWith(token);
         } catch (error) {
           if (!isGitHubAuthFailure(error)) throw error;
+          // 重试成功时调用方什么也看不到，令牌被撤销过就无从查起；只记错误码，绝不记令牌。
+          console.error(JSON.stringify({ event: 'feedback_auth_retried', phase, code: error.code,
+            elapsed_ms: Date.now() - started }));
           // 令牌撤销或权限被 GitHub 改掉时，只清同一枚值并从预检开始完整再试一轮。
           // 从预检重来可利用资产名幂等，避免只重试半条上传路线造成重复写入；第二轮失败直接上抛，绝不循环。
           invalidateInstallationToken(env, token);

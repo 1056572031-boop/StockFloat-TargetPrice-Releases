@@ -33,6 +33,9 @@ if "unittest" in sys.modules and not getattr(sys, "frozen", False):
                           os.path.join(_SF_TMP, "sf_debug_test.log"))
     os.environ.setdefault("SF_SINGLE_SOCK",
                           os.path.join(_SF_TMP, "sf_single_test.sock"))
+    # 默认持久行情队列只在正式运行启用；测试用例通过 SF_TARGET_TICKS_PATH
+    # 或直接注入临时库验证，避免跨用例共享数据库。
+    os.environ.setdefault("SF_TARGET_TICKS_DISABLE", "1")
 
 QUOTE_URL = 'https://qt.gtimg.cn/q=%s'
 # The old minute host returns Tencent WAF HTTP 501; this Tencent route has the same schema.
@@ -40,7 +43,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.109'
+APP_VERSION = '1.4.110'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -103,6 +106,7 @@ RELEASE_STAGE = 'beta'
 #   当前稳定基线 = v1.4.108（线上先发的那份 1.4.108 是 Beta 包，已被同号替换）。
 # v1.4.109（2026-10-29）：按上面那句执行，翻回 'beta'。本轮没有收到"标记为稳定"的口头确认，
 #   稳定基线仍是 v1.4.108。
+# v1.4.110（2026-11-05）：沿用 'beta'。本轮没有收到"标记为稳定"的口头确认，稳定基线仍是 v1.4.108。
 # Beta 后缀的唯一来源（2026-10-12 收口）。此前"加什么字"这条规则写在两处
 # （这里与 stock_float_window 的右键菜单版本行），改一处会留下另一处继续说 Beta。
 # 收成常量的另一个理由：产物层查得到名字，而裸字面量在 co_names 里是隐形的

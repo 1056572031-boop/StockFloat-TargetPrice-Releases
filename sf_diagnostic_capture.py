@@ -248,6 +248,8 @@ def prepare_diagnostics(window, temp_out, sources: DiagnosticSources, *,
             # v1.4.59/60 那串"切股之后目标价整片消失"的根因就是归属串味，
             # 而包里此前只有总条数 —— 分不清"被我设没了"还是"被盖章走了"。
             "codes": _field("codes", window._alert_code_histogram, {}, "targets"),
+            # 目标价行情队列现场：暂存在内存里的行情数、持有登记的股票、登记目录状态。
+            "tick_queue": _field("tick_queue", window._target_tick_diagnostics, {}, "targets"),
         })
         _json_entry("targets.json", targets_payload)
         runtime: dict = {

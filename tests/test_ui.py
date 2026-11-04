@@ -5,9 +5,13 @@
 方法：QTest 在应用内注入 mousePress/MouseMove/MouseRelease/右键事件，
 替代系统级鼠标模拟，确定性验证 PyQt6 下坐标命中与交互逻辑。
 """
+import contextlib
+import datetime
 import os
 import sys
 import inspect
+
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +23,8 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 import stock_float_window as m
+import sf_config
+from sf_config import load_alerts as real_load_alerts
 import sf_quote
 
 
@@ -42,6 +48,7 @@ class TestUIInteraction(unittest.TestCase):
             patch.object(m, "load_config",
                          return_value=("sh600519", 100, 100, 200, "translucent")),
             patch.object(m, "save_config", lambda *a, **k: None),
+            patch.object(sf_config, "save_alerts", side_effect=m.save_alerts),
             patch.object(sf_quote, "http_get", _fake_http_get),
             patch.object(m, "start_icon_worker", lambda: None),
             # 私有 API / AppKit / 原生菜单不进入测试（有 try/except 兜底，这里显式隔离）
@@ -195,14 +202,21 @@ class TestUIInteraction(unittest.TestCase):
         """实时越过目标价时，通知标题必须展示股票名称而非单独代码。"""
         self.win.code = "sz002837"
         self.win.quote = {"name": "英雄克", "code": "002837"}
-        self.win._alerts = [{"direction": "below", "target": 64.50, "state": "pending"}]
+        self.win._alerts = [{"direction": "below", "target": 64.50, "state": "pending",
+                             "session_date": "2099-12-31"}]
         fired = [{"direction": "below", "target": 64.50, "text": "跌到 64.50"}]
-        with patch.object(m, "evaluate_tick", return_value=([], fired)), \
-             patch.object(m, "save_alerts", return_value=True), \
-             patch.object(m, "_notify_deliver") as notify:
+        import sf_config
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(sf_config, "CONFIG_PATH", os.path.join(directory, "config.json")), \
+             patch.object(sf_config, "CONFIG_BACKUP_PATH", os.path.join(directory, "config.json.bak")), \
+             patch.object(m, "evaluate_tick", return_value=([], fired)), \
+             patch.object(m, "_notify_deliver", return_value="pending") as notify:
+            self.assertTrue(sf_config.save_alerts(self.win._alerts, code=self.win.code))  # discipline-ok(R5): 保存窗口的实际测试目标。
             self.win._evaluate_targets(64.50)
-        self.assertEqual(notify.call_args.args[0], "英雄克 目标价")
-        self.assertIn("002837", notify.call_args.args[3])
+            events = sf_config.load_target_notification_outbox()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(notify.call_args.args[0], "英雄克 目标价")
+            self.assertIn("002837", notify.call_args.args[3])
 
     def test_target_hit_starts_rainbow_after_successful_save(self):
         """目标价命中且状态落盘成功后，必须恢复流动彩虹；保存失败不播放。"""
@@ -229,16 +243,24 @@ class TestUIInteraction(unittest.TestCase):
 
     def test_target_notification_uses_stock_name_on_startup_recovery(self):
         """启动恢复时补发的通知也必须展示股票名称。"""
+        from pathlib import Path
         self.win.code = "sz002837"
         self.win.quote = {"name": "英雄克", "code": "002837"}
-        raw = [{"direction": "below", "target": 64.50, "state": "pending"}]
+        raw = [{"direction": "below", "target": 64.50, "state": "pending",
+                "session_date": "2099-12-31"}]
         reminder = {"direction": "below", "target": 64.50, "text": "跌到 64.50"}
-        with patch.object(m, "load_alerts", return_value=raw), \
+        import sf_config
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(sf_config, "CONFIG_PATH", os.path.join(directory, "config.json")), \
+             patch.object(sf_config, "CONFIG_BACKUP_PATH", os.path.join(directory, "config.json.bak")), \
              patch.object(m, "recover_alerts", return_value=(raw, [reminder])), \
-             patch.object(m, "_notify_deliver") as notify:
+             patch.object(m, "_notify_deliver", return_value="pending") as notify:
+            self.assertTrue(sf_config.save_alerts(raw, code=self.win.code))
             self.win._init_targets()
-        self.assertEqual(notify.call_args.args[0], "英雄克 目标价")
-        self.assertIn("002837", notify.call_args.args[3])
+            events = sf_config.load_target_notification_outbox()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(notify.call_args.args[0], "英雄克 目标价")
+            self.assertIn("002837", notify.call_args.args[3])
 
     def test_current_price_prefers_real_quote_over_animation(self):
         """R47：判定必须基于真实成交价，不能用滚动动画的中间帧。
@@ -288,7 +310,10 @@ class TestUIInteraction(unittest.TestCase):
             {"direction": "above", "target": 71.0, "session_date": "2099-12-31",
              "state": "pending", "last_side": None},
         ]
-        with patch.object(m, "save_alerts", return_value=True):
+        saved_alerts = list(self.win._alerts)  # discipline-ok(R5): 模拟持久目标与窗口状态一致。
+        with patch.object(m, "load_alerts", return_value=saved_alerts), \
+             patch.object(m, "save_alerts", return_value=True), \
+             patch("sf_config.target_tick_transaction", return_value=contextlib.nullcontext()):
             self.win._clear_expired()
         self.assertEqual(len(self.win._alerts), 1)
         self.assertEqual(self.win._alerts[0]["session_date"], "2099-12-31")
@@ -710,6 +735,8 @@ class TestTargetSaveConsistency(unittest.TestCase):
         rolled = [self._alert(70.0, sd="2026-09-07")]
         self.win._alerts = old
         with patch.object(m, "roll_alerts_to_trading_day", return_value=(rolled, True)), \
+             patch.object(m, "load_alerts", return_value=old), \
+             patch.object(m, "_beijing_now", return_value=datetime.datetime(2026, 9, 7, 10, 0)), \
              patch.object(m, "save_alerts", return_value=True), \
              patch.object(m, "evaluate_tick", return_value=(rolled, [])) as evaluate, \
              patch.object(m.FloatWindow, "_after_save_config"):
@@ -724,7 +751,10 @@ class TestTargetSaveConsistency(unittest.TestCase):
         直到重启（定时器漏触发 / 休眠跨过 15:00:30 时必现）。
         """
         self.win._alerts = [self._alert(70.0, sd="2020-01-01")]
-        with patch.object(m, "save_alerts", return_value=True) as save, \
+        saved_alerts = list(self.win._alerts)  # discipline-ok(R5): 模拟持久目标与窗口状态一致。
+        with patch.object(m, "load_alerts", return_value=saved_alerts), \
+             patch.object(m, "save_alerts", return_value=True) as save, \
+             patch("sf_config.target_tick_transaction", return_value=contextlib.nullcontext()), \
              patch.object(m.FloatWindow, "_after_save_config", lambda self, ok: None):
             self.win._arm_clear_timer()
         self.assertEqual(self.win._alerts, [])

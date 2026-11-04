@@ -20,6 +20,9 @@ def update_flow_diagnostics(host, field, install_result):
         "last_check_at": field("update.last_check_at", lambda: float(host._update_last_check_at), None),
         "stale_resets": field("update.stale_resets", lambda: int(host._update_stale_resets), None),
         "last_result": field("update.last_result", lambda: host._update_last_result, None),
+        # 最近一次下载是怎么收场的（成功 / 用户取消 / 失败，失败再分确定性与否）。
+        # 此前下载失败只写 debug.log，日志轮转后"更新总不成功"就查不到原因了。
+        "last_download": field("update.last_download", lambda: host._update_last_download, None),
         "install_result": field("update.install_result", lambda: install_result(), None),
     }
 
@@ -176,6 +179,13 @@ class UpdateFlowController:
         if timer is not None:
             timer.stop()
         if update is None:
+            # 2026-11-02 走查 F-H-07：线上清单被撤回或回滚后，检查结果会变回「已是最新」，
+            # 但常驻会话里还记着之前发现的版本：手动「检查更新」会跳过联网、直接弹出
+            # 已经撤回的版本。这里把待更新版本和「已就绪包」的记账一起放下（只清记账，
+            # 不删磁盘上的包；下次真有新版时 ready_archive 会按版本重新核对）。
+            host._update_pending = None
+            host._update_ready_archive = None
+            host._update_ready_version = None
             if manual:
                 host._show_update_message("检查更新", "当前已是最新版本。")
             return
@@ -241,13 +251,57 @@ class UpdateFlowController:
         if cancel is not None:
             cancel.set()
 
+    def _is_cancel(self, error):
+        """error 是不是「用户取消下载」。惰性 import 与本模块其余更新代码同口径：
+        取不到 sf_update（安装包在运行中被换掉等）就按普通失败处理并留痕，不外抛。"""
+        try:
+            import sf_update
+            return isinstance(error, sf_update.UpdateCancelled)
+        except Exception as exc:
+            self.swallow("sf_update_flow.is_cancel", exc)
+            return False
+
+    def _record_download(self, host, update, error, background):
+        """把这次下载的收场方式记进宿主状态，随诊断包外发（runtime.json 的 update.last_download）。
+
+        只记类型名与截断后的原因；地址类文本由诊断导出那一步统一脱敏（先截断再脱敏是理论
+        缺口：残片可能匹配不上整串规则，通用 /Users/<x> 规则仍会兜住）。
+        记账失败只留痕，绝不影响下载收尾和给用户的提示。
+        """
+        cancelled = fatal = False
+        try:
+            import sf_update
+            cancelled = isinstance(error, sf_update.UpdateCancelled)
+            fatal = isinstance(error, sf_update.UpdateFatal)
+        except Exception as exc:
+            # 安装包在运行中被换掉时拿不到 sf_update：分类退回"普通失败"，记录本身照写。
+            self.swallow("sf_update_flow.last_download.classify", exc)
+        try:
+            host._update_last_download = {
+                "outcome": ("ok" if error is None else ("cancelled" if cancelled else "failed")),
+                "fatal": bool(fatal),
+                "error_type": type(error).__name__ if error is not None else "",
+                "error": str(error)[:200] if error is not None else "",
+                "version": str(getattr(update, "version", "") or ""),
+                "silent": bool(background),
+                "at": time.time(),
+            }
+        except Exception as exc:
+            self.swallow("sf_update_flow.last_download", exc)
+
     def downloaded(self, host, update, archive, error):
         prompt_when_ready = bool(getattr(host, "_update_prompt_when_ready", False))
         host._update_prompt_when_ready = False
         host._update_downloading = False
         host._update_cancel = None
+        self._record_download(host, update, error, prompt_when_ready)
         host._close_update_flow_box()
         if getattr(host, "_quitting", False):
+            return
+        if error is not None and self._is_cancel(error):
+            # 2026-11-02 走查 F-H-06：用户自己点了「取消」不是失败，只留一行日志，不再弹
+            # 「更新未完成：下载或校验失败」。状态位上面已经放下，下一次下载照常能发起。
+            self.log("update download cancelled by user")
             return
         if error is not None:
             self.log("update download failed: %r" % (error,), "WARNING")

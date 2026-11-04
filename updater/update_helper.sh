@@ -57,12 +57,13 @@ write_result() {
   # 真实顺序。所以正向路线必须整条跑（tests/test_update_helper.py::TestHelperPositiveRoute）。
   status="$1"
   message="$2"
-  wr_dir="$(dirname "$RESULT")"
-  mkdir -p "$wr_dir"
+  wr_dir="$(dirname "$RESULT")" || return 1
+  mkdir -p "$wr_dir" || return 1
   umask 077
   wr_tmp="$RESULT.tmp-$$"
-  printf '{"status":"%s","message":"%s"}\n' "$status" "$message" > "$wr_tmp"
-  mv -f "$wr_tmp" "$RESULT"
+  [ ! -d "$RESULT" ] || return 1
+  printf '{"status":"%s","message":"%s"}\n' "$status" "$message" > "$wr_tmp" || return 1
+  mv -f "$wr_tmp" "$RESULT" || return 1
 }
 
 fail() {
@@ -275,9 +276,12 @@ need_bytes=$((zip_stats + target_kb * 1024 + MIN_FREE_BYTES))
 free_bytes=$((free_kb * 1024))
 [ "$free_bytes" -ge "$need_bytes" ] || fail "insufficient_disk_space"
 
-work="$(mktemp -d "$(dirname "$ARCHIVE")/unpack.XXXXXX")"
+# 2026-11-02 走查 F-H-03：这两步在 set -e 下一旦失败，脚本会不写 result.json 就静默结束，
+# 用户下次启动看不到任何「更新未完成」提示。助手的约定是每个终态都落 result，所以都要走 fail。
+# （result 与暂存目录同处一个不可写目录时 fail 自己也写不进去，那是无解的；这里补的是
+# 「只有解包目录建不出来」那一类。）
+work="$(mktemp -d "$(dirname "$ARCHIVE")/unpack.XXXXXX")" || fail "unpack_dir_failed"
 owner_record="${work}.owner"
-printf '%s\n' "$$" > "$owner_record"
 retire_unpack_work() {
   [ -d "$work" ] || return 0
   # Only this invocation's private staging directory is moved, never TARGET or rollback.
@@ -292,6 +296,8 @@ retire_unpack_work() {
   /bin/mv "$owner_record" "$recovery_slot/owner" 2>/dev/null || true
 }
 trap retire_unpack_work EXIT
+# 先挂好 EXIT 清理再写属主记录：写失败时 fail 退出，也会把刚建好的空解包目录收走。
+printf '%s\n' "$$" > "$owner_record" || fail "unpack_dir_failed"
 # macOS 没有 timeout；用 Perl alarm 为 ditto 提供硬超时。
 /usr/bin/perl -e 'alarm shift; exec @ARGV' "$EXTRACT_TIMEOUT" /usr/bin/ditto -x -k "$ARCHIVE" "$work" || fail "archive_extract_failed"
 
@@ -389,10 +395,24 @@ new_exec_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
   "$TARGET/Contents/Info.plist" 2>/dev/null || true)"
 [ -n "$new_exec_name" ] || rollback_or_fail "restart_new_app_failed"
 new_exec="$TARGET/Contents/MacOS/$new_exec_name"
+# 2026-11-02 走查 F-H-02：进程存活复核按完整命令行匹配，而 pgrep 的 -f 参数是**扩展正则**。
+# 安装路径里有 ( ) [ ] + { } 等字符（例如「Apps (new)」「C++ Tools」）时，裸路径当正则要么
+# 匹配不到自己、要么直接是非法正则，于是装好且一直活着的新版被判成「没起来」并回滚。
+# 所以先把 ASCII 正则元字符逐个转义再交给 pgrep；多字节字符原样保留（元字符都是 ASCII，
+# UTF-8 的后续字节恒 >= 0x80，不会与它们混淆）。转义用的 perl 本脚本早已依赖（ditto 超时
+# 与软链接校验），不新增依赖；perl 万一失败就退回未转义的原路径，不让 set -e 静默终止。
+app_running() {
+  ar_pattern=""
+  if ! ar_pattern="$(printf '%s' "$new_exec" | LC_ALL=C /usr/bin/perl -pe 's/([.\[\]\\(){}*+?|^\$])/\\$1/g' 2>/dev/null)" \
+     || [ -z "$ar_pattern" ]; then
+    ar_pattern="$new_exec"
+  fi
+  /usr/bin/pgrep -f "$ar_pattern" >/dev/null 2>&1
+}
 started=0
 count=0
 while [ "$count" -lt 20 ]; do
-  if /usr/bin/pgrep -f "$new_exec" >/dev/null 2>&1; then
+  if app_running; then
     started=1
     break
   fi
@@ -415,7 +435,7 @@ if [ -n "$HANDOFF" ]; then
     count=0
   confirmed=0
   while [ "$count" -lt "$ack_ticks" ]; do
-    /usr/bin/pgrep -f "$new_exec" >/dev/null 2>&1 || rollback_or_fail "restart_new_app_failed"
+    app_running || rollback_or_fail "restart_new_app_failed"
     if [ -f "$handoff_ack" ] \
        && LC_ALL=C /usr/bin/grep -F "\"handoff_id\":\"$HANDOFF\"" "$handoff_ack" >/dev/null 2>&1 \
        && LC_ALL=C /usr/bin/grep -F "\"version\":\"$EXPECTED_VERSION\"" "$handoff_ack" >/dev/null 2>&1 \
@@ -433,12 +453,16 @@ else
   # previously released 10-second post-launch survival check for them.
   count=0
   while [ "$count" -lt 20 ]; do
-    /usr/bin/pgrep -f "$new_exec" >/dev/null 2>&1 || rollback_or_fail "restart_new_app_failed"
+    app_running || rollback_or_fail "restart_new_app_failed"
     count=$((count + 1))
     sleep 0.5
   done
 fi
-write_result "installed" "ok"
+# 新版已运行；结果写不进去时保留新版和所有回退包，不能回滚或报告成功。
+if ! write_result "installed" "ok"; then
+  printf '%s\n' 'installed_result_write_failed: new app retained; rollback packages preserved' >&2
+  exit 1
+fi
 
 # ---- 回退包只保留最近一份（v1.4.59 起，S6 第一项）----
 # 原来这条路径上每一份回退包都永久留在 /Applications 里（名字以 . 开头，Finder 看不见、

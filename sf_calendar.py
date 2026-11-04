@@ -21,7 +21,7 @@ from datetime import timedelta
 
 from sf_constants import APP_SUPPORT_DIR, TRADING_HOLIDAYS
 from sf_config import _atomic_write_json
-from sf_logging import log_line, log_line_throttled
+from sf_logging import log_line, log_line_throttled, log_swallow
 from sf_network import http_get
 
 _CACHE_DIR = APP_SUPPORT_DIR
@@ -57,7 +57,12 @@ def _load_month_cache(ym):
         # ready 状态，目标价会整月停留在“等待同步”而无法触发或按时清理。
         _fetched_months.add(ym)
         _month_sync_status[ym] = "ready"
-    except Exception:
+    except FileNotFoundError:
+        hol = set()                       # 未来月份第一次用：没有缓存是正常的
+    except Exception as exc:
+        # 2026-11-02 走查 F-A-06：缓存在却读不出来（损坏/空表/权限）此前零痕迹，用户那边
+        # 表现为"法定假日被当交易日"而日志查不到原因。每个月份每进程只读一次盘，不会刷屏。
+        log_swallow("sf_calendar._load_month_cache", exc)
         hol = set()
     _month_cache[ym] = hol
     return hol
@@ -75,8 +80,9 @@ def _save_month_cache(ym, holidays):
         # 0600：日历决定目标价是否在法定假日被清空，被同机其他账户改写就能
         # 让提醒静默失效，故只允许本人写。
         os.chmod(path, 0o600)
-    except Exception:
-        pass
+    except Exception as exc:
+        # 2026-11-02 走查 F-A-06：写盘失败只丢缓存持久化（内存里已有），但必须留痕。
+        log_swallow("sf_calendar._save_month_cache", exc)
 
 
 def _fetch_month_holidays(ym):
@@ -195,8 +201,8 @@ def _warm_async(ym):
     def _run():
         try:
             _ensure_month(ym)
-        except Exception:
-            pass
+        except Exception as exc:
+            log_swallow("sf_calendar._warm_async", exc)   # 2026-11-02 走查 F-A-06
         finally:
             with _LOCK:
                 _inflight.discard(ym)

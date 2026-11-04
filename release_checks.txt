@@ -20,7 +20,74 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.109
+version 1.4.110
+# ---- v1.4.110：目标价行情跨进程保护、空列表立即生效、涨跌停口径、行情截断、更新取消与安装助手 ----
+# 基线 dafb9f5（v1.4.109 发布后验收记录里的 release_source.head）；逐模块用语法树对比基线与 HEAD 得到的新名字：
+# 配置事务锁、不可读哨兵、发布登记、通知外发清单（sf_config）：
+check sf_config::config_transaction
+check sf_config::config_unavailable
+check sf_config::ConfigUnreadableError
+check sf_config::target_tick_transaction
+check sf_config::target_tick_publisher_open
+check sf_config::target_tick_publisher_status
+check sf_config::target_tick_publisher_active
+check sf_config::alerts_revision
+check sf_config::expect_alerts_unchanged
+check sf_config::load_target_notification_outbox
+check sf_config::sync_target_notification_outbox
+check sf_config::ack_target_notification_outbox
+# 磁盘行情队列与缓冲区持久化（sf_target_tick_store / sf_quote_delivery）：
+check sf_target_tick_store::TargetTickStore
+check sf_target_tick_store::CapacityError
+check sf_target_tick_store::RetainedCapacityError
+check sf_target_tick_store::DisplayQueuedCapacityError
+check sf_quote_delivery::adopt_publisher
+check sf_quote_delivery::retain_unsaved
+check sf_quote_delivery::restore_ordered
+check sf_quote_delivery::has_pending
+# 目标价面板：空列表立即生效，气泡类搬入面板模块（target_panel / stock_float_window）：
+check target_panel::TargetBubble
+check target_panel::_apply_empty
+check stock_float_window::_panel_targets_transaction
+check stock_float_window::_apply_empty_targets
+check stock_float_window::_drain_target_notification_outbox
+check stock_float_window::_consume_old_target_tick
+check stock_float_window::_note_target_degraded
+check stock_float_window::_show_config_unavailable
+check stock_float_window::PANEL_TICK_LOCK_ATTEMPTS
+# 行情截断拒收、证券字典触顶保留旧缓存、临时副本清扫容错、图标路径（sf_quote / sf_http / sf_universe / sf_temp_sweep / sf_icons）：
+check sf_quote::_require_payload_terminator
+check sf_http::_require_complete_body
+check sf_universe::_note_server_total
+check sf_temp_sweep::_PLIST_READ_ERRORS
+check sf_icons::_icon_target_path
+# 更新下载：取消不算失败、确定性失败立刻停（sf_update / sf_update_flow），诊断采集名单（sf_diag）：
+check sf_update::UpdateCancelled
+check sf_update::UpdateFatal
+check sf_update_flow::_record_download
+check sf_update_flow::_is_cancel
+check sf_diag::is_product_module
+forbid sf_diag::_looks_prod
+# 包内 shell 资源（随包的安装助手）：存活复核改走转义后的统一函数，旧的裸写法必须消失：
+checkfile Contents/Resources/updater/update_helper.sh::app_running
+checkfile Contents/Resources/updater/update_helper.sh::unpack_dir_failed
+checkfile Contents/Resources/updater/update_helper.sh::installed_result_write_failed
+forbidfile Contents/Resources/updater/update_helper.sh::pgrep -f "$new_exec"
+# 以下模块只改了函数体或字面量，没有新名字，改用测试登记（只证明用例存在，不证明通过）：
+#   sf_notify（投递完成回调）、sf_run_session（磁盘写满不再被当成账本损坏）、sf_calendar（缓存读写失败留痕）、
+#   sf_face_guard_controller（锁屏不清自动隐藏标记）、sf_ui_render（0.00% 不染色）、
+#   stock_float_window 的启动保持窗口在屏内、sf_quote 的陈旧主源累计。
+testref tests/test_target_panel.py::TestDeleteOne::test_removing_the_last_saved_target_can_still_be_saved
+testref tests/test_face_guard.py::TestWindowWiring::test_lock_after_guard_hide_still_restores_when_owner_returns
+testref tests/test_run_session.py::RuntimeSessionLedgerTests::test_disk_full_or_io_error_is_not_mistaken_for_corruption
+testref tests/test_notify.py::TestOsascriptFallback::test_completion_reports_script_exit_status
+testref tests/test_update_helper.py::TestHelperVerificationHome::test_installed_result_write_failure_preserves_new_app_and_rollbacks
+testref tests/test_v1459_stale_quote.py::StalePrimaryIsStillDegraded::test_stale_primary_streak_accumulates_and_log_is_throttled
+testref tests/test_round50_update.py::CancelIsNotAFailureFlow::test_a_cancelled_manual_download_shows_no_failure_popup
+testref tests/test_round50_window.py::TestStartupKeepsWindowFullyOnScreen::test_saved_position_mostly_offscreen_is_pulled_fully_inside
+testref tests/test_round50_window.py::TestPctColorFollowsTheRoundedText::test_price_trend_color_is_neutral_when_pct_text_rounds_to_zero
+testref tests/test_calendar.py::TestCacheFailuresLeaveATrace::test_corrupt_cache_file_is_logged_and_degrades_to_empty
+testref tests/test_sweep_temp_apps.py::TestMalformedInfoPlistDoesNotAbortTheSweep::test_unexpected_error_on_one_app_is_logged_and_skipped
 # ---- v1.4.109：收盘行情、换股搜索、目标价按规范代码归属、自动隐藏认上半身 ----
 # 基线 71851ac（线上 v1.4.108 稳定版的源码提交）；逐模块用语法树对比基线与 HEAD 得到的新名字：
 # 收盘后刷新失败的短间隔重试与睡眠唤醒补拉（sf_quote_loop / sf_constants）：
@@ -375,9 +442,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.109 Beta**
+checkfile Contents/Resources/docs/README.md::v1.4.110 Beta**
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.109
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.110
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

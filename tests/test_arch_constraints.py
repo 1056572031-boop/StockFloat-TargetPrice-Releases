@@ -10,6 +10,7 @@
   工具窗层级提升潜伏几十个版本从未生效（v1.4.29 复核发现并修复）。
 """
 import ast
+import os
 import pathlib
 import sys
 import unittest
@@ -498,9 +499,124 @@ class TestReleaseChainCallsTheGate(SFCase):
         self.assertGreater(ota, 0, "找不到 OTA 发布调用，脚本结构变了，这条断言需要重新设计")
         self.assertGreater(push, ota, "推源码必须排在 OTA 之后：推失败不该让已完成的发版回滚")
         self.assertGreater(readback, push, "「已同步」必须以回读归零为准，不能只看 push 退出码")
-        self.assertEqual(s.count("源码未同步"), 2,
-                         "推失败与推错分支两条路都必须把「源码未同步」写进结尾结论，"
+        # 2026-11-02 走查 F-J-08：由 2 改 3 —— 新增“detached HEAD 拒绝推送”这第三条失败路径，
+        # 同样必须把「源码未同步」写进结尾结论（行为由下面 DetachedHead 那条用例实测）。
+        self.assertEqual(s.count("源码未同步"), 3,
+                         "detached HEAD 拒绝、推失败、推错分支三条路都必须把「源码未同步」写进结尾结论，"
                          "少一处就是一条静默吞掉的失败")
+
+    # ---- 2026-11-02 走查 F-J-04 / F-J-08：把发版脚本里的两段抽出来当可执行夹具跑 ----
+    # 与 tests/test_coverage_chain_wiring.py::run_release_gate 同一做法：整份 build_release.sh 会覆盖
+    # 桌面 DMG、替换 /Applications、切 OTA，不能当单元跑；抽出来的只是“关卡核验”与“推源码”两小段，
+    # 解释器/回归脚本/远端全是临时目录里的替身，断言看的是退出码、变量值和远端分支，不看措辞。
+
+    def _release_segment(self, begin, end):
+        source = self._text("build_release.sh")
+        start = source.index(begin)
+        return source[start:source.index(end, start)]
+
+    def _run_gate_block(self, *, runner_writes_stamp, local_only, extra_env=None):
+        import subprocess
+        import tempfile
+        block = self._release_segment("GATE_STAMP_VALID=0\n", "# ---- 1) 版本号")
+        with tempfile.TemporaryDirectory(prefix="sf-step0-") as directory:
+            work = pathlib.Path(directory)
+            stamp = work / "stamp-ok"
+            vpy = work / "vpy"
+            # 关卡戳/覆盖率回执的两个核验：有 stamp-ok 文件才算可用
+            vpy.write_text('#!/bin/sh\ncase "$1" in\n'
+                           '  tools/gate_stamp.py|tools/coverage_provenance.py) [ -f "$STAMP" ] && exit 0; exit 1;;\n'
+                           'esac\nexit 0\n')
+            vpy.chmod(0o700)
+            runner = work / "run_tests.sh"
+            runner.write_text('#!/bin/sh\n'
+                              'printf "%s|%s|%s" "${SF_GUARD_PROBE-unset}" "${SF_LOCK_PROBE-unset}" '
+                              '"${SF_LOCK_PROBE_DIR-unset}" > seen-env\n'
+                              + ('touch "$STAMP"\n' if runner_writes_stamp else "")
+                              + "exit 0\n")
+            runner.chmod(0o700)
+            script = ("set -euo pipefail\nSKIP_TESTS=0\nLOCAL_ONLY=%d\nVENV_PY=%s\n" % (local_only, vpy)
+                      + block + '\nprintf "gate-valid=%s\\n" "$GATE_STAMP_VALID"\n')
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "STAMP": str(stamp)}
+            env.update(extra_env or {})
+            result = subprocess.run(["/bin/bash", "-c", script], cwd=work, env=env,
+                                    capture_output=True, text=True, timeout=30)
+            seen = (work / "seen-env").read_text() if (work / "seen-env").exists() else None
+            return result, seen
+
+    def test_local_only_rerun_exit_zero_without_a_stamp_aborts_the_release(self):
+        """F-J-04：补跑 run_tests.sh 退出码 0 但没落戳（SF_SKIP_COVERAGE 一类）不许被当成关卡已过。"""
+        result, _ = self._run_gate_block(runner_writes_stamp=False, local_only=1)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("gate-valid=1", result.stdout)
+
+    def test_publish_prepared_rerun_without_a_stamp_aborts(self):
+        result, _ = self._run_gate_block(runner_writes_stamp=False, local_only=0)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("gate-valid=1", result.stdout)
+
+    def test_local_only_rerun_that_leaves_a_valid_stamp_passes(self):
+        result, _ = self._run_gate_block(runner_writes_stamp=True, local_only=1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("gate-valid=1", result.stdout)
+
+    def test_rerun_does_not_inherit_the_run_tests_probe_switches(self):
+        """F-J-04：环境里残留 SF_GUARD_PROBE 等探针开关时，补跑的 run_tests.sh 看到的必须是“未设置”。"""
+        for local_only in (0, 1):
+            with self.subTest(local_only=local_only):
+                result, seen = self._run_gate_block(
+                    runner_writes_stamp=True, local_only=local_only,
+                    extra_env={"SF_GUARD_PROBE": "1", "SF_LOCK_PROBE": "1", "SF_LOCK_PROBE_DIR": "/nonexistent"})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(seen, "unset|unset|unset")
+
+    def _run_source_sync_block(self, *, detached):
+        import subprocess
+        import tempfile
+        import gate_stamp
+        block = self._release_segment('SRC_BRANCH="$(git -C "$PROJ" rev-parse --abbrev-ref HEAD)"',
+                                      "# ---- 7.1)")
+        with tempfile.TemporaryDirectory(prefix="sf-step7-") as directory:
+            root = pathlib.Path(directory).resolve()
+            env = gate_stamp.git_env()
+            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+                       GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+
+            def git(*args, cwd):
+                done = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True,
+                                      text=True, timeout=30)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                return done.stdout
+
+            remote, work = root / "remote.git", root / "work"
+            work.mkdir()
+            git("init", "-q", "--bare", "-b", "mainline", str(remote), cwd=root)
+            git("init", "-q", "-b", "mainline", cwd=work)
+            git("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                "commit", "-q", "--allow-empty", "-m", "base", cwd=work)
+            git("remote", "add", "origin", str(remote), cwd=work)
+            if detached:
+                git("checkout", "-q", "--detach", cwd=work)
+            # 日志路径改道：块里写死了 /tmp/sf_push_err.log，测试不往固定路径写文件
+            script = ("set -euo pipefail\nPROJ=%s\n" % work
+                      + block.replace("/tmp/sf_push_err.log", str(root / "push-err.log"))
+                      + '\nprintf "sync-note=[%s]\\n" "$SYNC_NOTE"\n')
+            result = subprocess.run(["/bin/bash", "-c", script], cwd=work, env=env,
+                                    capture_output=True, text=True, timeout=30)
+            heads = git("for-each-ref", "--format=%(refname:short)", "refs/heads", cwd=remote).split()
+            return result, heads
+
+    def test_source_sync_refuses_to_push_from_a_detached_head(self):
+        """F-J-08：detached HEAD 下 --abbrev-ref 是字面 HEAD；旧写法会在远端建出名为 HEAD 的分支并报已同步。"""
+        result, heads = self._run_source_sync_block(detached=True)
+        self.assertEqual(heads, [], "detached HEAD 不许在远端建任何分支：%r\n%s" % (heads, result.stdout + result.stderr))
+        self.assertIn("sync-note=[源码未同步]", result.stdout)
+
+    def test_source_sync_still_pushes_a_named_branch_and_reports_synced(self):
+        result, heads = self._run_source_sync_block(detached=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(heads, ["mainline"])
+        self.assertIn("sync-note=[]", result.stdout)
 
     def test_gate_stamp_tool_ships_self_test(self):
         """闸门自带变异自检是仓内规矩（AGENTS §3.1）：没有它，某天判据退化成
@@ -893,6 +1009,17 @@ class TestLocalReleaseBoundaries(SFCase):
             self.assertEqual(missing(printed_log(drifted, "")), ["发布动作完成 v" + version])
             # 「最终启动复验：」也是同一段打印的，同样拿真实输出对，而不是各抄一份。
             self.assertIn("最终启动复验：" + str(app), printed_log(block, ""))
+
+    def test_detached_head_closing_instructions_do_not_suggest_pushing_head(self):
+        import tempfile
+        block = self.source()[self.source().index("# ---- 8)"):]
+        with tempfile.TemporaryDirectory(prefix="sf_closing_detached_") as directory:
+            done = self.run_block(block, pathlib.Path(directory), 0, "/usr/bin/true",
+                                  {"VERSION": "9.9.9", "SRC_BRANCH": "HEAD",
+                                   "SYNC_NOTE": "源码未同步"})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("git push origin HEAD", done.stdout)
+        self.assertIn("确认目标分支", done.stdout)
 
     def test_local_only_log_cannot_pass_as_publish_evidence(self):
         # 本机覆盖模式也打印「已安装:」，只差发布那一半。它绝不能当成发布证据：

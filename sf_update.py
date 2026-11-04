@@ -34,7 +34,9 @@ from sf_constants import (APP_DISPLAY_NAME, APP_VERSION,
                           UPDATE_SIGNING_TEAM_ID, UPDATE_STAGING_DIR)
 
 
-_VERSION_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z")
+# 2026-11-02 走查 F-H-09：\d 默认匹配全部 Unicode 数字（"1٤.0.0" 会被当成 14.0.0），
+# 版本号只许 ASCII 数字，所以带 re.ASCII。
+_VERSION_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z", re.ASCII)
 _ALLOWED_HOSTS = frozenset({"github.com", "raw.githubusercontent.com",
                             "objects.githubusercontent.com",
                             "github-releases.githubusercontent.com",
@@ -58,6 +60,23 @@ def _record_manifest(status, **values):
 
 class UpdateError(Exception):
     """更新检查、下载或交接失败；调用方不应影响行情主流程。"""
+
+
+class UpdateCancelled(UpdateError):
+    """用户主动取消下载。
+
+    2026-11-02 走查 F-H-06：取消此前也抛成普通 UpdateError("下载已取消")，界面分不出
+    「用户自己点了取消」和「下载失败」，于是取消之后还会弹出『下载或校验失败』。
+    仍是 UpdateError 的子类：只关心「更新没成」的调用方不用改；要区分的才认这个类。
+    """
+
+
+class UpdateFatal(UpdateError):
+    """重试没有意义的确定性错误（本地磁盘写入失败、服务端不支持分段下载）。
+
+    2026-11-02 走查 F-H-08：这类错误此前与网络读中断同样按可重试处理，一次失败会被
+    分片重试 × 并发阶梯放大成 256 次请求。分片遇到它立刻上抛，下载梯度立刻终止。
+    """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -201,7 +220,9 @@ def verify_manifest(raw):
         raise UpdateError("更新清单无法读取") from exc
     if not isinstance(manifest, dict):
         raise UpdateError("更新清单格式无效")
-    if manifest.get("schema") != 1 or manifest.get("channel") != "stable":
+    schema = manifest.get("schema")
+    # F-H-09：bool 是 int 的子类，True == 1，所以必须用 type() 精确判定。
+    if type(schema) is not int or schema != 1 or manifest.get("channel") != "stable":
         raise UpdateError("更新清单版本不受支持")
     if manifest.get("bundle_id") != BUNDLE_ID or manifest.get("app_name") != _APP_NAME:
         raise UpdateError("更新包不属于当前应用")
@@ -220,10 +241,13 @@ def verify_manifest(raw):
     version = manifest.get("version")
     parse_version(version)
     url = archive.get("url")
+    if not isinstance(url, str):
+        # F-H-09：非字符串地址在 urlparse 里会抛 AttributeError，不是 UpdateError。
+        raise UpdateError("更新地址格式无效")
     _check_release_url(url)
     size = archive.get("size")
     digest = archive.get("sha256")
-    if (not isinstance(size, int) or size < 1 or size > UPDATE_ARCHIVE_MAX_BYTES
+    if (type(size) is not int or size < 1 or size > UPDATE_ARCHIVE_MAX_BYTES
             or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
         raise UpdateError("更新包校验信息无效")
     notes = manifest.get("notes", "")
@@ -382,7 +406,7 @@ def _update_remaining(deadline, cancel_event=None):
     try:
         return remaining_budget(deadline, cancel_event)
     except ResponseCancelledError as exc:
-        raise UpdateError("下载已取消") from exc
+        raise UpdateCancelled("下载已取消") from exc
     except ResponseDeadlineError as exc:
         raise UpdateError("更新请求超过总时限") from exc
 
@@ -422,7 +446,7 @@ def resolve_download_url(info, cancel_event, timeout, deadline=None):
             except ValueError as exc:
                 raise UpdateError("下载文件长度无效") from exc
         if cancel_event is not None and cancel_event.is_set():
-            raise UpdateError("下载已取消")
+            raise UpdateCancelled("下载已取消")
         return resolved
 
 
@@ -443,6 +467,7 @@ class _DownloadSource:
         self.timeout = timeout
         self.deadline = deadline if deadline is not None else time.monotonic() + timeout
         self.lock = threading.Lock()
+        self.stop = threading.Event()
         self.url = resolve_download_url(info, cancel_event, timeout, deadline=self.deadline)
         self.refreshed = False
 
@@ -488,6 +513,8 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
     deadline = source.deadline if source is not None else time.monotonic() + timeout
     for _ in range(max(1, attempts)):
         _update_remaining(deadline, cancel_event)
+        if source is not None and source.stop.is_set():
+            raise UpdateError("更新下载已停止")
         if source is not None:
             url = source.get_url()
         _check_release_url(url)
@@ -500,6 +527,8 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
         )
         try:
             response = safe_urlopen(request, timeout=_update_remaining(deadline, cancel_event))
+        except ResponseCancelledError as exc:
+            raise UpdateCancelled("下载已取消") from exc
         except urllib.error.HTTPError as exc:
             exc.close()
             if exc.code in (401, 403) and source is not None:
@@ -515,26 +544,48 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
             _update_remaining(deadline, cancel_event)
             _check_release_url(response.geturl())
             if response.status != 206:
-                raise UpdateError("更新服务不支持分段下载")
+                # F-H-08：服务端不支持 Range 是确定性的，重试 64 次也不会变；直接终止整个梯度。
+                if source is not None:
+                    source.stop.set()
+                raise UpdateFatal("更新服务不支持分段下载")
             content_range = response.headers.get("Content-Range", "")
             if not content_range.startswith("bytes %d-%d/" % (offset, end)):
                 raise UpdateError("更新分段响应无效")
             try:
-                with open(part_path, "r+b", buffering=0) as out:
-                    out.seek(offset)
+                # F-H-08：本地文件的 open/seek/write 失败（磁盘写满、半包被移走）与网络读中断
+                # 同是 OSError，但重试只会白发请求；单独包成不可重试的 UpdateFatal，
+                # 不让下面那个「读到一半连接断了」的 except OSError 把它吞成可重试。
+                try:
+                    out = open(part_path, "r+b", buffering=0)
+                except OSError as exc:
+                    if source is not None:
+                        source.stop.set()
+                    raise UpdateFatal("本地磁盘写入失败: %r" % (exc,)) from exc
+                with out:
+                    try:
+                        out.seek(offset)
+                    except OSError as exc:
+                        if source is not None:
+                            source.stop.set()
+                        raise UpdateFatal("本地磁盘写入失败: %r" % (exc,)) from exc
                     while offset <= end:
                         chunk = read_chunk(response, deadline, min(65536, end - offset + 1),
                                            cancel_event)
                         if not chunk:
                             break
-                        out.write(chunk)
+                        try:
+                            out.write(chunk)
+                        except OSError as exc:
+                            if source is not None:
+                                source.stop.set()
+                            raise UpdateFatal("本地磁盘写入失败: %r" % (exc,)) from exc
                         offset += len(chunk)
                         if progress_callback is not None:
                             progress_callback(len(chunk))
             except ResponseDeadlineError as exc:
                 raise UpdateError("更新请求超过总时限") from exc
             except ResponseCancelledError as exc:
-                raise UpdateError("下载已取消") from exc
+                raise UpdateCancelled("下载已取消") from exc
             except OSError:
                 # 读到一半连接断了/超时：换一条连接从断点接着来。
                 last_error = UpdateError("更新分段读取中断")
@@ -549,13 +600,17 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
 def _load_resume_state(state_path, info):
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
+        # F-H-09：合法 JSON 但不是对象（[] / null / 5）时 .get 会抛 AttributeError，
+        # 续传状态于是永远读不出来；一律按「没有进度」处理，下一个分片完成时会被覆盖写好。
+        if not isinstance(data, dict):
+            return set()
         if (data.get("version") == info.version
                 and data.get("size") == info.archive_size
                 and data.get("sha256") == info.archive_sha256):
             max_parts = len(_download_ranges(info.archive_size))
             return {int(index) for index in data.get("completed", [])
                     if isinstance(index, int) and 0 <= index < max_parts}
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         pass
     return set()
 
@@ -623,9 +678,10 @@ def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
         if not pending:
             return
         if cancel_event is not None and cancel_event.is_set():
-            raise UpdateError("下载已取消")
+            raise UpdateCancelled("下载已取消")
         if source is None:
             source = _DownloadSource(info, cancel_event, timeout, deadline=deadline)
+        fatal_error = None
         with concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(workers, len(pending)), thread_name_prefix="update-part") as pool:
             future_to_index = {
@@ -637,13 +693,21 @@ def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
                 index = future_to_index[future]
                 try:
                     future.result()
+                except UpdateFatal as exc:
+                    source.stop.set()
+                    for queued in future_to_index:
+                        queued.cancel()
+                    fatal_error = exc
+                    break
                 except UpdateError as exc:
                     last_error = exc
                 else:
                     completed.add(index)
                     _save_resume_state(state_path, info, completed)
         if cancel_event is not None and cancel_event.is_set():
-            raise UpdateError("下载已取消")
+            raise UpdateCancelled("下载已取消") from fatal_error
+        if fatal_error is not None:
+            raise fatal_error
         _update_remaining(deadline, cancel_event)
         if len(completed) == len(ranges):
             return
@@ -672,7 +736,7 @@ def download_update(info, cancel_event=None, timeout=300, progress_callback=None
             state_path.unlink(missing_ok=True)
             raise UpdateError("下载文件校验失败")
         if local_cancel.is_set():
-            raise UpdateError("下载已取消")
+            raise UpdateCancelled("下载已取消")
         os.replace(part_path, final_path)
         state_path.unlink(missing_ok=True)
         return str(final_path)

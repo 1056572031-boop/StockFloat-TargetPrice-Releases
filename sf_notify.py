@@ -588,7 +588,7 @@ def _install_delegate(center):
         log_line("notify delegate install error: %r" % (exc,), "WARNING")
 
 
-def deliver(title, subtitle, body, semantic_key=None, on_click=None):
+def deliver(title, subtitle, body, semantic_key=None, on_click=None, on_complete=None):
     """投递一条通知。返回 'un' / 'osascript' / 'denied' / 'error' / 'pending'。
 
     pending 仅代表已排队，并非 UN 成功；授权后补送不依赖业务再次触发 hit。
@@ -604,7 +604,11 @@ def deliver(title, subtitle, body, semantic_key=None, on_click=None):
     """
     global _DELIVER_LAST, _DELIVER_LAST_AT
     try:
-        result = _deliver_impl(title, subtitle, body, semantic_key, on_click)
+        if on_complete is None:
+            result = _deliver_impl(title, subtitle, body, semantic_key, on_click)
+        else:
+            result = _deliver_impl(title, subtitle, body, semantic_key, on_click,
+                                   on_complete=on_complete)
     except Exception:
         with _DELIVERY_LOCK:
             _DELIVER_COUNTS["error"] = _DELIVER_COUNTS.get("error", 0) + 1
@@ -620,14 +624,30 @@ def deliver(title, subtitle, body, semantic_key=None, on_click=None):
 
 
 def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
-                  _pending_claim=False):
+                  _pending_claim=False, on_complete=None):
     """deliver() 的原始实现，行为与拆分前逐位一致（计时/计数在 deliver 外层）。"""
     global _USE_OSASCRIPT
+    callback = on_complete
+    if callback is not None:
+        completion_lock = threading.Lock()
+        completed = False
+        def complete_once(success):
+            nonlocal completed
+            with completion_lock:
+                if completed:
+                    return
+                completed = True
+            callback(success)
+        on_complete = complete_once
+    def fallback():
+        if on_complete is None:
+            return _deliver_osascript(title, subtitle, body)
+        return _deliver_osascript(title, subtitle, body, on_complete=on_complete)
     _ensure_un()
     if _UN_UNAVAILABLE:
         # UN 框架缺失（PyObjC 不可用）：osascript 是唯一的横幅出路。
         # 这不是"用户拒绝"，不应被下面的 denied 分支挡掉。
-        return _deliver_osascript(title, subtitle, body)
+        return fallback()
     with _DELIVERY_LOCK:
         _expire_pending_locked()
     # 排队满 60 秒仍无授权答复的旧提醒，先于本条补发出去（持锁之外发）。
@@ -658,8 +678,10 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
                 return "denied"
         log_line("notify: UN 尚未授权(status=%s)，本次改走 osascript 补发" % status,
                  "WARNING")
-        return _deliver_osascript(title, subtitle, body)
+        return fallback()
     if status not in ("authorized", "provisional", "ephemeral"):
+        if on_complete is not None:
+            return "pending"
         with _DELIVERY_LOCK:
             # Query completion may have raced the snapshot above. Recheck under
             # the same lock used by settings before enqueuing or dropping.
@@ -684,7 +706,7 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
             _schedule_pending_flush()
             return "pending"
     if _USE_OSASCRIPT:
-        return _deliver_osascript(title, subtitle, body)
+        return fallback()
     try:
         center = _un_center()
         if center is None:
@@ -714,6 +736,11 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
 
         def _done(error):
             if error is None:
+                if on_complete is not None:
+                    try:
+                        on_complete(True)
+                    except Exception as exc:
+                        log_line("notify completion callback failed: %r" % (exc,), "WARNING")
                 return
             log_line("UN deliver error: %r; fallback osascript" % (error,), "WARNING")
             global _USE_OSASCRIPT
@@ -729,7 +756,7 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
                     _FALLBACK_KEYS.popitem(last=False)
             # completionHandler 异步返回时，业务层已把该目标标成 hit；必须立刻
             # 对这一次通知补发，而不能只让后续通知降级，否则本次会永久漏掉。
-            _deliver_osascript(title, subtitle, body)
+            fallback()
 
         center.addNotificationRequest_withCompletionHandler_(req, _done)
         return "un"
@@ -740,10 +767,10 @@ def _deliver_impl(title, subtitle, body, semantic_key=None, on_click=None, *,
             if _AUTH_STATUS_CACHE == "denied":
                 return "denied"
             _USE_OSASCRIPT = True
-        return _deliver_osascript(title, subtitle, body)
+        return fallback()
 
 
-def _deliver_osascript(title, subtitle, body):
+def _deliver_osascript(title, subtitle, body, on_complete=None):
     """osascript 降级路线：无点击回调（已知损失）。
 
     R35-4：必须在**后台线程**执行。deliver() 由行情 tick 在 UI 线程调用，
@@ -757,14 +784,21 @@ def _deliver_osascript(title, subtitle, body):
     script = 'display notification "%s" with title "%s"' % (body_s, head_s)
 
     def _run():
+        success = False
         try:
             result = subprocess.run(["/usr/bin/osascript", "-e", script], check=False,
                                     capture_output=True, timeout=5)
-            if result.returncode != 0:
+            success = result.returncode == 0
+            if not success:
                 log_line("osascript deliver failed returncode=%s stderr=%r" %
                          (result.returncode, result.stderr), "WARNING")
         except Exception as exc:
             log_line("osascript deliver error: %r" % (exc,), "WARNING")
+        if on_complete is not None:
+            try:
+                on_complete(success)
+            except Exception as exc:
+                log_line("notify completion callback failed: %r" % (exc,), "WARNING")
 
     try:
         # daemon：osascript 最长可能阻塞 5s，非守护线程会让退出流程等它，
@@ -774,6 +808,11 @@ def _deliver_osascript(title, subtitle, body):
         return "osascript"
     except Exception as exc:
         log_line("osascript thread start error: %r" % (exc,), "WARNING")
+        if on_complete is not None:
+            try:
+                on_complete(False)
+            except Exception as callback_exc:
+                log_line("notify completion callback failed: %r" % (callback_exc,), "WARNING")
         return "error"
 
 

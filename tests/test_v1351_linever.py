@@ -169,7 +169,7 @@ class TestSeedBumpsLineVer(_WindowBase):
             os.environ["SF_SEED_FIRST_SCREEN"] = "1"
             with patch.object(m, "load_last_quote", return_value={
                     "code": "600519",
-                    "quote": {"price": "1688.00", "pct": "3.5"},
+                    "quote": {"name": "贵州茅台", "code": "600519", "price": "1688.00", "pct": "3.5"},
                     "day": "2026-09-11",
                     "minute_points": [("0930", 1680.0, None)]}):
                 win._seed_first_screen()

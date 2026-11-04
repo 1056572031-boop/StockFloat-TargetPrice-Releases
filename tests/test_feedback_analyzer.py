@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -271,7 +272,12 @@ class FeedbackAnalyzerTests(SFCase):
             archive = self._archive(root, {"health": True})
             report = analyze_archive(archive, root / "reports", ruleset={"required_members": []})
             self.assertEqual(report["conclusion"], "no_known_issue")
-            self.assertEqual(report["config_sha256"], report["config_sha256"])
+            # 2026-11-02 走查 F-J-05：原写 report[x] 比 report[x]，用例名叫 deterministic 却只跑了一次分析。
+            # 现在同一份输入分析两次必须得到同一个配置哈希，并且等于测试侧独立算的规范化 JSON 的 SHA-256。
+            again = analyze_archive(archive, root / "reports-again", ruleset={"required_members": []})
+            self.assertEqual(report["config_sha256"], again["config_sha256"])
+            self.assertEqual(report["config_sha256"],
+                             hashlib.sha256(b'{"required_members":[]}').hexdigest())
 
     def test_invalid_ruleset_values_are_coerced_and_report_written(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -486,6 +492,82 @@ class FullEvidenceAnalyzerTests(SFCase):
         with tempfile.TemporaryDirectory() as directory:
             report = self.analyze(Path(directory), extra)
             return report, Path(report["markdown_path"]).read_text()
+
+    def _found(self, extra):
+        report, text = self.analysis_of(extra)
+        return {row["code"]: row for row in report["findings"]}, text
+
+    @staticmethod
+    def _tick_queue(**body):
+        return {"targets.json": json.dumps({"tick_queue": {"persistent": True, **body}}).encode()}
+
+    def test_target_protection_pause_is_named_with_its_count_and_no_cause(self):
+        found, text = self._found(self._tick_queue(
+            registry="INACTIVE", degraded={"counts": {"unprotected_quotes": 5},
+                                           "guard_unavailable_now": True}))
+        row = found["target_protection_degraded"]
+        self.assertEqual(row["severity"], "warning")
+        self.assertIn("unprotected_quotes=5", row["message"])
+        self.assertIn("仍未恢复", row["message"], "此刻还没好和已经好了要分开说")
+        self.assertNotIn("目录没有写权限", row["message"], "计数只能证明发生过，不能替它认定原因")
+        self.assertIn("目标价保护出现过暂停", text, "进了发现列表还要真的写进报告正文")
+
+    def test_a_recovered_pause_is_still_reported_but_not_as_current(self):
+        found, _text = self._found(self._tick_queue(
+            degraded={"counts": {"lock_unavailable": 2}, "guard_unavailable_now": False,
+                      "lock_unavailable_now": False, "capacity_gap_now": False}))
+        self.assertNotIn("仍未恢复", found["target_protection_degraded"]["message"])
+
+    def test_an_unreadable_or_unwritable_registry_is_a_warning(self):
+        for body in ({"registry": "UNKNOWN"},
+                     {"registry": "INACTIVE", "registry_dir": {"exists": False, "writable": False}}):
+            with self.subTest(body=body):
+                found, _text = self._found(self._tick_queue(**body))
+                self.assertEqual(found["target_registry_unavailable"]["severity"], "warning")
+
+    def test_unsaved_ticks_are_information_only(self):
+        found, _text = self._found(self._tick_queue(unsaved=3, unsaved_codes={"sh600519": 3}))
+        self.assertEqual(found["target_ticks_unsaved"]["severity"], "info")
+
+    def test_a_clean_or_old_package_adds_no_target_finding(self):
+        clean = self._tick_queue(
+            unsaved=0, registry="INACTIVE", registry_dir={"exists": False, "writable": True},
+            degraded={"counts": {}, "guard_unavailable_now": False,
+                      "lock_unavailable_now": False, "capacity_gap_now": False})
+        for extra in (clean, {"targets.json": b"{}"}, {"targets.json": b'{"tick_queue": {"persistent": false}}'}):
+            with self.subTest(extra=extra):
+                found, _text = self._found(extra)
+                self.assertEqual([code for code in found if code.startswith("target_")], [])
+
+    def test_malformed_tick_queue_values_do_not_break_or_invent_findings(self):
+        for targets in ({"tick_queue": "x"}, {"tick_queue": []},
+                        {"tick_queue": {"degraded": {"counts": {"a": True, "b": -1, "c": "x", "d": 0}}}},
+                        {"tick_queue": {"degraded": "x", "registry_dir": [], "unsaved": True}}):
+            with self.subTest(targets=targets):
+                found, _text = self._found({"targets.json": json.dumps(targets).encode()})
+                self.assertEqual([code for code in found if code.startswith("target_")], [])
+
+    def test_failed_update_downloads_are_reported_and_cancels_are_not(self):
+        def runtime(**download):
+            return {"runtime.json": json.dumps({"update": {"last_download": download}}).encode()}
+
+        fatal, _ = self._found(runtime(outcome="failed", fatal=True, error_type="UpdateFatal",
+                                       error="本地磁盘写入失败", version="9.9.9"))
+        self.assertEqual(fatal["update_download_failed"]["severity"], "warning")
+        self.assertIn("磁盘", fatal["update_download_failed"]["message"])
+        plain, _ = self._found(runtime(outcome="failed", fatal=False, error_type="UpdateError",
+                                       error="下载文件校验失败", version="9.9.9"))
+        self.assertEqual(plain["update_download_failed"]["severity"], "info")
+        for outcome in ("cancelled", "ok"):
+            with self.subTest(outcome=outcome):
+                found, _ = self._found(runtime(outcome=outcome, fatal=False))
+                self.assertNotIn("update_download_failed", found)
+
+    def test_a_long_update_download_error_is_bounded_in_the_finding(self):
+        found, _ = self._found({"runtime.json": json.dumps({"update": {"last_download": {
+            "outcome": "failed", "fatal": True, "error_type": "UpdateFatal",
+            "error": "x" * 5000, "version": "9.9.9"}}}).encode()})
+        self.assertLess(len(found["update_download_failed"]["message"]), 600)
 
     def test_menu_trace_missing_is_a_gap_not_a_health_claim(self):
         report, text = self.analysis_of({"runtime.json": b"{}"})

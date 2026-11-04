@@ -314,6 +314,7 @@ class WindowOrchestrationFallbacks(SFCase):
                     _resched_loops=mock.Mock(), _glass_window=host(orderOut_=actions["glass"]),
                     top_timer=host(stop=mock.Mock()), _sync_dot_timer=mock.Mock(),
                     _update_nap_policy=mock.Mock(), _flash_drop_timer=host(stop=actions["flash"]),
+                    _anim_driver=host(flash_drop_on=True, flash_drop_count=1),
                     timer=host(interval=lambda: 50, setInterval=mock.Mock()),
                     _sync_face_guard=mock.Mock(), _dock_motion=mock.Mock(return_value=None))
                 minimize(target)
@@ -410,7 +411,7 @@ class WindowOrchestrationFallbacks(SFCase):
              mock.patch.object(window, "expired", side_effect=lambda alert, now: alert is old):
             adopt(target, "sz000001")
         self.assertEqual(vars(target)["_alerts"], [live])
-        vars(target)["_persist_alerts"].assert_called_once_with([live])
+        vars(target)["_persist_alerts"].assert_called_once_with([live], expected=[live, old])
         vars(target)["_after_save_config"].assert_called_once_with(False)
         vars(target)["_arm_clear_timer"].assert_called_once_with()
 

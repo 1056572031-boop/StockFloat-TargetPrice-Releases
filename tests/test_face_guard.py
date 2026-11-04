@@ -227,6 +227,38 @@ class TestMonitorDegradation(SFCase):
         self.assertEqual(mon.start(), STATE_DENIED,
                          "权限被拒必须原样成为状态，界面才有东西可显示")
 
+    def test_unavailable_retries_do_not_flood_the_log(self):
+        """2026-11-02 走查 F-G-02：denied/restricted/no camera/unsupported 每次重试一条 WARNING。
+
+        这几类只能由用户去系统设置里改，主窗却按 10 秒节拍一直重试（解决前 50 次重试 = 50 行，
+        一天可写数千行挤掉 7 天轮转）。同函数里 needs_auth / session_failed 早就走
+        `log_line_throttled`，这四处要与它们同口径：首条必记，其后每 30 次一条。
+        """
+        import sf_logging
+        scenarios = [
+            ("denied", dict(device=object(), status=STATE_DENIED)),
+            ("restricted", dict(device=object(), status=STATE_RESTRICTED)),
+            ("no_camera", dict(device=None, status="authorized")),
+            ("unsupported", dict(cls=None, why="PyObjC 桥接不可用: ImportError")),
+        ]
+        for label, overrides in scenarios:
+            with self.subTest(label):
+                sf_logging.reset_log_throttle()
+                lines = []
+                sink = (lambda msg, *a, **k: lines.append(str(msg)))
+                # 节流函数内部走 sf_logging.log_line，产品里直调的走 sf_presence.log_line：两处都接
+                with patch.object(sf_presence, "log_line", sink), \
+                        patch.object(sf_logging, "log_line", sink):
+                    self._patched(**overrides)
+                    mon = FacePresenceMonitor()
+                    for _ in range(100):
+                        mon.start()
+                faces = [x for x in lines if "face_guard" in x]
+                self.assertGreaterEqual(len(faces), 1, "首条必须记下来，事后才查得到")
+                self.assertLessEqual(len(faces), 4,
+                                     "%s 重试 100 次写了 %d 行日志（应 <=4）" % (label, len(faces)))
+        sf_logging.reset_log_throttle()
+
     def test_starting_never_opens_a_permission_dialog(self):
         """被动 `start()` 路径不请求摄像头权限。
 
@@ -1411,6 +1443,40 @@ class TestWindowWiring(_WindowWiringSupport, SFCase):
         self.win._face_guard_next_retry = 0.0                         # discipline-ok(R5): 退避时刻没有对外写入口
         self._poll(2)
         self.assertTrue(self._state()["camera_held"], "唤醒后必须自动继续看守，不用用户再点一次")
+
+    def test_lock_after_guard_hide_still_restores_when_owner_returns(self):
+        """2026-11-02 走查 F-G-01：被第二张脸收起之后锁屏再解锁，主人回座必须自动恢复。
+
+        修复前锁屏那次 `_stop_face_guard("screen off")` 走了 `arbiter.reset()`，连
+        `hidden_by_guard`（"我是被守卫收起来的"）一起抹掉；解锁后 `sync` 见窗口不可见
+        又不在"守卫收着"之列，就判成"没东西要看守"再停一次 —— 自动恢复从此死掉，
+        窗口一直躺在 Dock 里，要用户自己去点。与 "stalled" 中断同形，口径必须一致。
+        """
+        self._enable()
+        self.stub.faces = 2
+        self._poll(self._state()["hide_hits"])
+        self.assertFalse(self.win.isVisible(), "前置：连续命中应把窗收到 Dock")
+        self.assertTrue(self._state()["hidden_by_guard"], "前置：应记着是被守卫收起的")
+        # 锁屏：摄像头停（省电），但"被守卫收起"这件事必须留着
+        self.track_patch(patch.object(sf_presence, "screen_unavailable", lambda: True))
+        self.win._face_guard_screen_probe_at = 0.0      # discipline-ok(R5): 探测节流时刻没有对外写入口
+        self._poll(1)
+        d = self._state()
+        self.assertFalse(d["camera_held"], "锁屏时摄像头应当停下")
+        self.assertTrue(d["hidden_by_guard"],
+                        "锁屏把'被守卫收起'抹掉了 —— 解锁后自动恢复会死，got %r" % (d,))
+        # 解锁：节流到点 + 系统回答没锁 → 守卫自己重新武装
+        self.track_patch(patch.object(sf_presence, "screen_unavailable", lambda: False))
+        self.win._face_guard_screen_probe_at = 0.0      # discipline-ok(R5): 同上
+        self.win._face_guard_next_retry = 0.0           # discipline-ok(R5): 退避时刻没有对外写入口
+        self._poll(3)
+        self.assertTrue(self._state()["camera_held"], "解锁后守卫应自动重新起来")
+        # 主人一人回座：满次数就自己回到屏幕上
+        self.stub.faces = 1
+        self.win.running = True        # _restore_window 拒绝恢复"非运行中"的窗口（同 test_guard_hide_then_single_face_restores）
+        self._poll(self._state()["restore_hits"])
+        self.assertTrue(self.wait_for(lambda: self.win.isVisible(), timeout=3.0),
+                        "锁屏解锁之后主人回座，窗口必须自动恢复")
 
     def test_screen_probe_failure_keeps_protection(self):
         """探测抛错只能当作「没锁」：保护不许因为一次系统查询失败就静默停掉。"""

@@ -13,6 +13,7 @@
      "目标价不得越过涨跌停"的拦截同时静默失效。
 """
 
+import datetime
 import os
 import sys
 import unittest
@@ -141,6 +142,68 @@ class DegradedSourceIsCountable(SFCase):
         self.assertIn("跑备源", joined)
         self.assertIn("涨跌停", joined,
                       "必须说清失效的是什么，否则这条日志等于没说")
+
+
+class StalePrimaryIsStillDegraded(SFCase):
+    """2026-11-02 走查 F-A-02：主源"解析成功但时间戳陈旧"也是降级，账不许被复位口清零。
+
+    旧顺序：fetch_quote 主源解析成功就 _reset_degraded_source()，随后 ensure_current_quote
+    判陈旧、改用备源再 _note_degraded_source —— 每一轮都是「先清零再 +1」，连击永远是 1、
+    日志手表也每轮归零，于是每轮写一行 WARNING（盘中 0.1s 节拍下就是整天刷屏），
+    而诊断包里 degraded_streak 永远是 1，长期跑备源这件事反而查不到。
+    """
+
+    NOW = datetime.datetime(2026, 10, 14, 10, 0, 30,
+                            tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+
+    def setUp(self):
+        super().setUp()
+        self.logs = []
+        for p in (patch.object(sf_quote, "_beijing_now", return_value=self.NOW),
+                  patch.object(sf_quote, "log_line",
+                               lambda msg, level="INFO": self.logs.append(msg))):
+            self.track_patch(p)
+        sf_quote._reset_degraded_source()   # discipline-ok(R5): 降级计数与节流手表只有这个复位口
+        self.addCleanup(sf_quote._reset_degraded_source)   # discipline-ok(R5): 同上，没有公开复位入口
+        self.stale = sf_quote.QuoteData({"price": "1"}, "20261014094000")    # 20 分钟前
+        self.fresh = sf_quote.QuoteData({"price": "2"}, "20261014100020")
+        self.sina_fresh = sf_quote.QuoteData({"price": "3"}, "2026-10-14 10:00:25")
+
+    def _poll(self, times, primary):
+        for _ in range(times):
+            with patch.object(sf_quote, "_fetch_quote_primary", return_value=primary), \
+                 patch.object(sf_quote, "fetch_quote_fallback", return_value=self.sina_fresh):
+                sf_quote.ensure_current_quote("sh600519", sf_quote.fetch_quote("sh600519"))
+
+    def test_stale_primary_streak_accumulates_and_log_is_throttled(self):
+        self._poll(25, self.stale)
+        self.assertEqual(sf_quote.degraded_source_streak(), 25,
+                         "主源时间戳陈旧、备源兜住 25 次，连击必须累计到 25（修前恒为 1）")
+        degraded = [m_ for m_ in self.logs if "跑备源" in m_]
+        self.assertLessEqual(len(degraded), 2,
+                             "WARNING 必须按时间节流（修前 25 轮写 25 行）：%d 行" % len(degraded))
+        self.assertGreaterEqual(len(degraded), 1, "首条必记")
+        self.assertEqual(sf_quote.get_last_quote_source(), "sina")
+
+    def test_healthy_primary_still_resets_the_streak(self):
+        self._poll(5, self.stale)
+        self.assertEqual(sf_quote.degraded_source_streak(), 5)
+        with patch.object(sf_quote, "_fetch_quote_primary", return_value=self.fresh):
+            q = sf_quote.ensure_current_quote("sh600519", sf_quote.fetch_quote("sh600519"))
+        self.assertIs(q, self.fresh)
+        self.assertEqual(sf_quote.degraded_source_streak(), 0,
+                         "主源时间戳新鲜才算活着：必须归零，否则这条数字只会单调涨")
+        self.assertEqual(sf_quote.get_last_quote_source(), "tencent")
+
+    def test_primary_raising_keeps_old_accounting(self):
+        """对照：主源抛错的降级账原本就对（连击累计、日志节流），修复不许动它。"""
+        for _ in range(25):
+            with patch.object(sf_quote, "_fetch_quote_primary",
+                              side_effect=QuoteDataError("primary format changed")), \
+                 patch.object(sf_quote, "fetch_quote_fallback", return_value=self.sina_fresh):
+                sf_quote.ensure_current_quote("sh600519", sf_quote.fetch_quote("sh600519"))
+        self.assertEqual(sf_quote.degraded_source_streak(), 25)
+        self.assertLessEqual(len([m_ for m_ in self.logs if "跑备源" in m_]), 2)
 
 
 if __name__ == "__main__":

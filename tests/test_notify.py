@@ -126,10 +126,82 @@ class TestOsascriptFallback(unittest.TestCase):
         self.assertNotIn('say "hi"', script)
         self.assertIn("say 'hi'", script)
 
+    def test_completion_reports_script_exit_status(self):
+        outcomes = []
+        with mock.patch.object(sf_notify.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            sf_notify._deliver_osascript("T", "", "B", on_complete=outcomes.append)  # discipline-ok(R5): 验证降级线程完成状态。
+            wait_for(lambda: bool(outcomes), timeout=2.0, msg="通知完成回调未执行")
+        self.assertEqual(outcomes, [True])
+        outcomes.clear()
+        with mock.patch.object(sf_notify.subprocess, "run", return_value=mock.Mock(returncode=1, stderr=b"error")):
+            sf_notify._deliver_osascript("T", "", "B", on_complete=outcomes.append)  # discipline-ok(R5): 验证降级线程完成状态。
+            wait_for(lambda: bool(outcomes), timeout=2.0, msg="通知失败回调未执行")
+        self.assertEqual(outcomes, [False])
+
+    def test_public_delivery_reports_fallback_completion(self):
+        outcomes = []
+        with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", True), \
+                mock.patch.object(sf_notify.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            self.assertEqual(sf_notify.deliver("T", "", "B", on_complete=outcomes.append), "osascript")
+            wait_for(lambda: bool(outcomes), timeout=2.0, msg="降级通知未回报完成")
+        self.assertEqual(outcomes, [True])
+
+    def test_fallback_thread_start_failure_reports_failure(self):
+        outcomes = []
+        with mock.patch.object(sf_notify.threading.Thread, "start", side_effect=RuntimeError("cannot start")):
+            self.assertEqual(sf_notify._deliver_osascript("T", "", "B", on_complete=outcomes.append), "error")  # discipline-ok(R5): 验证启动线程失败的确认状态。
+        self.assertEqual(outcomes, [False])
+
+    def test_completion_callback_exception_is_isolated(self):
+        logs = []
+
+        def bad_callback(_success):
+            raise RuntimeError("callback failed")
+
+        with mock.patch.object(sf_notify, "log_line",
+                               side_effect=lambda *args, **kwargs: logs.append(args)), \
+                mock.patch.object(sf_notify.subprocess, "run",
+                                  return_value=mock.Mock(returncode=0)):
+            self.assertEqual(sf_notify._deliver_osascript("T", "", "B",
+                                                           on_complete=bad_callback),
+                             "osascript")
+            wait_for(lambda: any("completion callback failed" in item[0] for item in logs),
+                     timeout=2.0, msg="完成回调异常未被隔离并记录")
+
     def test_subprocess_failure_is_logged_not_raised(self):
         with mock.patch.object(sf_notify.subprocess, "run",
                                side_effect=OSError("boom")):
-            self.assertEqual(sf_notify._deliver_osascript("T", "", "B"), "osascript")
+            self.assertEqual(sf_notify._deliver_osascript("T", "", "B"), "osascript")  # discipline-ok(R5): 验证无公开同步入口的 osascript 失败隔离。
+
+    def test_forced_osascript_mode_uses_fallback_for_authorized_delivery(self):
+        outcomes = []
+        with mock.patch.object(sf_notify, "_USE_OSASCRIPT", True), \
+                mock.patch.object(sf_notify, "authorization_status", return_value="authorized"), \
+                mock.patch.object(sf_notify, "_deliver_osascript", return_value="osascript") as fallback:
+            result = sf_notify.deliver("T", "", "B", on_complete=outcomes.append)
+            self.assertEqual(result, "osascript")
+            self.assertEqual(fallback.call_args.args[:3], ("T", "", "B"))
+            fallback.call_args.kwargs["on_complete"](True)
+        self.assertEqual(outcomes, [True])
+
+    def test_missing_notification_center_falls_back_without_raising(self):
+        with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", False), \
+                mock.patch.object(sf_notify, "authorization_status", return_value="authorized"), \
+                mock.patch.object(sf_notify, "_un_center", return_value=None), \
+                mock.patch.object(sf_notify, "_deliver_osascript", return_value="osascript") as fallback:
+            self.assertEqual(sf_notify.deliver("T", "", "B"), "osascript")
+        fallback.assert_called_once_with("T", "", "B")
+
+    def test_thread_start_and_failure_callback_errors_are_isolated(self):
+        def bad_callback(_success):
+            raise RuntimeError("callback failed")
+
+        with mock.patch.object(sf_notify.threading.Thread, "start",
+                               side_effect=RuntimeError("cannot start")), \
+                mock.patch.object(sf_notify, "log_line") as log:
+            self.assertEqual(sf_notify._deliver_osascript("T", "", "B", on_complete=bad_callback), "error")  # discipline-ok(R5): 验证无公开同步入口的后台线程启动失败与二次回调异常隔离。
+        self.assertTrue(any("completion callback failed" in str(call.args[0])
+                            for call in log.call_args_list))
 
 
 class _FakeCenter:
@@ -162,6 +234,89 @@ class TestCompletionFallback(unittest.TestCase):
             ns.stringWithString_.side_effect = lambda s: s
             result = sf_notify.deliver("标题", "副标题", "正文", semantic_key="same-key")
         return result, center
+
+    def test_delivery_completion_is_reported_only_after_system_callback(self):
+        center = _FakeCenter()
+        outcomes = []
+        with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", False), \
+             mock.patch.object(sf_notify, "authorization_status", return_value="authorized"), \
+             mock.patch.object(sf_notify, "UNUserNotificationCenter") as unc, \
+             mock.patch.object(sf_notify, "UNMutableNotificationContent"), \
+             mock.patch.object(sf_notify, "UNNotificationRequest"), \
+             mock.patch.object(sf_notify, "NSString") as ns:
+            unc.currentNotificationCenter.return_value = center
+            ns.stringWithString_.side_effect = lambda value: value
+            result = sf_notify.deliver("标题", "", "正文", semantic_key="completion-test",
+                                       on_complete=outcomes.append)
+            self.assertEqual(result, "un")
+            self.assertEqual(outcomes, [])
+            center.handler(None)
+        self.assertEqual(outcomes, [True])
+
+    def test_durable_delivery_does_not_enter_memory_queue_while_auth_unknown(self):
+        outcomes = []
+        with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", False), \
+             mock.patch.object(sf_notify, "authorization_status", return_value="unknown"):
+            result = sf_notify.deliver("标题", "", "正文", semantic_key="durable-unknown",
+                                       on_complete=outcomes.append)
+        self.assertEqual(result, "pending")
+        self.assertEqual(outcomes, [])
+        self.assertNotIn("durable-unknown", sf_notify._PENDING)  # discipline-ok(R5): 持久事件不能同时进入会淘汰的内存队列。
+
+    def test_system_completion_callback_is_idempotent(self):
+        center = _FakeCenter()
+        outcomes = []
+        with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", False), \
+             mock.patch.object(sf_notify, "authorization_status", return_value="authorized"), \
+             mock.patch.object(sf_notify, "UNUserNotificationCenter") as unc, \
+             mock.patch.object(sf_notify, "UNMutableNotificationContent"), \
+             mock.patch.object(sf_notify, "UNNotificationRequest"), \
+             mock.patch.object(sf_notify, "NSString") as ns:
+            unc.currentNotificationCenter.return_value = center
+            ns.stringWithString_.side_effect = lambda value: value
+            sf_notify.deliver("标题", "", "正文", semantic_key="twice",
+                              on_complete=outcomes.append)
+            center.handler(None)
+            center.handler(None)
+        self.assertEqual(outcomes, [True])
+
+    def test_success_completion_callback_exception_is_logged(self):
+        center = _FakeCenter()
+        def bad_callback(_success):
+            raise RuntimeError("callback failed")
+        logs = []
+        with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", False), \
+                mock.patch.object(sf_notify, "authorization_status", return_value="authorized"), \
+                mock.patch.object(sf_notify, "UNUserNotificationCenter") as unc, \
+                mock.patch.object(sf_notify, "UNMutableNotificationContent"), \
+                mock.patch.object(sf_notify, "UNNotificationRequest"), \
+                mock.patch.object(sf_notify, "NSString") as ns, \
+                mock.patch.object(sf_notify, "log_line",
+                                  side_effect=lambda *args, **kwargs: logs.append(args)):
+            unc.currentNotificationCenter.return_value = center
+            ns.stringWithString_.side_effect = lambda value: value
+            sf_notify.deliver("标题", "", "正文", semantic_key="callback-error",
+                              on_complete=bad_callback)
+            center.handler(None)
+        self.assertTrue(any("completion callback failed" in call[0] for call in logs))
+
+    def test_system_failure_reports_fallback_completion(self):
+        center = _FakeCenter()
+        outcomes = []
+        with mock.patch.object(sf_notify, "_UN_UNAVAILABLE", False), \
+             mock.patch.object(sf_notify, "authorization_status", return_value="authorized"), \
+             mock.patch.object(sf_notify, "UNUserNotificationCenter") as unc, \
+             mock.patch.object(sf_notify, "UNMutableNotificationContent"), \
+             mock.patch.object(sf_notify, "UNNotificationRequest"), \
+             mock.patch.object(sf_notify, "NSString") as ns, \
+             mock.patch.object(sf_notify.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            unc.currentNotificationCenter.return_value = center
+            ns.stringWithString_.side_effect = lambda value: value
+            sf_notify.deliver("标题", "", "正文", semantic_key="fallback-completion",
+                              on_complete=outcomes.append)
+            center.handler(RuntimeError("system delivery failed"))
+            wait_for(lambda: bool(outcomes), timeout=2.0, msg="降级回调未执行")
+        self.assertEqual(outcomes, [True])
 
     def test_completion_error_falls_back_for_same_notification(self):
         result, center = self._deliver()

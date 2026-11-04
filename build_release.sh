@@ -254,10 +254,19 @@ elif "$VENV_PY" tools/gate_stamp.py check \
   GATE_STAMP_VALID=1
 else
   echo "== 关卡时间戳不可用：先补跑 ./run_tests.sh（约 2 分钟）=="
-  ./run_tests.sh || {
+  # 2026-11-02 走查 F-J-04：补跑前先洗掉 run_tests.sh 的探针短路开关（取到就 exit 0、零用例），
+  # 免得环境里残留一个，这一步把“没跑回归”当成“补跑成功”。
+  env -u SF_GUARD_PROBE -u SF_LOCK_PROBE -u SF_LOCK_PROBE_DIR ./run_tests.sh || {
     echo "!! 回归关卡未过 —— 中止发版（不覆盖桌面 DMG、不动 /Applications、不切 OTA）" >&2
     echo "!!   若上面写的是「检测到正在运行的正式版」：先退出 Skyrocket 再重跑。" >&2
     exit 1; }
+  # 退出码 0 不代表落下了完整回归的关卡戳和覆盖率凭据，所有发版路径都必须复验。
+  "$VENV_PY" tools/gate_stamp.py check \
+    && "$VENV_PY" tools/coverage_provenance.py check \
+    || {
+      echo "!! 补跑 run_tests.sh 退出码为 0，但关卡时间戳/覆盖率回执仍不可用 —— 中止发版" >&2
+      echo "!!   常见原因：环境里设了 SF_SKIP_COVERAGE / SF_RANDOM_ORDER（这两档不落戳）。" >&2
+      exit 1; }
   GATE_STAMP_VALID=1
 fi
 
@@ -735,7 +744,8 @@ step_begin "6.1 公开下载入口部署与读回"
 echo "== 6.1 公开下载入口部署与读回 =="
 (
   cd "$PROJ/services/download-analytics"
-  node deploy-pages.mjs
+  # 自动带出处：部署脚本自己取发布树的 HEAD 与页面/工具两份指纹，部署记录不再是没有提交号的黑盒。
+  SF_DEPLOY_PROVENANCE=auto node deploy-pages.mjs
 ) || { echo "!! 公开下载入口部署或读回失败，别生成对外安装命令" >&2; exit 1; }
 
 # ---- 6.2) 对外安装说明（必须在 OTA 与公开入口之后渲染并核验）----
@@ -774,7 +784,12 @@ else
   AHEAD="（远端还没有 $SRC_BRANCH 这个分支）"
 fi
 SYNC_NOTE=""
-if git -C "$PROJ" push -q origin "HEAD:refs/heads/$SRC_BRANCH" 2>/tmp/sf_push_err.log; then
+# 2026-11-02 走查 F-J-08：detached HEAD 下 rev-parse --abbrev-ref 给出字面 HEAD，
+# 下面的 push 会成功地在远端建出一个名为 HEAD 的分支并报“已同步”。这里拒绝推送。
+if [ "$SRC_BRANCH" = "HEAD" ]; then
+  echo "!! 发布树是 detached HEAD，拒绝推送（否则会在远端建出名为 HEAD 的分支）；先检出分支再同步源码" >&2
+  SYNC_NOTE="源码未同步"
+elif git -C "$PROJ" push -q origin "HEAD:refs/heads/$SRC_BRANCH" 2>/tmp/sf_push_err.log; then
   NOW="$(git -C "$PROJ" rev-list --count "origin/$SRC_BRANCH..HEAD" 2>/dev/null || echo '?')"
   if [ "$NOW" = "0" ]; then
     echo "   已同步：推前落后 $AHEAD 笔，现在 origin/$SRC_BRANCH 与 HEAD 一致"
@@ -827,7 +842,11 @@ if [ "$LOCAL_ONLY" -eq 1 ]; then
   echo "== 本机覆盖完成 v${VERSION}（未发布 GitHub/OTA）=="
 elif [ -n "$SYNC_NOTE" ]; then
   echo "== 发布动作完成 v${VERSION}，但遗留一项：${SYNC_NOTE}（发布后验收待完成） =="
-  echo "   修好后手工执行：git push origin $SRC_BRANCH"
+  if [ "$SRC_BRANCH" = "HEAD" ]; then
+    echo "   请确认目标分支和提交，再按源码同步流程处理"
+  else
+    echo "   修好后手工执行：git push origin $SRC_BRANCH"
+  fi
 else
   echo "== 发布动作完成 v${VERSION}，发布后验收待完成 =="
 fi

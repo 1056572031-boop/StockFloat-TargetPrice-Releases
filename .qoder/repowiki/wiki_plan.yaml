@@ -1,0 +1,21 @@
+version: 1
+
+repowiki:
+  template: architecture
+  notes:
+    - text: "读者是交互与视觉设计背景、不写代码。每页先讲用户在屏幕上看到什么、什么时候发生，再讲模块与调用关系。"
+    - text: "应用名 Skyrocket（原名 StockFloat）。发行名、代码与数据目录里的 StockFloat / StockFloatTargetPrice 旧标识、以及 sf_* 文件前缀都指同一产品，不要当成两个项目，也不要建议改名。"
+    - text: "根目录大量单文件 sf_*.py 是有意分层（行情取数、窗口生命周期、目标价、反馈诊断、更新发布等），不是待合并的散乱代码；文档不要提出“整合这些文件”的建议。"
+    - text: "运行形态是 macOS 桌面应用：Python 3.14.10 + PyQt6，用 PyInstaller 按 StockFloat.spec 打成 .app 与 DMG。它不是 Web 服务，桌面端没有服务端数据库；services/ 下的 download-analytics 与 feedback-worker 才是独立的云端侧服务。"
+    - text: "行情现价、涨跌幅与分时来自腾讯、新浪、东方财富等第三方接口，本项目未取得行情数据授权。文档不得把它们写成自有数据源，也不得表述为投资建议或唯一交易依据。"
+    - text: "安装包未签名、未公证是当前的有意状态而非待补缺陷；本地签名只用于完整性与版本身份检查。请如实描述，不要写成已通过 Apple 审核或公证。"
+    - text: "自动隐藏窗口的在场守卫（sf_presence、sf_face_guard_controller）只在本机用 Apple Vision 统计画面中人数（含上半身），不识别身份、不保存也不上传画面。文档不得表述为人脸识别或身份验证。"
+    - text: "版本与交付事实以 AGENTS.md 及 docs/ 下流程文档为准（日常提交 C0-C5、分支合并 M0-M5、发版 RELEASE_PREPARATION_WORKFLOW）。不要引用 build/、dist/、backups/、__pycache__/、.venv/ 与 outputs/ 里的历史产物作为实现依据。"
+    - text: "用户数据落在本机 ~/Library/Application Support/StockFloatTargetPrice/（旧目录名为兼容升级保留）。程序不连接券商账户、不能下单、无内置使用行为遥测；诊断包只在用户主动点击时生成或上传。"
+    - text: "当前开发主线是 feat/target-price 分支。README 顶部标注的版本号与更新日期是权威口径，正文引用版本时以它为准，不要自行推断“最新版”。"
+
+knowledgecard:
+  notes:
+    - text: "按这几条主线划分模块：行情取数与投递、窗口呈现与生命周期、目标价与提醒、自动更新与发版工具、反馈与诊断、在场守卫与隐私。"
+    - text: "services/download-analytics 与 services/feedback-worker 与桌面应用分属不同运行时，各自单独成卡，不要并入界面或行情模块。"
+    - text: "tests/ 与 tools/ 是质量防线与发版工具，按主题各自成模块；写边界时说明它们如何被 run_tests.sh 与 git-hooks/pre-commit 串成关卡。"

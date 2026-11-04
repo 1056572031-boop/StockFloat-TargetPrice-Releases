@@ -11,11 +11,11 @@ import unittest
 from unittest.mock import Mock, patch
 
 import sf_ui_render
-import stock_float_window as m
+import target_panel as tp
 from PyQt6.QtCore import QPoint, QRect, Qt
 from PyQt6.QtGui import QFont, QFontInfo, QImage
 
-from stock_float_window import TargetBubble
+from target_panel import TargetBubble
 from targets import bell_bubble_rows
 from tests._base import SFCase
 
@@ -443,7 +443,7 @@ class TargetBubbleScreenLookupCase(SFCase):
         self.bubble = self.track_widget(B())
         pending, hit = bell_bubble_rows(CMP, 60.0, 2)
         self.bubble.setRows(pending, hit)
-        self.area = m.QGuiApplication.primaryScreen().availableGeometry()
+        self.area = tp.QGuiApplication.primaryScreen().availableGeometry()
         self.anchor = QPoint(self.area.right() - 2, self.area.top() + 40)
         self.icon_top = self.area.top() + 20
 
@@ -455,19 +455,19 @@ class TargetBubbleScreenLookupCase(SFCase):
     def test_取屏幕信息抛错时不收拢也不翻转_并留下一行痕迹(self):
         fake = Mock()
         fake.screenAt.side_effect = RuntimeError("boom")
-        with patch.object(m, "QGuiApplication", fake), patch.object(m, "log_swallow") as swallowed:
+        with patch.object(tp, "QGuiApplication", fake), patch.object(tp, "log_swallow") as swallowed:
             self.bubble.show_below(self.anchor, self.icon_top)
         self.assertGreater(self.bubble.body_rect_global().right() + 1, self.area.right() + 1,
                            "取不到屏幕就没法知道边在哪，宁可不动也不能乱挪")
         self.assertFalse(self.bubble.is_flipped())
         labels = [c.args[0] for c in swallowed.call_args_list]
-        self.assertIn("stock_float_window.TargetBubble._available_rect", labels)
+        self.assertIn("target_panel.TargetBubble._available_rect", labels)
 
     def test_系统没有任何屏幕时同样不收拢_且不当成错误(self):
         fake = Mock()
         fake.screenAt.return_value = None
         fake.primaryScreen.return_value = None
-        with patch.object(m, "QGuiApplication", fake), patch.object(m, "log_swallow") as swallowed:
+        with patch.object(tp, "QGuiApplication", fake), patch.object(tp, "log_swallow") as swallowed:
             self.bubble.show_below(self.anchor, self.icon_top)
         self.assertGreater(self.bubble.body_rect_global().right() + 1, self.area.right() + 1)
         self.assertFalse(self.bubble.is_flipped())

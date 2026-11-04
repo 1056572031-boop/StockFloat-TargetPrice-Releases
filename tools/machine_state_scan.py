@@ -233,28 +233,32 @@ class T:
 
 def self_test() -> int:
     import tempfile
-    root = pathlib.Path(tempfile.mkdtemp(prefix="sf_machine_state_scan_"))
-    (root / "tests").mkdir(parents=True, exist_ok=True)
     fails = []
-    for i in range(MIN_TEST_FILES):        # 先把范围红线喂饱，免得每种样例都红在范围上
-        (root / "tests" / f"test filler_{i}.py").write_text("def x():\n    pass\n", encoding="utf-8")
-    for name, (src, expected) in _samples().items():
-        p = root / "tests" / f"test_zz_{abs(hash(name))}.py"
-        p.write_text(src, encoding="utf-8")
-        bad, n = scan(root)
-        got = 1 if any(b[0] == p.name and b[3] != "解析失败（尺子不许把读不动当干净）" for b in bad) else 0
-        if expected == 1 and got != 1:
-            fails.append(f"{name}：种了错却没抓到")
-        if expected == 0 and got == 1:
-            fails.append(f"{name}：正当写法被判违规（尺子过宽）")
-        p.unlink()
+    # 2026-11-02 走查 F-J-06：这两处原先用 mkdtemp 且从不清理，自检每跑一次就在临时目录里
+    # 留下 sf_machine_state_scan_*（约 60 个文件）与 sf_mss_small_* 两个目录；改成 TemporaryDirectory。
+    with tempfile.TemporaryDirectory(prefix="sf_machine_state_scan_") as scratch:
+        root = pathlib.Path(scratch)
+        (root / "tests").mkdir(parents=True, exist_ok=True)
+        for i in range(MIN_TEST_FILES):        # 先把范围红线喂饱，免得每种样例都红在范围上
+            (root / "tests" / f"test filler_{i}.py").write_text("def x():\n    pass\n", encoding="utf-8")
+        for name, (src, expected) in _samples().items():
+            p = root / "tests" / f"test_zz_{abs(hash(name))}.py"
+            p.write_text(src, encoding="utf-8")
+            bad, n = scan(root)
+            got = 1 if any(b[0] == p.name and b[3] != "解析失败（尺子不许把读不动当干净）" for b in bad) else 0
+            if expected == 1 and got != 1:
+                fails.append(f"{name}：种了错却没抓到")
+            if expected == 0 and got == 1:
+                fails.append(f"{name}：正当写法被判违规（尺子过宽）")
+            p.unlink()
     # 范围红线：只放三个文件必须拒答
-    small = pathlib.Path(tempfile.mkdtemp(prefix="sf_mss_small_"))
-    (small / "tests").mkdir(parents=True)
-    for i in range(3):
-        (small / "tests" / f"test_{i}.py").write_text("def x():\n    pass\n", encoding="utf-8")
-    if report(small) != 2:
-        fails.append("范围红线：三个文件时没有拒绝下结论")
+    with tempfile.TemporaryDirectory(prefix="sf_mss_small_") as scratch:
+        small = pathlib.Path(scratch)
+        (small / "tests").mkdir(parents=True)
+        for i in range(3):
+            (small / "tests" / f"test_{i}.py").write_text("def x():\n    pass\n", encoding="utf-8")
+        if report(small) != 2:
+            fails.append("范围红线：三个文件时没有拒绝下结论")
     if fails:
         print("!! 自检失败：", "；".join(fails), file=sys.stderr)
         return 1

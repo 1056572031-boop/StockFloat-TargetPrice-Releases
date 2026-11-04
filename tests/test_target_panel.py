@@ -652,6 +652,84 @@ class TestDeleteOne(unittest.TestCase):
                 "600519", "贵州茅台", lambda a: True, lambda: True,
                 current_code_fn=lambda: "600519")
 
+    def _make_tracked(self, saved):
+        """同 _make，但把 on_apply / on_clear 的调用次数交出来（走查 F-B-02 的判据要看走了哪条落盘路）。"""
+        applied, cleared = [], []
+
+        def _on_apply(alerts):
+            applied.append(alerts)
+            return True
+
+        def _on_clear():
+            cleared.append(1)
+            return True
+
+        with patch.object(target_panel, "load_alerts", return_value=list(saved)):
+            p = target_panel.TargetPanel(
+                "600519", "贵州茅台", _on_apply, _on_clear,
+                current_code_fn=lambda: "600519", on_apply_empty=lambda slots, decimals: _on_clear())
+        return p, applied, cleared
+
+    def test_removing_the_last_saved_target_can_still_be_saved(self):
+        """2026-11-02 走查 F-B-02：把已保存的最后一条逐个删光后，「立即生效」必须还能点。
+
+        旧行为：列表空 → 两个按钮都置灰，但 has_unsaved_changes() 为真，主窗再点铃铛只会提示
+        「有未生效的修改，请先点「立即生效」」，而这个按钮是灰的；唯一出路是 ✕/Esc 回滚，
+        重开后目标价还在、到价照样提醒。点「立即生效」应当提交删除，且不请求通知授权。
+        """
+        p, applied, cleared = self._make_tracked([_saved(TARGET_DIR_ABOVE, 1600.0)])
+        self.assertTrue(p.btn_apply.isEnabled())
+        p._remove_one(TARGET_DIR_ABOVE, 1600.0)  # discipline-ok(R5): 驱动真实删除交互，验证删空后的保存状态。
+        self.assertEqual(p._pending, [])  # discipline-ok(R5): 读取面板待保存列表，确认逐条删除确实形成空提交。
+        self.assertTrue(p.has_unsaved_changes())
+        self.assertTrue(p.btn_apply.isEnabled(), "删光已保存的条目后，「立即生效」不许置灰")
+        p._apply()  # discipline-ok(R5): 驱动真实立即生效入口，验证空列表仍能提交。
+        self.assertEqual(cleared, [1], "空状态必须经删除回调落盘")
+        self.assertEqual(applied, [], "不走普通保存：那会多请求一次通知授权")
+        self.assertFalse(p.has_unsaved_changes(), "落盘成功后不再有未生效修改")
+
+    def test_empty_apply_failure_keeps_unsaved_state(self):
+        p, _, _ = self._make_tracked([_saved(TARGET_DIR_ABOVE, 1600.0)])
+        p.on_apply_empty = lambda slots, decimals: False
+        p._remove_one(TARGET_DIR_ABOVE, 1600.0)  # discipline-ok(R5): 驱动真实删除交互，构造保存失败的空提交。
+        p._apply()  # discipline-ok(R5): 驱动真实立即生效入口，验证失败后仍可重试。
+        self.assertTrue(p.has_unsaved_changes())
+        self.assertIn("保存失败", p.status_label.text())
+
+    def test_empty_apply_rejects_switched_stock(self):
+        p, _, cleared = self._make_tracked([_saved(TARGET_DIR_ABOVE, 1600.0)])
+        p._remove_one(TARGET_DIR_ABOVE, 1600.0)  # discipline-ok(R5): 模拟用户删除最后一项。
+        p.current_code_fn = lambda: "000001"
+        p._apply()  # discipline-ok(R5): 检查切股后的真实提交路径。
+        self.assertEqual(cleared, [])
+        self.assertTrue(p.has_unsaved_changes())
+
+    def test_empty_apply_rejects_code_lookup_failure(self):
+        p, _, cleared = self._make_tracked([_saved(TARGET_DIR_ABOVE, 1600.0)])
+        p._remove_one(TARGET_DIR_ABOVE, 1600.0)  # discipline-ok(R5): 模拟用户删除最后一项。
+        def unavailable():
+            raise RuntimeError("lookup failed")
+        p.current_code_fn = unavailable
+        p._apply()  # discipline-ok(R5): 检查代码查询异常时的提交行为。
+        self.assertEqual(cleared, [])
+        self.assertTrue(p.has_unsaved_changes())
+
+    def test_empty_apply_reports_callback_exception(self):
+        p, _, _ = self._make_tracked([_saved(TARGET_DIR_ABOVE, 1600.0)])
+        p._remove_one(TARGET_DIR_ABOVE, 1600.0)  # discipline-ok(R5): 模拟用户删除最后一项。
+        def fail(*args):
+            raise OSError("write failed")
+        p.on_apply_empty = fail
+        p._apply()  # discipline-ok(R5): 验证真实回调异常路径。
+        self.assertTrue(p.has_unsaved_changes())
+        self.assertIn("保存失败", p.status_label.text())
+
+    def test_apply_stays_disabled_for_a_panel_that_never_had_targets(self):
+        """对照：从没有过条目的空面板，没有东西可保存，按钮保持置灰。"""
+        p, _applied, _cleared = self._make_tracked([])
+        self.assertFalse(p.has_unsaved_changes())
+        self.assertFalse(p.btn_apply.isEnabled())
+
     def test_remove_one_keeps_other(self):
         p = self._make([_saved(TARGET_DIR_ABOVE, 1600), _saved(TARGET_DIR_ABOVE, 1700)])
         self.assertEqual(len(p._pending), 2)

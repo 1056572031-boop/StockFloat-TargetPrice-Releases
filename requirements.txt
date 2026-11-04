@@ -1,15 +1,24 @@
 # 实时股价 v1.1.0 运行/打包依赖锁定（13.1 / 2.2 / 13.2）
-# 安装：python3 -m pip install -r requirements.txt
+# 安装：uv venv .venv --python 3.14.10
+#       uv pip install --python .venv/bin/python -r requirements.txt
+#       （与 AGENTS.md §环境 一致；改完依赖须同步重生成 requirements.lock，命令见文件末尾）
 # 注意：已从 PyQt5 迁移至 PyQt6（v1.1.0 起），PyQt6/Qt6 为当前主流维护版本。
 # 依赖全部使用 == 精确锁定，保证构建机与运行环境可复现。
-PyQt6==6.11.0
-PyQt6-Qt6==6.11.2
+#
+# 2026-10-31 依赖升级（所选版本均为 PyPI 正式版，无 alpha/beta/rc/dev，且均未被 yank）：
+#   PyQt6 6.11.0 -> 6.12.0，PyQt6-Qt6 6.11.2 -> 6.12.0；pyobjc 12.2.2 -> 13.0（8 个包同步）。
+#   pyinstaller 保持 6.22.3；ruff/mypy/coverage 不动，避免 static_gate 的 B 级基线漂移。
+#   代价：PyQt6 6.12 的绑定与 Qt 二进制实测 minos 全部为 14.4（旧 6.11 为 13.0），
+#   StockFloat.spec 的 LSMinimumSystemVersion 已同步 13.0 -> 14.4，macOS 14.3 及以下
+#   不再受支持；tools/verify_macos_compat.py 逐个镜像校验 minos 的门禁会随之改判，必须重跑。
+PyQt6==6.12.0
+PyQt6-Qt6==6.12.0
 PyQt6-sip==13.13.0
-pyobjc-core==12.2.2
-pyobjc-framework-Cocoa==12.2.2
-pyobjc-framework-Quartz==12.2.2
-pyobjc-framework-UserNotifications==12.2.2
-pyobjc-framework-Security==12.2.2
+pyobjc-core==13.0
+pyobjc-framework-Cocoa==13.0
+pyobjc-framework-Quartz==13.0
+pyobjc-framework-UserNotifications==13.0
+pyobjc-framework-Security==13.0
 # v1.4.40 人脸在场守卫需要 AVFoundation 的**方法元数据**：
 # requestAccessForMediaType:completionHandler: 的第三个参数是 ObjC block，只有
 # pyobjc-core 时 PyObjC 直接报 "Argument 3 is a block, but no signature available"，
@@ -18,9 +27,9 @@ pyobjc-framework-Security==12.2.2
 # CoreMedia / CoreAudio 是 AVFoundation 桥接的依赖，一并锁版本保证可复现。
 # 体积代价（本机实测）：site-packages 下 944K + 388K + 328K ≈ 1.6MB 源码，
 # 无模型、无二进制框架新增（系统框架本来就在 /System 里）。
-pyobjc-framework-AVFoundation==12.2.2
-pyobjc-framework-CoreMedia==12.2.2
-pyobjc-framework-CoreAudio==12.2.2
+pyobjc-framework-AVFoundation==13.0
+pyobjc-framework-CoreMedia==13.0
+pyobjc-framework-CoreAudio==13.0
 # 测试覆盖率门禁（本地与 CI 共用）
 coverage==7.17.0
 # 第一道防线：静态检查闸门 tools/static_gate.py（本地钩子与 CI 共用，需精确锁定；

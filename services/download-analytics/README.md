@@ -241,6 +241,13 @@ never waits for GitHub and a missed redeploy does not leave the buttons on an ol
 After each production deploy it verifies all four accepted download assets (DMG, macOS ZIP,
 source ZIP and checksums) through Pages' 302 and GitHub's signed release-asset redirect using
 HEAD only; it never downloads a release asset as part of the check.
+Static assets are verified by content hash. A machine-wide cache
+(`~/Library/Caches/SkyrocketDeploy/readback-cache.json`) remembers the ETag, hash, type and cache
+headers of every verified URL; a later deploy of the same content sends `If-None-Match` and
+accepts 304 instead of the body (the 304 carries the cache headers, the type and size come from
+the cached verified response), so no extra HEAD request is made. The URL carries the content
+fingerprint, so a changed asset can never reuse a stale entry; an older entry missing those
+headers is downloaded once to refill it.
 
 The deployment script does production publish-and-readback only. It is intentionally not used for
 preview or rollback: both are separate, explicit operator actions.
@@ -249,9 +256,40 @@ preview or rollback: both are separate, explicit operator actions.
 # Deploy the current clean committed tree to an isolated Pages preview branch and verify it.
 npm run preview
 
+# Check whether this checkout may go live (read-only), then deploy it.
+npm run ship -- --dry-run
+npm run ship
+
+# Compare the live page with this checkout (read-only).
+npm run status
+
+# After an interrupted deploy, close its journal entry once the live page has been checked.
+npm run reconcile -- --confirm [--abandon]
+
 # Roll production back only to a specific, previously successful production deployment ID.
 npm run rollback -- <deployment-id>
 ```
+
+`ship` is the entry point for putting a finished change on the production site. It refuses unless the
+checkout is on the development branch `feat/target-price`; the site build inputs (this directory except
+`README.md`, `ASSETS.md`, `tests/` and `asset-sources/`, plus the Python modules the icon export imports)
+have no uncommitted or git-ignored files; the site source version equals the version the live `/health`
+reports; Pages holds a successful preview of exactly this page content (commit messages carry
+`page:<page fingerprint> tool:<tooling fingerprint>`); `--preview <deployment-id>` names that preview; and the
+node tests pass. Tooling-only changes do not invalidate a preview, because the page fingerprint covers only
+what decides the page. It holds a machine-wide `~/Library/Caches/SkyrocketDeploy/deploy.lock` (shared by ship,
+rollback, reconcile and the release deploy, and by every clone on this machine) so two deploys cannot interleave,
+writes each attempt to `outputs/site-deploys/journal.jsonl` (kept to the most recent 500 entries; an interrupted
+entry blocks the next ship until `npm run reconcile -- --confirm` closes it, and `--abandon` records an attempt
+that production never took),
+records the current production deployment as the
+rollback point, deploys through `deploy-pages.mjs` with the real commit hash and both fingerprints, and checks
+that the production deployment changed and carries the same page fingerprint. `status` compares the asset
+fingerprints on the live page with a fresh local build, reads the production deployment's fingerprints and
+reports an unfinished journal entry: `in-sync`, `assets-match-unstamped` (no page stamp, or the pre-split
+`site:` stamp), `dirty-checkout` (uncommitted site files, so the local build cannot confirm the live page) or
+`drift` (exit code 1). The release chain calls `deploy-pages.mjs` with `SF_DEPLOY_PROVENANCE=auto`, so those
+deployments carry the release commit and both fingerprints too.
 
 `pages-control.mjs preview` provisions and binds a separate D1 database for preview on first use,
 so preview clicks cannot alter production counts. It verifies the preview URL and confirms the

@@ -1388,6 +1388,9 @@ test('a GitHub 401 or 403 invalidates the cached token and retries the whole pub
     const remote = new FakeGitHub();
     remote.authFailures = 1;
     remote.authFailureStatus = status;
+    const logged = [];
+    const originalError = console.error;
+    console.error = (line) => { logged.push(String(line)); };
     try {
       await withGitHub(remote, async () => {
         const response = await worker.fetch(request(await archiveFor({ text: 'SYNTHETIC AUTH RETRY ' + status })), env);
@@ -1395,7 +1398,12 @@ test('a GitHub 401 or 403 invalidates the cached token and retries the whole pub
       });
       assert.equal(remote.mintCount, 2, '旧令牌清掉后只换一次新令牌：' + status);
       assert.equal(remote.assets.size, 2, '重试必须利用资产名幂等，不重复写入：' + status);
-    } finally { env.DB.native.close(); }
+      const retried = logged.map((line) => { try { return JSON.parse(line); } catch { return null; } })
+        .filter((entry) => entry?.event === 'feedback_auth_retried');
+      assert.equal(retried.length, 1, '重试成功也要留一条日志，否则令牌被撤销过无从查起：' + status);
+      assert.equal(retried[0].code, 'github_http_' + status);
+      assert.ok(!JSON.stringify(retried[0]).includes('ghs_'), '日志里不许出现令牌');
+    } finally { console.error = originalError; env.DB.native.close(); }
   }
 });
 

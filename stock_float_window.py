@@ -24,18 +24,14 @@ _SESSION_TERMINAL_PHASES = frozenset({PHASE_CLEAN_EXIT, PHASE_UPDATE_HANDOFF})
 
 guard_temporary_launch()
 
-from PyQt6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QRectF, pyqtSignal,
+from PyQt6.QtCore import (Qt, QTimer, QPoint, pyqtSignal,
                           QCoreApplication, QEvent)
-from PyQt6.QtGui import (QAction, QPainter, QColor, QPen, QIcon, QPixmap,
-                         QFont, QFontInfo, QFontMetrics, QGuiApplication, QPainterPath,
-                         QPolygonF)
+from PyQt6.QtGui import (QAction, QColor, QIcon, QPixmap,
+                         QFont, QFontInfo)
 from typing import Any, Optional
 from PyQt6.QtWidgets import QApplication, QWidget, QToolTip, QProgressBar, QMessageBox
 # 退出期同步销毁 Qt 对象用（见 _flush_deferred_deletions / _close_update_flow_box）
 from PyQt6.sip import delete as _sip_delete
-
-# 20.1 职责拆分：纯绘制辅助函数下沉到 renderer（超椭圆路径/CGPath/底部四段布局唯一实现）
-from renderer import smooth_round_rect_path
 
 # ---- 模块化拆分 sf_ui_render：显式导入（v1.2.22 消除通配符 import*） ----
 from sf_ui_render import (BOTTOM_BASE_HIDDEN, BOTTOM_SECTION_HIDDEN, BTN_CY, BTN_X, CHART_MIN_DRAW_H,
@@ -62,6 +58,8 @@ from sf_icons import _objc_deps
 
 # ---- 模块化拆分 sf_editor：显式导入 ----
 from sf_editor import EditorWindow
+# 铃铛悬浮气泡与目标价面板同属「目标价」界面，类定义在 target_panel；主窗在 __init__ 里创建它。
+from target_panel import TargetBubble
 
 # ---- 模块化拆分 sf_icons：显式导入（含私有名） ----
 from sf_icons import show_dock, start_icon_worker, button_pixmaps
@@ -74,7 +72,7 @@ from sf_quote import (MinutePoints, fetch_minute, fetch_quote, official_limit_pr
                       load_api_urls, market_status, price_decimals)
 from sf_quote import degraded_source_streak, get_last_quote_source
 from sf_quote import get_last_minute_source   # 诊断：分时这一路最近成功走的是哪个源
-from sf_quote import ensure_current_quote, quote_is_current
+from sf_quote import QuoteData, ensure_current_quote, quote_is_current
 from sf_quote import _is_trading_time
 # v1.4.10 功耗：后台线程按需休眠时要卡"交易时段翻转点"，否则会睡过 09:30 开盘
 from sf_quote import seconds_to_session_change
@@ -148,8 +146,7 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
                           FACE_GUARD_FIRST_FRAME_SEC, FACE_GUARD_MENU_TEXT,
                           FACE_GUARD_RETRY_STALLED_SEC, FACE_GUARD_SCREEN_PROBE_SEC,
                           FACE_GUARD_STALE_SEC,
-                          FG_BRIGHT_HEX, FG_DIM, FG_DIM_HEX, FG_HINT_HEX, ACCENT_BLUE_HEX, MENU_SEPARATOR_HEX,
-                          UP_RED_HEX, DOWN_GREEN_HEX,
+                          FG_BRIGHT_HEX, FG_DIM, FG_DIM_HEX, ACCENT_BLUE_HEX, MENU_SEPARATOR_HEX,
                           LAST_QUOTE_PATH, LOG_PATH, MAX_H, MIN_H, W, LOG_ROTATE_KEEP, POLL_DEGRADED,
                           LOG_MAX_BYTES,
                           POLL_FAIL_TO_DEGRADED, POLL_FAIL_TO_OPEN,
@@ -446,6 +443,51 @@ _UPDATE_FLOW = UpdateFlowController(
     lambda *args: log_swallow(*args))
 
 
+def _note_target_degraded(owner, key):
+    """给目标价保护的降级场景累加一次计数（随诊断包 targets.json 的 tick_queue.degraded 外发）。
+
+    日志对同一次故障只记一条，所以"这一天到底有多少笔行情没进目标价判定"只能靠计数事后查出。
+    计数失败只留痕，绝不影响行情投递。
+    """
+    try:
+        counts = owner.__dict__.setdefault("_target_degraded_counts", {})
+        counts[key] = counts.get(key, 0) + 1
+    except Exception as exc:
+        log_swallow("stock_float_window.note_target_degraded", exc)
+
+
+def _registry_dir_state():
+    """登记目录此刻的真实状态：在不在、建不建得出来。只读文件属性，不创建任何东西。
+
+    状态查询在目录不存在时一律答 INACTIVE，"没人在发布"与"目录根本建不出来"于是同形；
+    这里补的就是能把两者分开的那一问。
+    """
+    import sf_config
+    directory = sf_config.target_tick_publisher_directory()
+    if os.path.isdir(directory):
+        return {"exists": True, "writable": bool(os.access(directory, os.W_OK | os.X_OK))}
+    parent = os.path.dirname(directory) or "."
+    return {"exists": False, "writable": bool(os.path.isdir(parent) and os.access(parent, os.W_OK | os.X_OK))}
+
+
+def _disk_queue_state(path):
+    """磁盘队列文件的大小与新旧。只做 stat，不打开数据库（打开会创建日志旁路文件）。"""
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return {"exists": False}
+    except OSError as exc:
+        return {"exists": None, "error": type(exc).__name__}
+    try:
+        journal_bytes = os.stat(path + "-journal").st_size
+    except FileNotFoundError:
+        journal_bytes = 0
+    except OSError:
+        journal_bytes = None
+    return {"exists": True, "bytes": int(info.st_size), "journal_bytes": journal_bytes,
+            "age_sec": round(max(0.0, time.time() - info.st_mtime), 1)}
+
+
 def _normalize_code_6(code):
     """v1.2.48(B2)：切股丢弃判断用代码归一 —— 去市场前缀，纯数字统一补 0 到 6 位
     （北交所 4 位老代码 8307→830700）。非纯数字/无法归一返回 None（不参与比较）。
@@ -508,6 +550,8 @@ CHART_COLLAPSED_MINUTE_INTERVAL = 30.0 # 收起态分时拉取间隔（秒，仅
 # 避免长时间高频空转刷屏；与交易时段判定/30s 崩溃重启保护互不影响。
 MINUTE_RETRY_INTERVAL = 2.5
 MINUTE_RETRY_MAX = 5
+PANEL_TICK_LOCK_ATTEMPTS = 8       # 面板保存/清空抢 tick 锁的最多尝试次数
+PANEL_TICK_LOCK_RETRY_SEC = 0.01   # 两次尝试之间的间隔；重试等待合计 ≤ (尝试次数-1)×10ms
 BG = QColor("#1b1e2b")
 BORDER = QColor("#3b4256")
 GRAY = QColor("#9aa2b8")
@@ -591,302 +635,6 @@ FLASH_DROP_LEVELS = (       # 档位表：key 用于独立冷却记录
 # ---------- 冷启动优化：图标后台生成 ----------
 # AppKit 首次 import 是冷启动最大开销之一，放后台线程与 QApplication 构造并行；
 # 图标一律生成 QImage（线程安全）后经队列回传 GUI 线程转 QPixmap/QIcon 应用。
-
-
-class TargetBubble(QWidget):
-    """铃铛专用自绘气泡（效果图 B 版）：待触发 / 已触发两组，每行「方向词｜价位｜距现价%」。
-
-    窗口比可见的气泡本体大一圈透明边（MARGIN_*），用来画柔影和指向铃铛的小三角。
-    所有尺寸与定位接口（show_below / body_rect_global）都以「本体」为准，调用方不必关心这圈边。
-    """
-    # ---- 本体（单位 px，取自效果图 B 的实测值）----
-    PAD_X = 12
-    PAD_TOP = 9
-    PAD_BOTTOM = 10
-    RADIUS = 10
-    MIN_CONTENT_W = 112         # 内容区最小宽（不含左右内边距）
-    HEADER_H = 15
-    HEADER_GAP = 3
-    ROW_H = 22
-    SEP_GAP_TOP = 7             # 两组之间：细线上方 7、下方 6
-    SEP_GAP_BOTTOM = 6
-    COL_GAP = 6
-    PCT_GAP = 14                # 价位与百分比之间，在列距之外再留的空
-    # ---- 底边对齐（2026-10-23 效果图 B 方案）----
-    # 三列共用一条基线，但「涨到/跌到」的笔画底部实测比数字低约 1px（8 倍屏量：方向词 1.125、价位与百分比
-    # 都是 0.125，差 1.0），所以方向词整体上提 WORD_RAISE，让可见的底边落在同一条线上。
-    # 组标题「待触发/已触发」的文字底边比基线低 HEADER_INK_OVER（实测 1.0），前面的圆点底边与它齐平。
-    # 两个数是按这两套字体量出来的设计取值；换字体或字号要重量，不要凭感觉改。
-    WORD_RAISE = 1.0
-    HEADER_INK_OVER = 1.0
-    DOT_SIZE = 6
-    # ---- 与铃铛的关系 ----
-    GAP_TO_ICON = 8             # 本体边到铃铛图标边；悬停底板比图标各大 4px，三角尖端正好顶到底板
-    CARET_H = 4.25
-    CARET_INSET = 15            # 三角中心离本体左右边至少这么远，避开 10px 圆角
-    SCREEN_EDGE = 4             # 本体离屏幕可用区域边缘至少留的空
-    # ---- 透明外圈：柔影与三角都画在这里 ----
-    MARGIN_X = 16
-    MARGIN_TOP = 12
-    MARGIN_BOTTOM = 24
-    # ---- 颜色（涨跌色取 sf_constants 的具名 token，与主界面 RED / GREEN 同一来源，同屏只此一种红）----
-    UP_COLOR = QColor(UP_RED_HEX)
-    DOWN_COLOR = QColor(DOWN_GREEN_HEX)
-    PENDING_DOT_COLOR = QColor("#f5c542")     # 与铃铛「待触发」同色
-    HIT_DOT_COLOR = QColor("#9aa2b8")         # 与铃铛「已触发」同色
-    HEADER_COLOR = QColor(FG_DIM_HEX)
-    HIT_TEXT_COLOR = QColor(FG_HINT_HEX)
-    BODY_COLOR = QColor(29, 30, 28, 245)
-    RING_COLOR = QColor(255, 255, 255, 26)
-    SEP_COLOR = QColor(255, 255, 255, 20)
-
-    def __init__(self):
-        super().__init__(None)
-        # WindowTransparentForInput 才是让「原生窗口」点击穿透的开关（macOS 上对应 NSWindow 的
-        # ignoresMouseEvents）。下面那条 WA_TransparentForMouseEvents 只管 Qt 内部的事件传递，
-        # 2026-10-23 实测不加这个标志时 ignoresMouseEvents=False：气泡窗口带透明外圈，顶边落在铃铛
-        # 感应区下半部分，鼠标停在那里会「进入」气泡窗口 -> 主窗收到离开 -> 气泡收起 -> 鼠标回到
-        # 主窗 -> 再弹出，来回闪。两个都留着：前者管原生层，后者管 Qt 层。
-        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
-                            | Qt.WindowType.WindowStaysOnTopHint
-                            | Qt.WindowType.WindowTransparentForInput)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # 提示气泡不得截获顶部按钮点击
-        self._rows = {"pending": [], "hit": []}
-        self._body_w = self._body_h = 0
-        self._flipped = False
-        self._caret_x = 0.0          # 三角中心，本体坐标系（不含透明外圈）
-        self._relayout()
-
-    @staticmethod
-    def _fonts():
-        """每次现建：字体可能在气泡之后才注册（load_bundled_fonts），缓存会固化兜底字体的度量。"""
-        price = QFont(NUM_FONT)
-        price.setPixelSize(15)
-        price.setBold(True)
-        pct = QFont(NUM_FONT)
-        pct.setPixelSize(11)
-        pct.setBold(True)
-        word = QFont("PingFang SC")
-        word.setPixelSize(11)
-        header = QFont("PingFang SC")
-        header.setPixelSize(10)
-        header.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.4)
-        return price, pct, word, header
-
-    def _columns(self):
-        """三列各自的宽度；没有任何百分比时第三列为 0，整块自动收成两列。"""
-        price_f, pct_f, word_f, _header_f = self._fonts()
-        rows = self._rows["pending"] + self._rows["hit"]
-        word_w = max((QFontMetrics(word_f).horizontalAdvance("涨到"),
-                      QFontMetrics(word_f).horizontalAdvance("跌到")))
-        price_w = max((QFontMetrics(price_f).horizontalAdvance(r[1]) for r in rows), default=0)
-        pct_w = max((self._stable_advance(pct_f, r[2]) for r in rows), default=0)
-        return word_w, price_w, pct_w
-
-    @staticmethod
-    def _stable_advance(font, text):
-        """文字宽度：每个数字都按「最宽的那个数字」量。
-
-        内置数字字体的数字不等宽（实测 11 号粗体：「1」宽 4px，「0/3/4/6/8/9」宽 6px），
-        百分比随行情每跳一次，直接量字符串会让整块气泡在 1~2px 之间来回变宽变窄，
-        居中对齐使左边缘跟着横向抖。按最宽数字量之后，只要位数、符号、小数点相同，
-        宽度就恒定；画的时候仍用真实字形右对齐，所以看到的字形不变。"""
-        fm = QFontMetrics(font)
-        widest = max("0123456789", key=fm.horizontalAdvance)
-        return sum(fm.horizontalAdvance(widest if c.isdigit() else c) for c in text)
-
-    def _relayout(self):
-        _price_f, _pct_f, _word_f, header_f = self._fonts()
-        word_w, price_w, pct_w = self._columns()
-        content_w = word_w + self.COL_GAP + price_w
-        if pct_w:
-            content_w += self.COL_GAP + self.PCT_GAP + pct_w
-        hfm = QFontMetrics(header_f)
-        header_w = max((hfm.horizontalAdvance(t) + 12
-                        for t, k in (("待触发", "pending"), ("已触发", "hit")) if self._rows[k]),
-                       default=0)
-        self._body_w = int(math.ceil(max(content_w, header_w, self.MIN_CONTENT_W))) + 2 * self.PAD_X
-        h = self.PAD_TOP + self.PAD_BOTTOM
-        groups = [k for k in ("pending", "hit") if self._rows[k]]
-        for k in groups:
-            h += self.HEADER_H + self.HEADER_GAP + self.ROW_H * len(self._rows[k])
-        if len(groups) == 2:
-            h += self.SEP_GAP_TOP + 1 + self.SEP_GAP_BOTTOM
-        self._body_h = max(h, 40)
-        self.setFixedSize(self._body_w + 2 * self.MARGIN_X,
-                          self._body_h + self.MARGIN_TOP + self.MARGIN_BOTTOM)
-        self.update()
-
-    def setRows(self, pending, hit):
-        """设置两组行数据，每行 (is_up, 价位文本, 百分比文本)。内容没变就什么都不做，返回是否变化。"""
-        new = {"pending": [tuple(r) for r in (pending or [])],
-               "hit": [tuple(r) for r in (hit or [])]}
-        if new == self._rows:
-            return False
-        self._rows = new
-        self._relayout()
-        return True
-
-    def rows(self):
-        return {k: list(v) for k, v in self._rows.items()}
-
-    @staticmethod
-    def _available_rect(anchor_global):
-        """锚点所在屏幕的可用区域（已去掉菜单栏与 Dock）。取不到屏幕就返回一个极大的矩形，等于不收拢。"""
-        try:
-            scr = QGuiApplication.screenAt(anchor_global) or QGuiApplication.primaryScreen()
-            if scr is not None:
-                return scr.availableGeometry()
-        except Exception as _swallow_exc:
-            log_swallow("stock_float_window.TargetBubble._available_rect", _swallow_exc)
-        return QRect(-100000, -100000, 200000, 200000)
-
-    def body_rect_global(self):
-        """可见气泡本体在屏幕坐标里的矩形（不含透明外圈）。"""
-        top_left = self.mapToGlobal(QPoint(self.MARGIN_X, self.MARGIN_TOP))
-        return QRect(top_left.x(), top_left.y(), self._body_w, self._body_h)
-
-    def is_flipped(self):
-        """True 表示整块翻到了铃铛上方（下方放不下），小三角朝下。"""
-        return self._flipped
-
-    def caret_center_global_x(self):
-        return self.mapToGlobal(QPoint(0, 0)).x() + self.MARGIN_X + self._caret_x
-
-    def show_below(self, anchor_global, icon_top_y=None):
-        """气泡本体水平中心对准铃铛中心，顶边在铃铛图标下方 GAP_TO_ICON。
-
-        anchor_global 是铃铛图标底边中心；icon_top_y 是图标上沿的屏幕 y，只用于下方放不下时
-        翻到上方（不传就永不翻转）。靠近屏幕左右边时本体向内收拢，小三角仍留在铃铛正下方/上方，
-        只在离本体圆角不足 CARET_INSET 时才被迫偏离。
-        """
-        area = self._available_rect(anchor_global)
-        edge = self.SCREEN_EDGE
-        bw, bh = self._body_w, self._body_h
-        ax = anchor_global.x()
-        left = int(round(ax - bw / 2.0))
-        left = max(area.left() + edge, min(left, area.right() + 1 - edge - bw))
-        top = anchor_global.y() + self.GAP_TO_ICON
-        flipped = False
-        if icon_top_y is not None and top + bh > area.bottom() + 1 - edge:
-            above = icon_top_y - self.GAP_TO_ICON - bh
-            if above >= area.top() + edge:
-                flipped, top = True, above
-        self._flipped = flipped
-        self._caret_x = float(max(self.CARET_INSET, min(ax - left, bw - self.CARET_INSET)))
-        target = QPoint(left - self.MARGIN_X, int(top) - self.MARGIN_TOP)
-        if self.isVisible() and self.pos() == target:
-            # 已经开着、位置也没变（行情只是把数字换了）：只重绘，不再移动、不再重新显示与置顶。
-            # 探针实测：活跃行情下每秒 6~7 次文字变化，旧写法每次都走一遍 move+show+raise_。
-            self.update()
-            return
-        self.move(target)
-        self.update()
-        self.show()
-        self.raise_()
-
-    def _shape_path(self):
-        """本体圆角矩形 + 指向铃铛的小三角，合成一条轮廓（描边时三角与本体之间没有接缝）。"""
-        w, h, c = float(self._body_w), float(self._body_h), self._caret_x
-        body = smooth_round_rect_path(0, 0, w, h, self.RADIUS)
-        k = self.CARET_H
-        if self._flipped:
-            tri = QPolygonF([QPointF(c - k - 1, h - 1), QPointF(c, h + k), QPointF(c + k + 1, h - 1)])
-        else:
-            tri = QPolygonF([QPointF(c - k - 1, 1), QPointF(c, -k), QPointF(c + k + 1, 1)])
-        caret = QPainterPath()
-        caret.addPolygon(tri)
-        caret.closeSubpath()
-        return body.united(caret)
-
-    def _paint_shadow(self, p):
-        """两层柔影（贴边收口 + 向下散开）。Qt 没有现成模糊，用一组逐层外扩、alpha 递减的圆角矩形逼近高斯。"""
-        w, h = float(self._body_w), float(self._body_h)
-        # (纵向偏移, 高斯 σ, 最深处 alpha 0~1)，对应效果图 0 1px 2px / 0 8px 20px
-        for dy, sigma, peak in ((1.0, 1.0, 0.28), (8.0, 10.0, 0.30)):
-            prev = 0.0                                  # 已叠在外侧的累计覆盖
-            for i in range(8, -9, -1):                  # 从最外层往里：+2σ … -2σ，每 σ/4 一层
-                d = i * sigma / 4.0
-                # 「刚好在这一层边缘内侧」那一带应有的累计覆盖；越往里越深，所以逐层递增
-                cum = peak * 0.5 * math.erfc((d - sigma / 8.0) / (sigma * math.sqrt(2.0)))
-                # 累计覆盖逐层严格递增且恒小于 peak（< 1），这一层的 alpha 因此恒为正，不需要再防 0
-                layer = 1.0 - (1.0 - cum) / (1.0 - prev)
-                prev = cum
-                rect = QRectF(-d, dy - d, w + 2 * d, h + 2 * d)
-                if rect.width() <= 0 or rect.height() <= 0:
-                    continue
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(0, 0, 0, max(1, int(round(layer * 255)))))
-                radius = max(0.0, self.RADIUS + d)
-                p.drawRoundedRect(rect, radius, radius)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.translate(self.MARGIN_X, self.MARGIN_TOP)
-        self._paint_shadow(p)
-        shape = self._shape_path()
-        p.fillPath(shape, self.BODY_COLOR)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(self.RING_COLOR, 1))
-        p.drawPath(shape)
-        self._paint_rows(p)
-        p.end()
-
-    def _paint_rows(self, p):
-        """组标题 + 每行三列。三列共用同一条文字基线（取价位字体的度量，方向词与百分比跟着它），
-        方向词再上提 WORD_RAISE 抵掉汉字笔画的下探，使三列可见底边齐平；标题圆点底边与标题文字底边齐平。"""
-        price_f, pct_f, word_f, header_f = self._fonts()
-        word_w, price_w, pct_w = self._columns()
-        hfm, pfm = QFontMetrics(header_f), QFontMetrics(price_f)
-        x_word = float(self.PAD_X)
-        x_price = x_word + word_w + self.COL_GAP
-        x_pct_right = x_price + price_w + self.COL_GAP + self.PCT_GAP + pct_w
-        row_off = (self.ROW_H - (pfm.ascent() + pfm.descent())) / 2.0 + pfm.ascent()
-        head_off = (self.HEADER_H - (hfm.ascent() + hfm.descent())) / 2.0 + hfm.ascent()
-        y = float(self.PAD_TOP)
-        groups = [(k, t, dot) for k, t, dot in (
-            ("pending", "待触发", self.PENDING_DOT_COLOR), ("hit", "已触发", self.HIT_DOT_COLOR))
-            if self._rows[k]]
-        for gi, (key, title, dot) in enumerate(groups):
-            base = y + head_off
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(dot)
-            # 圆点底边与标题文字的可见底边齐平（文字底边 = 基线 + HEADER_INK_OVER）。
-            # 标题基线常落在半像素上（实测 20.5）：2 倍屏上刚好是设备像素边界，1 倍屏上文字会被取整而圆点
-            # 按半像素抗锯齿，差出 1px，所以圆点底边按所在设备的像素向上取整。
-            # 缩放取两处的较大值：直接画到窗口时 device() 报真实倍率；render() 到 2 倍图片时 device() 仍是
-            # 窗口本身（实测报 1.0），真实缩放只在 deviceTransform() 里（报 2.0）。
-            dpr = max(1.0, p.device().devicePixelRatioF(), p.deviceTransform().m11())
-            dot_bottom = math.ceil((base + self.HEADER_INK_OVER) * dpr - 1e-6) / dpr
-            p.drawEllipse(QRectF(self.PAD_X, dot_bottom - self.DOT_SIZE, self.DOT_SIZE, self.DOT_SIZE))
-            p.setFont(header_f)
-            p.setPen(self.HEADER_COLOR)
-            p.drawText(QPointF(self.PAD_X + 12, base), title)
-            y += self.HEADER_H + self.HEADER_GAP
-            for is_up, price_text, pct_text in self._rows[key]:
-                base = y + row_off
-                if key == "hit":
-                    color = self.HIT_TEXT_COLOR
-                else:
-                    color = self.UP_COLOR if is_up else self.DOWN_COLOR
-                p.setPen(color)
-                p.setFont(word_f)
-                p.drawText(QPointF(x_word, base - self.WORD_RAISE), "涨到" if is_up else "跌到")
-                p.setFont(price_f)
-                p.drawText(QPointF(x_price, base), price_text)
-                if pct_text:
-                    p.setFont(pct_f)
-                    adv = QFontMetrics(pct_f).horizontalAdvance(pct_text)
-                    p.drawText(QPointF(x_pct_right - adv, base), pct_text)
-                y += self.ROW_H
-            if gi < len(groups) - 1:
-                y += self.SEP_GAP_TOP
-                p.setPen(QPen(self.SEP_COLOR, 1))
-                p.drawLine(QPointF(self.PAD_X, y + 0.5), QPointF(self._body_w - self.PAD_X, y + 0.5))
-                y += 1 + self.SEP_GAP_BOTTOM
 
 
 class ToolWindowManager:
@@ -978,6 +726,9 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
     face_guard_wakeup = pyqtSignal()
     diagnostics_ready = pyqtSignal(object)
     maintenance_wakeup = pyqtSignal()
+    target_notification_wakeup = pyqtSignal()
+    target_store_warning = pyqtSignal()
+    target_revision_warning = pyqtSignal()
 
     # 收展动画期间的重复整窗帧合并：resizeEvent 每次都会排一次整窗帧，并把序号加一；
     # 呼吸灯时钟自己再排一次就是同一个 vsync 周期里的第二帧（实测展开时约 30% 的相邻
@@ -1096,6 +847,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
     _update_manual_wait = _update_state_property("_update_manual_wait")
     _update_last_check_at = _update_state_property("_update_last_check_at")
     _update_last_result = _update_state_property("_update_last_result")
+    _update_last_download = _update_state_property("_update_last_download")
     _update_stale_resets = _update_state_property("_update_stale_resets")
     _update_check_aborted = _update_state_property("_update_check_aborted")
     _update_failure_count = _update_state_property("_update_failure_count")
@@ -1245,7 +997,46 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
             lambda item: self._q_put(item), _bundle_version)
         self._diagnostics_controller = DiagnosticsExportController(_publish_diagnostics_file)
         self._quote_runtime = QuoteRuntimeController()
-        self._target_ticks = TargetTickBuffer()
+        tick_store_path = os.environ.get("SF_TARGET_TICKS_PATH")
+        if tick_store_path is None and os.environ.get("SF_TARGET_TICKS_DISABLE") != "1":
+            import sf_config
+            tick_store_path = os.path.join(os.path.dirname(os.path.abspath(sf_config.CONFIG_PATH)),
+                                           "target_ticks.sqlite")
+        if tick_store_path is None:
+            self._target_ticks = TargetTickBuffer()
+        else:
+            try:
+                from sf_target_tick_store import TargetTickStore
+                os.makedirs(os.path.dirname(os.path.abspath(tick_store_path)), exist_ok=True)
+                with TargetTickStore(tick_store_path):
+                    pass
+                self._target_ticks = TargetTickBuffer(
+                    persistent_path=tick_store_path, persistent_max_entries=100000,
+                    persistent_max_bytes=64 * 1024 * 1024, async_recovery=True,
+                    on_recovery=self._wake_ui)
+            except Exception as exc:
+                log_line("target tick store unavailable; using memory buffer: %r" % (exc,), "WARNING")
+                self._target_ticks = TargetTickBuffer()
+                QTimer.singleShot(0, self._show_target_store_unavailable)
+        self._target_tick_publishers = 0
+        self._target_notification_results: queue.SimpleQueue[tuple[str, bool]] = queue.SimpleQueue()
+        self._target_notification_inflight = {}
+        self._target_notification_acks = set()
+        self._target_notification_uncertain: list[dict] = []
+        self._target_startup_retry = None
+        self._target_notification_retry_timer = QTimer(self)
+        self._target_notification_retry_timer.setInterval(30000)
+        self._target_notification_retry_timer.timeout.connect(self._drain_target_notification_outbox)
+        self._target_notification_retry_timer.start()
+        self._target_notification_initial_timer = QTimer(self)
+        self._target_notification_initial_timer.setSingleShot(True)
+        self._target_notification_initial_timer.timeout.connect(self._drain_target_notification_outbox)
+        self.target_notification_wakeup.connect(self._drain_target_notification_outbox,
+                                                Qt.ConnectionType.QueuedConnection)
+        self.target_store_warning.connect(self._show_target_store_unavailable,
+                                          Qt.ConnectionType.QueuedConnection)
+        self.target_revision_warning.connect(self._show_target_revision_unavailable,
+                                             Qt.ConnectionType.QueuedConnection)
         self._snapshot_writer = SnapshotWriter(save_last_quote)
         self.running = True
         self._editor = None
@@ -1511,6 +1302,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 诊断留痕：上一次检查的末态与"在飞检查过期复位"的次数（1.4.44 那一支
         # 此前只写一行 WARNING）。runtime.json 据此回答"点了没反应/卡在检查中"。
         self._update_last_result = None
+        self._update_last_download = None
         self._update_stale_resets = 0
         # v1.4.44：用户在「正在检查更新」上按了取消 —— 这一次的结果不再弹（状态照常收）。
         self._update_check_aborted = False
@@ -1635,6 +1427,11 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         QApplication.instance().applicationStateChanged.connect(self._on_app_state)
         QApplication.instance().applicationStateChanged.connect(self._check_updates_after_resume)
         self._clamp_to_screen()
+        # 2026-11-02 走查 F-D-03：_clamp_to_screen 只处理"与可用区完全不相交"的窗口，
+        # 保存位置只剩几像素贴在屏缘（上次退出时被拖到边上、或换了更小的屏）时它判成
+        # "看得见"而不动，启动后窗口大半在屏外。与屏幕变化路径（_on_screen_changed）同口径，
+        # 补一次 _keep_on_screen（幂等：已完整在屏内时不产生位移）。
+        self._keep_on_screen()
         # 屏幕热插拔、分辨率和缩放变化：窗口可能被甩出可见区域，均需重新钳制。
         # v1.2.72 第6轮走查：此前只监听新增/移除/主屏切换；副屏仍连接但用户
         # 改分辨率、缩放或可用区域时不会触发，窗口可能永久留在屏幕外。
@@ -1650,6 +1447,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
 
         # v6：启动载入目标价（过期丢弃 / 越线补提醒 / 武装清空定时器）
         self._init_targets()
+        self._target_notification_initial_timer.start(0)
         # ---- v1.4.40 人脸在场守卫 ----
         # 默认关闭：要摄像头权限的功能不能替用户默认打开（且一开就亮绿灯、不可隐藏）。
         # 这里只登记状态与一张轮询表，**不**拉起采集 —— 采集由 _sync_face_guard
@@ -3060,6 +2858,37 @@ QMenu::separator {
             return None
         return round(max(0.0, time.monotonic() - float(stamp)), 2)
 
+    def _target_tick_diagnostics(self):
+        """目标价行情队列现场（诊断包 targets.json 的 tick_queue）。
+
+        "提醒怎么没响"此前包里问不出：行情是不是只在内存里、登记目录读不读得出来。
+        登记目录读不出来（UNKNOWN）会让面板保存和过期清理都被挡住，必须点名。
+        """
+        ticks = getattr(self, "_target_ticks", None)
+        if ticks is None:
+            return {"persistent": False}
+        body = ticks.diagnostics()
+        if body.get("persistent"):
+            import sf_config
+            from sf_utils import normalize_code
+            body["registry"] = sf_config.target_tick_publisher_status(self.code)
+            # 登记目录建不出来时 registry 一律是 INACTIVE，必须另问一句才分得开。
+            body["registry_dir"] = _registry_dir_state()
+            # 别的股票的暂存行情同样会拦住过期清理，只看当前这只股票会漏掉它们。
+            mine = normalize_code(self.code)
+            others = sorted((set(body.get("held_markers") or ()) | set(body.get("unsaved_codes") or ()))
+                            - {mine, self.code})[:20]
+            body["registry_others"] = {code: sf_config.target_tick_publisher_status(code) for code in others}
+            body["disk_queue"] = _disk_queue_state(ticks.persistent_path)
+            # 提醒被暂停的原因：计数是累计值，*_now 是此刻仍未恢复的故障。
+            body["degraded"] = {
+                "counts": dict(getattr(self, "_target_degraded_counts", None) or {}),
+                "guard_unavailable_now": bool(getattr(self, "_target_guard_warned", False)),
+                "lock_unavailable_now": bool(getattr(self, "_target_lock_warned", False)),
+                "capacity_gap_now": bool(getattr(self, "_target_lock_gap_warned", False)),
+            }
+        return body
+
     def _alert_code_histogram(self):
         """存储里每条目标价各归属于哪只股票的计数（"" = 无主，按顶层股票处理）。
 
@@ -3337,10 +3166,31 @@ QMenu::separator {
             self._close_target_panel()
         except Exception:
             pass
-        self.code = code
         ticks = getattr(self, "_target_ticks", None)
+        retry_by_code = getattr(self, "_target_retry_by_code", {})
         if ticks is not None:
-            ticks.clear()
+            previous_code = self.code
+            pending = ticks.park(previous_code)
+            retry_quotes = getattr(self, "_target_retry_quotes", {})
+            saved = [(record, retry_quotes.get(id(record[2]))) for record in pending]
+            if saved:
+                retry_by_code[previous_code] = saved
+                import sf_config
+                while len(retry_by_code) > sf_config.ALERT_STORE_MAX_CODES:
+                    evicted = next(iter(retry_by_code))
+                    del retry_by_code[evicted]
+                    log_line("target retry buffer full; pending quotes discarded for %s" % evicted, "WARNING")
+        self.code = code
+        self._target_retry_quotes = {}
+        self._target_retry_blocked = False
+        saved = retry_by_code.pop(code, [])
+        if ticks is not None:
+            restored = ticks.restore_ordered(code, [record for record, _ in saved])
+            if restored is False:
+                self.target_store_warning.emit()
+            self._target_retry_quotes = {id(record[2]): data for record, data in saved
+                                         if data is not None}
+        self._target_retry_by_code = retry_by_code
         # v1.4.59（S4 彻底解）：换完 code 立刻把**这只股票自己的**目标价接回来。
         # 存储里可能还留着它（今天早些时候设的），也可能什么都没有（第一次看这只）。
         self._adopt_targets_for(code)
@@ -3380,6 +3230,26 @@ QMenu::separator {
         return True
 
     # ---------- 数据 ----------
+    def _show_target_revision_unavailable(self):
+        """提示目标版本未知导致的暂停。"""
+        try:
+            from PyQt6.QtWidgets import QToolTip
+            point = self.mapToGlobal(QPoint(self.width() // 2, 10))
+            QToolTip.showText(point, "部分股票目标价提醒已暂停，提醒可能遗漏：无法确认历史行情对应的目标", self)
+            QTimer.singleShot(5000, QToolTip.hideText)
+        except Exception as exc:
+            log_line("target revision warning display failed: %r" % (exc,), "WARNING")
+
+    def _show_target_store_unavailable(self):
+        """告知用户目标价行情未能持久保存。"""
+        try:
+            from PyQt6.QtWidgets import QToolTip
+            point = self.mapToGlobal(QPoint(self.width() // 2, 10))
+            QToolTip.showText(point, "目标价行情保存失败，提醒可能遗漏；请检查磁盘和权限", self)
+            QTimer.singleShot(5000, QToolTip.hideText)
+        except Exception as exc:
+            log_line("target tick warning display failed: %r" % (exc,), "WARNING")
+
     def _after_save_config(self, ok):
         """v1.2.39：配置保存失败不再静默 —— 失败时弹一次性气泡提示用户
         （磁盘空间 / config 文件权限问题），并记录 WARNING 日志。"""
@@ -3397,7 +3267,11 @@ QMenu::separator {
             from PyQt6.QtCore import QPoint, QTimer
             from PyQt6.QtWidgets import QToolTip
             g = self.mapToGlobal(QPoint(self.width() // 2, 10))
-            QToolTip.showText(g, "配置保存失败：请检查磁盘空间或 config 文件权限", self)
+            import sf_config
+            message = ("配置读取失败，目标价已暂停；请检查权限后重新启动"
+                       if sf_config.config_unavailable()
+                       else "配置保存失败：请检查磁盘空间或 config 文件权限")
+            QToolTip.showText(g, message, self)
             QTimer.singleShot(5000, QToolTip.hideText)
         except Exception:
             pass
@@ -3671,6 +3545,135 @@ QMenu::separator {
             pass
 
     def _q_put(self, item):
+        ticks = getattr(self, "_target_ticks", None)
+        publishing = item[0] == "quote" and ticks is not None and ticks.persistent
+        token = None
+        if publishing:
+            self._target_tick_publishers = getattr(self, "_target_tick_publishers", 0) + 1
+            import sf_config
+            # Register the publication before the lock is even attempted: this tick
+            # can end up held only in memory (lock unavailable, or the durable write
+            # failing while we hold it), and another process' expiry cleanup must not
+            # delete the target it belongs to in that window.
+            token = sf_config.target_tick_publisher_open(item[1][0])
+        try:
+            if publishing and token is None:
+                # Fail closed: without a cross-process marker no other process can
+                # learn that this tick is still in flight, so it must not become
+                # target-price input. The price is still shown; reminders pause.
+                code, quote = item[1]
+                if not isinstance(quote, QuoteData):
+                    quote = QuoteData(quote)
+                    quote._plain_quote = True
+                quote._target_unprotected = True
+                _note_target_degraded(self, "unprotected_quotes")
+                if not getattr(self, "_target_guard_warned", False):
+                    # One line per failure episode: this branch runs for every quote
+                    # while the registry stays unwritable, so it must not flood debug.log.
+                    log_line("target publication guard unavailable; quote shown without target evaluation", "WARNING")
+                    self._target_guard_warned = True
+                    self.target_store_warning.emit()
+                return FloatWindow._q_put_locked(self, ("quote", (code, quote)))
+            if publishing:
+                self._target_guard_warned = False
+                import sf_config
+                lock = sf_config.target_tick_transaction()
+                try:
+                    lock.__enter__()
+                except OSError as exc:
+                    code, quote = item[1]
+                    if not isinstance(quote, QuoteData):
+                        quote = QuoteData(quote)
+                        quote._plain_quote = True
+                    quote.target_revision = None
+                    from sf_target_tick_store import CapacityError, DisplayQueuedCapacityError
+                    capacity_error = None
+                    try:
+                        ticks is not None and ticks.retain_unsaved(code, quote)
+                    except CapacityError as capacity_exc:
+                        capacity_error = capacity_exc
+                        _note_target_degraded(self, "capacity_gap")
+                        log_line("target tick gap for %s: volatile queue exhausted: %r" % (code, capacity_exc), "ERROR")
+                    _note_target_degraded(self, "lock_unavailable")
+                    log_line("target tick lock unavailable; revision unknown: %r" % (exc,), "WARNING")
+                    if not getattr(self, "_target_lock_warned", False):
+                        self._target_lock_warned = True
+                        self.target_revision_warning.emit()
+                    elif capacity_error is not None and not getattr(self, "_target_lock_gap_warned", False):
+                        self.target_store_warning.emit()
+                    if capacity_error is not None:
+                        self._target_lock_gap_warned = True
+                    displayed = False
+                    try:
+                        self.q.put_nowait(("quote", (code, quote)))
+                        displayed = True
+                    except queue.Full:
+                        try:
+                            self.q.get_nowait()
+                        except queue.Empty:
+                            log_line("display queue emptied during target lock fallback", "WARNING")
+                        try:
+                            self.q.put_nowait(("quote", (code, quote)))
+                            displayed = True
+                        except queue.Full:
+                            log_line("display queue full during target lock fallback", "WARNING")
+                    self._wake_ui()
+                    if capacity_error is not None:
+
+                        if displayed:
+                            raise DisplayQueuedCapacityError(str(capacity_error)) from capacity_error
+                        raise capacity_error
+                    if not displayed:
+                        raise queue.Full("display queue full during target lock fallback")
+                    return
+                self._target_lock_warned = False
+                self._target_lock_gap_warned = False
+                try:
+                    try:
+                        return FloatWindow._q_put_locked(self, item)
+                    except Exception as exc:
+                        from sf_target_tick_store import CapacityError, DisplayQueuedCapacityError
+                        if not isinstance(exc, CapacityError):
+                            raise
+                        # The target store is full, but the price must still reach the
+                        # screen: queue it for display, then report the target gap.
+                        try:
+                            self.q.put_nowait(item)
+                        except queue.Full:
+                            try:
+                                self.q.get_nowait()
+                            except queue.Empty as queue_exc:
+                                log_swallow("stock_float_window._q_put.display_queue_empty", queue_exc)
+                            try:
+                                self.q.put_nowait(item)
+                            except queue.Full:
+                                raise exc
+                        self._wake_ui()
+                        raise DisplayQueuedCapacityError(str(exc)) from exc
+                finally:
+                    lock.__exit__(None, None, None)
+            return FloatWindow._q_put_locked(self, item)
+        finally:
+            if publishing:
+                self._target_tick_publishers = max(0, self._target_tick_publishers - 1)
+                if token is not None:
+                    # The buffer normally registers its own marker for a tick that stays
+                    # volatile. When that registration failed it takes over ours instead,
+                    # so the tick never sits in memory without a cross-process marker.
+                    adopted = False
+                    try:
+                        adopted = ticks is not None and ticks.adopt_publisher(item[1][0], token)
+                    finally:
+                        if not adopted:
+                            try:
+                                token.close()
+                            except OSError as close_exc:
+                                # The quote is already queued; a failed marker release must
+                                # not replace its result. The process-lifetime marker stays
+                                # conservative until the process exits.
+                                log_swallow("stock_float_window._q_put.token_close", close_exc)
+
+    def _q_put_locked(self, item):
         """有界队列写入：队列满（UI 短暂卡顿）时丢弃最旧行情，保证最新数据可达，
         避免无界积压造成内存增长。行情/分钟线均为可丢失的实时数据，丢弃旧值是安全的。
 
@@ -3678,8 +3681,61 @@ QMenu::separator {
         if item[0] == "quote":
             code, quote = item[1]
             ticks = getattr(self, "_target_ticks", None)
-            if ticks is not None:
-                ticks.add(code, quote)
+            if ticks is not None and not getattr(quote, "_target_unprotected", False):
+                if ticks.persistent and not isinstance(quote, QuoteData):
+                    quote = QuoteData(quote)
+                    quote._plain_quote = True
+                    item = ("quote", (code, quote))
+                import sf_config
+                from contextlib import nullcontext
+                try:
+                    transaction = sf_config.config_transaction() if ticks.persistent else nullcontext()
+                    with transaction:
+                        if isinstance(quote, QuoteData):
+                            try:
+                                quote.target_revision = sf_config.alerts_revision(code)
+                            except Exception as exc:
+                                quote.target_revision = None
+                                log_line("target revision unavailable on quote receipt: %r" % (exc,), "WARNING")
+                        ticks.add_ordered(code, quote)
+                    if ticks.persistent:
+                        unsaved = ticks.unsaved_count()
+                        if unsaved and not getattr(self, "_target_unsaved_warned", False):
+                            self._target_unsaved_warned = True
+                            self.target_store_warning.emit()
+                        elif unsaved == 0:
+                            self._target_unsaved_warned = False
+                except Exception as exc:
+                    from sf_target_tick_store import CapacityError, RetainedCapacityError
+                    if isinstance(exc, TimeoutError) and ticks.persistent:
+                        quote.target_revision = None
+                        try:
+                            ticks.add_ordered(code, quote)
+                        except RetainedCapacityError:
+                            log_line("target tick store full; quote retained in memory", "WARNING")
+                        except CapacityError as capacity_exc:
+                            log_line("target tick gap for %s: volatile queue exhausted: %r" %
+                                     (code, capacity_exc), "ERROR")
+                            self.target_store_warning.emit()
+                            raise
+                        if ticks.unsaved_count():
+                            self.target_store_warning.emit()
+                        log_line("target revision lock unavailable; quote retained without revision", "WARNING")
+                        self.target_revision_warning.emit()
+                    elif isinstance(exc, RetainedCapacityError):
+                        log_line("target tick store full; quote retained in memory", "WARNING")
+                        if not getattr(self, "_target_unsaved_warned", False):
+                            self._target_unsaved_warned = True
+                            self.target_store_warning.emit()
+                    elif isinstance(exc, CapacityError):
+                        log_line("target tick gap for %s: volatile queue exhausted: %r" % (code, exc), "ERROR")
+                        try:
+                            self.target_store_warning.emit()
+                        except (AttributeError, RuntimeError):
+                            pass
+                        raise
+                    else:
+                        raise
         try:
             self.q.put_nowait(item)
         except queue.Full:
@@ -3771,7 +3827,13 @@ QMenu::separator {
                     # v1.2.69：备源兜底成功 ≠ 主源健康；主源故障时仍按失败计入熔断，
                     # 避免交易时段每 0.1s 反复打已死的主源（请求风暴）。
                     via_fallback = (get_last_quote_source() == "sina")
-                    self._q_put(("quote", (request_code, q)))
+                    from sf_target_tick_store import DisplayQueuedCapacityError
+                    try:
+                        self._q_put(("quote", (request_code, q)))
+                    except DisplayQueuedCapacityError as exc:
+                        # 目标价缺口已经由生产者上报，这一笔只是"行情已经排队显示"的正常分支；
+                        # 仍留一行 SWALLOWED 痕迹，避免 §6 第 9 条那一族的静默失效。
+                        log_swallow("stock_float_window._fetch_quote.display_queued_gap", exc)
                     if self._quote_fail > 0:
                         self._quote_fail = 0
                         self._report_net(True)
@@ -4169,12 +4231,54 @@ QMenu::separator {
         if not self.running:
             return
         ticks = getattr(self, "_target_ticks", None)
+        if ticks is not None and ticks.persistent and ticks.unsaved_count() == 0:
+            self._target_unsaved_warned = False
+        self._target_retry_blocked = False
+        evaluated_ids = set()
+        target_read_failed = False
+        tick_batch: list = []
         if ticks is not None:
-            for quote in ticks.take(self.code):
+            try:
+                enabled = getattr(self, "_targets_enabled", None)
+                paused = ticks.persistent and callable(enabled) and not enabled()
+                consume_old = getattr(self, "_consume_old_target_tick", None)
+                if not paused and ticks.persistent and callable(consume_old) and consume_old(ticks) is False:
+                    target_read_failed = True
+                    tick_batch = []
+                else:
+                    tick_batch = ([] if paused else ticks.take(self.code, global_order=True)
+                                  if ticks.persistent and callable(consume_old) else ticks.take(self.code))
+            except Exception as exc:
+                log_swallow("stock_float_window._poll.target_tick_read", exc)
+                target_read_failed = True
+                tick_batch = []
+            evaluated_ids = {id(quote) for quote in tick_batch}
+            self._target_retry_inflight = set(evaluated_ids)
+            self._target_batch_rolls: dict = {}
+            for quote in tick_batch:
                 try:
-                    self._evaluate_received_quote(quote)
+                    outcome = self._evaluate_received_quote(quote)
+                    if outcome is False and ticks.persistent:
+                        break
+                    if outcome is not False:
+                        ticks.acknowledge(quote)
                 except Exception as exc:
                     log_swallow("stock_float_window._poll.target_tick", exc)
+                    retry_quotes = getattr(self, "_target_retry_quotes", {})
+                    retry_data = retry_quotes.get(id(quote))
+                    if retry_data is None or retry_data[0] is not quote:
+                        retry_quotes[id(quote)] = (quote, getattr(quote, "target_revision", None))
+                    retained = ticks.pin(self.code, quote) or ()
+                    keep_ids = {id(item) for item in retained}
+                    keep_ids.update(self._target_retry_inflight)
+                    self._target_retry_quotes = {key: value for key, value in retry_quotes.items()
+                                                 if key in keep_ids}
+                    self._target_retry_blocked = True
+                    if ticks.persistent:
+                        break
+                finally:
+                    self._target_retry_inflight.discard(id(quote))
+            del self._target_batch_rolls
         # 缩小到 Dock 期间整体低频；具体间隔由 sf_quote_loop 的决策函数提供。
         # 仍消费行情队列，保证恢复即最新。
         # v1.2.40：间隔决策下沉 sf_quote_loop.ui_poll_interval_ms/ui_top_poll_interval_ms
@@ -4195,7 +4299,13 @@ QMenu::separator {
                         data_code, quote = data if (isinstance(data, tuple) and len(data) == 2) else (self.code, data)
                         if data_code != self.code:
                             continue
-                        self._apply_quote(quote)
+                        self._target_display_skip = evaluated_ids
+                        try:
+                            if ticks is not None and (ticks.persistent or target_read_failed or ticks.has_pending(self.code)):
+                                self._target_display_skip = evaluated_ids | {id(quote)}
+                            self._apply_quote(quote)
+                        finally:
+                            del self._target_display_skip
                     elif kind == "minute":
                         # data 形如 (请求时的代码, 分时点列表)：旧股票的迟到回包直接丢弃
                         data_code, data = data if (isinstance(data, tuple) and len(data) == 2) else (self.code, data)
@@ -4267,11 +4377,19 @@ QMenu::separator {
         # 现在整段纳入守卫并留痕；后面的重绘/呼吸灯/宽度收尾无论如何都执行。
         try:
             for quote in batch.quote_evaluations:
+                if (ticks is not None and ticks.persistent) or id(quote) in evaluated_ids:
+                    continue
                 evaluate = getattr(self, "_evaluate_received_quote", None)
                 if callable(evaluate):
                     evaluate(quote)
             if latest_quote is not None:
-                self._apply_quote(latest_quote)
+                self._target_display_skip = evaluated_ids
+                try:
+                    if ticks is not None and (ticks.persistent or target_read_failed or ticks.has_pending(self.code)):
+                        self._target_display_skip = evaluated_ids | {id(latest_quote)}
+                    self._apply_quote(latest_quote)
+                finally:
+                    del self._target_display_skip
             if latest_minute is not None:
                 if latest_minute != self.minute_points:
                     self._need_redraw = True
@@ -4472,6 +4590,11 @@ QMenu::separator {
         dec = len(_frac) if (_frac and _frac.isdigit() and len(_frac) <= 4) else 2
         data["price"] = ("%%.%df" % dec) % last_price
         data["pct"] = str(round(new_pct, 2))
+        # 2026-11-02 走查 F-D-05：涨跌额也要同步回写。_trend_color 读的是 data["change"]，
+        # 只改 price/pct 时它仍是接口给的 0 → 价格大字按"平盘"画成白色，而涨跌幅文字
+        # 已经是负数（如 -3.00%），两者颜色/方向互相矛盾。昨收无效时不编造涨跌额。
+        if pre_close > 0 and math.isfinite(pre_close):
+            data["change"] = ("%%.%df" % dec) % (last_price - pre_close)
         return last_price, new_pct
 
     def _resolve_pct(self, data, price):
@@ -4576,7 +4699,12 @@ QMenu::separator {
         self._maybe_trigger_drop_flash(new_pct)
         # v6：「目标价」实时判定（置于切股丢弃判定之后，仿 _maybe_trigger_drop_flash 位置）。
         # 命中即通知（语义键去重）+ 彩虹高亮 + 持久化已 hit 状态；不重复触发。
-        self._evaluate_received_quote(data)
+        try:
+            target_display_skip = getattr(self, "_target_display_skip", ())
+        except RuntimeError:
+            target_display_skip = ()
+        if self._real_price > 0 and id(data) not in target_display_skip:
+            self._evaluate_received_quote(data)
         # 铃铛气泡正开着时让它跟上最新现价与触发状态（气泡没开时这里几乎零开销）。
         # 紧跟判定之后：刚触发的那一条要立刻从「待触发」挪到「已触发」。
         refresh_bubble = getattr(self, "_refresh_target_bubble", None)
@@ -4742,6 +4870,13 @@ QMenu::separator {
             q = snap.get("quote")
             if not isinstance(q, dict):
                 return
+            # 2026-11-02 走查 F-D-06：顶部名称行直接读 quote["name"] / quote["code"]，
+            # 快照缺任一项（手改、旧格式、半写入）都会让每一帧绘制抛 KeyError 并被 paintEvent
+            # 吞掉，只剩一行日志。预填前要求两者都是非空字符串，否则不预填、等首条行情。
+            for _need in ("name", "code"):
+                _val = q.get(_need)
+                if not isinstance(_val, str) or not _val.strip():
+                    return
             price = float(q.get("price") or 0)
             pct = float(q.get("pct") or 0)
             if not (math.isfinite(price) and math.isfinite(pct)) or price <= 0:
@@ -5330,18 +5465,53 @@ QMenu::separator {
             log_line("calendar prefetch error: %r" % (exc,))
             return {}
 
+    def _show_config_unavailable(self):
+        self._after_save_config(False)
+
     def _init_targets(self):
         """启动恢复（D2/M-8）：过期静默丢弃、未过期保留、已越线补提醒一次。"""
+        import sf_config
+        unavailable_at_start = sf_config.config_unavailable()
+        if unavailable_at_start:
+            QTimer.singleShot(0, self._show_config_unavailable)
         if not self._targets_enabled():
             return
         self._prefetch_calendar()
+        ticks = getattr(self, "_target_ticks", None)
+        target_lock = None
+        if ticks is not None and ticks.persistent:
+            target_lock = sf_config.target_tick_transaction(blocking=False)
+            try:
+                target_lock.__enter__()
+            except (BlockingIOError, OSError) as exc:
+                log_line("target startup recovery deferred: %r" % (exc,), "WARNING")
+                self._target_startup_deferred_code = self.code
+                self._alerts = load_alerts(self.code)
+                self._clear_timer.start(1000)
+                return
         try:
             raw = load_alerts(self.code)   # v1.4.59（S4）：只取当前这只股票
+            if not unavailable_at_start and sf_config.config_unavailable():
+                QTimer.singleShot(0, self._show_config_unavailable)
             if not raw:
                 self._alerts = []
                 return
+            ticks = getattr(self, "_target_ticks", None)
+            if ticks is not None and ticks.persistent:
+                try:
+                    pending = ticks.has_pending(self.code)
+                except Exception as exc:
+                    log_line("target startup queue read failed: %r" % (exc,), "WARNING")
+                    pending = True
+                if pending:
+                    self._target_startup_deferred_code = self.code
+                    self._alerts = raw
+                    self._request_notify_auth()
+                    self._clear_timer.start(1000)
+                    return
             # R47：先把落在非交易日的生效日顺延（跨年/未来月份日历未缓存时
             # 可能落到元旦、春节这类休市日，否则目标价会整天不触发还被静默清空）。
+            stored = raw
             raw, rolled = roll_alerts_to_trading_day(raw)
             now = _beijing_now()
             price = self._current_price()
@@ -5353,19 +5523,20 @@ QMenu::separator {
             # R46：全部过期时 kept 为空，原先 `if kept:` 会跳过落盘，
             # 磁盘里留着永不生效的死条目 —— 铃铛显示 none（内存已空），
             # 但打开面板又看到那条目标价，两处说法不一致。
-            if kept != raw or rolled:
-                recovered_persisted = bool(self._persist_alerts(kept))
+            events = self._target_notification_events(reminders)
+            if kept != raw or rolled or events:
+                kwargs = {"outbox_events": events} if events else {}
+                recovered_persisted = bool(self._persist_alerts(kept, expected=stored, **kwargs))
                 self._after_save_config(recovered_persisted)
+                if not recovered_persisted and events:
+                    self._target_startup_retry = (self.code, stored, kept, events)
             # R46：写盘失败时不能原样回退 raw —— 里面可能混着本该被 recover
             # 丢弃的过期条目，而 _arm_clear_timer 只武装未来时刻，它们既不会被
             # 清掉也不会生效，铃铛常亮、面板看得到，直到重启才消失。
             # 过期的条目不可能触发提醒（in_effect_window 已拦截），丢掉是安全的。
-            self._alerts = kept if recovered_persisted else drop_expired(raw, now)
-            name = self.quote.get("name") if self.quote else ""
-            for r in reminders if recovered_persisted else []:
-                _notify_deliver(target_notification_title(name, self.code), "", r["text"],
-                                semantic_key(r["direction"], r["target"], self.code),
-                                on_click=self._restore_window)
+            self._alerts = kept if recovered_persisted else drop_expired(load_alerts(self.code), now)
+            if events and recovered_persisted:
+                self._drain_target_notification_outbox()
             # R48：启动恢复路径也要确保已请求过通知授权。此前只有面板「立即生效」
             # 会请求，若那次请求因系统原因静默失败（或用户是升级前设的目标价），
             # 之后永远不再重试 —— 用户设了目标价却一次通知都收不到。
@@ -5376,8 +5547,11 @@ QMenu::separator {
         except Exception as exc:
             log_line("init targets error: %r" % (exc,), "WARNING")
             self._alerts = []
+        finally:
+            if target_lock is not None:
+                target_lock.__exit__(None, None, None)
 
-    def _set_targets(self, alerts):
+    def _set_targets(self, alerts, live=None):
         """保存目标价（面板「立即生效」）：与实时状态合并后更新内存 + 落盘 +
         重新武装清空定时器 + 请求通知授权。返回是否保存成功。
 
@@ -5389,9 +5563,16 @@ QMenu::separator {
         """
         if not self._targets_enabled():
             return False
+        ticks = getattr(self, "_target_ticks", None)
+        try:
+            if ticks is not None and ticks.persistent and ticks.has_pending(self.code):
+                return False
+        except Exception as exc:
+            log_line("target panel save deferred: %r" % (exc,), "WARNING")
+            return False
         # 保存/合并/过期过滤的纯事务下沉到协调器；主窗只保留 Qt 定时器和刷新编排。
         ok, committed, _changed = TargetLifecycleCoordinator(self._persist_alerts, _beijing_now).save(
-            alerts, self._safe_alerts())
+            alerts, self._safe_alerts() if live is None else live)
         self._after_save_config(ok)
         if not ok:
             return False
@@ -5401,12 +5582,97 @@ QMenu::separator {
         self.update()
         return True
 
+    def _apply_empty_targets(self, original, decimals, expected_revision=None):
+        import sf_config
+        try:
+            with sf_config.config_transaction():
+                if sf_config.alerts_revision(self.code) != expected_revision:
+                    return False
+                return self._apply_empty_targets_locked(original, decimals)
+        except Exception as exc:
+            log_line("apply empty targets transaction error: %r" % (exc,), "WARNING")
+            return False
+
+    def _apply_empty_targets_locked(self, original, decimals):
+        """仅删除面板看到的原条目，状态分歧时拒绝猜测。"""
+        if not self._targets_enabled():
+            return False
+        try:
+            def slot(alert):
+                return (str(alert.get("direction")),
+                        round(float(alert.get("target")), decimals))
+
+            def identity(alert):
+                return {k: v for k, v in alert.items()
+                        if k not in ("code", "state", "last_side")}
+
+            def comparable(alert):
+                return {k: v for k, v in alert.items() if k != "code"}
+
+            baseline = {}
+            for alert in original:
+                baseline.setdefault(slot(alert), []).append(identity(alert))
+            live = self._safe_alerts()
+            stored = load_alerts(self.code)
+            for alert in live + stored:
+                key = slot(alert)
+                if key in baseline and identity(alert) not in baseline[key]:
+                    return False
+            live_other = [comparable(a) for a in live if slot(a) not in baseline]
+            stored_other = [comparable(a) for a in stored if slot(a) not in baseline]
+            if live_other != stored_other:
+                return False
+            remaining = [a for a in live if slot(a) not in baseline]
+            ok = self._persist_alerts(remaining, expected=stored)
+            self._after_save_config(ok)
+            if not ok:
+                return False
+            self._alerts = remaining
+            self._arm_clear_timer()
+            self.update()
+            return True
+        except Exception as exc:
+            log_line("apply empty targets error: %r" % (exc,), "WARNING")
+            return False
+
     def _request_notify_auth(self):
         """请求通知授权（结果不回溯阻断保存，v6 §5.2）。"""
         try:
             request_authorization()
         except Exception:
             pass
+
+    def _panel_targets_transaction(self, code, revision, action):
+        import sf_config
+        from contextlib import ExitStack
+        try:
+            ticks = getattr(self, "_target_ticks", None)
+            with ExitStack() as stack:
+                if ticks is not None and ticks.persistent:
+                    # 行情线程收到一笔行情时会持 tick 锁做一次写库；点保存正好撞上时短间隔
+                    # 重试几次，重试本身最多等 7×10ms。窗口只覆盖常见的短占用：若行情线程
+                    # 正在等配置锁（最长 0.5s），这里仍会判失败并提示重试，这是有意保留的上限，
+                    # 不为它让界面线程多等。
+                    for attempt in range(PANEL_TICK_LOCK_ATTEMPTS):
+                        try:
+                            stack.enter_context(sf_config.target_tick_transaction(blocking=False))
+                            break
+                        except BlockingIOError:
+                            if attempt == PANEL_TICK_LOCK_ATTEMPTS - 1:
+                                raise
+                            time.sleep(PANEL_TICK_LOCK_RETRY_SEC)
+                stack.enter_context(sf_config.config_transaction())
+                if self.code != code or sf_config.alerts_revision(code) != revision:
+                    return False
+                stored = load_alerts(code)
+                with sf_config.expect_alerts_unchanged(code, stored):
+                    return action(stored)
+        except Exception as exc:
+            # 抢锁耗尽（重试用满仍被占）与其他异常的处置完全不同，分开计数。
+            _note_target_degraded(self, "panel_lock_exhausted" if isinstance(exc, BlockingIOError)
+                                  else "panel_transaction_error")
+            log_line("target panel transaction error: %r" % (exc,), "WARNING")
+            return False
 
     def _clear_targets(self):
         """清空目标价（面板「清空」，与 _set_targets 解耦）：落盘 + 清内存 +
@@ -5436,6 +5702,18 @@ QMenu::separator {
             return False
 
     def _adopt_targets_for(self, code):
+        import sf_config
+        try:
+            with sf_config.target_tick_transaction(blocking=False):
+                FloatWindow._adopt_targets_for_locked(self, code)
+            if getattr(self, "_target_startup_deferred_code", None) == code:
+                self._clear_timer.start(1000)
+        except (BlockingIOError, OSError) as exc:
+            log_line("target adoption deferred (%s): %r" % (code, exc), "WARNING")
+            self._alerts = load_alerts(code)
+            self._clear_timer.start(1000)
+
+    def _adopt_targets_for_locked(self, code):
         """把存储里属于 `code` 的目标价装进内存（切股与启动恢复共用同一口径）。
 
         过期的条目顺手丢掉并写回 —— 与 `_init_targets` 同一道理：留着它们铃铛会亮、
@@ -5446,24 +5724,55 @@ QMenu::separator {
             return
         try:
             stored = load_alerts(code)
+            ticks = getattr(self, "_target_ticks", None)
+            if (ticks is not None and ticks.persistent and
+                    hasattr(self, "_adopt_targets_for_locked")):
+                try:
+                    pending = ticks.has_pending(code)
+                except Exception as exc:
+                    log_line("target adoption queue read failed: %r" % (exc,), "WARNING")
+                    pending = True
+                if pending:
+                    self._alerts = stored
+                    self._clear_timer.start(1000)
+                    return
             now = _beijing_now()
             kept = [a for a in stored if not expired(a, now)]
             self._alerts = kept
             if len(kept) != len(stored):
-                self._after_save_config(self._persist_alerts(kept))
+                ok = self._persist_alerts(kept, expected=stored)
+                self._after_save_config(ok)
+                if not ok:
+                    self._alerts = [a for a in load_alerts(code) if not expired(a, now)]
             self._arm_clear_timer()
         except Exception as exc:
             log_line("adopt targets failed (%s): %r" % (code, exc), "WARNING")
             self._alerts = []
 
-    def _persist_alerts(self, alerts):
+    def _persist_alerts(self, alerts, expected=None, *, outbox_events=None):
         """目标价落盘的唯一入口（v1.4.59，S4 彻底解）。
 
         带上当前 code 是为了"只替换这只股票的条目" —— 别的股票在存储里的条目
         原样留着。以前切股等于把上一只的目标价整片删掉，而这是用户一条条手录的
         核心数据；现在删除只可能来自面板的「清空」（那也只清当前这只）。
         """
-        return save_alerts(alerts, code=self.code)
+        old = self._safe_alerts()
+        kwargs = {"outbox_events": outbox_events} if outbox_events is not None else {}
+        if expected is None:
+            ok = save_alerts(alerts, code=self.code, **kwargs)
+        else:
+            import sf_config
+            with sf_config.expect_alerts_unchanged(self.code, expected):
+                ok = save_alerts(alerts, code=self.code, **kwargs)
+        if ok:
+            def identity(alert):
+                return {key: value for key, value in alert.items()
+                        if key not in ("code", "state", "last_side")}
+            before = [identity(a) for a in old if isinstance(a, dict)]
+            after = [identity(a) for a in alerts if isinstance(a, dict)]
+            if before != after:
+                self._targets_revision = getattr(self, "_targets_revision", 0) + 1
+        return ok
 
     def _safe_alerts(self):
         """取 _alerts；兼容未完全初始化的对象（测试桩）与未设置的边界。"""
@@ -5472,11 +5781,119 @@ QMenu::separator {
         except Exception:
             return []
 
+    def _consume_old_target_tick(self, ticks):
+        """Process one durable tick belonging to a different stock."""
+        import sf_config
+        import sf_quote
+
+        def sync_config():
+            with open(sf_config.CONFIG_PATH, "rb") as config_file:
+                os.fsync(config_file.fileno())
+            fd = os.open(os.path.dirname(sf_config.CONFIG_PATH) or ".", os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+        with sf_config.config_transaction(timeout=0):
+            oldest = ticks.oldest_persistent()
+            if ticks.blocked_stocks and not getattr(self, "_target_revision_warned", False):
+                self._target_revision_warned = True
+                self.target_revision_warning.emit()
+            if oldest is None:
+                return True
+            code, quote = oldest
+            if _normalize_code_6(code) == _normalize_code_6(self.code):
+                return True
+            if not self._targets_enabled():
+                return False
+            revision = getattr(quote, "target_revision", None)
+            if revision is None:
+                if not getattr(self, "_target_revision_warned", False):
+                    self._target_revision_warned = True
+                    self.target_revision_warning.emit()
+                return False
+            if sf_config.config_unavailable():
+                return False
+            if sf_config.alerts_revision(code) != revision:
+                sync_config()
+                ticks.acknowledge(quote)
+                return True
+            received = quote.received_at
+            if (received is None or not sf_quote._is_trading_time(received) or
+                    not sf_quote.quote_is_current(quote, received)):
+                ticks.acknowledge(quote)
+                return True
+            try:
+                price = float(quote["price"])
+            except (KeyError, TypeError, ValueError):
+                ticks.acknowledge(quote)
+                return True
+            if not math.isfinite(price) or price <= 0:
+                ticks.acknowledge(quote)
+                return True
+            stored = sf_config.load_alerts(code)
+            if sf_config.config_unavailable():
+                return False
+            alerts, rolled = roll_alerts_to_trading_day(stored)
+            alerts = drop_expired(alerts, received)
+            out, fired = evaluate_tick(alerts, price, decimals=price_decimals(code), now=received)
+            if rolled or out != stored or fired:
+                import uuid
+                name = quote.get("name", "")
+                events = [{"id": uuid.uuid4().hex, "code": code,
+                           "title": target_notification_title(name, code),
+                           "body": item["text"],
+                           "semantic_key": semantic_key(item["direction"], item["target"], code)}
+                          for item in fired]
+                with sf_config.expect_alerts_unchanged(code, stored):
+                    if not sf_config.save_alerts(out, code=code, outbox_events=events):
+                        return False
+            else:
+                # A previous replace may have succeeded before directory fsync failed.
+                sync_config()
+            ticks.acknowledge(quote)
+        if fired:
+            self._target_notification_initial_timer.start(0)
+        return True
+
     def _evaluate_received_quote(self, quote):
         """业务逐笔判断，显示仍允许合批；旧日期与非交易时段不触发。"""
-        if not self._targets_enabled() or not self._is_trading_time():
+        if getattr(quote, "_target_unprotected", False):
             return
-        if not isinstance(quote, dict) or not quote_is_current(quote):
+        import sf_config
+        try:
+            ticks = getattr(self, "_target_ticks", None)
+        except RuntimeError:
+            ticks = None
+        if ticks is not None and ticks.persistent and sf_config.config_unavailable():
+            return False
+        if (ticks is not None and ticks.persistent and isinstance(quote, QuoteData)
+                and getattr(quote, "_target_store_record", None) is not None
+                and hasattr(quote, "target_revision") and quote.target_revision is None):
+            log_line("target retry retained: original revision unavailable for %s" % self.code, "WARNING")
+            if not getattr(self, "_target_revision_warned", False):
+                self._target_revision_warned = True
+                self.target_revision_warning.emit()
+            self._target_retry_blocked = True
+            return False
+        if not self._targets_enabled() or not self._safe_alerts():
+            return
+        retry_quotes = getattr(self, "_target_retry_quotes", {})
+        retry_data = retry_quotes.pop(id(quote), None)
+        retry = retry_data is not None and retry_data[0] is quote
+        if (not retry and isinstance(quote, QuoteData) and
+                getattr(quote, "_target_store_record", None) is not None and
+                hasattr(quote, "target_revision")):
+            import sf_quote
+            received = quote.received_at
+            if (received is not None and sf_quote._is_trading_time(received) and
+                    sf_quote.quote_is_current(quote, received)):
+                retry_data = (quote, quote.target_revision)
+                retry = True
+        if not retry and not self._is_trading_time():
+            return
+        if not isinstance(quote, dict) or (not retry and not quote_is_current(quote)):
             return
         code = quote.get("code")
         if isinstance(code, str) and _normalize_code_6(code) != _normalize_code_6(self.code):
@@ -5486,7 +5903,168 @@ QMenu::separator {
         except (KeyError, TypeError, ValueError):
             return
         if price > 0 and math.isfinite(price):
-            self._evaluate_targets(price)
+            import sf_config
+            ticks = getattr(self, "_target_ticks", None)
+            incoming_revision = getattr(quote, "target_revision", None)
+            if (retry and retry_data[1] is None) or (not retry and
+                    isinstance(quote, QuoteData) and hasattr(quote, "target_revision") and
+                    incoming_revision is None):
+                if ticks is not None and ticks.persistent:
+                    log_line("target retry retained: original revision unavailable for %s" % self.code, "WARNING")
+                    if not getattr(self, "_target_revision_warned", False):
+                        self._target_revision_warned = True
+                        self.target_revision_warning.emit()
+                    self._target_retry_blocked = True
+                    return False
+                log_line("target retry discarded: original revision unavailable for %s" % self.code, "WARNING")
+                return
+            try:
+                revision = (retry_data[1] if retry else incoming_revision
+                            if isinstance(quote, QuoteData) and hasattr(quote, "target_revision")
+                            else sf_config.alerts_revision(self.code))
+            except Exception:
+                if ticks is not None:
+                    retry_quotes[id(quote)] = (quote, None)
+                    retained = ticks.pin(self.code, quote) or ()
+                    keep_ids = {id(item) for item in retained}
+                    keep_ids.update(getattr(self, "_target_retry_inflight", set()))
+                    self._target_retry_quotes = {key: value for key, value in retry_quotes.items()
+                                                 if key in keep_ids}
+                    self._target_retry_blocked = True
+                return False
+            rolls = getattr(self, "_target_batch_rolls", {})
+            while revision in rolls:
+                revision = rolls[revision]
+            if isinstance(quote, QuoteData) and hasattr(quote, "target_revision"):
+                quote.target_revision = revision
+            if getattr(self, "_target_retry_blocked", False):
+                if ticks is not None:
+                    retry_quotes[id(quote)] = (quote, revision)
+                    if ticks.persistent:
+                        from sf_target_tick_store import CapacityError
+                        try:
+                            ticks.retain_unsaved(self.code, quote)
+                        except CapacityError as exc:
+                            log_line("target tick gap for %s: volatile queue exhausted: %r" % (self.code, exc), "ERROR")
+                            self.target_store_warning.emit()
+                            retry_quotes.pop(id(quote), None)
+                            return False
+                        retained = (quote,)
+                    else:
+                        retained = ticks.add_ordered(self.code, quote) or ()
+                    keep_ids = {id(item) for item in retained}
+                    keep_ids.update(getattr(self, "_target_retry_inflight", set()))
+                    self._target_retry_quotes = {key: value for key, value in retry_quotes.items()
+                                                 if key in keep_ids}
+                return False
+            self._target_expected_revision = (retry, revision)
+            self._target_retry_revision = revision
+            received_time = None
+            if (retry and isinstance(quote, QuoteData) and
+                    getattr(quote, "_target_store_record", None) is not None):
+                import sf_quote
+                received = quote.received_at
+                if (received is not None and sf_quote._is_trading_time(received) and
+                        sf_quote.quote_is_current(quote, received)):
+                    received_time = received
+            self._target_received_time = received_time
+            self._target_received_name = quote.get("name") or ""
+            try:
+                failed = self._evaluate_targets(price) is False
+                revision = self._target_retry_revision
+            finally:
+                del self._target_expected_revision
+                del self._target_retry_revision
+                del self._target_received_time
+                del self._target_received_name
+            if failed:
+                self._target_retry_blocked = True
+                if ticks is not None:
+                    retry_quotes[id(quote)] = (quote, revision)
+                    retained = ticks.pin(self.code, quote) or ()
+                    keep_ids = {id(item) for item in retained}
+                    keep_ids.update(getattr(self, "_target_retry_inflight", set()))
+                    self._target_retry_quotes = {key: value for key, value in retry_quotes.items()
+                                                 if key in keep_ids}
+                return False
+
+    def _target_notification_events(self, reminders):
+        import uuid
+        name = getattr(self, "_target_received_name", None)
+        if name is None:
+            name = self.quote.get("name") if self.quote else ""
+        return [{"id": uuid.uuid4().hex, "code": self.code,
+                 "title": target_notification_title(name, self.code),
+                 "body": item["text"],
+                 "semantic_key": semantic_key(item["direction"], item["target"], self.code)}
+                for item in reminders]
+
+    def _drain_target_notification_outbox(self):
+        """Process notification completions on the UI thread and retry pending events."""
+        if getattr(self, "_threads_stopped", False):
+            return
+        import sf_config
+        retry = getattr(self, "_target_startup_retry", None)
+        if retry is not None:
+            code, expected, recovered, retry_events = retry
+            try:
+                with sf_config.config_transaction(timeout=0):
+                    stored_events = sf_config.load_target_notification_outbox()
+                    by_id = {event["id"]: event for event in stored_events}
+                    present = [event for event in retry_events if event["id"] in by_id]
+                    if present:
+                        success = (len(present) == len(retry_events) and
+                                   sf_config.sync_target_notification_outbox(retry_events))
+                    elif sf_config.load_alerts(code) != expected:
+                        self._target_startup_retry = None
+                        success = False
+                    else:
+                        with sf_config.expect_alerts_unchanged(code, expected):
+                            success = sf_config.save_alerts(recovered, code=code,
+                                                            outbox_events=retry_events)
+                    if success:
+                        self._target_startup_retry = None
+                        if self.code == code:
+                            self._alerts = sf_config.load_alerts(code)
+            except Exception as exc:
+                log_line("target startup retry failed: %r" % (exc,), "WARNING")
+        results = self._target_notification_results
+        inflight = self._target_notification_inflight
+        acks = self._target_notification_acks
+        while True:
+            try:
+                event_id, success = results.get_nowait()
+            except queue.Empty:
+                break
+            if success:
+                inflight.pop(event_id, None)
+                acks.add(event_id)
+        if acks and sf_config.ack_target_notification_outbox(list(acks)):
+            acks.clear()
+        try:
+            events = sf_config.load_target_notification_outbox()
+        except Exception as exc:
+            log_line("target notification outbox read failed: %r" % (exc,), "WARNING")
+            return
+        now = time.monotonic()
+        for event in events:
+            event_id = event["id"]
+            if event_id in acks or now < inflight.get(event_id, 0):
+                continue
+            if not sf_config.sync_target_notification_outbox([event]):
+                continue
+            inflight[event_id] = now + 30.0
+            def completed(success, event_id=event_id, results=results):
+                results.put((event_id, bool(success)))
+                try:
+                    self.target_notification_wakeup.emit()
+                except RuntimeError:
+                    pass
+            try:
+                _notify_deliver(event["title"], "", event["body"], event["semantic_key"],
+                                on_click=self._restore_window, on_complete=completed)
+            except Exception as exc:
+                log_line("target notification delivery failed: %r" % (exc,), "WARNING")
 
     def _evaluate_targets(self, price):
         """行情 tick：对 pending 目标价判定越线；命中即通知 + 彩虹 + 持久化。"""
@@ -5496,36 +6074,76 @@ QMenu::separator {
         if not alerts:
             return
         try:
-            # R47：每个 tick 先纠正落在非交易日的生效日（跨年/未来月份日历未
-            # 缓存时会落到休市日）。只有真正非交易日才会改，正常交易日零开销。
-            alerts, rolled = roll_alerts_to_trading_day(alerts)
-            if rolled:
-                ok = self._persist_alerts(alerts)
-                self._after_save_config(ok)
-                if not ok:
+            import sf_config
+            with sf_config.config_transaction(timeout=0):
+                uncertain = getattr(self, "_target_notification_uncertain", [])
+                if uncertain:
+                    pending_events = sf_config.load_target_notification_outbox()
+                    pending_by_id = {event["id"]: event for event in pending_events}
+                    present = [event for event in uncertain if event["id"] in pending_by_id]
+                    if present:
+                        if len(present) != len(uncertain) or not sf_config.sync_target_notification_outbox(uncertain):
+                            return False
+                        self._target_notification_uncertain = []
+                        self._alerts = load_alerts(self.code)
+                        self._target_notification_initial_timer.start(0)
+                        if all(event.get("code") == self.code for event in uncertain):
+                            return
+                    self._target_notification_uncertain = []
+                revision = sf_config.alerts_revision(self.code)
+                expected_revision = getattr(self, "_target_expected_revision", None)
+                expected = expected_revision[1] if expected_revision else None
+                rolls = getattr(self, "_target_batch_rolls", {})
+                while expected in rolls:
+                    expected = rolls[expected]
+                if expected_revision and revision != expected:
                     return
-                self._alerts = alerts
-            out, fired = evaluate_tick(
-                alerts, price, decimals=price_decimals(self.code))
+                stored = load_alerts(self.code)
+                if sf_config.config_unavailable():
+                    return False
+                alerts, rolled = roll_alerts_to_trading_day(stored)
+                evaluation_time = getattr(self, "_target_received_time", None)
+                alerts = drop_expired(alerts, evaluation_time or _beijing_now())
+                if rolled or alerts != stored:
+                    ok = self._persist_alerts(alerts, expected=stored)
+                    self._after_save_config(ok)
+                    if not ok:
+                        return False
+                    self._alerts = alerts
+                    stored = alerts
+                    new_revision = sf_config.alerts_revision(self.code)
+                    if new_revision != revision:
+                        rolls[revision] = new_revision
+                    self._target_retry_revision = new_revision
+                try:
+                    kwargs = {"now": evaluation_time} if evaluation_time is not None else {}
+                    out, fired = evaluate_tick(
+                        alerts, price, decimals=price_decimals(self.code), **kwargs)
+                except Exception as exc:
+                    log_line("target tick evaluation failed: %r" % (exc,), "WARNING")
+                    return False
+                if fired:
+                    events = self._target_notification_events(fired)
+                    ok = self._persist_alerts(out, expected=stored, outbox_events=events)
+                    self._after_save_config(ok)
+                    if not ok:
+                        self._target_notification_uncertain = events
+                        return False
+                self._alerts = out
             if not fired:
                 return
-            # 命中状态先落盘成功，再更新内存和发送通知；保存失败时保留 pending，
-            # 避免下次 tick 因“内存已 hit、磁盘仍 pending”造成状态分裂。
-            ok = self._persist_alerts(out)
-            self._after_save_config(ok)
-            if not ok:
-                return
-            self._alerts = out
             self._sync_target_panel()
             self._start_rainbow()
-            name = self.quote.get("name") if self.quote else ""
-            for f in fired:
-                _notify_deliver(target_notification_title(name, self.code), "", f["text"],
-                                semantic_key(f["direction"], f["target"], self.code),
-                                on_click=self._restore_window)
+            self._drain_target_notification_outbox()
             self.update()
+        except TimeoutError:
+            return False
+        except OSError as exc:
+            log_line("evaluate targets error: %r" % (exc,), "WARNING")
+            return False
         except Exception as exc:
             log_line("evaluate targets error: %r" % (exc,), "WARNING")
+            return False
 
     def _arm_clear_timer(self):
         """专用清空定时器（D1）：按各 alert 的 session_date 15:00:30 武装单发。"""
@@ -5567,20 +6185,51 @@ QMenu::separator {
 
     def _clear_expired(self):
         """清空定时器到点：丢弃已过 15:00:30 的目标价，保留未来 session_date。"""
+        deferred = getattr(self, "_target_startup_deferred_code", None)
+        if deferred == self.code:
+            self._target_startup_deferred_code = None
+            self._init_targets()
+            return
+        import sf_config
         try:
-            now = _beijing_now()
-            alerts = self._safe_alerts()
-            kept = [a for a in alerts if not expired(a, now)]
-            if len(kept) != len(alerts):
-                # 先写盘，成功后才替换内存；清空落盘失败时保留原状态，
-                # 避免重启后旧目标再次出现而界面此前已显示为空。
-                if self._persist_alerts(kept):
-                    self._alerts = kept
-                    self._sync_target_panel()
-                    self.update()
+            with sf_config.target_tick_transaction(blocking=False):
+                self._clear_expired_locked()
+        except (BlockingIOError, OSError) as exc:
+            log_line("target tick cleanup deferred: %r" % (exc,), "WARNING")
+            self._clear_timer.start(1000)
+
+    def _clear_expired_locked(self):
+        try:
+            ticks = getattr(self, "_target_ticks", None)
+            import sf_config
+            with sf_config.config_transaction(timeout=0):
+                if ticks is not None and ticks.persistent and (
+                        ticks.has_pending(self.code) or
+
+                        getattr(self, "_target_tick_publishers", 0)):
+                    self._clear_timer.start(1000)
+                    return
+                sf_config.alerts_revision()
+                now = _beijing_now()
+                alerts = load_alerts(self.code)
+                kept = [a for a in alerts if not expired(a, now)]
+                if len(kept) != len(alerts):
+                    # The producer can publish a just-captured tick after the first
+                    # pending check. Recheck immediately before removing expired
+                    # targets so that this cleanup never wins that race.
+                    if ticks is not None and ticks.persistent and ticks.has_pending(self.code):
+                        self._clear_timer.start(1000)
+                        return
+                    if self._persist_alerts(kept, expected=alerts):
+                        self._alerts = kept
+                        self._sync_target_panel()
+                        self.update()
             self._arm_clear_timer()
         except Exception as exc:
             log_line("clear expired error: %r" % (exc,), "WARNING")
+            timer = getattr(self, "_clear_timer", None)
+            if timer is not None:
+                timer.start(1000)
 
     def _raise_tool_window(self, tool):
         """把工具窗抬到主窗**之上**，让主窗的周期置顶压不住它。
@@ -5727,8 +6376,27 @@ QMenu::separator {
                 except Exception as _swallow_exc:
                     log_swallow("stock_float_window._open_target_panel", _swallow_exc)
             name = self.quote.get("name") if self.quote else ""
-            panel = TargetPanel(self.code, name, self._set_targets,
-                                self._clear_targets,
+            targets_revision = getattr(self, "_targets_revision", 0)
+            import sf_config
+            with sf_config.config_transaction():
+                disk_targets_revision = sf_config.alerts_revision(self.code)
+                disk_targets_snapshot = load_alerts(self.code)
+            panel_code = self.code
+            def clear_panel_targets():
+                nonlocal disk_targets_revision
+                def clear_and_update_revision(stored):
+                    nonlocal disk_targets_revision
+                    if not self._clear_targets():
+                        return False
+                    disk_targets_revision = sf_config.alerts_revision(panel_code)
+                    return True
+                return self._panel_targets_transaction(
+                    panel_code, disk_targets_revision, clear_and_update_revision)
+            panel = TargetPanel(panel_code, name,
+                                lambda desired: self._panel_targets_transaction(
+                                    panel_code, disk_targets_revision,
+                                    lambda stored: self._set_targets(desired, live=stored)),
+                                clear_panel_targets,
                                 current_code_fn=lambda: self.code,
                                 current_price_fn=lambda: self._current_price(),
                                 # v1.2.87：与主窗对齐 + 互斥 + 校验所需的运行时回调
@@ -5745,7 +6413,11 @@ QMenu::separator {
                                 # 分时抓取、休市提示、nap 策略）语义均正确，未改动。
                                 # 输入限制只使用行情源明确给出的涨跌停价。无官方字段时
                                 # 仍可设置目标价，避免新股等特殊规则被本地估算误拦截。
-                                limits_fn=lambda: official_limit_prices(self.quote))
+                                limits_fn=lambda: official_limit_prices(self.quote),
+                                initial_alerts=disk_targets_snapshot,
+                                on_apply_empty=lambda original, decimals: (
+                                    getattr(self, "_targets_revision", 0) == targets_revision
+                                    and self._apply_empty_targets(original, decimals, disk_targets_revision)))
             panel.set_surface_owner(self)
             self._target_panel = panel
             for status in self._prefetch_calendar().values():
@@ -6476,6 +7148,13 @@ QMenu::separator {
             self._flash_drop_timer.stop()
         except Exception:
             pass
+        # 2026-11-02 走查 F-D-02：只停表不复位相位 —— 闪烁正处在"亮"相时点缩小，flash_drop_on
+        # 会停在 True，从 Dock 恢复后价格一直画成白色（要等下一次下跌触发才恢复）。
+        # 不用 reset_flash()：它还会清各档冷却记录与彩虹提醒，那是切股语义，缩小不该动。
+        anim_driver = getattr(self, "_anim_driver", None)
+        if anim_driver is not None:
+            anim_driver.flash_drop_on = False
+            anim_driver.flash_drop_count = 0
         if self.timer.interval() != int(POLL_INTERVAL_MINIMIZED * 1000):
             self.timer.setInterval(int(POLL_INTERVAL_MINIMIZED * 1000))
         show_dock()
@@ -6730,6 +7409,13 @@ QMenu::separator {
         if getattr(self, "_threads_stopped", False):
             return
         self._threads_stopped = True
+        ticks = getattr(self, "_target_ticks", None)
+        if ticks is not None and not ticks.wait_recovery(1.5):
+            log_line("target tick recovery still running during exit", "WARNING")
+        if ticks is not None:
+            unsaved = ticks.unsaved_count()
+            if unsaved is None or (isinstance(unsaved, int) and unsaved > 0):
+                log_line("target tick unsaved at exit: %s" % unsaved, "ERROR")
         maintenance = getattr(self, "_update_maintenance", None)
         if maintenance is not None:
             maintenance.stop()
@@ -6747,7 +7433,9 @@ QMenu::separator {
             pass
         # 停止更新调度，避免退出后仍触发静默检查或退避重试。
         for timer in (getattr(self, "_update_retry_timer", None),
-                      getattr(self, "_update_periodic_timer", None)):
+                      getattr(self, "_update_periodic_timer", None),
+                      getattr(self, "_target_notification_retry_timer", None),
+                      getattr(self, "_target_notification_initial_timer", None)):
             if timer is not None:
                 try:
                     timer.stop()
@@ -6792,6 +7480,9 @@ QMenu::separator {
                 t.join(timeout=1.5)
             except Exception:
                 pass
+        publishers = getattr(self, "_target_tick_publishers", 0)
+        if publishers:
+            log_line("target tick publisher still active at exit: %s; reminders may be missed" % publishers, "ERROR")
         # 编辑器搜索线程：QThread 无停止标志可用（run() 是一次阻塞网络调用、
         # 不检查中断），只能有限等待后放行。
         # 上限刻意压到 500ms：v1.2.x 曾因在主线程 st.wait(4000) 导致退出时明显

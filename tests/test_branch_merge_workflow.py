@@ -135,6 +135,20 @@ class TestBranchMergeWorkflow(SFCase):
         self.assertEqual(len(self.read_compile_calls(calls)), 1)
         self.assertFalse((self.repo / "tests-ran").exists())
 
+    def test_pre_commit_clears_run_tests_probe_switches_before_the_test_gate(self):
+        # 2026-11-02 走查 F-J-03：run_tests.sh 的 SF_GUARD_PROBE / SF_LOCK_PROBE 是给测试用的短路开关
+        # （取到就 exit 0、一条用例不跑）。shell 里残留一个，钩子照样打印“全部检查通过，允许提交”。
+        # 这里的 run_tests.sh 是桩，只记录它被调用时看到的三个变量；钩子必须在调用前把它们洗掉。
+        self.hook_compile_fixture()
+        runner = self.write("run_tests.sh", (
+            "#!/bin/sh\n"
+            'printf "%s|%s|%s" "${SF_GUARD_PROBE-unset}" "${SF_LOCK_PROBE-unset}" '
+            '"${SF_LOCK_PROBE_DIR-unset}" > seen-env\n'))
+        runner.chmod(0o755)
+        self.env.update(SF_GUARD_PROBE="1", SF_LOCK_PROBE="1", SF_LOCK_PROBE_DIR=str(self.root / "probe-dir"))
+        result = self.run_command(["/bin/bash", str(self.repo / "git-hooks/pre-commit")])
+        self.assertEqual((self.repo / "seen-env").read_text(), "unset|unset|unset", result.stdout)
+
     def test_no_ff_no_commit_stops_before_moving_mainline_and_commit_runs_hook(self):
         source = self.source_branch()
         hook = self.hook_path()

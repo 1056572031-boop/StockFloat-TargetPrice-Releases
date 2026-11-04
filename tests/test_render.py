@@ -564,7 +564,7 @@ class TestRenderNetBad(TestRenderBase):
                 if isinstance(a, str):
                     texts.append(a)
 
-        real = m.QPainter.drawText
+        real = QPainter.drawText
         self._render_net_bad()
         with patch.object(QPainter, "drawText", _draw_text):
             self.win._need_redraw = True

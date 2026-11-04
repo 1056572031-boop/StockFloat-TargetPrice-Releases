@@ -194,13 +194,34 @@ def read_chunk(response, deadline, size, cancel_event=None):
     return chunk
 
 
+def _require_complete_body(headers, declared_length, received):
+    """2026-11-02 走查 F-A-05：声明了 Content-Length 而实收字节数不同 = 被截断，判失败。
+
+    http.client 的 read1 在对端提前 FIN 时只返回空串、不抛 IncompleteRead，旧实现因此把
+    "声明 300 字节、只收到 60 字节"当成成功读取，截断的行情文本（如价格停在 149）继续往下解析。
+    chunked 传输时 Content-Length 头不再描述正文长度（http.client 自己也忽略它），不判。
+    本仓不发 Accept-Encoding、urllib/http.client 也不自动解压，所以收到的字节数与
+    Content-Length 是同一个口径（压缩体也是按压缩后长度比）。
+    """
+    if declared_length is None:
+        return
+    encoding = str(headers.get("Transfer-Encoding") or "").lower()
+    if "chunked" in encoding:
+        return
+    if received != declared_length:
+        raise ResponsePolicyError(
+            "HTTP response truncated: declared %d bytes, received %d" % (declared_length, received))
+
+
 def read_limited(response, deadline, max_bytes=MAX_RESPONSE_BYTES, cancel_event=None):
     remaining_budget(deadline, cancel_event)
     headers = getattr(response, "headers", {})
     declared = headers.get("Content-Length")
+    declared_length = None
     if declared:
         try:
-            if int(declared) > max_bytes:
+            declared_length = int(declared)
+            if declared_length > max_bytes:
                 raise ResponsePolicyError("HTTP response exceeds size limit")
         except (TypeError, ValueError) as exc:
             raise ResponsePolicyError("Invalid HTTP content length") from exc
@@ -209,12 +230,14 @@ def read_limited(response, deadline, max_bytes=MAX_RESPONSE_BYTES, cancel_event=
         body = read_chunk(response, deadline, max_bytes + 1, cancel_event)
         if len(body) > max_bytes:
             raise ResponsePolicyError("HTTP response exceeds size limit")
+        _require_complete_body(headers, declared_length, len(body))
         return body
     chunks: list[bytes] = []
     total = 0
     while True:
         chunk = read_chunk(response, deadline, min(65536, max_bytes + 1 - total), cancel_event)
         if not chunk:
+            _require_complete_body(headers, declared_length, total)
             return b"".join(chunks)
         total += len(chunk)
         if total > max_bytes:

@@ -20,11 +20,15 @@
 再补一遍主进程用例，只为把账面数字抬上去；或者更糟，直接把 84 改成 83。
 两个选择都比不过"把线画在有意义的位置"。
 
-于是这里定两档，方向不一样：
-  · 产品档 **只许升**（下限由基线里的 `product_floor` 读取；
-    抬它要先把覆盖率真跑上去，别先改数字）；
-  · 链上档 **只降不升**（基线记当前实测向下取整，它守的是"别新增无人核验的链上代码"，
-    不是"漂亮"；和 `tools/static_gate_baseline.json` 同一个思路）
+于是这里定两档，记账方式不一样，但棘轮方向相同（都是下限只许往上抬）：
+  · 产品档 **只许升**（下限由基线里的 `product_floor` 读取，由人拍板、`--update` 不碰；
+    抬它要先把覆盖率真跑上去，别先改数字；"下限的下限"另钉在
+    `tests/test_coverage_gate.py::test_shipped_baseline_is_usable`，抬档要两处一起改）；
+  · 链上档 **同样只许升**（基线记当前实测向下取整，`--update` 只在实测涨了时才抬；
+    实测反而低于基线时拒绝写回，要下调必须显式 `--allow-drop`。它守的是
+    "别新增无人核验的链上代码"，不是"漂亮"）。
+    2026-11-02 走查 F-J-06/F-J-02：此前这里写成"只降不升"，与 `decide_update` 的实际行为相反，
+    读的人会以为链上档下限可以随手往下调。
 
 两道红线是从本仓反复栽过的地方抄来的，别放宽：
   · 没有 `.coverage`、或某一分档一个文件都没配上 → **判红**。
@@ -344,11 +348,13 @@ def self_test() -> int:
     check("基线里没有 product_floor/chain_floor —— 必须抛错而不是用默认值", ok8)
 
     # 9) 基线文件不存在必须抛错
-    try:
-        load_baseline(Path(tempfile.mkdtemp()) / "nope.json")
-        ok9 = False
-    except RuntimeError:
-        ok9 = True
+    # 2026-11-02 走查 F-J-06：原写 Path(tempfile.mkdtemp()) 每跑一次自检就在临时目录留一个空目录。
+    with tempfile.TemporaryDirectory() as td9:
+        try:
+            load_baseline(Path(td9) / "nope.json")
+            ok9 = False
+        except RuntimeError:
+            ok9 = True
     check("基线文件不存在 —— 必须抛错", ok9)
 
     # 10) 写回侧：下调链上档下限必须显式开关（走纯函数，不读 .coverage，

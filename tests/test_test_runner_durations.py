@@ -28,6 +28,34 @@ import coverage
 import test_runner as runner
 
 
+class IconIsolation(SFCase):
+    def test_focused_environment_redirects_real_icon_write(self):
+        import sf_icons
+        self.ensure_qapp()
+        with tempfile.TemporaryDirectory() as directory:
+            default = os.path.join(directory, "user", "icon.png")
+            with mock.patch.object(sf_icons, "ICON_PATH", default), \
+                    mock.patch.object(sf_icons, "_DEFAULT_ICON_PATH", default), \
+                    runner.focused_environment() as isolated:
+                sf_icons.make_app_icon("light")
+                self.assertTrue(os.path.exists(os.path.join(isolated, "icon.png")))
+                self.assertFalse(os.path.exists(default))
+
+    def test_full_runner_redirects_icon_before_running_tests(self):
+        observed = []
+        with mock.patch.dict(os.environ, {"SF_ICON_PATH": "/unsafe/user/icon.png"}), \
+                mock.patch.object(runner, "run_tests", side_effect=lambda *a: observed.append(os.environ["SF_ICON_PATH"]) or 0):
+            self.assertEqual(runner.main([]), 0)
+        self.assertEqual(len(observed), 1)
+        self.assertNotEqual(observed[0], "/unsafe/user/icon.png")
+    def test_full_runner_clears_icon_override_when_previously_absent(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SF_ICON_PATH", None)
+            with mock.patch.object(runner, "run_tests", return_value=0):
+                self.assertEqual(runner.main([]), 0)
+            self.assertNotIn("SF_ICON_PATH", os.environ)
+
+
 class _Clock:
     def __init__(self):
         self.reading = 100.0

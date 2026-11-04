@@ -35,6 +35,8 @@ if args[:1] == ["-c"]:
 if args[:1] == ["tools/coverage_provenance.py"]:
     action = args[1]
     code = failures.get("provenance:" + action, 0)
+    if action == "check" and Path("regression-completed").exists():
+        code = failures.get("provenance:after-regression", code)
     if action == "finish" and args[2:] != ["--exit-code", "0"]:
         code = code or 1
     raise SystemExit(code)
@@ -234,6 +236,7 @@ class TestCoverageChainWiring(SFCase):
         runner = self.repo / "run_tests.sh"
         runner.write_text(
             '#!/bin/sh\nprintf \'["isolated-regression"]\\n\' >> "$CHAIN_CALLS"\n'
+            'touch regression-completed\n'
             f"exit {runner_code}\n"
         )
         runner.chmod(0o700)
@@ -254,14 +257,23 @@ class TestCoverageChainWiring(SFCase):
         self.assertEqual(calls, [])
 
     def test_old_stamp_success_but_provenance_failure_requires_regression(self):
-        code, output, calls = self.run_release_gate({"provenance:check": 9}, 0)
+        code, output, calls = self.run_release_gate({"provenance:check": 9, "provenance:after-regression": 0}, 0)
         self.assertEqual(code, 0, output)
         self.assertEqual(calls, [
             ["tools/gate_stamp.py", "check"],
             ["tools/coverage_provenance.py", "check"],
             ["isolated-regression"],
+            ["tools/gate_stamp.py", "check"],
+            ["tools/coverage_provenance.py", "check"],
         ])
         self.assertIn("release-gate-valid=1", output)
+
+    def test_rerun_without_coverage_provenance_aborts_release(self):
+        code, output, calls = self.run_release_gate({"provenance:check": 9}, 0)
+        self.assertNotEqual(code, 0, output)
+        self.assertEqual(calls[-2:], [["tools/gate_stamp.py", "check"],
+                                     ["tools/coverage_provenance.py", "check"]])
+        self.assertNotIn("release-gate-valid=1", output)
 
     def test_required_regression_failure_aborts_release_gate(self):
         code, output, calls = self.run_release_gate({"provenance:check": 9}, 27)
