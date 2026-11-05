@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.111",
-  "published_at": "2026-11-05T09:43:41Z",
+  "version": "1.4.112",
+  "published_at": "2026-11-05T12:05:11Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 目标价提醒不再因行情暂时没存上而停住，锁恢复后自动继续。\n2. 已存目标价的股票太多时，自动清掉已过期的；仍存不下会说明真实原因。\n3. 系统通知被关闭后，不再反复重试同一条提醒。\n4. 启动时配置文件被短暂占用，不再误提示“配置读取失败”。",
+  "notes": "1. 本版为内部维护更新，日常使用没有变化。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.111-macos.zip",
-    "size": 27253264,
-    "sha256": "1f5163cbbd4bf308ed3803cbc6e3903343192541e3f298649de5d135d43a7ce1"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.112-macos.zip",
+    "size": 27252753,
+    "sha256": "561cf719b75b9aa4dc2f0c34e006f4ca1cc30ac92fea28445ad647f40f858937"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "QWIb5GjaaL47EJriMe99JcZlApNNNeC/SlessAtlC6JueuB0jI9G4qW+lOUJYAVoSEkJDvpFxqpMi6FkkbaoBg=="
+    "value": "wUa2LY9ziEMASlVVqdvTs4j8nKaSBXZ5e377RVBhItBDYRNwPzQoC0+JT0QqkkFwzChbVvf5Bt85GFpiVanlDg=="
   }
 }
