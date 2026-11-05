@@ -24,9 +24,14 @@ from public_docs_check import problems  # noqa: E402
 PUBLIC_BRANCH = "public-source"
 PUBLIC_FEEDBACK_REPO = b"1056572031-boop/Skyrocket-Private-Feedback"
 PUBLIC_FEEDBACK_ORIGIN = b"https://skyrocket-feedback-1056572031.pages.dev"
+# tests/test_agents_pointers.py 只守 AGENTS.md 与 docs/agents/ 的指引关系，这两处本身不外发，
+# 测试若随快照带出，公开 CI 会因找不到文件而红（v1.4.111 实测：3 条 FileNotFoundError + 1 条断言失败）。
 EXCLUDED = ("AGENTS.md", "DELIVERY_CHECKLIST.md", "QC_CHECKLIST.md", "backups", "outputs",
             "TESTS_AUDIT_2026-09-14.md", "REFACTOR_CHANGES_V1.3.46.md", "tools/archive",
+            "tests/test_agents_pointers.py",
             "目标价功能技术方案_v6.md", "目标价功能评估_基于v1.2.74.md")
+# 这条测试曾随 v1.4.111 公开快照发布；今后导出时继续排除，但不能把已公开的旧历史当成私有历史。
+HISTORICALLY_PUBLIC = ("tests/test_agents_pointers.py",)
 DOCS = ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md", "docs/INSTALL.md",
         "docs/CONTRIBUTING.md")
 # docs/ 下对外公开的文件只有这三份（README 与安装说明链接得到的，加许可与贡献所需）。
@@ -176,7 +181,8 @@ def audit_history(root: Path, home: str, secrets=()) -> None:
     issues = []
     for entry in objects:
         oid, _, name = entry.partition(" ")
-        if name and (excluded(name) or re.search(r"\.(dmg|log|ips)$|(^|/)config\.json$", name)):
+        if name and (excluded(name) and name not in HISTORICALLY_PUBLIC or
+                     re.search(r"\.(dmg|log|ips)$|(^|/)config\.json$", name)):
             issues.append("internal history entry: " + name)
         if name:
             issues.extend(label + ": object path " + name

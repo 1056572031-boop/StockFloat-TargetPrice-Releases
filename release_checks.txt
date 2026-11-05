@@ -20,7 +20,17 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.111
+version 1.4.112
+# ---- v1.4.112：内部维护版（公开源码快照不再带出依赖内部文档的指针测试） ----
+# 基线 c885ed3（线上 v1.4.111 的源码提交，post_release.json 的 release_source.head）。相对基线只有四类改动：
+# tools/public_release.py 的导出排除清单加一项，并允许这条在 v1.4.111 已公开过的测试留在历史审计中、但继续从后续快照导出时排除；tests/test_public_release.py 加两条守住导出与历史边界的用例、
+# outputs/release-candidates/ 下 v1.4.111 的证据归档，以及本版的版本号和说明文字。
+# 没有任何产品模块（.app 内的 .py）改动，包内除版本号与阶段标签这类字符串字面量外没有新的 co_names，
+# 所以用书面申报跳过"新增特征"这一条判据，不拿旧符号冒充本版产物证据：
+stale-feature 1.4.112 本版只改公开源码导出的排除清单与证据归档，tools/ 与 outputs/ 不进 .app；包内只有 APP_VERSION 字符串字面量变化，co_names 无新增可查。导出排除由 tests/test_public_release.py::PublicReleaseCase::test_export_excludes_internal_pointer_guard_tests 守住，版本三方同源仍照常核验。
+testref tests/test_public_release.py::PublicReleaseCase::test_export_excludes_internal_pointer_guard_tests
+testref tests/test_public_release.py::PublicReleaseCase::test_history_audit_tolerates_pointer_guard_test_published_before_it_was_excluded
+# （上一版 v1.4.111 的 version 行已并入上面，其条目保留如下）
 # ---- v1.4.111：目标价复核隐患修复（修订号未知的行限期丢弃、存满上限先清过期、通知被拒按新答复确认、启动锁超时多等一次、日志限流） ----
 # 基线 700741f（线上 v1.4.110 的源码提交，post_release.json 的 release_source.head）；逐模块用语法树对比基线与 HEAD 得到的新名字：
 # 修订号未知的行限期丢弃（sf_quote_delivery / sf_target_tick_store）：
@@ -477,9 +487,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.111 Beta**
+checkfile Contents/Resources/docs/README.md::v1.4.112 Beta**
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.111
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.112
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

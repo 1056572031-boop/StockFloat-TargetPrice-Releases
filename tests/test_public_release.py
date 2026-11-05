@@ -278,6 +278,24 @@ class PublicReleaseCase(SFCase):
                 public.main(["--audit-public-history", flag])
             audit.assert_not_called()
 
+    def test_export_excludes_internal_pointer_guard_tests(self):
+        self.assertTrue(public.export_excluded("tests/test_agents_pointers.py"))
+
+    def test_history_audit_tolerates_pointer_guard_test_published_before_it_was_excluded(self):
+        # v1.4.111 的公开快照带出过 tests/test_agents_pointers.py，它留在公开历史里。
+        # 后来改成"导出时丢弃"，不能因此让历史审计把今后每一次发布都拦下
+        # （v1.4.112 的 --prepare-only 实测：internal history entry）。
+        self.assertTrue(public.export_excluded("tests/test_agents_pointers.py"))
+        self.write_docs_dir_files(["tests/test_agents_pointers.py"])
+        self.init_repo()
+        public.audit_history(self.root, "/Users/" + "fixture-owner")
+        # 真正的内部清单进了历史仍然必须被拦：放宽的只是这一条已公开过的路径。
+        (self.root / "AGENTS.md").write_text("internal overview\n")
+        public.run(["git", "add", "AGENTS.md"], self.root)
+        public.run(["git", "commit", "-qm", "internal file by mistake"], self.root)
+        with self.assertRaisesRegex(ValueError, "internal history entry: AGENTS.md"):
+            public.audit_history(self.root, "/Users/" + "fixture-owner")
+
     def test_export_excludes_internal_docs_and_cleans_paths(self):
         home = str(Path.home())
         (self.root / "example.py").write_text("# %s/project .private_tools\n" % home)
