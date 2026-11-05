@@ -210,13 +210,11 @@ version 1.4.109
 skip sf_editor 换股搜索窗是临时窗口，本版新增的"交易所前缀与代码不符"拒绝原因经 sf_universe.note_reject("prefix_no_match") 记入 universe 诊断；候选列表与键盘焦点不是常驻状态。
 skip sf_quote_loop 新增的收盘后重试间隔是纯函数；它读取的连续失败次数 _quote_fail 与 _minute_fail 已由 sf_diagnostic_capture 导出；睡眠唤醒探测器的基线只活在各自的轮询线程里，唤醒补拉会在 debug.log 留一行 wake from sleep detected（仅行情循环写，分时循环不写）。
 skip sf_feedback_analyzer 离线分析函数，只被维护者本机的反馈管理工具调用；本版新增的是"休市时兜底价只算信息"的判断，结论写入案件报告，不进入用户诊断附件。
-skip sf_target_tick_store 磁盘队列模块自身没有模块级运行态；队列内容在 SQLite 文件里，诊断导出不打开它。内存侧的现场（只在内存的行情数、持有登记的股票、登记目录状态）已由 TargetTickBuffer.diagnostics 经 targets.json 的 tick_queue 导出；磁盘队列文件的大小与新旧（只做 stat、不打开数据库）经 tick_queue.disk_queue 导出，登记目录能否建出来经 tick_queue.registry_dir 导出，降级累计计数经 tick_queue.degraded 导出；队列里的行数本版不进包。
-skip sf_temp_sweep 本版只扩大了 Info.plist 读取异常的捕获范围，并让单个副本的意外异常经日志回调留一行后跳过；清扫结果仍由启动后写入 debug.log 的 temp-copies sweep 与 temp-sweep skip 行输出，模块不持有运行态。
-skip sf_feedback_admin 只由维护者本机的反馈代理加载，客户端不启动它；本版新增的是把案件标记为已忽略，状态在代理自己的 SQLite 队列里，不进入用户诊断附件。
-skip sf_window_state 本版只给更新流程状态容器加了 last_download 一个字段，容器本身不持有独立运行态；该字段由 update_flow_diagnostics 经 runtime.json 的 update.last_download 外发（下载收场方式、是否确定性失败、错误类型与截断后的原因）。
 version 1.4.110
 skip sf_target_tick_store 磁盘行情队列模块自身没有模块级运行态；队列内容在 SQLite 文件里，诊断导出不打开它。内存侧现场由 TargetTickBuffer.diagnostics 经 targets.json 的 tick_queue 导出；磁盘队列文件的大小与新旧（只做 stat、不打开数据库）经 tick_queue.disk_queue 导出，登记目录能否建出来经 tick_queue.registry_dir 导出，降级累计计数经 tick_queue.degraded 导出；队列里的行数本版不进包。
 skip sf_temp_sweep 本版只扩大了 Info.plist 读取异常的捕获范围，并让单个副本的意外异常经日志回调留一行后跳过；清扫结果仍写入 debug.log，模块不持有运行态。
 skip sf_feedback_admin 只由维护者本机的反馈代理加载，客户端不启动它，也不在随包的隐式导入清单里；本版新增的是把案件标记为已忽略，状态在代理自己的 SQLite 队列里，不进入用户诊断附件。
 skip sf_feedback_analyzer 离线分析函数，只被维护者本机的反馈管理工具调用；本版新增的 _target_update_findings 读取诊断包里已有的目标价与更新下载现场，结论写入案件报告，不进入用户诊断附件。
 skip sf_window_state 本版只给更新流程状态容器加了 last_download 一个字段，容器本身不持有独立运行态；该字段由 update_flow_diagnostics 经 runtime.json 的 update.last_download 外发（下载收场方式、是否确定性失败、错误类型与截断后的原因）。
+version 1.4.111
+skip sf_target_tick_store 本版只给磁盘队列加了一个按修订号为空筛行的只读查询；模块自身仍没有模块级运行态，队列现场照旧由 TargetTickBuffer.diagnostics 经 targets.json 的 tick_queue 导出，限期丢弃的条数记入 debug.log。

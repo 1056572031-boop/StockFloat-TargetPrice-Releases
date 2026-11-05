@@ -29,6 +29,10 @@ EXCLUDED = ("AGENTS.md", "DELIVERY_CHECKLIST.md", "QC_CHECKLIST.md", "backups", 
             "目标价功能技术方案_v6.md", "目标价功能评估_基于v1.2.74.md")
 DOCS = ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md", "docs/INSTALL.md",
         "docs/CONTRIBUTING.md")
+# docs/ 下对外公开的文件只有这三份（README 与安装说明链接得到的，加许可与贡献所需）。
+# 其余 docs/ 文件（流程、待办、审计报告）是内部材料，导出时一律丢弃；
+# 新增对外文档必须登记在这里，没登记的文件不会出现在公开快照里。
+PUBLIC_DOCS_DIR_FILES = ("docs/INSTALL.md", "docs/CONTRIBUTING.md", "docs/STABLE_CAMERA_AUTH.md")
 CREDENTIALS = re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
                          rb"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 PERSONAL_MAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@(?:qq|foxmail|gmail|icloud|outlook|hotmail)\.com")
@@ -58,7 +62,13 @@ def run(args, cwd=ROOT, binary=False):
 
 
 def excluded(name: str) -> bool:
+    # 历史审计只用这一个：以前公开过的 docs/ 文件留在旧提交里，不能让它们拦住今后的发布。
     return any(name == item or name.startswith(item + "/") for item in EXCLUDED)
+
+
+def export_excluded(name: str) -> bool:
+    """导出时丢弃的文件：内部清单，加上 docs/ 下没登记为对外的文件。"""
+    return excluded(name) or (name.startswith("docs/") and name not in PUBLIC_DOCS_DIR_FILES)
 
 
 def sanitize(text: str, home: str) -> str:
@@ -210,13 +220,13 @@ def export_source(out: Path, root: Path = ROOT) -> None:
     product_untracked = [name for name in untracked
                          if ("/" not in name and name.endswith((".py", ".spec")))
                          or name.startswith(("updater/", "installer/", "fonts/"))]
-    unsafe = [name for name in dirty + product_untracked if name not in DOCS and not excluded(name)]
+    unsafe = [name for name in dirty + product_untracked if name not in DOCS and not export_excluded(name)]
     if unsafe:
         raise ValueError("Commit release inputs before exporting: " + ", ".join(unsafe))
     raw = run(["git", "archive", "--format=tar", "HEAD"], root, binary=True)
     out.mkdir(parents=True, exist_ok=False)
     with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
-        members = [member for member in archive.getmembers() if not excluded(member.name)]
+        members = [member for member in archive.getmembers() if not export_excluded(member.name)]
         archive.extractall(out, members=members, filter="data")
     for name in DOCS:
         destination = out / name

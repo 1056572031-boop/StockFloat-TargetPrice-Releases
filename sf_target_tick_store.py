@@ -158,6 +158,22 @@ class TargetTickStore:
                                 (code, after_id, limit)).fetchall()
         return self._decode_rows(rows)
 
+    def unknown_revision_rows(self, *, limit=256):
+        """列出接收时没取到修订号的行 [(id, code)]，不解码整张表。
+
+        先用 LIKE 在 SQL 里粗筛（保存时 revision 为 None 会写成 "revision":null），
+        再逐行解码确认，免得行情文本里恰好出现同样的字样而误判。"""
+        _positive_limit(limit, "limit")
+        rows = self._db.execute(
+            "SELECT id, code, payload FROM target_ticks WHERE payload LIKE ? ORDER BY id LIMIT ?",
+            ('%"revision":null%', limit)).fetchall()
+        found = []
+        for tick_id, code, text in rows:
+            payload = json.loads(text)
+            if payload.get("has_revision") and payload.get("revision") is None:
+                found.append((tick_id, code))
+        return found
+
     def has_equivalent_code(self, code):
         """Check pending stocks without loading or decoding tick payloads."""
         from sf_utils import normalize_code

@@ -7,12 +7,12 @@
 - 一键跑通 `tests/` 下全部单元/回归测试，实际数量和条件跳过以本轮日志为准。
 - 已含 `set -euo pipefail`，任一用例失败即**非零退出码**，可阻断打包/发布流程。
 - 使用工程 `.venv`（Python 3.14.10 + PyQt6），不要用系统 Python 代替。
-- 完整合并流程见 [`docs/BRANCH_MERGE_WORKFLOW.md`](../docs/BRANCH_MERGE_WORKFLOW.md)；
+- 完整合并流程见内部文档 `docs/BRANCH_MERGE_WORKFLOW.md`（不随公开源码发布）；
   回归通过不自动授权打包、安装或发布。
 
 ## Git pre-commit 钩子
 
-所有普通新提交先按 [日常提交标准流程](../docs/COMMIT_WORKFLOW.md) 的 C0-C5 执行。
+所有普通新提交先按内部文档 `docs/COMMIT_WORKFLOW.md`（日常提交标准流程，不随公开源码发布）的 C0-C5 执行。
 本钩子是其中的强制测试入口，不自动检查提交授权、修改归属或审查树与实际提交树一致性；
 它测试工作目录，不能独自证明部分暂存内容通过。纯文档提交也不跳过当前钩子。
 整理准确提交范围后可先运行 `SF_RERUN_FAILED=0 ./.venv/bin/python3 -m tools.commit_preflight --path <文件>`；

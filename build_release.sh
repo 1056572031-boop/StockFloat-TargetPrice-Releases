@@ -737,7 +737,16 @@ echo "   自动更新资产: $UPDATE_ASSET_DIR"
 "$VENV_PY" tools/publish_update_release.py --assets "$UPDATE_ASSET_DIR" --notes "$NOTES_FILE"
 echo "   GitHub 发布说明来源: $NOTES_FILE"
 
-# ---- 6.1) 公开下载入口（必须在 OTA 发布之后部署并读回）----
+# ---- 6.0) 公开源码、许可与 DMG 同步（必须在下载入口读回之前）----
+# 6.1 的线上读回会逐项核对 DMG、源码 ZIP、校验清单是否已在发行页，而这三项就是本步上传的。
+# v1.4.109 与 v1.4.110 两次都因为本步排在 6.1 之后，在 6.1 处停住、靠手工补传再续跑。
+# 编号保持 6.1/6.2 不动（文档、证据文件名和续跑工具都按它们引用），所以这一步叫 6.0。
+step_begin "6.0 公开源码、许可与 DMG 同步"
+echo "== 6.0 对应源码、GPL 许可、公开文档与 DMG 同步发行 =="
+"$VENV_PY" tools/public_release.py --publish \
+  || { echo "!! OTA 已发布，但公开源码或分发资料未齐，不能报告完整交付" >&2; exit 1; }
+
+# ---- 6.1) 公开下载入口（必须在 OTA 发布与公开发布之后部署并读回）----
 # 安装说明改走入口后，入口本身就是交付路径。部署失败或仍是旧版都不能继续生成
 # 对外命令，否则本地检查只能看到入口的 302，无法证明对应 GitHub 资产真的能下载。
 step_begin "6.1 公开下载入口部署与读回"
@@ -756,11 +765,6 @@ echo "== 6.2 对外安装说明（含最终 GitHub 资产可达性核对）=="
   || { echo "!! 安装说明渲染失败，或命令块不合 FR-12 约束（不许 sudo/删除）" >&2; exit 1; }
 "$VENV_PY" tools/render_install_guide.py --check \
   || { echo "!! 安装说明与本轮不同源，或线上还取不到这一轮的包 —— 别对外发" >&2; exit 1; }
-
-step_begin "6.2 公开源码、许可与 DMG 同步"
-echo "== 6.2 对应源码、GPL 许可、公开文档与 DMG 同步发行 =="
-"$VENV_PY" tools/public_release.py --publish \
-  || { echo "!! OTA 已发布，但公开源码或分发资料未齐，不能报告完整交付" >&2; exit 1; }
 
 # ---- 7) 源码同步到 origin（v1.4.62 补）----
 # 为什么必须有这一步：2026-10-10 对账实测，origin 停在 v1.4.45，而本地已经是 v1.4.61 ——

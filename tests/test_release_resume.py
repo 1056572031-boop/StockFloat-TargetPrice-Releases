@@ -27,7 +27,7 @@ HEAD = "a" * 40
 # 样本里的“发布开始”取一个固定的过去时刻，不依赖现在几点；夹具文件的修改时间都在它之后。
 STARTED = datetime.datetime(2026, 1, 1, 12, 0, tzinfo=datetime.timezone.utc)
 APP = Path("/Applications/Skyrocket.app")
-HARD = ("6.1-download-entry", "6.2-render-guide", "6.2-check-guide", "6.2-public-release", "8-final-smoke")
+HARD = ("6.0-public-release", "6.1-download-entry", "6.2-render-guide", "6.2-check-guide", "8-final-smoke")
 SOFT = ("7-push", "7.1-desktop")
 PUBLISH_LOG = "\n".join((
     "已安装: " + str(APP),
@@ -111,8 +111,8 @@ class PlanTests(_TempCase):
         # 又没有可调用行为可断言（真跑就是真发布），所以只能读脚本文本，逐项在“上一项之后”找。
         source = (REPO / "build_release.sh").read_text(encoding="utf-8")
         # 6.1 必须带自动出处：删掉这个环境变量，发版部署又会变成没有提交号的黑盒。
-        markers = ["SF_DEPLOY_PROVENANCE=auto node deploy-pages.mjs", "tools/render_install_guide.py", "tools/render_install_guide.py --check",
-                   "tools/public_release.py --publish", 'push -q origin "HEAD:refs/heads/$SRC_BRANCH"',
+        markers = ["tools/public_release.py --publish", "SF_DEPLOY_PROVENANCE=auto node deploy-pages.mjs", "tools/render_install_guide.py",
+                   "tools/render_install_guide.py --check", 'push -q origin "HEAD:refs/heads/$SRC_BRANCH"',
                    "tools/desktop_folder_sync.py --refresh --version", "tools/smoke_frozen_app.py"]
         self.assertEqual(len(markers), len(self.steps))
         at = 0
@@ -136,6 +136,18 @@ class PlanTests(_TempCase):
         publish_at = source.find("tools/publish_update_release.py")
         self.assertGreater(publish_at, -1)
         self.assertLess(publish_at, source.find("node deploy-pages.mjs"), "脚本里第 6 步在 6.1 之前")
+        # 下载入口的读回要核对 DMG、源码 ZIP、校验清单都已在发行页：它们由公开发布步骤上传，必须先于读回。
+        public_at = source.find('"$VENV_PY" tools/public_release.py --publish')
+        self.assertGreater(public_at, publish_at, "公开发布必须在 OTA 上传之后")
+        self.assertLess(public_at, source.find("node deploy-pages.mjs"), "公开发布必须在下载入口读回之前")
+
+    def test_every_release_asset_is_uploaded_before_the_download_entry_is_read_back(self):
+        # 下载入口的线上读回要求 DMG、源码 ZIP、校验清单都已在发行页；v1.4.109 与 v1.4.110 两次都因为
+        # 公开发布排在读回之后而在读回处停住。这里守的是计划里的顺序，不是命令行文本。
+        names = [name for name, _, _ in self.steps]
+        self.assertLess(names.index("6.0-public-release"), names.index("6.1-download-entry"))
+        self.assertLess(names.index("6.1-download-entry"), names.index("6.2-render-guide"))
+        self.assertLess(names.index("6.2-render-guide"), names.index("6.2-check-guide"))
 
     def test_app_version_is_read_from_constants_without_importing_it(self):
         self.assertEqual(resume.app_version(self.root), VERSION)
@@ -209,7 +221,11 @@ class RunStepsTests(_TempCase):
         code, out = self.run_it(runner, apply=True)
         self.assertEqual(code, 3)
         self.assertEqual(resume.step_rc(self.evidence, "6.2-check-guide"), 3)
-        self.assertIsNone(resume.step_rc(self.evidence, "6.2-public-release"))
+        # 排在它前面的步骤照常跑完；排在它后面的（推送、桌面对账、最终冷启动）一个都不许开始。
+        for earlier in ("6.0-public-release", "6.1-download-entry", "6.2-render-guide"):
+            self.assertEqual(resume.step_rc(self.evidence, earlier), 0, earlier)
+        for later in ("7-push", "7.1-desktop", "8-final-smoke"):
+            self.assertIsNone(resume.step_rc(self.evidence, later), later)
         self.assertTrue(any("按脚本口径停在这里" in line for line in out), out)
 
     def test_a_failing_soft_step_is_recorded_and_the_run_goes_on(self):
@@ -767,7 +783,7 @@ class ComposeTests(_TempCase):
     def test_evidence_older_than_the_publish_start_is_refused_and_named(self):
         # 证据目录被复用时，旧版本留下的退出码与日志不能沿用到这次发布。
         long_ago = (STARTED - datetime.timedelta(days=1)).timestamp()
-        for victim in ("rest-8-final-smoke.rc", "rest-6.2-public-release.log", resume.AHEAD_FILE, "publish.log"):
+        for victim in ("rest-8-final-smoke.rc", "rest-6.0-public-release.log", resume.AHEAD_FILE, "publish.log"):
             with self.subTest(victim=victim):
                 self.write_results()
                 source = self.write_publish_log()

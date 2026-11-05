@@ -58,7 +58,7 @@ if args[:1] == ["tools/verify_bottom_gap_px.py"]:
     print("== 结论：隔离像素工具替身通过 ==")
     raise SystemExit(0)
 if args[:1] in (["tools/public_docs_check.py"], ["tools/static_gate.py"],
-               ["tools/pyobjc_sig_check.py"]):
+               ["tools/test_def_diff.py"], ["tools/pyobjc_sig_check.py"]):
     print("isolated prerequisite passed")
     raise SystemExit(0)
 raise SystemExit("unexpected command in isolated fixture: " + repr(args))

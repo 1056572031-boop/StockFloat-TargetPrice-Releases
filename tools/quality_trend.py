@@ -30,7 +30,8 @@
     ./.venv/bin/python tools/quality_trend.py --from-log --days 7   # 现场锚点（数字二的数据源）
     ./.venv/bin/python tools/quality_trend.py --open "现象" --channel online_user \
         [--observed-at "2026-10-09 09:12:03"]   # 从锚点开条时必须传，否则起点会被当成敲命令的那一刻
-    ./.venv/bin/python tools/quality_trend.py --rootcause <id>
+    ./.venv/bin/python tools/quality_trend.py --open "现象" --found-by maintainer_found   # 走查发现：不盖起点、不计定位时长
+    ./.venv/bin/python tools/quality_trend.py --rootcause <id> [--missed-shape time_sequence]   # verify 失守的本轮条目必须标
     ./.venv/bin/python tools/quality_trend.py --close <id> --fixed-version 1.4.46
     ./.venv/bin/python tools/quality_trend.py --gate 1.4.46      # 发版链 3.7 硬拦
     ./.venv/bin/python tools/quality_trend.py --self-test        # 变异自检
@@ -61,6 +62,22 @@ LEDGER_PATH = LEDGER
 # 算作「线上逃逸」的渠道：用户或实机现场能看见的
 ESCAPE_CHANNELS = ("online_user", "second_machine", "installed_field")
 ALL_CHANNELS = ESCAPE_CHANNELS + ("shipped_unnoticed", "gate_liar")
+# 发现方式决定“首次出现时刻”对这条缺陷是否成立：maintainer_found = 维护者走查/复核时发现，
+# 没有用户或现场的“第一次看到”，所以不进数字二（旧条目不回填，未标注就是未标注）。
+FOUND_BY = ("user_report", "field_log", "maintainer_found")
+MAINTAINER_FOUND_REASON = "由维护者走查发现，不是用户报回；没有首次出现时刻，不计定位时长。"
+# 漏测形状：第二道防线（verify）为什么没拦住。标注只统计、不拦截；同一形状出现第二次时报告
+# 会报警——按本仓口径，同类错第二次出现要改成覆盖整一类的机器判据，而不是再补一条用例。
+# 本轮发现且 verify 失守的条目，发版闸门要求必须标注（旧条目不回填）。
+MISSED_SHAPE_LABEL = {
+    "stale_rule": "外部规则过期",
+    "sample_class": "样例种类缺失",
+    "boundary_value": "边界值",
+    "time_sequence": "时序",
+    "fault_injection": "故障注入",
+    "real_environment": "真实环境",
+}
+MISSED_SHAPES = tuple(MISSED_SHAPE_LABEL)
 LINES = ("static", "verify", "locate", "none")
 LINE_LABEL = {
     "static": "防线一 静态",
@@ -536,13 +553,26 @@ def report(data: dict[str, Any]) -> str:
     timed = [e for e in entries if str(e["id"]) not in bookkeeping
              and locate_minutes(e) is not None]
     unknown_time = [e for e in entries if e not in timed]
-    lines.append(f"当场盖戳/可追溯证据的真时长：{len(timed)} 条 | 时刻未知：{len(unknown_time)} 条（含记账时刻与待定位）。")
+    walkthrough = [e for e in unknown_time if e.get("found_by") == "maintainer_found"]
+    lines.append(f"当场盖戳/可追溯证据的真时长：{len(timed)} 条 | 时刻未知：{len(unknown_time)} 条"
+                 f"（含记账时刻与待定位；其中 {len(walkthrough)} 条是维护者走查发现，本来就没有首次出现时刻）。")
     lines.append("有效区间沿用原账现场/日志声明；未触发异常不等于本轮逐条重新认证，终点来源未声明的在下方点名。")
+    # 理由相同的记账条目折成一行（点名全部 ID），不再每条重复打印同一句话
+    grouped: dict[str, list[str]] = {}
     for e in unknown_time:
         eid = str(e["id"])
         reason = bookkeeping.get(eid) or e.get("locate_unknown_reason") or "缺起点或终点"
         if eid in bookkeeping or e.get("timestamp_audit"):
-            lines.append(f"  {eid}：记账时刻，不是定位时长；已剔除平均值。{reason}")
+            grouped.setdefault(reason, []).append(eid)
+    for reason, ids in grouped.items():
+        if len(ids) == 1:
+            lines.append(f"  {ids[0]}：记账时刻，不是定位时长；已剔除平均值。{reason}")
+        else:
+            lines.append(f"  {len(ids)} 条（{', '.join(ids)}）：记账时刻，不是定位时长；已剔除平均值。{reason}")
+    found_count = {k: sum(1 for e in entries if e.get("found_by") == k) for k in FOUND_BY}
+    lines.append("发现方式：用户报回 %d / 现场日志 %d / 维护者走查 %d / 未标注 %d（旧条目不回填）"
+                 % (found_count["user_report"], found_count["field_log"],
+                    found_count["maintainer_found"], sum(1 for e in entries if not e.get("found_by"))))
     only_start = [e for e in entries
                   if e.get("observed_at") and not e.get("rootcause_at")]
     if timed:
@@ -586,6 +616,22 @@ def report(data: dict[str, Any]) -> str:
     for fl in LINES:
         if fl in by_line:
             lines.append("  %-12s 失守 %2d 次" % (LINE_LABEL[fl], by_line[fl]))
+    shape_ids: dict[str, list[str]] = {}
+    for e in entries:
+        if e.get("missed_shape") in MISSED_SHAPES:
+            shape_ids.setdefault(e["missed_shape"], []).append(str(e["id"]))
+    if shape_ids:
+        lines.append("  ---")
+        lines.append("  漏测形状（标注只统计、不拦截；旧条目不回填）：")
+        for shape in MISSED_SHAPES:
+            shape_hits = shape_ids.get(shape)
+            if shape_hits:
+                lines.append("    %s（%s）%d 条：%s" % (MISSED_SHAPE_LABEL[shape], shape, len(shape_hits),
+                                                      ", ".join(shape_hits)))
+        for shape in MISSED_SHAPES:
+            if len(shape_ids.get(shape, [])) >= 2:
+                lines.append("    ⚠ %s 已漏测 %d 次：同一形状第二次出现，应补覆盖这一整类的机器判据，"
+                             "不是再补一条用例" % (MISSED_SHAPE_LABEL[shape], len(shape_ids[shape])))
     no_defense = [e["id"] for e in strict if not e.get("defense_added")]
     lines.append("  已上线逃逸里 %d 条至今没登记「补上了什么防线」：%s"
                  % (len(no_defense), ", ".join(no_defense) if no_defense else "无"))
@@ -678,6 +724,10 @@ def validate(data: dict[str, Any], target_version: str | None = None) -> list[st
             errs.append(f"{eid}: 缺 source（出处），条目无法复核")
         if not e.get("found_version"):
             errs.append(f"{eid}: 缺 found_version")
+        if e.get("found_by") is not None and e.get("found_by") not in FOUND_BY:
+            errs.append(f"{eid}: found_by「{e.get('found_by')}」不在名单 {FOUND_BY}")
+        if e.get("missed_shape") is not None and e.get("missed_shape") not in MISSED_SHAPES:
+            errs.append(f"{eid}: missed_shape「{e.get('missed_shape')}」不在名单 {MISSED_SHAPES}")
         # 时刻戳的自洽：有终点必须有起点，起点不能晚于终点
         ob, ra = e.get("observed_at"), e.get("rootcause_at")
         if ra and not ob:
@@ -709,6 +759,9 @@ def validate(data: dict[str, Any], target_version: str | None = None) -> list[st
                         f"{e.get('found_version')}")
         here = target_version and str(e.get("found_version")) == target_version
         fixed_here_flag = target_version and str(e.get("fixed_version")) == target_version
+        if here and "verify" in fls and not e.get("missed_shape"):
+            errs.append(f"{eid}: 本轮发现且第二道防线（verify）失守，但没标 missed_shape —— "
+                        f"跑 --rootcause {eid} --missed-shape <{'/'.join(MISSED_SHAPES)}> 补上")
         if e.get("channel") in ESCAPE_CHANNELS and not e.get("defense_added") \
                 and "none" not in fls and (here or fixed_here_flag):
             # 只硬拦**本轮相关**的逃逸：早期条目当年确实没补防线，那是历史事实，
@@ -783,6 +836,10 @@ def print_gate(data: dict[str, Any], target_version: str | None) -> int:
 def cmd_open(args: argparse.Namespace) -> int:
     data = load()
     eid = args.id or _next_id(data, args.prefix)
+    walkthrough = args.found_by == "maintainer_found"
+    if walkthrough and args.observed_at:
+        print("!! 维护者走查发现的条目没有“首次出现时刻”，不要同时传 --observed-at")
+        return 2
     entry: dict[str, Any] = {
         "id": eid,
         "symptom": args.symptom,
@@ -797,13 +854,15 @@ def cmd_open(args: argparse.Namespace) -> int:
         "defense_added": None,
         # 起点默认=现在；从日志锚点开条时必须显式传 --observed-at，
         # 否则"定位时长"会把「从敲命令起」当成「从现象出现起」，是个系统性低估。
-        "observed_at": args.observed_at or now_iso(),
-        "observed_origin": "log" if args.observed_at else "now",
+        "observed_at": None if walkthrough else (args.observed_at or now_iso()),
+        "observed_origin": "none" if walkthrough else ("log" if args.observed_at else "now"),
         "rootcause_at": None,
-        "locate_unknown_reason": None,
+        "locate_unknown_reason": MAINTAINER_FOUND_REASON if walkthrough else None,
         "source": args.source or "本轮现场",
         "evidence": "verified",
     }
+    if args.found_by:
+        entry["found_by"] = args.found_by
     data["entries"].append(entry)
     _save(data)
     print(f"已开条 {eid}（observed_at={entry['observed_at']} "
@@ -820,11 +879,14 @@ def cmd_rootcause(args: argparse.Namespace) -> int:
     e["rootcause_at"] = now_iso()
     e["rootcause_origin"] = "now"
     if not e.get("observed_at"):
-        e["locate_unknown_reason"] = "开条时没在现场盖 observed_at，起点无法追溯"
+        if e.get("found_by") != "maintainer_found":   # 走查发现本来就没有起点，保留开条时的理由
+            e["locate_unknown_reason"] = "开条时没在现场盖 observed_at，起点无法追溯"
     else:
         e["locate_unknown_reason"] = None
     if args.why_missed:
         e["why_missed"] = args.why_missed
+    if args.missed_shape:
+        e["missed_shape"] = args.missed_shape
     _save(data)
     mins = locate_minutes(e)
     print(f"{e['id']} 已盖 rootcause_at，定位时长 = "
@@ -896,7 +958,7 @@ def self_test() -> int:
             "id": "T1", "symptom": "样例现象", "component": "样例件",
             "channel": "online_user", "introduced_version": "1.4.40",
             "introduced_note": None, "found_version": "1.4.46",
-            "fixed_version": "1.4.46", "failed_lines": ["verify"],
+            "fixed_version": "1.4.46", "failed_lines": ["verify"], "missed_shape": "time_sequence",
             "why_missed": "样例", "defense_added": "样例防线",
             "observed_at": "2026-10-09 10:00:00+08:00",
             "rootcause_at": "2026-10-09 10:37:00+08:00",
@@ -932,6 +994,9 @@ def self_test() -> int:
     mutations = [
         ("归不到任何防线", lambda d: d["entries"][0].__setitem__("failed_lines", [])),
         ("channel 用错口径", lambda d: d["entries"][0].__setitem__("channel", "test_only")),
+        ("found_by 不在名单", lambda d: d["entries"][0].__setitem__("found_by", "guess")),
+        ("missed_shape 不在名单", lambda d: d["entries"][0].__setitem__("missed_shape", "guess")),
+        ("本轮 verify 失守没标 missed_shape", lambda d: d["entries"][0].pop("missed_shape")),
         ("没有出处", lambda d: d["entries"][0].__setitem__("source", "")),
         ("本轮逃逸没补防线", lambda d: d["entries"][0].__setitem__("defense_added", None)),
         ("记不到时长又不说原因", lambda d: [d["entries"][0].__setitem__("observed_at", None),
@@ -1091,6 +1156,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--id", help="配合 --open 指定 id")
     p.add_argument("--prefix", default="N", help="配合 --open 的 id 前缀（N=线上逃逸/S/G）")
     p.add_argument("--channel", default="online_user", help="配合 --open")
+    p.add_argument("--found-by", dest="found_by", choices=FOUND_BY,
+                   help="配合 --open：发现方式；maintainer_found（走查发现）不盖 observed_at、不计定位时长")
     p.add_argument("--component", help="配合 --open/--close 的缺陷种类")
     p.add_argument("--introduced", help="配合 --open：引入版本")
     p.add_argument("--found-version", dest="found_version", help="配合 --open：发现版本")
@@ -1102,6 +1169,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--zero-reason", dest="zero_reason", help="配合 --round：本轮 0 逃逸的原因")
     p.add_argument("--escapes", type=int, default=0, help="配合 --round：本轮逃逸条数（0 也要明写）")
     p.add_argument("--why-missed", dest="why_missed", help="配合 --rootcause：为什么三道防线都没拦住")
+    p.add_argument("--missed-shape", dest="missed_shape", choices=MISSED_SHAPES,
+                   help="配合 --rootcause：第二道防线漏掉的是哪一类形状；同一形状第二次出现报告会报警")
     p.add_argument("--note", help="配合 --open 的补充说明")
     p.add_argument("--source", help="配合 --open 的出处")
     p.add_argument("--observed-at", dest="observed_at",

@@ -10,6 +10,7 @@
 ② 真 chmod 000（root 或系统仍放行读取时如实跳过并打印理由）。
 """
 import builtins
+import contextlib
 import errno
 import json
 import os
@@ -925,6 +926,35 @@ class ConfigUnavailableFeedback(SFCase):
         finally:
             host.tearDown()
 
+    def _save_failure_message(self, refusal):
+        from tests.test_minute_recovery_latency import _Host
+        from PyQt6.QtWidgets import QToolTip
+        class Host(_Host):
+            def runTest(self):
+                pass
+        host = Host()
+        host.setUp()
+        try:
+            with mock.patch.object(sf_config, "config_unavailable", return_value=False), \
+                    mock.patch.object(sf_config, "last_alert_refusal", return_value=refusal), \
+                    mock.patch.object(QToolTip, "showText") as shown:
+                host.win._after_save_config(False)  # discipline-ok(R5): 验证真实窗口保存失败反馈。
+            return shown.call_args.args[1]
+        finally:
+            host.tearDown()
+
+    def test_store_limit_refusal_is_not_blamed_on_disk_or_permissions(self):
+        """复核 B1：目标价条数/股票数到上限而被拒时，不能让用户去查磁盘空间和文件权限。"""
+        message = self._save_failure_message("store_limit")
+        self.assertIn("上限", message)
+        self.assertNotIn("磁盘", message)
+        self.assertNotIn("权限", message)
+
+    def test_other_save_failures_still_point_at_disk_and_permissions(self):
+        message = self._save_failure_message("")
+        self.assertIn("磁盘空间", message)
+        self.assertIn("权限", message)
+
 
 class TestApiUrlsFromBomConfig(SFCase):
     """F-C-02：带 BOM 的配置里的 api_urls 要照常生效；读不出来留 WARNING。"""
@@ -968,6 +998,104 @@ class TestApiUrlsFromBomConfig(SFCase):
     def test_missing_config_stays_silent(self):
         self.assertEqual(sf_quote.load_api_urls(), [])
         self.assertEqual(self.logs, [], "配置文件不存在是正常场景，不刷日志")
+
+    def test_lock_timeout_while_resolving_urls_leaves_a_warning(self):
+        """复核 B3：解析接口地址时配置锁超时，此前被外层 except 静默吞掉，注释却说
+        “细节由该模块自己记日志”，实际一行都没有。自定义接口没生效必须能在日志里查到。"""
+        self._write(json.dumps({"api_urls": {"quote": "https://example.invalid/q=%s"}}).encode("utf-8"))
+        with mock.patch("sf_credentials.resolve_config_urls", side_effect=TimeoutError("configuration lock timed out")):
+            self.assertEqual(sf_quote.load_api_urls(), [])
+        self.assertTrue(any(lv == "WARNING" and "api_urls" in msg for lv, msg in self.logs),
+                        "自定义接口没加载必须留 WARNING：%r" % (self.logs,))
+
+
+class TestLoadConfigLockTimeout(_ConfigDirCase):
+    """复核 B3：启动时配置锁被别人短暂占住，不能把本次运行永久判成配置不可信。"""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(setattr, sf_config, "_untrusted_config_path", None)
+        sf_config._untrusted_config_path = None  # discipline-ok(R5): 保证用例从可信状态开始。
+        self._put(dict(OLD, code="sh600519"), OLD)
+
+    def _flaky_transaction(self, failures):
+        real = sf_config.config_transaction
+        state = {"left": failures, "timeouts": []}
+
+        @contextlib.contextmanager
+        def wrapper(path=None, timeout=None):
+            state["timeouts"].append(timeout)
+            if state["left"] > 0:
+                state["left"] -= 1
+                raise TimeoutError("configuration lock timed out")
+            with real(path, timeout):
+                yield
+        return wrapper, state
+
+    def test_one_transient_timeout_does_not_poison_the_run(self):
+        wrapper, state = self._flaky_transaction(1)
+        with mock.patch.object(sf_config, "config_transaction", wrapper):
+            code = sf_config.load_config()[0]
+        self.assertEqual(code, "sh600519", "重试之后必须读到用户真实配置，而不是默认股票")
+        self.assertFalse(sf_config.config_unavailable(), "一次短暂超时不能把本次运行判成不可信")
+        self.assertEqual(len(state["timeouts"]), 2)
+        self.assertGreater(state["timeouts"][1], sf_config._CONFIG_LOCK_TIMEOUT,  # discipline-ok(R5): 锁超时没有公开读取口，要比较的就是它
+                           "重试必须比首次等得更久，否则等于原样再撞一次")
+
+    def test_a_lock_that_never_frees_still_marks_the_config_untrusted(self):
+        wrapper, _state = self._flaky_transaction(99)
+        with mock.patch.object(sf_config, "config_transaction", wrapper):
+            code = sf_config.load_config()[0]
+        self.assertEqual(code, sf_config.DEFAULT_STOCK)
+        self.assertTrue(sf_config.config_unavailable(), "重试用尽仍拿不到锁，保持原来的保护行为")
+
+    def test_a_non_timeout_failure_marks_untrusted_without_a_second_wait(self):
+        calls = []
+
+        @contextlib.contextmanager
+        def broken(path=None, timeout=None):
+            calls.append(timeout)
+            raise PermissionError("configuration lock is not an owned regular file")
+            yield
+        with mock.patch.object(sf_config, "config_transaction", broken):
+            code = sf_config.load_config()[0]
+        self.assertEqual(code, sf_config.DEFAULT_STOCK)
+        self.assertTrue(sf_config.config_unavailable())
+        self.assertEqual(len(calls), 1, "权限这类故障再等也没用，不能白等第二轮")
+
+
+class TestHasPendingTicks(_ConfigDirCase):
+    """复核 B1：丢弃过期休眠条目前，必须确认这只股票没有在途行情；读不出来按"有"处理。"""
+
+    def _store_with_tick(self, path, code):
+        from sf_target_tick_store import TargetTickStore
+        quote = sf_quote.QuoteData({"code": code, "price": "10"}, "")
+        quote.source_time = None
+        quote.received_at = None
+        with TargetTickStore(path) as store:
+            store.save(code, quote)
+
+    def test_a_live_publisher_counts_as_pending(self):
+        with mock.patch.object(sf_config, "target_tick_publisher_active", return_value=True):
+            self.assertTrue(sf_config._has_pending_ticks("sh600519"))  # discipline-ok(R5): 判定函数没有公开入口，要测的就是它的出口
+
+    def test_default_queue_sits_next_to_the_config_file(self):
+        default_queue = os.path.join(self.dir, "target_ticks.sqlite")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SF_TARGET_TICKS_PATH", None)
+            self.assertFalse(sf_config._has_pending_ticks("sh600519"), "队列文件还不存在就是没有在途行情")  # discipline-ok(R5): 判定函数没有公开入口，要测的就是它的出口
+            self._store_with_tick(default_queue, "sh600519")
+            self.assertTrue(sf_config._has_pending_ticks("sh600519"), "默认路径要落在配置文件旁边")  # discipline-ok(R5): 判定函数没有公开入口，要测的就是它的出口
+            self.assertFalse(sf_config._has_pending_ticks("sz000001"), "别的股票的行不算")  # discipline-ok(R5): 判定函数没有公开入口，要测的就是它的出口
+
+    def test_an_unreadable_queue_is_treated_as_pending(self):
+        broken = os.path.join(self.dir, "broken.sqlite")
+        with open(broken, "wb") as stream:
+            stream.write(b"")
+        with mock.patch.dict(os.environ, {"SF_TARGET_TICKS_PATH": broken}), \
+                mock.patch("sf_target_tick_store.TargetTickStore", side_effect=OSError("database is locked")):
+            self.assertTrue(sf_config._has_pending_ticks("sh600519"),  # discipline-ok(R5): 判定函数没有公开入口，要测的就是它的出口
+                            "读不出来时宁可多留一条过期条目，也不能丢在途行情要用的目标价")
 
 
 if __name__ == "__main__":

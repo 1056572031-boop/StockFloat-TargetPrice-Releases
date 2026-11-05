@@ -77,15 +77,18 @@ def app_version(root: Path) -> str:
 
 def plan(py: str, version: str, branch: str, app: Path,
          record: Path | None = None) -> list[tuple[str, bool, list[str]]]:
-    """build_release.sh 第 6.1 至 8 步的原顺序；第二项为 True 表示失败即停（脚本里是 exit 1）。
+    """build_release.sh 第 6.0 至 8 步的原顺序；第二项为 True 表示失败即停（脚本里是 exit 1）。
+
+    6.0 公开发布排在 6.1 下载入口读回之前：读回要核对 DMG、源码 ZIP、校验清单都已在发行页，
+    它们由 6.0 上传。步骤编号保持 6.1/6.2 不动，所以公开发布取名 6.0。
 
     给了 record（本轮已绑定的质量记录）才在最前面加上第 6 步：用 publish_update_release.py --resume 接着做
     上传之后的清单切换，线上已有同名版本 ZIP 且字节一致才复用，否则照旧拒绝覆盖。"""
     steps = [
+        ("6.0-public-release", True, [py, "tools/public_release.py", "--publish"]),
         ("6.1-download-entry", True, ["bash", "-c", "cd services/download-analytics && SF_DEPLOY_PROVENANCE=auto node deploy-pages.mjs"]),
         ("6.2-render-guide", True, [py, "tools/render_install_guide.py"]),
         ("6.2-check-guide", True, [py, "tools/render_install_guide.py", "--check"]),
-        ("6.2-public-release", True, [py, "tools/public_release.py", "--publish"]),
         ("7-push", False, ["git", "push", "-q", "origin", "HEAD:refs/heads/" + branch]),
         ("7.1-desktop", False, [py, "tools/desktop_folder_sync.py", "--refresh", "--version", version]),
         ("8-final-smoke", True, [py, "tools/smoke_frozen_app.py", str(app), "--platform", "cocoa",

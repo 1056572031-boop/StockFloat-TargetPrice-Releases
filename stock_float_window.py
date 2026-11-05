@@ -186,7 +186,8 @@ from targets import (evaluate_tick, recover_alerts, expired, drop_expired,
                      roll_alerts_to_trading_day)
 from sf_notify import (has_bundle_identity,
                       delivery_stats as _notify_delivery_stats,
-                       deliver as _notify_deliver, request_authorization,
+                      deliver as _notify_deliver, last_authorization_answer as _notify_authorization_answer,
+                      request_authorization,
                        semantic_key, target_notification_title)
 from sf_calendar import calendar_sync_status, is_trading_day_confirmed, prefetch_months_async
 from sf_config import load_alerts, save_alerts
@@ -552,6 +553,8 @@ MINUTE_RETRY_INTERVAL = 2.5
 MINUTE_RETRY_MAX = 5
 PANEL_TICK_LOCK_ATTEMPTS = 8       # 面板保存/清空抢 tick 锁的最多尝试次数
 PANEL_TICK_LOCK_RETRY_SEC = 0.01   # 两次尝试之间的间隔；重试等待合计 ≤ (尝试次数-1)×10ms
+TARGET_READ_BUSY_ESCALATE_SEC = 5.0  # 目标价读取连续被配置锁挡住超过这么久，就不再当偶发竞争，改记 SWALLOWED
+TARGET_NOTIFICATION_DENIED_CONFIRM_SEC = 5.0  # 确认拒绝的兜底最小间隔（授权缓存有效期）；主判据是答复时刻晚于首次观察
 BG = QColor("#1b1e2b")
 BORDER = QColor("#3b4256")
 GRAY = QColor("#9aa2b8")
@@ -1022,6 +1025,8 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         self._target_notification_results: queue.SimpleQueue[tuple[str, bool]] = queue.SimpleQueue()
         self._target_notification_inflight = {}
         self._target_notification_acks = set()
+        self._target_notification_denied_since: dict[str, float] = {}
+        self._target_read_busy_since: float | None = None
         self._target_notification_uncertain: list[dict] = []
         self._target_startup_retry = None
         self._target_notification_retry_timer = QTimer(self)
@@ -3268,9 +3273,13 @@ QMenu::separator {
             from PyQt6.QtWidgets import QToolTip
             g = self.mapToGlobal(QPoint(self.width() // 2, 10))
             import sf_config
-            message = ("配置读取失败，目标价已暂停；请检查权限后重新启动"
-                       if sf_config.config_unavailable()
-                       else "配置保存失败：请检查磁盘空间或 config 文件权限")
+            if sf_config.config_unavailable():
+                message = "配置读取失败，目标价已暂停；请检查权限后重新启动"
+            elif sf_config.last_alert_refusal() == "store_limit":
+                # 复核 B1：存储到上限而被拒，与磁盘空间、文件权限无关，别让用户去查错地方。
+                message = "目标价保存失败：已存目标价的股票或条数到上限，请先清理其他股票的目标价"
+            else:
+                message = "配置保存失败：请检查磁盘空间或 config 文件权限"
             QToolTip.showText(g, message, self)
             QTimer.singleShot(5000, QToolTip.hideText)
         except Exception:
@@ -3595,7 +3604,10 @@ QMenu::separator {
                         _note_target_degraded(self, "capacity_gap")
                         log_line("target tick gap for %s: volatile queue exhausted: %r" % (code, capacity_exc), "ERROR")
                     _note_target_degraded(self, "lock_unavailable")
-                    log_line("target tick lock unavailable; revision unknown: %r" % (exc,), "WARNING")
+                    # 复核 B4：每笔行情都会走到这里，不节流一天上万行会挤掉 7 天日志轮转。
+                    log_line_throttled("target.tick_lock_unavailable",
+                                       "target tick lock unavailable; revision unknown: %r" % (exc,),
+                                       "WARNING", 600)
                     if not getattr(self, "_target_lock_warned", False):
                         self._target_lock_warned = True
                         self.target_revision_warning.emit()
@@ -3720,7 +3732,9 @@ QMenu::separator {
                             raise
                         if ticks.unsaved_count():
                             self.target_store_warning.emit()
-                        log_line("target revision lock unavailable; quote retained without revision", "WARNING")
+                        log_line_throttled("target.revision_lock_unavailable",
+                                           "target revision lock unavailable; quote retained without revision",
+                                           "WARNING", 600)
                         self.target_revision_warning.emit()
                     elif isinstance(exc, RetainedCapacityError):
                         log_line("target tick store full; quote retained in memory", "WARNING")
@@ -4241,6 +4255,14 @@ QMenu::separator {
             try:
                 enabled = getattr(self, "_targets_enabled", None)
                 paused = ticks.persistent and callable(enabled) and not enabled()
+                # 只在上一拍已发现有股票被"修订号未知"的行挡住时才扫队列：平时队列可能很大，
+                # 每 100ms 全表扫一遍不值得。
+                if ticks.persistent and not paused and getattr(ticks, "blocked_stocks", None):
+                    try:
+                        ticks.expire_unknown_revisions(time.monotonic())
+                    except Exception as exc:
+                        # 生产者正忙（BlockingIOError）也走这里：log_swallow 自带限流，下一拍再试。
+                        log_swallow("stock_float_window._poll.expire_unknown_revision", exc)
                 consume_old = getattr(self, "_consume_old_target_tick", None)
                 if not paused and ticks.persistent and callable(consume_old) and consume_old(ticks) is False:
                     target_read_failed = True
@@ -4248,10 +4270,27 @@ QMenu::separator {
                 else:
                     tick_batch = ([] if paused else ticks.take(self.code, global_order=True)
                                   if ticks.persistent and callable(consume_old) else ticks.take(self.code))
+            except TimeoutError as exc:
+                # 配置锁被行情线程短暂占用是可恢复的轮询竞争（探针实测持锁毫秒级）：目标价行情
+                # 仍在持久化队列里，下一拍重试，所以短暂占用只留节流日志，不记 SWALLOWED。
+                # 但持续占用意味着目标价一直没被判定，那是真正的静默失效：连续超过
+                # TARGET_READ_BUSY_ESCALATE_SEC 后照旧记 SWALLOWED，偶发竞争和持续故障不能一起被压下去。
+                busy_since = getattr(self, "_target_read_busy_since", None)
+                if busy_since is None:
+                    busy_since = self._target_read_busy_since = time.monotonic()
+                if time.monotonic() - busy_since >= TARGET_READ_BUSY_ESCALATE_SEC:
+                    log_swallow("stock_float_window._poll.target_tick_read", exc)
+                else:
+                    log_line_throttled("target.tick_read_lock_unavailable",
+                                       "target tick read deferred: %r" % (exc,), "WARNING", 60)
+                target_read_failed = True
+                tick_batch = []
             except Exception as exc:
                 log_swallow("stock_float_window._poll.target_tick_read", exc)
                 target_read_failed = True
                 tick_batch = []
+            else:
+                self._target_read_busy_since = None
             evaluated_ids = {id(quote) for quote in tick_batch}
             self._target_retry_inflight = set(evaluated_ids)
             self._target_batch_rolls: dict = {}
@@ -5709,7 +5748,8 @@ QMenu::separator {
             if getattr(self, "_target_startup_deferred_code", None) == code:
                 self._clear_timer.start(1000)
         except (BlockingIOError, OSError) as exc:
-            log_line("target adoption deferred (%s): %r" % (code, exc), "WARNING")
+            log_line_throttled("target.adoption_deferred",
+                               "target adoption deferred (%s): %r" % (code, exc), "WARNING", 60)
             self._alerts = load_alerts(code)
             self._clear_timer.start(1000)
 
@@ -6031,6 +6071,10 @@ QMenu::separator {
         results = self._target_notification_results
         inflight = self._target_notification_inflight
         acks = self._target_notification_acks
+        denied_since = getattr(self, "_target_notification_denied_since", None)
+        if denied_since is None:
+            denied_since = {}
+            self._target_notification_denied_since = denied_since
         while True:
             try:
                 event_id, success = results.get_nowait()
@@ -6061,10 +6105,34 @@ QMenu::separator {
                 except RuntimeError:
                     pass
             try:
-                _notify_deliver(event["title"], "", event["body"], event["semantic_key"],
-                                on_click=self._restore_window, on_complete=completed)
+                outcome = _notify_deliver(event["title"], "", event["body"], event["semantic_key"],
+                                          on_click=self._restore_window, on_complete=completed)
             except Exception as exc:
                 log_line("target notification delivery failed: %r" % (exc,), "WARNING")
+                continue
+            if outcome != "denied":
+                denied_since.pop(event_id, None)
+                continue
+            # 用户在系统里关掉了通知：deliver 直接返回 "denied"，不会再调用 on_complete。
+            # 这是用户的选择，不重试；否则事件永远留在外发清单里，每 30 秒重写一次配置备份，
+            # 还会在日后重新开启通知时补弹早已过时的提醒。
+            # 但单次 denied 不可信：用户刚在系统设置里重新开启通知时，授权缓存还停在旧的 denied，
+            # 第一次查询仍答 denied，系统回调到达后才变 authorized（实测）。所以要求 sf_notify
+            # 记录的真实 denied 答复，其发问时刻晚于本事件首次观察；只有 deliver 的返回值、
+            # 没有这条时间证据时，继续保留事件。起作用的是 answer_at > first；
+            # 间隔条款只是兜底下限（同一事件两次评估本来就被 inflight 的 30 秒隔开）。
+            # 已知残余窗口：用户恰在“首次观察那一拍的查询已答完”与“下一拍”之间重新开启通知，
+            # 下一拍拿到的仍是粘滞的旧 denied，这条事件会被确认删除（约 30 秒窗口，
+            # 代价是一条本就在通知关闭期间命中的横幅没有补弹；彩虹与气泡不受影响）。
+            first = denied_since.setdefault(event_id, now)
+            answer, answer_at = _notify_authorization_answer()
+            if (now - first >= TARGET_NOTIFICATION_DENIED_CONFIRM_SEC and
+                    answer == "denied" and answer_at > first):
+                denied_since.pop(event_id, None)
+                inflight.pop(event_id, None)
+                acks.add(event_id)
+        if acks and sf_config.ack_target_notification_outbox(list(acks)):
+            acks.clear()
 
     def _evaluate_targets(self, price):
         """行情 tick：对 pending 目标价判定越线；命中即通知 + 彩虹 + 持久化。"""
@@ -6195,7 +6263,10 @@ QMenu::separator {
             with sf_config.target_tick_transaction(blocking=False):
                 self._clear_expired_locked()
         except (BlockingIOError, OSError) as exc:
-            log_line("target tick cleanup deferred: %r" % (exc,), "WARNING")
+            # 复核 B4：BlockingIOError 是预期的短暂占用，但同一个 except 也会接住
+            # PermissionError 这类持续性错误，此时每秒重排一次，不节流就是永久 1Hz 刷日志。
+            log_line_throttled("target.cleanup_deferred",
+                               "target tick cleanup deferred: %r" % (exc,), "WARNING", 60)
             self._clear_timer.start(1000)
 
     def _clear_expired_locked(self):

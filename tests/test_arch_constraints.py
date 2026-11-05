@@ -475,6 +475,21 @@ class TestReleaseChainCallsTheGate(SFCase):
         self.assertGreater(deploy, ota, "下载入口必须在 OTA 资产出现后才部署")
         self.assertGreater(guide, deploy, "安装说明只能在入口部署并读回后生成")
 
+    def test_build_release_uploads_every_release_asset_before_the_download_entry_readback(self):
+        """下载入口的线上读回会逐项核对 DMG、源码 ZIP、校验清单是否已在发行页。
+
+        为什么读 shell 文本（同本类开头那条的理由）：守的是发版链里两步的先后，行为验证只能真发一次版。
+        v1.4.109 与 v1.4.110 两次都因为“公开发布”排在“下载入口读回”之后，而在读回处停住、
+        靠手工补传再续跑。三个位置必须严格递增：OTA 上传 < 公开发布 < 下载入口部署与读回。
+        """
+        source = self._text("build_release.sh")
+        ota = source.find('"$VENV_PY" tools/publish_update_release.py --assets')
+        public = source.find('"$VENV_PY" tools/public_release.py --publish')
+        deploy = source.find("node deploy-pages.mjs")
+        self.assertGreater(ota, -1, "找不到 OTA 上传调用")
+        self.assertGreater(public, ota, "公开发布必须在 OTA 上传之后")
+        self.assertGreater(deploy, public, "下载入口读回要核对三项发行资产，公开发布必须先于它")
+
     def test_build_release_pushes_source_after_ota_and_confirms_by_readback(self):
         """发版链第 7 步：推源码必须在 OTA 之后，且以**回读归零**为准。
 

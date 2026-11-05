@@ -4677,7 +4677,8 @@
       "rootcause_origin": "unknown",
       "locate_unknown_reason": "用户转述并附截图，没有那台机器的日志或回滚记录，没有可独立证明现象首次出现的时刻；根因来自代码、日志与本机复现，不借会话或提交时刻估算定位时长。",
       "source": "用户 2026-10-27 转述“已经更新到最新版本了，打开程序以后还是会弹窗”并附更新确认框截图（Vision OCR 读出原文）；修复提交 7b338df、bd36a0c，合并提交 14e1a12 与 c4ec0f8",
-      "evidence": "second-hand"
+      "evidence": "second-hand",
+      "missed_shape": "time_sequence"
     },
     {
       "id": "N27",
@@ -4702,7 +4703,9 @@
       "rootcause_origin": "unknown",
       "locate_unknown_reason": "由维护者本机实测发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，开条时刻只是记账，不计定位时长。",
       "source": "2026-10-27 装机版点关闭后读回 run-session.sqlite3 为 frame_ready；修复提交 3c0f6c4，合并提交 cd54916",
-      "evidence": "verified"
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "real_environment"
     },
     {
       "id": "G29",
@@ -4728,6 +4731,188 @@
       "source": "2026-10-29 每日质量复核：发布防线复核者提出，本地用公开导出审计函数复现（phone=a<号码> 返回空）；修复提交 e95a238，合入主线 867edff",
       "evidence": "verified",
       "rootcause_origin": "unknown"
+    },
+    {
+      "id": "N28",
+      "symptom": "沪深主板 ST/*ST 的涨停价、跌停价仍按 5% 估算：交易所自 2026-07-06 起改为 10%，行情源没给官方涨跌停价时，涨 5% 就被标成「涨停」，真正的涨停价也算错",
+      "component": "行情与动画",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "代码口径自 v1.2.27 起按名称里的 ST 取 5%，缺陷自规则变更生效日起成立；那一天用户装的是哪个版本、当时有没有行情源官方价兜底，没有核实。",
+      "found_version": "1.4.109",
+      "fixed_version": "1.4.110",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "旧用例把 5% 当规则钉死（改规则时没人同步改用例），外部规则变化没有任何判据会去核对；静态、验证两道防线都看不见「规则本身过期」。",
+      "defense_added": [
+        "_board_rate 不再按名称里的 ST 降档，主板 ST 与普通主板同为 10%；test_opt_v127 里 test_main_board_st_10pct_since_20260706 与 test_estimate_limit_prices 改按新规则断言"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者走查发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，不借提交或会话时刻估算定位时长。",
+      "source": "2026-11-02 走查（编号见各条）；2026-11-05 把 v1.4.109 发布源码 dafb9f5 导出到临时目录，放入修复后的回归测试逐条跑，下列测试在发布版上真红；修复在整合提交 0f244af，随 v1.4.110 发布；F-A-01；新规来源为沪深交易所 2026 年修订交易规则（2026-07-06 施行），本次靠网页检索核对，没有逐条读交易所原文；基线红用例：tests/test_opt_v127.py::TestQuoteStatusBoardFallback::test_main_board_st_10pct_since_20260706、test_estimate_limit_prices（10.5 != 11.0）",
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "stale_rule"
+    },
+    {
+      "id": "N29",
+      "symptom": "上证、深证系列指数（如 sh000001、sz399006）被套用 10% 涨跌停：指数当日涨跌 10% 会被画上「涨停」「跌停」徽标，而指数没有涨跌停",
+      "component": "行情与动画",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "板块估算对带交易所前缀的指数代码一律返回 10%，引入版本没有回溯。",
+      "found_version": "1.4.109",
+      "fixed_version": "1.4.110",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "估算函数只有股票样例；没有一条用例拿指数代码问过「有没有涨跌停」。",
+      "defense_added": [
+        "_board_rate 对 sh000xxx、sz399xxx 返回 0，不再估算涨跌停价；sz000xxx 仍按深市主板股票处理，有用例钉住"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者走查发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，不借提交或会话时刻估算定位时长。",
+      "source": "2026-11-02 走查（编号见各条）；2026-11-05 把 v1.4.109 发布源码 dafb9f5 导出到临时目录，放入修复后的回归测试逐条跑，下列测试在发布版上真红；修复在整合提交 0f244af，随 v1.4.110 发布；F-A-01；基线红用例：tests/test_opt_v127.py::TestQuoteStatusBoardFallback::test_index_codes_have_no_limit（'涨停' is not None）",
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "sample_class"
+    },
+    {
+      "id": "N30",
+      "symptom": "行情响应被中途截断时仍被当成功读取：声明 300 字节只收到 60 字节，截断的行情文本（如价格停在 149）继续往下解析并显示",
+      "component": "行情与动画",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "读取函数只在超长时拒收，从未核对「声明长度与实收长度是否一致」；http.client 在对端提前结束时只返回空串、不抛 IncompleteRead，引入版本没有回溯。",
+      "found_version": "1.4.109",
+      "fixed_version": "1.4.110",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "网络层用例只覆盖超长、重定向、非法目的地，没有「提前断流」这一形状；真实网络下的发生率没有测过，只证明了读取逻辑本身会放行。",
+      "defense_added": [
+        "read_limited 在读完后核对 Content-Length 与实收字节数，不符抛 ResponsePolicyError，分块传输不判；流式与非流式适配器各有用例"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者走查发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，不借提交或会话时刻估算定位时长。",
+      "source": "2026-11-02 走查（编号见各条）；2026-11-05 把 v1.4.109 发布源码 dafb9f5 导出到临时目录，放入修复后的回归测试逐条跑，下列测试在发布版上真红；修复在整合提交 0f244af，随 v1.4.110 发布；F-A-05；基线红用例：tests/test_quality_http.py::TruncatedBodyTests::test_body_shorter_than_declared_content_length_is_rejected、test_non_streaming_adapter_is_checked_too（ResponsePolicyError not raised）",
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "fault_injection"
+    },
+    {
+      "id": "N31",
+      "symptom": "涨跌幅取整后显示 0.00% 时，文字和价格仍按正负染成红色或绿色（A 股惯例里 0.00% 应是灰色）",
+      "component": "主界面渲染",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "着色函数按原始浮点的正负判，显示函数按两位小数取整，两处口径不一致；引入版本没有回溯。",
+      "found_version": "1.4.109",
+      "fixed_version": "1.4.110",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "着色用例只用明显的涨、跌、平三档，没有「绝对值小于 0.005」这一档。",
+      "defense_added": [
+        "着色改为直接比对取整后的显示文字（fmt_pct 的结果为 0.00% 即中性色），不复制阈值；价格行与底部两行各有用例"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者走查发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，不借提交或会话时刻估算定位时长。",
+      "source": "2026-11-02 走查（编号见各条）；2026-11-05 把 v1.4.109 发布源码 dafb9f5 导出到临时目录，放入修复后的回归测试逐条跑，下列测试在发布版上真红；修复在整合提交 0f244af，随 v1.4.110 发布；F-D-04；基线红用例：tests/test_round50_window.py::TestPctColorFollowsTheRoundedText::test_price_trend_color_is_neutral_when_pct_text_rounds_to_zero、test_bottom_rows_tiny_deviation_is_grey_not_red_or_green",
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "boundary_value"
+    },
+    {
+      "id": "N32",
+      "symptom": "窗口被第二张脸收起后，如果锁屏再解锁，主人回座也不会自动恢复，窗口一直留在 Dock 里要自己去点",
+      "component": "人脸在场守卫（自动隐藏窗口）",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "锁屏分支只认「stalled」一种暂停原因，「screen off」把「我是被守卫收起的」记录一并抹掉；引入版本没有回溯。",
+      "found_version": "1.4.109",
+      "fixed_version": "1.4.110",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "守卫用例覆盖了「stalled」中断，没有一条走「收起之后锁屏再解锁」这条每天都会发生的时序。",
+      "defense_added": [
+        "锁屏与休眠和 stalled 同口径，保留「被守卫收起」记录；test_face_guard::test_lock_after_guard_hide_still_restores_when_owner_returns 走完整时序"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者走查发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，不借提交或会话时刻估算定位时长。",
+      "source": "2026-11-02 走查（编号见各条）；2026-11-05 把 v1.4.109 发布源码 dafb9f5 导出到临时目录，放入修复后的回归测试逐条跑，下列测试在发布版上真红；修复在整合提交 0f244af，随 v1.4.110 发布；F-G-01；真机锁屏后的实际表现没有在装机版上复现，这里证明的是逻辑；基线红用例：tests/test_face_guard.py::TestWindowWiring::test_lock_after_guard_hide_still_restores_when_owner_returns（锁屏把被守卫收起抹掉了）",
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "time_sequence"
+    },
+    {
+      "id": "N33",
+      "symptom": "启动阶段就没了的会话，会在再下一次启动时被当成「上次没正常退出」而弹出询问，尽管中间用户已经正常用过、正常退出过",
+      "component": "崩溃与生命周期",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "会话账本对「启动未完成」与「运行中异常结束」没有区分已处理状态；引入版本没有回溯。",
+      "found_version": "1.4.109",
+      "fixed_version": "1.4.110",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "账本用例只造单次中断，没有「连续三次启动，第一次启动失败」这一时序。",
+      "defense_added": [
+        "启动未完成的会话处理一次后不再翻出来询问，仍保留在诊断口径的未结束清单里；test_run_session::test_launch_crash_is_not_prompted_one_launch_later"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者走查发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，不借提交或会话时刻估算定位时长。",
+      "source": "2026-11-02 走查（编号见各条）；2026-11-05 把 v1.4.109 发布源码 dafb9f5 导出到临时目录，放入修复后的回归测试逐条跑，下列测试在发布版上真红；修复在整合提交 0f244af，随 v1.4.110 发布；F-E-01；弹窗在真机上出现的频率没有统计；基线红用例：tests/test_run_session.py::RuntimeSessionLedgerTests::test_launch_crash_is_not_prompted_one_launch_later",
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "time_sequence"
+    },
+    {
+      "id": "N34",
+      "symptom": "磁盘写满、读写错误或数据库暂时打不开时，健康的运行会话账本被当成损坏文件改名隔离并换成空账本，「上次是否异常中断」的线索随之丢失",
+      "component": "崩溃与生命周期",
+      "channel": "shipped_unnoticed",
+      "introduced_version": null,
+      "introduced_note": "账本把所有非忙碌的 OperationalError 都归为损坏；引入版本没有回溯。",
+      "found_version": "1.4.109",
+      "fixed_version": "1.4.110",
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "损坏路径只用「文件被写坏」一种样例测过，没有拿「环境暂时不行」去问「该不该隔离」。",
+      "defense_added": [
+        "只有真正的损坏才改名隔离，磁盘满、I/O 错误、无法打开等报 unavailable 并保留原账本；test_run_session 三种报错文本各一条"
+      ],
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "rootcause_origin": "unknown",
+      "locate_unknown_reason": "由维护者走查发现，不是用户报回；没有独立日志锚点证明现象首次出现的时刻，不借提交或会话时刻估算定位时长。",
+      "source": "2026-11-02 走查（编号见各条）；2026-11-05 把 v1.4.109 发布源码 dafb9f5 导出到临时目录，放入修复后的回归测试逐条跑，下列测试在发布版上真红；修复在整合提交 0f244af，随 v1.4.110 发布；F-C-04；基线红用例：tests/test_run_session.py::RuntimeSessionLedgerTests::test_disk_full_or_io_error_is_not_mistaken_for_corruption（改名函数被调用 1 次）",
+      "evidence": "verified",
+      "found_by": "maintainer_found",
+      "missed_shape": "fault_injection"
     }
   ],
   "rounds": [
@@ -5487,7 +5672,21 @@
         "2026-11-02 走查的行情口径与显示修复（主板 ST 涨跌停、指数无涨跌停、行情响应被截断即拒收、0.00% 不染色、涨跌额回写）与更新链修复（取消不算失败、确定性失败即停、安装助手存活复核转义）各有定向回归：test_round50_window、test_round50_update、test_update_helper；助手改动另由 release_checks 的 checkfile/forbidfile 钉在随包文件上。",
         "诊断包新增更新下载现场、目标价保护降级计数、磁盘队列与登记目录状态，反馈分析器据此出线索；发版链 3.9 诊断覆盖闸门本轮通过，新增模块的申报理由逐条写在 diag_coverage.txt 的 1.4.110 段。"
       ],
-      "zero_reason": "本轮开工前线上台账没有新增的用户报回逃逸。本版修复里有一批 2026-11-02 走查在已发布代码中发现的潜在缺陷（主板 ST 涨跌停口径、行情响应被截断、0.00% 配色、锁屏后自动隐藏不恢复、取消下载误弹失败框、安装助手路径含特殊字符时误回滚等）：无用户报回，台账 updated 停在 2026-10-29，这些缺陷没有逐条登记成条目，发现时刻也无法由原始日志独立证明，不编估算值；此处明说，不等于本版没有已发布缺陷。0 不等于上线后无故障：目标价行情保护是大块新机制，真机、冻结包、摄像头、OTA 与 macOS 14.4 门槛下的安装均未在装机版上验证。"
+      "zero_reason": "本轮开工前线上台账没有新增的用户报回逃逸，escapes_this_round 保持 0。2026-11-02 走查在已发布的 v1.4.109 里发现的缺陷，其中基线测试真红的 7 条已于 2026-11-05 登记为 N28、N29、N30、N31、N32、N33、N34（渠道 shipped_unnoticed：已进发布产物但无人报回，不计入线上逃逸数）；发现时刻无法由原始日志独立证明，不编估算值。这不等于本版没有其他已发布缺陷，同一走查里还有三类没有登记：① 基线测试同样真红、但本次没有逐条整理成条目的（首屏预填缺名称或缺代码、最小化时价格停在白闪色、启动时窗口大半在屏外、零价兜底配色、撤回清单后仍记着待更新版本、更新下载遇本地写失败仍逐级重试、清单字段把布尔值当整数且接受非 ASCII 数字、主源陈旧时连击计数不累计、不可用重试刷满日志、安装助手结果写失败仍报已安装）；② 基线上只因缺少新接口而报错、行为缺陷没有被证明的（取消下载是否误弹失败框）；③ 没有行为测试、基线上没有复现过的（安装助手存活复核对路径里正则元字符的转义：现在只有 release_checks 的包内字符串判据钉住，没有拿带括号的安装路径真跑过助手）。0 不等于上线后无故障：目标价行情保护是大块新机制，真机、冻结包、摄像头、OTA 与 macOS 14.4 门槛下的安装均未在装机版上验证。"
+    },
+    {
+      "version": "1.4.111",
+      "date": "2026-11-05",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "2026-11-05 每日复核的目标价隐患修复各有定向回归：修订号取不到的行限期丢弃与日志限流（test_target_commit_retry）、存满上限先清已过期休眠条目并给出真实拒绝原因、收盘安全余量（test_v1459_targets_per_code、test_round50_config）、通知被拒改按系统最近一次真实答复确认（test_notify、test_target_commit_retry）、启动读配置锁超时多等一次（test_round50_config）；其中限期丢弃、拒绝确认条件与安全余量三处用 tools/mutation_probe.py 改坏后均变红。",
+        "候选交付验收在冻结包冒烟里抓到：目标价轮询用零等待取配置锁，行情线程 quote-loop 在 _q_put_locked 里恰好持锁时抛出的超时被记成 SWALLOWED 静默失效（探针抓到持锁方，源码启动 10 次出现 4 次；该行为自 1.4.110 起存在，旧包同样复现）。轮询现在把偶发竞争记成节流的延后日志，连续被挡住超过 5 秒才照旧记 SWALLOWED，取锁成功即清零，其他异常仍按 SWALLOWED 记。四条用例守住（偶发不记 SWALLOWED、延后不丢行情、持续占锁必记、成功后重新计时），其中去掉升级分支与去掉清零分支两处用 tools/mutation_probe.py 改坏后均变红。",
+        "新增测试定义差集检查 tools/test_def_diff.py（run_tests.sh 第 0.2 关）：往测试文件插入新用例时旧用例的 def 行被顶掉这一形状，此前整档照绿、全靠人工复核发现，现在提交前即被拦下并点名；有意删除或改名须在 docs/test_removals.txt 登记理由。",
+        "缺陷台账新增发现方式与漏测形状（tools/quality_trend.py）：走查发现的条目不再计定位时长，同一漏测形状第二次出现时报告报警，发版闸门要求本轮发现且验证失守的条目必须标形状。",
+        "发版链把公开发布提到下载入口读回之前（新增 6.0 步），公开源码只带登记的 docs 文件，自动化日报与事故保全副本不再入库，各有定向判据。"
+      ],
+      "zero_reason": "本轮开工前线上台账没有新增的用户报回逃逸。本版修复的是 2026-11-05 每日复核在已发布的目标价行情保护机制里发现的隐患（修订号取不到的行会永久挡住该股提醒、存满上限后新股票存不进去且提示误导、系统通知被关闭后外发清单永不清、启动读配置遇到一次短暂锁超时就把本次运行判成配置不可信、几处每笔行情都写的日志刷屏），以及候选验收抓到的一处误分类（轮询取配置锁偶发竞争被记成静默失效，自 1.4.110 起存在，只影响日志与诊断摘要，目标价行情仍留在队列里由下一拍重试，没有数据丢失）：均为维护者复核发现，无用户报回，没有逐条登记成台账条目，发现时刻也无法由原始日志独立证明，不编估算值；此处明说，不等于本版没有已发布缺陷。0 不等于上线后无故障：这批修复只有离屏回归、改坏必红与源码启动探针验证，没有在装机版、冻结包、真实睡眠唤醒、真实系统通知重新开启和 macOS 14.4 门槛下验证过，发布后才能读回。"
     }
   ],
   "comparison_policy": {

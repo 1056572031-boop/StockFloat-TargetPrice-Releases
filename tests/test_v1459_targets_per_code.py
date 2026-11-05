@@ -138,6 +138,21 @@ class StoreIsPerCode(SFCase):
     def test_invalid_dormant_entry_is_not_considered_expired(self):
         self.assertFalse(sf_config._session_is_past(None))  # discipline-ok(R5): 非法输入需保守处理而不能当成过期。
 
+    def test_prune_does_not_drop_at_the_close_boundary(self):
+        import targets
+        from datetime import datetime, timedelta, timezone
+        clear_at = datetime(2026, 11, 2, 15, 0, 30, tzinfo=timezone(timedelta(hours=8)))
+        boundary = _alert("sh600399", day="2026-11-02")
+        with patch.object(targets, "is_trading_day_confirmed", return_value=True), \
+             patch.object(targets, "_clear_dt", return_value=clear_at), \
+             patch.object(targets, "_beijing_now", return_value=clear_at + timedelta(seconds=119)):
+            self.assertFalse(sf_config._droppable_expired([boundary]),  # discipline-ok(R5): 余量边界只能在判定函数上以注入时钟精确卡点，公开保存路径无法固定到秒
+                             "收盘切点后的安全余量内不能把可能仍在途的目标价剪掉")
+        with patch.object(targets, "is_trading_day_confirmed", return_value=True), \
+             patch.object(targets, "_clear_dt", return_value=clear_at), \
+             patch.object(targets, "_beijing_now", return_value=clear_at + timedelta(seconds=120)):
+            self.assertTrue(sf_config._droppable_expired([boundary]))  # discipline-ok(R5): 同上，余量刚好走完的另一侧边界
+
     def test_prune_keeps_unconfirmed_recent_session(self):
         import targets
         for i in range(sf_config.ALERT_STORE_MAX_CODES + 1):
@@ -182,6 +197,44 @@ class StoreIsPerCode(SFCase):
             self.assertTrue(sf_config.save_alerts([_alert("sz000001")], code="sz000001"))
         self.assertEqual(sf_config.load_alerts("sh600001"), [holiday])
         self.assertEqual(sf_config.load_alerts("sh600002"), [])
+
+    def _durable_env(self):
+        # 持久化模式是生产默认；测试默认关闭它，这里显式打开才是真实路径。
+        return patch.dict(os.environ, {"SF_TARGET_TICKS_PATH": os.path.join(self.tmp, "ticks.sqlite")})
+
+    def test_durable_mode_drops_expired_dormant_instead_of_refusing_new_stock(self):
+        """复核 B1：持久化开启时超限分支只会拒绝、不剪枝，别的股票早已过期的条目又没有任何
+        清理路径，于是设过 13 只股票后，第 14 只的目标价永远保存失败（界面还说是磁盘/权限问题）。
+        已确认过期的休眠条目没有保留价值，超限时必须先丢它们。"""
+        with self._durable_env():
+            for i in range(sf_config.ALERT_STORE_MAX_CODES + 1):
+                code = "sh6004%02d" % i
+                self.assertTrue(sf_config.save_alerts([_alert(code, 10.0 + i, day="2020-01-02")],
+                                                      code=code))
+            self.assertTrue(sf_config.save_alerts([_alert("sh600519", 1600.0)], code="sh600519"),
+                            "只有过期条目占着名额时，新股票的目标价必须能保存")
+        self.assertEqual([a["target"] for a in sf_config.load_alerts("sh600519")], [1600.0])
+        self.assertEqual(sf_config.load_alerts("sh600400"), [], "过期的休眠条目应已被清掉")
+
+    def test_durable_mode_still_refuses_when_live_dormant_entries_fill_the_store(self):
+        """有效（未过期）的休眠条目不能为了腾位置被丢：持久化模式下它们可能还有在途行情。"""
+        with self._durable_env():
+            for i in range(sf_config.ALERT_STORE_MAX_CODES + 1):
+                code = "sh6005%02d" % i
+                self.assertTrue(sf_config.save_alerts([_alert(code, 10.0 + i)], code=code))
+            self.assertFalse(sf_config.save_alerts([_alert("sh600519", 1600.0)], code="sh600519"))
+            self.assertEqual(sf_config.last_alert_refusal(), "store_limit",
+                             "拒绝的真实原因必须能被界面读到，不能让用户去查磁盘和权限")
+        self.assertTrue(sf_config.load_alerts("sh600500"), "被拒绝时已有的有效条目一条都不许少")
+
+    def test_refusal_reason_is_cleared_by_the_next_save(self):
+        with self._durable_env():
+            for i in range(sf_config.ALERT_STORE_MAX_CODES + 1):
+                code = "sh6006%02d" % i
+                sf_config.save_alerts([_alert(code, 10.0 + i)], code=code)
+            self.assertFalse(sf_config.save_alerts([_alert("sh600519", 1600.0)], code="sh600519"))
+            self.assertTrue(sf_config.save_alerts([_alert("sh600600", 99.0)], code="sh600600"))
+            self.assertEqual(sf_config.last_alert_refusal(), "", "一次成功的保存必须清掉上次的拒绝原因")
 
     def test_prune_report_uses_the_same_expiry_decision_as_retention(self):
         first = _alert("sh600001")

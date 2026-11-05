@@ -615,7 +615,7 @@ class LedgerLifecycleViaCli(SFCase):
                    "--component", "玻璃层与层级", "--found-version", V_REHEARSAL,
                    "--introduced", V_INTRO_E1, "--source", "rehearsal",
                    "--observed-at", T_1000])
-        self._cli(["--rootcause", "Z94"])
+        self._cli(["--rootcause", "Z94", "--missed-shape", "time_sequence"])
         self._cli(["--close", "Z94", "--fixed-version", V_REHEARSAL,
                    "--failed-lines", "verify", "--defense", "补一条判据"])
         rc, out = self._cli(["--round", V_REHEARSAL, "--escapes", "1",
@@ -628,6 +628,45 @@ class LedgerLifecycleViaCli(SFCase):
         self.assertIsNotNone(mine["rootcause_at"])
         text = qt.report(data)
         self.assertIn("Z94", text, "链路写出来的条目连报表都读不回来")
+
+    def test_走查发现的条目不盖起点也不计定位时长(self):
+        rc, out = self._cli(["--open", "走查时发现的问题", "--id", "Z95",
+                             "--channel", "shipped_unnoticed", "--found-version", V_BUCKET4,
+                             "--found-by", "maintainer_found", "--source", "rehearsal"])
+        self.assertEqual(rc, 0, out)
+        mine = self._mine("Z95")
+        self.assertIsNone(mine["observed_at"], "走查发现没有首次出现时刻，却被盖了起点")
+        self.assertEqual(mine["found_by"], "maintainer_found")
+        self.assertEqual(mine["locate_unknown_reason"], qt.MAINTAINER_FOUND_REASON)
+        rc, out = self._cli(["--rootcause", "Z95"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._mine("Z95")["locate_unknown_reason"], qt.MAINTAINER_FOUND_REASON,
+                         "盖根因戳把走查发现的理由改成了“开条时没盖起点”")
+        self.assertIsNone(qt.locate_minutes(self._mine("Z95")))
+
+    def test_没有起点的非走查条目盖根因时记下起点无法追溯(self):
+        rc, out = self._cli(["--open", "旧式条目", "--id", "Z97", "--channel", "online_user",
+                             "--found-version", V_BUCKET4, "--source", "rehearsal"])
+        self.assertEqual(rc, 0, out)
+        data = json.loads(self.ledger.read_text(encoding="utf-8"))
+        for entry in data["entries"]:
+            if entry["id"] == "Z97":
+                entry["observed_at"] = None      # 模拟旧账里起点丢失的条目
+        self.ledger.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        rc, out = self._cli(["--rootcause", "Z97"])
+        self.assertEqual(rc, 0, out)
+        mine = self._mine("Z97")
+        self.assertIn("起点无法追溯", mine["locate_unknown_reason"] or "",
+                      "起点丢失的条目盖根因后没有记下为什么算不出定位时长")
+        self.assertIsNone(qt.locate_minutes(mine))
+
+    def test_走查发现同时传observed_at被拒且不落条目(self):
+        before = len(qt.load(self.ledger)["entries"])
+        rc, out = self._cli(["--open", "自相矛盾的开条", "--id", "Z96",
+                             "--found-version", V_BUCKET4, "--found-by", "maintainer_found",
+                             "--observed-at", T_1000, "--source", "rehearsal"])
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(len(qt.load(self.ledger)["entries"]), before)
 
 
 class CliReadOnly(SFCase):
@@ -737,6 +776,59 @@ class MeasurementIntegrity(SFCase):
         self.assertIsNone(qt.locate_minutes(entry))
         self.assertIn("起点终点相同", "\n".join(qt.validate(data)))
         self.assertIn("可计算条目 **0** 条", qt.report(data))
+
+    def test_bookkeeping_entries_with_the_same_reason_fold_into_one_line(self):
+        data = fixture_ledger()
+        same = "同一句记账说明"
+        for entry in data["entries"][:3]:
+            entry.update(observed_at=None, rootcause_at=None, locate_unknown_reason=same,
+                         timestamp_audit={"original_observed_at": T_1000})
+        out = qt.report(data)
+        self.assertEqual(out.count(same), 1, "三条理由相同的记账条目仍各打印一行")
+        self.assertIn("3 条（", _flat(out))
+        for entry in data["entries"][:3]:
+            self.assertIn(entry["id"], out, "折叠后丢了条目 ID")
+
+    def test_this_rounds_verify_escape_must_carry_a_missed_shape(self):
+        data = fixture_ledger()
+        entry = data["entries"][0]
+        entry.update(found_version=V_REHEARSAL, failed_lines=["verify"])
+        entry.pop("missed_shape", None)
+        self.assertTrue(any("missed_shape" in err for err in qt.validate(data, V_REHEARSAL)),
+                        "本轮 verify 失守没标形状却过了闸门")
+        entry["missed_shape"] = "time_sequence"
+        self.assertFalse(any("missed_shape" in err for err in qt.validate(data, V_REHEARSAL)))
+        entry["missed_shape"] = "guess"
+        self.assertTrue(any("missed_shape" in err for err in qt.validate(data)))
+        # 旧条目不回填：不带版本号的只校验自洽，不要求形状
+        entry.pop("missed_shape")
+        self.assertFalse(any("missed_shape" in err for err in qt.validate(data)))
+
+    def test_report_warns_when_the_same_shape_repeats_but_not_for_a_single_one(self):
+        data = fixture_ledger()
+        data["entries"][0]["missed_shape"] = "time_sequence"
+        self.assertNotIn("已漏测", qt.report(data))
+        data["entries"][1]["missed_shape"] = "time_sequence"
+        data["entries"][2]["missed_shape"] = "boundary_value"
+        flat = _flat(qt.report(data))
+        self.assertIn("时序 已漏测 2 次", flat)
+        self.assertNotIn("边界值 已漏测", flat)
+
+    def test_found_by_outside_the_list_is_rejected(self):
+        data = fixture_ledger()
+        data["entries"][0]["found_by"] = "guess"
+        self.assertTrue(any("found_by" in err for err in qt.validate(data)))
+        data["entries"][0]["found_by"] = "maintainer_found"
+        self.assertFalse(any("found_by" in err for err in qt.validate(data)))
+
+    def test_report_splits_walkthrough_entries_out_of_the_unknown_time_count(self):
+        data = fixture_ledger()
+        for entry in data["entries"][:2]:
+            entry.update(observed_at=None, rootcause_at=None, found_by="maintainer_found",
+                         locate_unknown_reason=qt.MAINTAINER_FOUND_REASON)
+        flat = _flat(qt.report(data))
+        self.assertIn("其中 2 条是维护者走查发现", flat)
+        self.assertIn("维护者走查 2", flat)
 
     def test_independent_positive_interval_stays_in_mean(self):
         data = fixture_ledger()

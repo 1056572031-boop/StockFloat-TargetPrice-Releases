@@ -43,7 +43,7 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.110'
+APP_VERSION = '1.4.111'
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -107,6 +107,7 @@ RELEASE_STAGE = 'beta'
 # v1.4.109（2026-10-29）：按上面那句执行，翻回 'beta'。本轮没有收到"标记为稳定"的口头确认，
 #   稳定基线仍是 v1.4.108。
 # v1.4.110（2026-11-05）：沿用 'beta'。本轮没有收到"标记为稳定"的口头确认，稳定基线仍是 v1.4.108。
+# v1.4.111（2026-11-05）：沿用 'beta'。本轮没有收到"标记为稳定"的口头确认，稳定基线仍是 v1.4.108。
 # Beta 后缀的唯一来源（2026-10-12 收口）。此前"加什么字"这条规则写在两处
 # （这里与 stock_float_window 的右键菜单版本行），改一处会留下另一处继续说 Beta。
 # 收成常量的另一个理由：产物层查得到名字，而裸字面量在 co_names 里是隐形的

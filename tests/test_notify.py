@@ -474,6 +474,52 @@ class TestAsyncAuthorizationStatus(SFCase):
             self.assertEqual(stats["counts"]["denied"], 1)
             fallback.assert_not_called()
 
+    def test_last_answer_records_only_real_system_replies_with_the_time_they_were_asked(self):
+        """主窗确认「用户拒绝了通知」要看这条记录：只有系统真的答复了才写，
+        时间戳取发问时刻；粘滞的旧 denied、答不出来的 unknown 都不更新它。"""
+        self.assertEqual(sf_notify.last_authorization_answer(), ("unknown", 0.0))
+        self.assertEqual(sf_notify.authorization_status(), "unknown")
+        self.assertEqual(sf_notify.last_authorization_answer(), ("unknown", 0.0),
+                         "发出查询不等于有了答复")
+        self.clock_value = 1001.0
+        self.center.callbacks[-1](_SettingsStub(1))
+        self.assertEqual(sf_notify.last_authorization_answer(), ("denied", 1000.0))
+        # 缓存过期后再问：旧的 denied 继续粘滞返回，但记录里不会多出一条新答复。
+        self.clock_value = 1007.0
+        self.assertEqual(sf_notify.authorization_status(), "denied")
+        self.assertEqual(sf_notify.last_authorization_answer(), ("denied", 1000.0),
+                         "粘滞返回的 denied 不是新的系统答复")
+        self.clock_value = 1008.0
+        self.center.callbacks[-1](_SettingsStub(2))
+        self.assertEqual(sf_notify.last_authorization_answer(), ("authorized", 1007.0))
+        # 系统答了个读不懂的状态：缓存按 unknown 处理，记录保持上一条真实答复。
+        self.clock_value = 1020.0
+        sf_notify.authorization_status()
+        self.clock_value = 1021.0
+        self.center.callbacks[-1](_SettingsStub(99))
+        self.assertEqual(sf_notify.last_authorization_answer(), ("authorized", 1007.0))
+
+    def test_late_callback_after_the_lease_does_not_write_the_last_answer(self):
+        sf_notify.authorization_status()
+        self.clock_value += sf_notify._AUTH_QUERY_TTL_SEC + 1.0  # discipline-ok(R5): 租约时长是被测的边界
+        self.center.callbacks[-1](_SettingsStub(1))
+        self.assertEqual(sf_notify.last_authorization_answer(), ("unknown", 0.0))
+
+    def test_reset_delivery_probe_clears_the_last_answer(self):
+        sf_notify.authorization_status()
+        self.center.callbacks[-1](_SettingsStub(1))
+        self.assertEqual(sf_notify.last_authorization_answer()[0], "denied")
+        sf_notify.reset_delivery_probe()
+        self.assertEqual(sf_notify.last_authorization_answer(), ("unknown", 0.0))
+
+    def test_no_notification_center_is_not_a_system_answer(self):
+        """没有 bundle 身份、取不到通知中心的进程（源码态、裸解释器）没有向系统发过问。
+        外发清单各进程共用：它若把自己的 denied 记成答复并据此确认事件，
+        会把本该由装机版投递的提醒删掉。事件应当留着等能投递的进程来取。"""
+        with mock.patch.object(sf_notify, "_un_center", return_value=None):
+            self.assertEqual(sf_notify.authorization_status(), "denied")
+        self.assertEqual(sf_notify.last_authorization_answer(), ("unknown", 0.0))
+
     def test_not_determined_reply_delivers_the_queued_reminder_once_by_fallback(self):
         """系统答「尚未询问」：排队的提醒不能丢（该目标价已落盘记为已触发），补发恰好一次。"""
         self._pending_fixture()

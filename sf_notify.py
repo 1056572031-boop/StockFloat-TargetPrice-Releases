@@ -166,6 +166,11 @@ _AUTH_CACHE_TTL_SEC = 5.0
 _AUTH_QUERY_TTL_SEC = 5.0
 _AUTH_STATUS_CACHE = "unknown"
 _AUTH_STATUS_CACHE_AT = 0.0
+# 系统最近一次真实答复及其发问时刻（monotonic）。与上面的缓存不是一回事：缓存会把旧的
+# denied 粘滞到新答复到达为止，也会被"答不出来"刷新时间戳；这里只在系统真的回了一个
+# 读得懂的状态时才写，调用方才能判断"这个 denied 是不是在我第一次看到事件之后才出现的"。
+_AUTH_LAST_ANSWER = "unknown"
+_AUTH_LAST_ANSWER_ASKED_AT = 0.0
 _AUTH_QUERY_STARTED_AT = 0.0
 _AUTH_QUERY_IN_FLIGHT = False
 _AUTH_QUERY_GENERATION = 0
@@ -322,6 +327,7 @@ def _schedule_pending_flush():
 def reset_delivery_probe():
     """复位投递探测状态及测试隔离所需的异步授权缓存。"""
     global _USE_OSASCRIPT, _AUTH_STATUS_CACHE, _AUTH_STATUS_CACHE_AT
+    global _AUTH_LAST_ANSWER, _AUTH_LAST_ANSWER_ASKED_AT
     global _PENDING_FLUSH_SCHEDULED, _PENDING_EPOCH
     global _AUTH_QUERY_STARTED_AT, _AUTH_QUERY_IN_FLIGHT, _AUTH_QUERY_GENERATION
     with _DELIVERY_LOCK:
@@ -336,6 +342,8 @@ def reset_delivery_probe():
         _CLICK_HANDLERS.clear()
         _AUTH_STATUS_CACHE = "unknown"
         _AUTH_STATUS_CACHE_AT = 0.0
+        _AUTH_LAST_ANSWER = "unknown"
+        _AUTH_LAST_ANSWER_ASKED_AT = 0.0
         _AUTH_QUERY_STARTED_AT = 0.0
         _AUTH_QUERY_IN_FLIGHT = False
         _AUTH_QUERY_GENERATION += 1
@@ -349,6 +357,19 @@ def target_notification_title(name, code):
     """目标价提醒标题：优先股票名称，名称缺失时回退股票代码。"""
     label = str(name or "").strip() or str(code or "").strip() or "股票"
     return "%s 目标价" % label
+
+
+def last_authorization_answer():
+    """系统最近一次真实答复 (状态, 发问时刻 monotonic)；从未答复过是 ("unknown", 0.0)。
+
+    只有系统真的回了读得懂的状态才会更新；缓存里粘滞的旧 denied、答不出来的 unknown、
+    租约过期后才到的回调都不算。没有 bundle 身份、取不到通知中心的进程（源码态、裸解释器）
+    根本没有向系统发过问，也不记：外发清单是各进程共用的，这样的进程若凭自己的 "denied"
+    确认事件，会把本该由装机版投递的提醒删掉。调用方用它判断一个 denied 是不是在某个时刻
+    之后才由系统给出的。
+    """
+    with _DELIVERY_LOCK:
+        return _AUTH_LAST_ANSWER, _AUTH_LAST_ANSWER_ASKED_AT
 
 
 def authorization_status():
@@ -392,10 +413,12 @@ def authorization_status():
         generation = _AUTH_QUERY_GENERATION
         _AUTH_QUERY_IN_FLIGHT = True
         _AUTH_QUERY_STARTED_AT = now
+        query_started_at = now
 
     def _settings_done(settings):
         global _AUTH_QUERY_IN_FLIGHT, _AUTH_QUERY_STARTED_AT
         global _AUTH_STATUS_CACHE, _AUTH_STATUS_CACHE_AT
+        global _AUTH_LAST_ANSWER, _AUTH_LAST_ANSWER_ASKED_AT
         try:
             raw = settings.authorizationStatus()
             mapping = {0: "notDetermined", 1: "denied", 2: "authorized",
@@ -414,6 +437,11 @@ def authorization_status():
             if status != "unknown" or _AUTH_STATUS_CACHE != "denied":
                 _AUTH_STATUS_CACHE = status
             _AUTH_STATUS_CACHE_AT = time.monotonic()
+            if status != "unknown":
+                # 发问时刻取本次查询的起点，而不是回调到达的时刻：调用方要判断的是
+                # "这条答复是不是在我第一次看到事件之后才问出来的"。
+                _AUTH_LAST_ANSWER = status
+                _AUTH_LAST_ANSWER_ASKED_AT = query_started_at
         _schedule_pending_flush()
 
     try:

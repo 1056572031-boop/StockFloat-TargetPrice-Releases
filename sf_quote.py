@@ -235,10 +235,12 @@ def load_api_urls():
                 continue
             globals()[gname] = v
             changed.append(key)
-    except Exception:
+    except Exception as exc:
         # 配置读不出来的情形已在上面留 WARNING；走到这里的是 resolve_config_urls
-        # （钥匙串等）之类的异常，回落内置默认地址、不阻断启动，细节由该模块自己记日志。
-        pass
+        # （钥匙串、配置锁超时等）之类的异常，回落内置默认地址、不阻断启动。
+        # 复核 B3：此前这里只有 pass，而注释声称“细节由该模块自己记日志”——加锁之后
+        # TimeoutError 并没有人记，用户的自定义接口悄悄不生效，日志里查不到原因。
+        log_line("api_urls: 自定义接口未加载，沿用内置默认地址：%r" % (exc,), "WARNING")
     if changed:
         log_line("api_urls loaded from config: %s" % ",".join(changed), "INFO")
     return changed

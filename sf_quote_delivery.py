@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 
 _MEMORY_SPILL_MAX = 8192
+UNKNOWN_REVISION_MAX_AGE_SEC = 15.0
 
 
 class TargetTickBuffer:
@@ -37,6 +38,7 @@ class TargetTickBuffer:
         self._pinned = {}
         self._paged_codes = set()
         self.blocked_stocks = set()
+        self._unknown_first_seen: dict[int, float] = {}
         self._sequence = 0
         self._taken = {}
 
@@ -519,6 +521,48 @@ class TargetTickBuffer:
             return item.code, quote
         finally:
             self._lock.release()
+
+    def expire_unknown_revisions(self, now, max_age=UNKNOWN_REVISION_MAX_AGE_SEC):
+        """限期保留修订号未知的行，超时后确认丢弃，返回丢弃条数。
+
+        复核 M1：这类行（接收那一刻配置锁超时，取不到修订号）没有任何事后补号的路径，却会
+        被 read_actionable_prefix 整只股票挡住。保留一小段时间给锁恢复留余地，超时后留痕丢弃：
+        丢的只是这一笔行情对目标价的判定，行情照常显示，提醒由后续行情继续判。
+        `now` 用单调时钟；首次见到的时刻只存内存，重启后重新计时，所以一行最多多留一个限期。"""
+        if not self._persistent_path:
+            return 0
+        from sf_target_tick_store import TargetTickStore
+        if not self._lock.acquire(blocking=False):
+            raise BlockingIOError("target tick producer is busy")
+        try:
+            with TargetTickStore(self._persistent_path) as store:
+                rows = store.unknown_revision_rows()
+                alive = {tick_id for tick_id, _ in rows}
+                # 已经不在队列里的（被别处确认了）不再占着记录。
+                self._unknown_first_seen = {tick_id: seen for tick_id, seen
+                                            in self._unknown_first_seen.items() if tick_id in alive}
+                expired = []
+                for tick_id, code in rows:
+                    first = self._unknown_first_seen.setdefault(tick_id, now)
+                    if now - first >= max_age:
+                        expired.append((tick_id, code))
+                dropped = 0
+                for tick_id, code in expired:
+                    dropped += store.acknowledge(code, [tick_id])
+                    self._unknown_first_seen.pop(tick_id, None)
+                    self._persistent_objects.pop(tick_id, None)
+        finally:
+            self._lock.release()
+        if dropped:
+            # 独立复核 R2：配置锁被持续占住时行情会持续以空修订号落盘，每满限期就丢一批，
+            # 逐批写 ERROR 一分钟能写几百条，挤掉 7 天日志轮转。首条必记，其后每 10 批一条
+            # （附累计批数）；丢弃本身一条不少，只是日志限流。
+            from sf_logging import log_line_throttled
+            log_line_throttled("target.unknown_revision_discarded",
+                               "target tick revision unknown for over %.0fs; discarded %d tick(s) for %s"
+                               % (max_age, dropped, ",".join(sorted({code for _, code in expired}))),
+                               "ERROR", 10)
+        return dropped
 
     def unsaved_count(self):
         """Return volatile tick count, or None while the buffer is busy."""

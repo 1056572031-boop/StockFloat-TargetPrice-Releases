@@ -28,6 +28,7 @@ SPLIT_SOURCE_CONFIG_PATH = os.path.expanduser(
 _config_thread_lock = threading.RLock()
 _config_lock_state = threading.local()
 _CONFIG_LOCK_TIMEOUT = 0.5
+_CONFIG_LOCK_STARTUP_RETRY_TIMEOUT = 3.0   # 仅启动读配置的第二次尝试，见 load_config
 
 
 @contextmanager
@@ -543,14 +544,26 @@ def load_last_quote():
 
 
 def load_config():
-    try:
-        with config_transaction():
-            return _load_config_locked()
-    except Exception as exc:
-        global _untrusted_config_path
-        _untrusted_config_path = CONFIG_PATH
-        log_line("config transaction unavailable: %r" % (exc,), "WARNING")
-        return DEFAULT_STOCK, 120, 120, MIN_H, BG_MODE_DEFAULT
+    global _untrusted_config_path
+    failure: Exception | None = None
+    for attempt in (0, 1):
+        try:
+            # 复核 B3：启动那一刻配置锁被别的进程或线程短暂占住（慢盘上带 fsync 的原子写等），
+            # 0.5 秒就放弃的话，本次运行会被永久判成“配置不可信”：目标价暂停、所有保存被拒，
+            # 产品里没有复位路径，只能重启。启动读配置本来就在主窗构造期、没有界面可卡，
+            # 所以超时后再多等一次，仍拿不到才按不可信处理。
+            with config_transaction(timeout=None if attempt == 0 else _CONFIG_LOCK_STARTUP_RETRY_TIMEOUT):
+                return _load_config_locked()
+        except TimeoutError as exc:
+            failure = exc
+            if attempt == 0:
+                log_line("config lock busy at startup; retrying with a longer wait", "WARNING")
+        except Exception as exc:
+            failure = exc
+            break
+    _untrusted_config_path = CONFIG_PATH
+    log_line("config transaction unavailable: %r" % (failure,), "WARNING")
+    return DEFAULT_STOCK, 120, 120, MIN_H, BG_MODE_DEFAULT
 
 
 def _load_config_locked():
@@ -824,6 +837,7 @@ def load_alerts(code=None):
 
 ALERT_STORE_MAX_CODES = 12        # 休眠股票最多保留几只（S4 彻底解的上限）
 ALERT_STORE_MAX_TOTAL = 120       # 存储总条目上限，防无限增长
+EXPIRED_PRUNE_MARGIN_SEC = 120.0  # 收盘清空后再等两分钟，避开最后几笔行情登记竞态
 
 # 最近一次"超上限剪枝"的现场（复核 F7）。只留最近一次：它要回答的是"我那条目标价
 # 什么时候、为什么不见的"，而日志被 7 天轮转挤掉之后这件事就没人能说清。
@@ -870,8 +884,9 @@ def _dormant_of(stored, code, owner=""):
     return out
 
 
-def _session_is_past(alert):
-    """仅在顺延后的交易日已确认且超过清空时刻时视为过期。"""
+def _session_is_past(alert, margin_sec=0.0):
+    """仅在顺延后的交易日已确认且超过清空时刻（再加 margin_sec 秒）时视为过期。"""
+    from datetime import timedelta
     from targets import _beijing_now, _clear_dt, is_trading_day_confirmed, roll_to_trading_day
     if not isinstance(alert, dict):
         return False
@@ -879,7 +894,7 @@ def _session_is_past(alert):
     clear_at = _clear_dt(day)
     return (clear_at is not None
             and is_trading_day_confirmed(clear_at.date()) is True
-            and _beijing_now() >= clear_at)
+            and _beijing_now() >= clear_at + timedelta(seconds=margin_sec))
 
 
 def _prune_store(active, dormant):
@@ -1091,6 +1106,82 @@ def ack_target_notification_outbox(event_ids):
         return False
 
 
+# 最近一次 save_alerts 被拒绝的原因，供界面给出真实提示：保存失败并不都是磁盘或权限问题。
+# 只在拒绝后 _ALERT_REFUSAL_FRESH_SEC 秒内有效，免得之后别的保存失败（比如窗口位置）
+# 被误读成这次的原因；每次 save_alerts 开始时清零。
+_ALERT_REFUSAL_FRESH_SEC = 10.0
+_alert_refusal_reason = ""
+_alert_refusal_at = 0.0
+
+
+def _set_alert_refusal(reason):
+    global _alert_refusal_reason, _alert_refusal_at
+    _alert_refusal_reason = reason
+    _alert_refusal_at = time.monotonic() if reason else 0.0
+
+
+def last_alert_refusal():
+    """最近一次目标价保存被拒绝的原因（目前只有 "store_limit"）；没有或已过期返回空串。"""
+    if _alert_refusal_reason and time.monotonic() - _alert_refusal_at <= _ALERT_REFUSAL_FRESH_SEC:
+        return _alert_refusal_reason
+    return ""
+
+
+def _has_pending_ticks(code):
+    """这只股票是否还有在途行情：有发布者登记，或磁盘队列里还有它的行。
+
+    判断读不出来时一律按"有"处理：宁可多留一条过期条目，也不能丢一条在途行情要用的目标价。
+    sf_target_tick_store 依赖 sf_quote，而 sf_quote 又会回头用 sf_config，所以这里延迟导入。"""
+    try:
+        if target_tick_publisher_active(code):
+            return True
+        path = os.environ.get("SF_TARGET_TICKS_PATH")
+        if path is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(CONFIG_PATH)), "target_ticks.sqlite")
+        if not os.path.exists(path):
+            return False
+        from sf_target_tick_store import TargetTickStore
+        with TargetTickStore(path) as store:
+            return store.has_equivalent_code(code)
+    except Exception as exc:
+        log_swallow("sf_config._has_pending_ticks", exc)
+        return True
+
+
+def _droppable_expired(dormant):
+    """休眠条目里可以安全丢弃的：已确认过期，并且这只股票没有在途行情。
+
+    "已确认过期"要比清空时刻多等 EXPIRED_PRUNE_MARGIN_SEC 秒：行情发布者在 15:00:30 之前
+    取到的最后几笔，可能在检查在途行情之后、登记之前才入队，没有这段余量就有毫秒级的窗口
+    把它们要用的目标价剪掉。持久化队列的在途检查只能证明"此刻没有"，余量证明"也不会马上有"。
+    """
+    pending = {}
+    drop = []
+    for a in dormant:
+        if not _session_is_past(a, EXPIRED_PRUNE_MARGIN_SEC):
+            continue
+        key = _canon_code(a.get("code")) or str(a.get("code"))
+        if key not in pending:
+            pending[key] = _has_pending_ticks(a.get("code"))
+        if not pending[key]:
+            drop.append(a)
+    return drop
+
+
+def _durable_store_over_limit(active, dormant, stored):
+    """持久化模式下，这次写入会不会让存储超出上限。返回 (是否超限, 合并后的条目)。
+
+    只有"写入让存储变大"才算超限：已经超限的存量里要落一笔命中状态，条数不增加，不拒绝。"""
+    combined = active + dormant
+    previous_codes = {_canon_code(a.get("code")) for a in stored if str(a.get("code") or "")}
+    combined_codes = {_canon_code(a.get("code")) for a in combined if str(a.get("code") or "")}
+    dormant_codes = {_canon_code(a.get("code")) for a in dormant if str(a.get("code") or "")}
+    too_many = len(combined) > ALERT_STORE_MAX_TOTAL and len(combined) > len(stored)
+    too_many_codes = (len(dormant_codes) > ALERT_STORE_MAX_CODES and
+                      len(combined_codes) > len(previous_codes))
+    return (too_many or too_many_codes), combined
+
+
 @_config_write_transaction
 def save_alerts(alerts, code=None, *, outbox_events=None):
     """「目标价」独立写入 config 的 alerts 字段（原子写 + 备份），保留其他字段。
@@ -1106,6 +1197,7 @@ def save_alerts(alerts, code=None, *, outbox_events=None):
     v6 §5.5：save_config 现已 `d = dict(old)` 全字段保留，故 alerts 不会被任意保存冲掉；
     本函数仅负责 alerts 字段自身的读写，不改动 save_config。"""
     try:
+        _set_alert_refusal("")
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         expected = getattr(_config_lock_state, "expected_alerts", None)
         if expected is not None and (code != expected[0] or load_alerts(code) != expected[1]):
@@ -1142,21 +1234,30 @@ def save_alerts(alerts, code=None, *, outbox_events=None):
             dormant = _dormant_of(stored, code, owner)
             durable_enabled = (os.environ.get("SF_TARGET_TICKS_PATH") is not None or
                                os.environ.get("SF_TARGET_TICKS_DISABLE") != "1")
-            dormant_codes = {_canon_code(a.get("code")) for a in dormant
-                             if str(a.get("code") or "")}
             if durable_enabled:
-                combined = active + dormant
-                previous_codes = {_canon_code(a.get("code")) for a in stored
-                                  if str(a.get("code") or "")}
-                combined_codes = {_canon_code(a.get("code")) for a in combined
-                                  if str(a.get("code") or "")}
-                too_many = (len(combined) > ALERT_STORE_MAX_TOTAL and len(combined) > len(stored))
-                too_many_codes = (len(dormant_codes) > ALERT_STORE_MAX_CODES and
-                                  len(combined_codes) > len(previous_codes))
-                if too_many or too_many_codes:
+                refused, combined = _durable_store_over_limit(active, dormant, stored)
+                dropped = 0
+                if refused:
+                    # 复核 B1：持久化模式下别的股票的过期条目没有任何清理路径，攒满上限后新股票
+                    # 的目标价永远存不进去。已确认过期的休眠条目没有保留价值（过期行情读到
+                    # 不匹配的修订号会被直接丢弃），所以先丢它们；仍超限才拒绝。有效的休眠条目
+                    # 不动：它们可能还有在途行情。
+                    gone = _droppable_expired(dormant)
+                    if gone:
+                        gone_ids = {id(a) for a in gone}
+                        live = [a for a in dormant if id(a) not in gone_ids]
+                        refused, combined = _durable_store_over_limit(active, live, stored)
+                        if not refused:
+                            dropped = len(gone)
+                            _record_store_prune(
+                                dropped, [_canon_code(a.get("code")) or str(a.get("code")) for a in gone])
+                            log_line("save_alerts: 持久化模式超限，已丢弃 %d 条已过期的休眠条目" % dropped,
+                                     "WARNING")
+                if refused:
                     log_line("save_alerts refused: target storage limit while durable ticks enabled", "WARNING")
+                    _set_alert_refusal("store_limit")
                     return False
-                d["alerts"], dropped = combined, 0
+                d["alerts"] = combined
             else:
                 d["alerts"], dropped = _prune_store(active, dormant)
             if dropped:

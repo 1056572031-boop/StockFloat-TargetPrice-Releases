@@ -75,7 +75,7 @@ class PublicReleaseCase(SFCase):
         self.assertTrue(public.privacy_problems(repo, "unused", (repo,)))
 
     def test_actual_feedback_source_passes_the_public_privacy_guard(self):
-        names = ["sf_constants.py", "docs/GITHUB_FEEDBACK.md", "tests/test_public_release.py"]
+        names = ["sf_constants.py", "tests/test_public_release.py"]
         names += [str(p.relative_to(ROOT)) for p in ROOT.glob("sf_feedback*.py")]
         names += [str(p.relative_to(ROOT)) for p in (ROOT / "tools").glob("*feedback*.py")]
         names += [str(p.relative_to(ROOT)) for p in (ROOT / "tests").glob("test_feedback*.py")]
@@ -294,6 +294,55 @@ class PublicReleaseCase(SFCase):
         self.assertEqual(public.run(["git", "rev-list", "--count", "HEAD"], out).strip(), "1")
         exported_problems = docs.problems(out, docs.APP_VERSION)
         self.assertEqual(exported_problems, [])
+
+    def write_docs_dir_files(self, names):
+        for name in names:
+            path = self.root / name
+            if path.exists():
+                continue  # setUp 已放入真实的对外文档，不能被占位文字覆盖
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture for " + name + "\n")
+
+    def test_export_keeps_only_the_registered_docs_dir_files(self):
+        internal = ("docs/TODO.md", "docs/COMMIT_WORKFLOW.md", "docs/PERFORMANCE_AUDIT_2026-10-15.md",
+                    "docs/superpowers/plans/plan.md")
+        self.write_docs_dir_files(internal + public.PUBLIC_DOCS_DIR_FILES)
+        self.init_repo()
+        out = self.root.parent / "docs-scope"
+        public.export_source(out, self.root)
+        exported = {str(p.relative_to(out)) for p in (out / "docs").rglob("*") if p.is_file()}
+        self.assertEqual(exported, set(public.PUBLIC_DOCS_DIR_FILES), exported)
+
+    def test_uncommitted_internal_doc_does_not_block_the_export(self):
+        self.write_docs_dir_files(["docs/TODO.md"])
+        self.init_repo()
+        (self.root / "docs/TODO.md").write_text("edited after the commit\n")
+        out = self.root.parent / "dirty-internal-doc"
+        public.export_source(out, self.root)
+        self.assertFalse((out / "docs/TODO.md").exists())
+
+    def test_history_audit_tolerates_docs_published_before_the_scope_narrowed(self):
+        # 以前的公开快照带出过 docs/TODO.md；它留在旧提交里，不能拦住今后的每一次发布。
+        self.write_docs_dir_files(["docs/TODO.md"])
+        self.init_repo()
+        public.audit_history(self.root, "/Users/" + "fixture-owner")
+
+    def test_exported_markdown_links_never_point_at_dropped_files(self):
+        listed = public.run(["git", "ls-files", "-z"], ROOT).split("\0")
+        broken = []
+        for name in filter(None, listed):
+            if public.export_excluded(name) or not name.endswith(".md"):
+                continue
+            path = ROOT / name
+            if not path.is_file():
+                continue
+            for target in re.findall(r"\]\(([^)#\s]+)", path.read_text(encoding="utf-8")):
+                if target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                resolved = os.path.normpath(os.path.join(os.path.dirname(name), target))
+                if public.export_excluded(resolved):
+                    broken.append("%s -> %s" % (name, target))
+        self.assertEqual(broken, [], "导出的文档链接指向了不随公开源码发布的文件")
 
     def test_export_rejects_uncommitted_code_but_carries_generated_guide(self):
         self.init_repo()

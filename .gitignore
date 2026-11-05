@@ -59,3 +59,9 @@ outputs/人脸守卫自测素材-*.png
 
 # 下载站部署日志、锁与缓存：本地状态，不进版本控制
 outputs/site-deploys/
+
+# 自动化日报、事故保全副本、过程计划稿：本地运行状态，不进版本控制
+# （事故保全副本里有个人配置与日志；判据 tests/test_local_state_ignored.py）
+outputs/todo-runs/
+outputs/config-incident-preservation-*/
+docs/superpowers/

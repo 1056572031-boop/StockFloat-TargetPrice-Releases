@@ -469,6 +469,39 @@ class TargetCommitRetry(_Host):
         self.assertEqual(len(rows), 1)
         self.assertIsNone(rows[0].quote.target_revision)
 
+    def test_persistent_lock_failure_does_not_write_a_warning_per_quote(self):
+        # 复核 B4：tick 锁文件属主不对（例如曾用 sudo 跑过）时 target_tick_transaction 每次都抛
+        # PermissionError，盘中每笔行情（约 0.1 秒一笔）写一条无节流 WARNING，一天上万行，
+        # 把 debug.log 的 7 天轮转挤掉，恰好造成“事后查不到”。首条必记，其后必须节流。
+        import sf_logging
+        import sf_quote
+        from contextlib import contextmanager
+        from sf_quote_delivery import TargetTickBuffer
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        self._open_saved_panel([])
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "flood.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离持久队列。
+        self.track_patch(mock.patch.object(self.win, "_apply_quote"))
+        @contextmanager
+        def denied(**kwargs):
+            raise PermissionError("lock owned by someone else")
+            yield
+        lines = []
+        record = lambda msg, level="INFO": lines.append(msg)
+        sf_logging.reset_log_throttle()
+        self.addCleanup(sf_logging.reset_log_throttle)
+        with mock.patch.object(sf_config, "target_tick_transaction", denied), \
+                mock.patch.object(window, "log_line", side_effect=record), \
+                mock.patch.object(sf_logging, "log_line", side_effect=record), \
+                mock.patch("sf_quote_delivery.quote_is_current", return_value=True):
+            for index in range(100):
+                quote = sf_quote.QuoteData({"code": self.win.code, "price": str(100 + index)}, "20261015100000")
+                quote.received_at = now
+                self.win._q_put(("quote", (self.win.code, quote)))  # discipline-ok(R5): 驱动真实接收入口。
+        flood = [line for line in lines if "target tick lock unavailable" in line]
+        self.assertGreaterEqual(len(flood), 1, "故障第一条必须记下来")
+        self.assertLessEqual(len(flood), 5, "连续 100 笔行情只应留少量日志，实际 %d 条" % len(flood))
+
     def test_persistent_unknown_revision_is_not_acknowledged(self):
         import sf_quote
         from sf_quote_delivery import TargetTickBuffer
@@ -514,6 +547,105 @@ class TargetCommitRetry(_Host):
         self.win._poll()  # discipline-ok(R5): 当前无目标不能证明历史行情无目标。
         with TargetTickStore(path) as store:
             self.assertEqual(len(store.read(self.win.code)), 1)
+
+    def test_unknown_revision_row_is_discarded_after_the_retention_limit(self):
+        # 复核 M1：取不到修订号的行情行没有任何退出路径。它挡在队首，read_actionable_prefix
+        # 把整只股票标成 blocked，这只股票的提醒停掉、面板保存永远失败，重启也不恢复。
+        # 保留一小段时间（给锁恢复留余地），超时后留痕确认丢弃，不能无限期卡住。
+        import sf_quote
+        from sf_quote_delivery import TargetTickBuffer, UNKNOWN_REVISION_MAX_AGE_SEC
+        from sf_target_tick_store import TargetTickStore
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        self._open_saved_panel([])
+        path = os.path.join(self.tmp_path, "ticks.sqlite")
+        ticks = TargetTickBuffer(persistent_path=path)
+        self.win._target_ticks = ticks  # discipline-ok(R5): 使用隔离队列。
+        self.track_patch(mock.patch("sf_quote_delivery.quote_is_current", return_value=True))
+        self.track_patch(mock.patch.object(self.win, "_apply_quote"))
+        self.win.running = True
+        stuck = sf_quote.QuoteData({"code": self.win.code, "price": "101"}, "20261015100000")
+        stuck.received_at = now
+        stuck.target_revision = None
+        ticks.add_ordered(self.win.code, stuck)
+        with mock.patch.object(window.time, "monotonic", return_value=1000.0):
+            self.win._poll()  # discipline-ok(R5): 第一拍发现这只股票被挡住。
+            self.win._poll()  # discipline-ok(R5): 第二拍开始给这一行计时。
+        expected_retained_rows = 1
+        with TargetTickStore(path) as store:
+            self.assertEqual(len(store.read(self.win.code)), expected_retained_rows, "限期之内必须保留，给锁恢复留余地")
+        self.assertEqual(sorted(ticks.blocked_stocks), [self.win.code])
+        with mock.patch.object(window.time, "monotonic",
+                               return_value=1000.0 + UNKNOWN_REVISION_MAX_AGE_SEC + 1.0):
+            self.win._poll()  # discipline-ok(R5): 超过限期后必须放行。
+        with TargetTickStore(path) as store:
+            self.assertEqual(store.read(self.win.code), [], "超过限期仍未知的行必须确认丢弃")
+        self.assertEqual(sorted(ticks.blocked_stocks), [], "丢弃之后这只股票不能再被挡住")
+
+    def test_expire_unknown_revisions_is_a_noop_without_a_durable_queue(self):
+        from sf_quote_delivery import TargetTickBuffer
+        expected_dropped_rows = 0
+        self.assertEqual(TargetTickBuffer().expire_unknown_revisions(1000.0), expected_dropped_rows)
+
+    def test_expire_unknown_revisions_does_not_wait_for_a_busy_producer(self):
+        from sf_quote_delivery import TargetTickBuffer
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "busy.sqlite"))
+        with ticks._lock:  # discipline-ok(R5): 模拟生产者正持有缓冲锁
+            with self.assertRaises(BlockingIOError):
+                ticks.expire_unknown_revisions(1000.0)
+
+    def test_sustained_unknown_revision_discards_do_not_flood_the_error_log(self):
+        # 独立复核 R2：配置锁被持续占住时，行情会以空修订号持续落盘，每满限期就丢一批。
+        # 每次丢弃都写一条 ERROR，会挤掉 7 天日志轮转。首条必记、其后限流，
+        # 累计条数随日志附带，证据不丢。
+        import sf_quote
+        import sf_logging
+        from sf_quote_delivery import TargetTickBuffer, UNKNOWN_REVISION_MAX_AGE_SEC
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "flood.sqlite"))
+        lines = []
+        record = lambda msg, level="INFO": lines.append((level, msg))
+        sf_logging.reset_log_throttle()
+        self.addCleanup(sf_logging.reset_log_throttle)
+        rounds = 30
+        total = 0
+        self.track_patch(mock.patch("sf_quote_delivery.quote_is_current", return_value=True))
+        with mock.patch.object(sf_logging, "log_line", side_effect=record):
+            for index in range(rounds):
+                stuck = sf_quote.QuoteData({"code": "sh600183", "price": "101"}, "20261015100000")
+                stuck.received_at = now
+                stuck.target_revision = None
+                ticks.add_ordered("sh600183", stuck)
+                start = 1000.0 + index * 100.0
+                ticks.expire_unknown_revisions(start)
+                total += ticks.expire_unknown_revisions(start + UNKNOWN_REVISION_MAX_AGE_SEC + 1.0)
+        self.assertEqual(total, rounds, "每一批都要真的丢弃，限流只能限日志，不能限丢弃")
+        errors = [msg for level, msg in lines if level == "ERROR" and "revision unknown" in msg]
+        self.assertGreaterEqual(len(errors), 1, "首条必须记，丢数据不能没有痕迹")
+        self.assertLess(len(errors), rounds // 2, "持续故障下 ERROR 必须限流，不能每批一条")
+
+    def test_poll_survives_a_failing_unknown_revision_sweep(self):
+        # 限期丢弃出任何错（含生产者正忙）都不能带崩轮询，只留限流痕迹，下一拍再试。
+        import sf_quote
+        from sf_quote_delivery import TargetTickBuffer
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        self._open_saved_panel([])
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "sweep-fails.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 使用隔离队列。
+        self.track_patch(mock.patch("sf_quote_delivery.quote_is_current", return_value=True))
+        self.track_patch(mock.patch.object(self.win, "_apply_quote"))
+        self.win.running = True
+        stuck = sf_quote.QuoteData({"code": self.win.code, "price": "101"}, "20261015100000")
+        stuck.received_at = now
+        stuck.target_revision = None
+        ticks.add_ordered(self.win.code, stuck)
+        self.win._poll()  # discipline-ok(R5): 第一拍发现这只股票被挡住。
+        self.assertTrue(ticks.blocked_stocks)
+        with mock.patch.object(ticks, "expire_unknown_revisions", side_effect=BlockingIOError("busy")) as sweep, \
+                mock.patch.object(window, "log_swallow") as swallowed:
+            self.win._poll()  # discipline-ok(R5): 第二拍的限期丢弃失败。
+        self.assertTrue(sweep.called)
+        self.assertTrue(any("expire_unknown_revision" in str(call.args[0]) for call in swallowed.call_args_list),
+                        "失败必须留限流痕迹，不能静默")
 
     def test_persistent_plain_quote_does_not_trigger_new_target(self):
         from sf_quote_delivery import TargetTickBuffer
@@ -837,6 +969,137 @@ class TargetCommitRetry(_Host):
                 mock.patch.object(window.time, "monotonic", return_value=131.0):
             self.win._drain_target_notification_outbox()  # discipline-ok(R5): 退避到期后重试。
         self.assertEqual(len(callbacks), 2)
+
+    def test_denied_notification_is_acknowledged_instead_of_retried_forever(self):
+        # 用户在系统里关掉了通知：deliver 返回 "denied" 且不会再调用 on_complete。
+        # 这是用户明确的选择，事件必须当场确认删除；否则它每 30 秒重写一次配置备份，
+        # 并在用户日后重新开启通知时补弹早已过时的提醒。
+        self._open_saved_panel([])
+        event = {"id": "denied-ack", "code": "other", "title": "old stock",
+                 "body": "crossed", "semantic_key": "denied-ack"}
+        self.assertTrue(sf_config.save_alerts([], self.win.code, outbox_events=[event]))
+        calls = []
+        def deliver(*args, **kwargs):
+            calls.append(args)
+            return "denied"
+        with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                mock.patch.object(window.time, "monotonic", return_value=100.0), \
+                mock.patch.object(window, "_notify_authorization_answer",
+                                  return_value=("denied", 90.0)):
+            self.win._drain_target_notification_outbox()  # discipline-ok(R5): 首次被拒绝，可能只是过期缓存。
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sf_config.load_target_notification_outbox(), [event],
+                         "只见到一次 denied 不足以认定用户拒绝，事件必须保留")
+        with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                mock.patch.object(window.time, "monotonic", return_value=131.0), \
+                mock.patch.object(window, "_notify_authorization_answer",
+                                  return_value=("denied", 131.0)):
+            self.win._drain_target_notification_outbox()  # discipline-ok(R5): 间隔足够后再次被拒绝。
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sf_config.load_target_notification_outbox(), [],
+                         "连续两次 denied 才是用户的真实选择，事件这时才确认删除")
+        with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                mock.patch.object(window.time, "monotonic", return_value=500.0):
+            self.win._drain_target_notification_outbox()  # discipline-ok(R5): 退避到期后也不应重发。
+        self.assertEqual(len(calls), 2, "退避到期后不得重发已确认的事件")
+
+    def test_stale_denied_answer_does_not_discard_a_notification_after_user_reenables(self):
+        # blast-radius 实测：缓存里残留旧 denied、用户刚在系统设置里重新开启通知时，
+        # sf_notify.authorization_status() 第一次仍答 denied，系统回调到达后才变 authorized。
+        # 所以单次 denied 不能当成终态，否则用户刚开启通知，第一条提醒就被永久丢掉。
+        self._open_saved_panel([])
+        event = {"id": "denied-stale", "code": "other", "title": "old stock",
+                 "body": "crossed", "semantic_key": "denied-stale"}
+        self.assertTrue(sf_config.save_alerts([], self.win.code, outbox_events=[event]))
+        answers = iter(["denied", "un", "denied"])
+        calls = []
+        def deliver(*args, **kwargs):
+            calls.append(args)
+            return next(answers)
+        for now in (100.0, 131.0, 162.0):
+            with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                    mock.patch.object(window.time, "monotonic", return_value=now), \
+                    mock.patch.object(window, "_notify_authorization_answer",
+                                      return_value=("unknown", 0.0)):
+                self.win._drain_target_notification_outbox()  # discipline-ok(R5): 逐拍驱动重试。
+        self.assertEqual(len(calls), 3, "中间那次不是 denied，事件必须继续被重试")
+        self.assertEqual(sf_config.load_target_notification_outbox(), [event],
+                         "denied 被打断后要重新计时，第三次的 denied 只算第一次")
+
+    def test_repeated_denied_from_a_stale_cache_never_acknowledges_the_event(self):
+        # 复核第二轮：用户重新开启通知后，授权缓存会在过期后仍答 denied（旧答复保持"粘滞"，
+        # 直到新的系统答复到达），连着两拍都答 denied 并不代表系统又拒绝了一次。
+        # 判据必须是"确认之后才有一条新的真实系统答复，且答复就是 denied"，
+        # 只看 deliver 的返回值和间隔时间会把刚重新开启通知的第一条提醒永久丢掉。
+        self._open_saved_panel([])
+        event = {"id": "denied-sticky", "code": "other", "title": "old stock",
+                 "body": "crossed", "semantic_key": "denied-sticky"}
+        self.assertTrue(sf_config.save_alerts([], self.win.code, outbox_events=[event]))
+        calls = []
+        def deliver(*args, **kwargs):
+            calls.append(args)
+            return "denied"
+        # 系统最后一次真实答复停在 50.0（早于第一次观察），其后没有新答复到达。
+        for now in (100.0, 131.0, 162.0, 193.0):
+            with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                    mock.patch.object(window.time, "monotonic", return_value=now), \
+                    mock.patch.object(window, "_notify_authorization_answer",
+                                      return_value=("denied", 50.0)):
+                self.win._drain_target_notification_outbox()  # discipline-ok(R5): 逐拍驱动，答复时间戳不前进。
+        self.assertEqual(len(calls), 4, "没有新的系统答复，事件每个退避周期都要重试")
+        self.assertEqual(sf_config.load_target_notification_outbox(), [event],
+                         "旧的 denied 答复不能确认一条在它之后才第一次观察到的事件")
+
+    def test_fresh_authorized_answer_after_denied_keeps_the_notification_deliverable(self):
+        # 同一场景的另一半：缓存先答了 denied，随后系统新答复变成 authorized，
+        # 事件必须保留并走正常投递，而不是被前一拍的 denied 记录带走。
+        self._open_saved_panel([])
+        event = {"id": "denied-then-ok", "code": "other", "title": "old stock",
+                 "body": "crossed", "semantic_key": "denied-then-ok"}
+        self.assertTrue(sf_config.save_alerts([], self.win.code, outbox_events=[event]))
+        outcomes = iter(["denied", "un"])
+        answers = iter([("denied", 50.0), ("authorized", 120.0)])
+        calls = []
+        def deliver(*args, **kwargs):
+            calls.append(args)
+            return next(outcomes)
+        for now in (100.0, 131.0):
+            with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                    mock.patch.object(window.time, "monotonic", return_value=now), \
+                    mock.patch.object(window, "_notify_authorization_answer",
+                                      side_effect=lambda: next(answers)):
+                self.win._drain_target_notification_outbox()  # discipline-ok(R5): 逐拍驱动，答复由 denied 变 authorized。
+        self.assertEqual(len(calls), 2, "第二拍已不是 denied，事件要继续走正常投递")
+        self.assertEqual(sf_config.load_target_notification_outbox(), [event],
+                         "投递成功的确认要等系统回调，不能在这里提前删除")
+
+    def test_denied_confirmation_requires_a_system_answer_newer_than_the_first_sighting(self):
+        # 边界：答复时间戳恰好等于第一次观察时刻，说明它可能就是被粘滞缓存带出来的那一条，
+        # 不算数；严格晚于才算。
+        self._open_saved_panel([])
+        event = {"id": "denied-edge", "code": "other", "title": "old stock",
+                 "body": "crossed", "semantic_key": "denied-edge"}
+        self.assertTrue(sf_config.save_alerts([], self.win.code, outbox_events=[event]))
+        def deliver(*args, **kwargs):
+            return "denied"
+        with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                mock.patch.object(window.time, "monotonic", return_value=100.0), \
+                mock.patch.object(window, "_notify_authorization_answer",
+                                  return_value=("denied", 100.0)):
+            self.win._drain_target_notification_outbox()  # discipline-ok(R5): 第一次观察，答复时刻与之相同。
+        self.assertEqual(sf_config.load_target_notification_outbox(), [event])
+        with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                mock.patch.object(window.time, "monotonic", return_value=131.0), \
+                mock.patch.object(window, "_notify_authorization_answer",
+                                  return_value=("denied", 100.0)):
+            self.win._drain_target_notification_outbox()  # discipline-ok(R5): 答复时刻仍不晚于第一次观察。
+        self.assertEqual(sf_config.load_target_notification_outbox(), [event])
+        with mock.patch.object(window, "_notify_deliver", side_effect=deliver), \
+                mock.patch.object(window.time, "monotonic", return_value=162.0), \
+                mock.patch.object(window, "_notify_authorization_answer",
+                                  return_value=("denied", 100.5)):
+            self.win._drain_target_notification_outbox()  # discipline-ok(R5): 新答复晚于第一次观察，才确认。
+        self.assertEqual(sf_config.load_target_notification_outbox(), [])
 
     def test_outbox_retry_runs_without_targets_or_new_quotes(self):
         self._open_saved_panel([])
@@ -2721,6 +2984,82 @@ class TargetCommitRetry(_Host):
         self.assertFalse(producer.is_alive())
         self.assertTrue(real_load_alerts(self.win.code))
         self.assertTrue(original(self.win.code))
+
+    def test_target_tick_read_lock_timeout_is_deferred_without_swallowed_failure(self):
+        from sf_quote_delivery import TargetTickBuffer
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-timeout.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.win.running = True
+        with mock.patch.object(sf_config, "config_transaction",
+                                side_effect=TimeoutError("configuration lock timed out")), \
+                mock.patch.object(window, "log_swallow") as swallowed, \
+                mock.patch.object(window, "log_line_throttled") as throttled:
+            self.win._poll()  # discipline-ok(R5): 真实轮询接缝，模拟生产者短暂持有配置锁。
+        swallowed.assert_not_called()
+        self.assertTrue(any(call.args[0] == "target.tick_read_lock_unavailable"
+                            for call in throttled.call_args_list),
+                        "预期锁竞争必须留节流日志，但不能记成 SWALLOWED")
+
+    def test_deferred_target_tick_read_keeps_the_pending_tick_for_the_next_poll(self):
+        import sf_quote
+        from sf_quote_delivery import TargetTickBuffer
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        self._open_saved_panel([])
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-keep.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.track_patch(mock.patch("sf_quote_delivery.quote_is_current", return_value=True))
+        self.track_patch(mock.patch.object(self.win, "_apply_quote"))
+        self.win.running = True
+        pending = sf_quote.QuoteData({"code": self.win.code, "price": "101"}, "20261015100000")
+        pending.received_at = now
+        pending.target_revision = None
+        ticks.add_ordered(self.win.code, pending)
+        self.assertTrue(ticks.has_pending(self.win.code), "前提：队列里有一笔待消费的行情")
+        with mock.patch.object(sf_config, "config_transaction",
+                               side_effect=TimeoutError("configuration lock timed out")), \
+                mock.patch.object(window, "log_swallow") as swallowed:
+            self.win._poll()  # discipline-ok(R5): 真实轮询接缝，生产者短暂持锁。
+        self.assertTrue(ticks.has_pending(self.win.code),
+                        "锁竞争只是延后一拍，行情必须还留在队列里等下一次轮询")
+        swallowed.assert_not_called()
+
+    def test_sustained_target_tick_read_lock_timeout_is_still_reported_as_swallowed(self):
+        from sf_quote_delivery import TargetTickBuffer
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-sustained.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.win.running = True
+        clock = [1000.0]
+        with mock.patch.object(window.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(sf_config, "config_transaction",
+                                  side_effect=TimeoutError("configuration lock timed out")), \
+                mock.patch.object(window, "log_swallow") as swallowed, \
+                mock.patch.object(window, "log_line_throttled"):
+            self.win._poll()  # discipline-ok(R5): 第一拍：偶发竞争，不升级。
+            swallowed.assert_not_called()
+            clock[0] += window.TARGET_READ_BUSY_ESCALATE_SEC + 1.0
+            self.win._poll()  # discipline-ok(R5): 持续占锁超过期限：目标价一直没被判定，必须留 SWALLOWED。
+        self.assertTrue(any(call.args[0] == "stock_float_window._poll.target_tick_read"
+                            for call in swallowed.call_args_list),
+                        "持续占锁不能和偶发竞争一起被压成普通日志")
+
+    def test_target_tick_read_busy_window_restarts_after_a_successful_poll(self):
+        from sf_quote_delivery import TargetTickBuffer
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-reset.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.win.running = True
+        clock = [1000.0]
+        busy = mock.patch.object(sf_config, "config_transaction",
+                                 side_effect=TimeoutError("configuration lock timed out"))
+        with mock.patch.object(window.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(window, "log_swallow") as swallowed, \
+                mock.patch.object(window, "log_line_throttled"):
+            with busy:
+                self.win._poll()  # discipline-ok(R5): 开始一段占锁期。
+            clock[0] += window.TARGET_READ_BUSY_ESCALATE_SEC + 1.0
+            self.win._poll()  # discipline-ok(R5): 这一拍取锁成功，占锁期应当清零。
+            with busy:
+                self.win._poll()  # discipline-ok(R5): 新的一次占锁，不能沿用旧的起点而立刻升级。
+        swallowed.assert_not_called()
 
     def test_target_tick_lock_blocks_other_process(self):
         import subprocess
