@@ -296,6 +296,112 @@ class PublicReleaseCase(SFCase):
         with self.assertRaisesRegex(ValueError, "internal history entry: AGENTS.md"):
             public.audit_history(self.root, "/Users/" + "fixture-owner")
 
+    def test_adding_an_export_only_path_never_blocks_the_history_audit(self):
+        # 守的是一整类：往“导出时丢弃”的表里加路径，不许因此让历史审计拦住此后每一次发布。
+        # v1.4.112 的 --prepare-only 实测过一次：该路径已随更早的公开快照发布、留在公开历史里。
+        # 为什么不用行为之外的办法：历史审计只对远端 public-source 历史真跑，本地没有别的办法复现。
+        newcomer = "tests/zz_export_only_newcomer.py"
+        self.write_docs_dir_files([newcomer])
+        self.init_repo()
+        with patch.object(public, "EXPORT_ONLY", public.EXPORT_ONLY + (newcomer,)):
+            self.assertTrue(public.export_excluded(newcomer))
+            public.audit_history(self.root, "/Users/" + "fixture-owner")
+
+    def test_every_hard_excluded_path_is_still_refused_in_history(self):
+        # 放宽只能发生在“仅导出丢弃”那张表；真内部清单进了历史必须逐项被拦。
+        for name in public.EXCLUDED:
+            tail = name.rsplit("/", 1)[-1]
+            target = name if "." in tail else name + "/fixture.txt"
+            self.write_docs_dir_files([target])
+        self.init_repo()
+        with self.assertRaises(ValueError) as caught:
+            public.audit_history(self.root, "/Users/" + "fixture-owner")
+        for name in public.EXCLUDED:
+            with self.subTest(path=name):
+                self.assertIn("internal history entry: " + name, str(caught.exception))
+
+    def snapshot_probe_command(self, record):
+        """在快照副本里运行、把自己看到的现场写进 record 的命令（不依赖真实 run_tests.sh）。"""
+        script = (
+            "import json, os, sys\n"
+            "keys = ('SF_PUBLIC_REGRESSION', 'QT_QPA_PLATFORM', 'SF_SKIP_COVERAGE', 'SF_RANDOM_ORDER',\n"
+            "        'SF_GUARD_PROBE', 'SF_LOCK_PROBE', 'SF_LOCK_PROBE_DIR', 'GIT_DIR', 'GIT_INDEX_FILE')\n"
+            "venv = os.path.join(os.getcwd(), '.venv')\n"
+            "json.dump({'cwd': os.path.realpath(os.getcwd()),\n"
+            "           'has_agents': os.path.exists('AGENTS.md'),\n"
+            "           'venv_target': os.path.realpath(venv) if os.path.islink(venv) else None,\n"
+            "           'env': {k: os.environ.get(k) for k in keys}},\n"
+            "          open(sys.argv[1], 'w'))\n")
+        return [sys.executable, "-c", script, str(record)]
+
+    def test_snapshot_regression_runs_in_the_exported_tree_with_public_ci_env(self):
+        # 公开 CI 跑的是脱敏快照，不是开发树；发布前在同一份快照里按同一口径跑一遍，
+        # 才能在不可逆动作之前看见“只有快照里才红”的那一类（v1.4.111 实测：读 AGENTS.md 的测试被带出）。
+        (self.root / "AGENTS.md").write_text("internal overview\n")
+        self.init_repo()
+        (self.root / ".venv" / "bin").mkdir(parents=True)
+        record = self.root.parent / "record.json"
+        hostile = {"SF_SKIP_COVERAGE": "1", "SF_RANDOM_ORDER": "1", "SF_GUARD_PROBE": "1",
+                   "SF_LOCK_PROBE": "1", "SF_LOCK_PROBE_DIR": "/nonexistent",
+                   "GIT_DIR": "/nonexistent", "GIT_INDEX_FILE": "/nonexistent",
+                   "QT_QPA_PLATFORM": "cocoa"}
+        before = public.run(["git", "status", "--porcelain"], self.root)
+        with patch.dict(os.environ, hostile), \
+                patch.object(public, "push_source") as push, \
+                patch.object(public, "upload_asset") as upload:
+            code = public.regress_snapshot(self.root, self.snapshot_probe_command(record),
+                                           work=self.root.parent / "regress")
+        self.assertEqual(code, 0)
+        push.assert_not_called()
+        upload.assert_not_called()
+        self.assertEqual(public.run(["git", "status", "--porcelain"], self.root), before)
+        seen = json.loads(record.read_text())
+        self.assertNotEqual(Path(seen["cwd"]), self.root.resolve())
+        self.assertTrue(Path(seen["cwd"]).is_relative_to((self.root.parent / "regress").resolve()))
+        self.assertFalse(seen["has_agents"], "the snapshot must not carry the internal overview")
+        self.assertEqual(seen["env"]["SF_PUBLIC_REGRESSION"], "1")
+        self.assertEqual(seen["env"]["QT_QPA_PLATFORM"], "offscreen")
+        for name in ("SF_SKIP_COVERAGE", "SF_RANDOM_ORDER", "SF_GUARD_PROBE", "SF_LOCK_PROBE",
+                     "SF_LOCK_PROBE_DIR", "GIT_DIR", "GIT_INDEX_FILE"):
+            with self.subTest(name=name):
+                self.assertIsNone(seen["env"][name], name + " must not reach the snapshot run")
+        # 快照里没有解释器环境，指向开发树的 .venv；它是未跟踪链接，不进快照提交。
+        self.assertEqual(Path(seen["venv_target"]), (self.root / ".venv").resolve())
+
+    def test_snapshot_regression_goes_red_for_a_test_that_reads_an_internal_file(self):
+        # 这就是 v1.4.111 的形状：测试读 AGENTS.md，开发树里读得到，快照里没有这个文件。
+        (self.root / "AGENTS.md").write_text("internal overview\n")
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "test_reads_overview.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_overview_is_readable(self):\n"
+            "        open('AGENTS.md', encoding='utf-8').read()\n")
+        self.init_repo()
+        command = [sys.executable, "-m", "unittest", "tests.test_reads_overview"]
+        control = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(control.returncode, 0, "in the development tree the test is green")
+        code = public.regress_snapshot(self.root, command, work=self.root.parent / "regress")
+        self.assertNotEqual(code, 0)
+
+    def test_snapshot_regression_returns_the_commands_own_failure_code(self):
+        self.init_repo()
+        code = public.regress_snapshot(self.root, [sys.executable, "-c", "raise SystemExit(7)"],
+                                       work=self.root.parent / "regress")
+        self.assertEqual(code, 7)
+
+    def test_regress_snapshot_flag_returns_the_regression_code_and_stands_alone(self):
+        with patch.object(public, "regress_snapshot", return_value=3) as regress, \
+                patch.object(public, "export_source") as export:
+            self.assertEqual(public.main(["--regress-snapshot"]), 3)
+        regress.assert_called_once_with()
+        export.assert_not_called()
+        for flag in ("--publish", "--source-only", "--self-test", "--audit-public-history"):
+            with self.subTest(flag=flag), self.assertRaises(SystemExit), \
+                    patch.object(public, "regress_snapshot") as regress:
+                public.main(["--regress-snapshot", flag])
+            regress.assert_not_called()
+
     def test_export_excludes_internal_docs_and_cleans_paths(self):
         home = str(Path.home())
         (self.root / "example.py").write_text("# %s/project .private_tools\n" % home)

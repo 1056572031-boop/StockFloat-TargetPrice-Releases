@@ -353,6 +353,25 @@ class TestReleaseChainCallsTheGate(SFCase):
             self.assertGreater(pos, 0, "找不到 %s，脚本结构变了，这条断言需要重新设计" % what)
             self.assertLess(gate, pos, "关卡核验排在 %s 之后 —— 那已经撤不回了" % what)
 
+    def test_snapshot_regression_sits_between_preflight_and_the_stamp_gate(self):
+        """公开快照回归排在前置核验之后、回归关卡之前，并且早于所有不可逆动作。
+
+        v1.4.111 的公开 CI 在发布之后才红（测试读了快照里没有的 AGENTS.md），发布无法撤回，
+        只能再发一版。把同一口径的回归提前到不可逆动作之前，红了就不移动任何产物。
+        """
+        s = self._text("build_release.sh")
+        preflight_failed = s.find("发版前置核验未通过")
+        call = s.find("tools/public_release.py --regress-snapshot")
+        stamp = s.find("gate_stamp.py check")
+        self.assertGreater(preflight_failed, 0)
+        self.assertGreater(call, preflight_failed, "快照回归必须排在前置核验之后")
+        self.assertGreater(stamp, call, "快照回归必须排在回归关卡之前")
+        for marker, what in (("hdiutil create", "生成 DMG"),
+                             ('cp -R "$PROJ/dist/$APP_BUNDLE" "$APP_DST"', "替换 /Applications"),
+                             ("tools/publish_update_release.py --assets", "切换线上 OTA 清单")):
+            pos = s.find(marker)
+            self.assertGreater(pos, call, "快照回归排在 %s 之后 —— 那已经撤不回了" % what)
+
     def test_diag_coverage_gate_gets_the_real_release_baseline(self):
         """3.9 诊断覆盖关必须拿到真实发布基线，不许按版本号推断区间（v1.4.101 之后补）。
 
@@ -961,6 +980,57 @@ class TestLocalReleaseBoundaries(SFCase):
                 "FAIL_EXPORT": "1" if fail_export else "0"})
             calls = log.read_text().splitlines() if log.exists() else []
         return done, calls
+
+    def snapshot_regression_block(self):
+        source = self.source()
+        start = source.index("# ---- 0-) 公开快照回归")
+        return source[start:source.index("# ---- 0) 回归关卡", start)]
+
+    def run_snapshot_regression(self, local=0, use_prepared=0, skip_tests=0, prepare_only=0,
+                                fail=False):
+        """真跑那一段；解释器换成只记参数的桩，看它到底调用了什么、失败时怎么收场。"""
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="sf_snapshot_gate_") as directory:
+            root = pathlib.Path(directory)
+            log = root / "calls.log"
+            stub = root / "stub.sh"
+            stub.write_text(
+                '#!/bin/bash\n'
+                'echo "$*" >> "$STUB_LOG"\n'
+                'if [ "${STUB_FAIL:-0}" = 1 ]; then echo "stub: snapshot regression red"; exit 1; fi\n'
+                'exit 0\n')
+            stub.chmod(0o755)
+            done = self.run_block(self.snapshot_regression_block(), root, local, str(stub), {
+                "USE_PREPARED": str(use_prepared), "SKIP_TESTS": str(skip_tests),
+                "PREPARE_ONLY": str(prepare_only), "STUB_LOG": str(log),
+                "STUB_FAIL": "1" if fail else "0"})
+            calls = log.read_text().splitlines() if log.exists() else []
+        return done, calls
+
+    def test_snapshot_regression_runs_for_prepare_only_and_the_full_release(self):
+        for prepare_only in (0, 1):
+            with self.subTest(prepare_only=prepare_only):
+                done, calls = self.run_snapshot_regression(prepare_only=prepare_only)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(calls, ["tools/public_release.py --regress-snapshot"])
+
+    def test_snapshot_regression_is_skipped_where_no_public_snapshot_is_built(self):
+        # 本机模式不发公开快照；已备候选在 --prepare-only 时跑过，发布阶段只核验不重做；
+        # --skip-tests 是“同一份代码重做 DMG/OTA”，回归关卡本身也被跳过，并已大声警告。
+        for name, kwargs in (("local", {"local": 1}), ("prepared", {"use_prepared": 1}),
+                             ("skip_tests", {"skip_tests": 1})):
+            with self.subTest(case=name):
+                done, calls = self.run_snapshot_regression(**kwargs)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(calls, [])
+
+    def test_a_red_snapshot_regression_stops_the_release_before_anything_moves(self):
+        done, calls = self.run_snapshot_regression(fail=True)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(calls, ["tools/public_release.py --regress-snapshot"])
+        self.assertIn("stub: snapshot regression red", done.stdout)
+        self.assertIn("公开快照回归未通过", done.stderr)
+        self.assertIn("未移动旧产物", done.stderr)
 
     def test_prepare_only_also_runs_the_read_only_public_export_audit(self):
         # v1.4.105：公开源码审计到发布阶段才拒绝（注释里的示例邮箱），那时候选已冻结，

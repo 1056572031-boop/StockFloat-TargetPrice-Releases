@@ -40,6 +40,44 @@ class TargetCommitRetry(_Host):
         self.construction_guards.enter_context(mock.patch.object(sf_config, "CONFIG_PATH", config))
         self.construction_guards.enter_context(mock.patch.object(sf_config, "CONFIG_BACKUP_PATH", config + ".bak"))
 
+    def test_poll_does_not_rescan_unknown_revisions_on_every_tick(self):
+        # F1：_poll 每 100ms 调用一次；未知修订号行只需要按限期节奏扫描，
+        # 不应在每次轮询都重新打开 SQLite 并扫描整张队列。正常的 oldest_persistent
+        # 仍会每拍运行，负责读取队首和更新 blocked_stocks。
+        import sf_quote
+        from sf_quote_delivery import TargetTickBuffer, UNKNOWN_REVISION_SWEEP_INTERVAL_SEC
+        from sf_target_tick_store import TargetTickStore
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        self._open_saved_panel([])
+        path = os.path.join(self.tmp_path, "ticks.sqlite")
+        ticks = TargetTickBuffer(persistent_path=path)
+        self.win._target_ticks = ticks  # discipline-ok(R5): 使用隔离队列。
+        self.track_patch(mock.patch("sf_quote_delivery.quote_is_current", return_value=True))
+        self.track_patch(mock.patch.object(self.win, "_apply_quote"))
+        self.win.running = True
+        stuck = sf_quote.QuoteData({"code": self.win.code, "price": "101"}, "20261015100000")
+        stuck.received_at = now
+        stuck.target_revision = None
+        ticks.add_ordered(self.win.code, stuck)
+        real_scan = TargetTickStore.unknown_revision_rows
+        clock = [1000.0]
+        with mock.patch.object(TargetTickStore, "unknown_revision_rows",
+                               autospec=True, side_effect=real_scan) as scan, \
+                mock.patch.object(window.time, "monotonic", side_effect=lambda: clock[0]):
+            self.win._poll()  # discipline-ok(R5): 首拍发现被挡住，建立真实 blocked 状态。
+            self.win._poll()  # discipline-ok(R5): 第二拍执行第一次限期扫描。
+            clock[0] = 1000.1
+            self.win._poll()  # discipline-ok(R5): 100ms 之后，限频窗口内不应再次扫描。
+            clock[0] = 1000.5
+            self.win._poll()  # discipline-ok(R5): 仍在同一限频窗口内。
+            scans_inside_window = scan.call_count
+            clock[0] = 1000.0 + UNKNOWN_REVISION_SWEEP_INTERVAL_SEC + 0.5
+            self.win._poll()  # discipline-ok(R5): 间隔过后扫描必须恢复，不能只扫一次就停摆。
+        self.assertEqual(scans_inside_window, 1,
+                         "未知修订号扫描应按限频执行，不能随每次 100ms 轮询打开 SQLite")
+        self.assertEqual(scan.call_count, 2, "限频窗口过后必须继续扫描，否则限期丢弃会失效")
+        self.assertEqual(sorted(ticks.blocked_stocks), [self.win.code])
+
     def test_empty_panel_apply_persists_when_runtime_empty(self):
         import target_panel
         alert = targets.make_alert(targets.TARGET_DIR_ABOVE, 100.0)
@@ -592,6 +630,21 @@ class TargetCommitRetry(_Host):
         with ticks._lock:  # discipline-ok(R5): 模拟生产者正持有缓冲锁
             with self.assertRaises(BlockingIOError):
                 ticks.expire_unknown_revisions(1000.0)
+
+    def test_busy_producer_does_not_consume_the_sweep_slot(self):
+        # 生产者正忙时这一拍根本没有扫，不能占用限频名额：下一拍要能马上重试，
+        # 否则一次撞车会让限期丢弃白白晚一整个间隔。
+        from sf_quote_delivery import TargetTickBuffer
+        from sf_target_tick_store import TargetTickStore
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "busy-retry.sqlite"))
+        with ticks._lock:  # discipline-ok(R5): 模拟生产者正持有缓冲锁
+            with self.assertRaises(BlockingIOError):
+                ticks.expire_unknown_revisions(1000.0)
+        real_scan = TargetTickStore.unknown_revision_rows
+        with mock.patch.object(TargetTickStore, "unknown_revision_rows",
+                               autospec=True, side_effect=real_scan) as scan:
+            ticks.expire_unknown_revisions(1000.0)
+        self.assertEqual(scan.call_count, 1, "忙碌的那一拍没有扫描，下一拍必须能立刻扫")
 
     def test_sustained_unknown_revision_discards_do_not_flood_the_error_log(self):
         # 独立复核 R2：配置锁被持续占住时，行情会以空修订号持续落盘，每满限期就丢一批。

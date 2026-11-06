@@ -624,6 +624,50 @@ def join_active_space(widget):
         return "error:%s" % type(exc).__name__
 
 
+def make_popup_nonactivating(widget):
+    """让这块弹层被点击时**不把本程序激活**；返回一句诊断，绝不外抛。
+
+    现场（2026-11-06，1.4.112，反馈案件 750398f2，台账 N35）：右键菜单「要点好几次才生效」。
+    真实 HID 点击复现（源码态与装机版一样）：另一个程序在前台时，菜单能弹出、鼠标能悬停，
+    但菜单上的**第一下左键**到了菜单窗（AppKit 本地监视器看得到按下），随后系统把本程序
+    激活、菜单被收起，Qt 的菜单过滤器一次按下都没记到（picked=none, reason=unknown）；
+    被激活之后同一手势全部选中。激活前后对照：点之前切到别的程序 8/8 丢，不切 8/8 中。
+    所以用户的"多点几次"= 第一下被拿去激活了程序。
+
+    已被实测否掉的做法（别再试）：给菜单窗补 NSWindowStyleMaskNonactivatingPanel 位
+    （styleMask 6→134 确实改了，点击照样激活程序、照样丢）。
+    实测有效的是私有的 `_setPreventsActivation:`：设上之后同一 A/B 激活前后各 3/3 选中，
+    点菜单全程程序保持非激活。它是私有选择子，所以先 `respondsToSelector_` 再调，
+    没有就原样不动（回到"多点一下"的旧行为，不比以前差）；只对 NSPanel 设。
+    """
+    if not native_cocoa_active():
+        return "skip:not_cocoa"
+    try:
+        nsw = content_ns_window(widget)
+    except Exception as exc:
+        log_swallow("sf_glass.make_popup_nonactivating", exc)
+        return "error:no_nswindow"
+    if nsw is None:
+        return "skip:no_nswindow"
+    try:
+        if not bool(nsw.isKindOfClass_(_ns_panel_class())):
+            return "skip:not_panel"
+        if not bool(nsw.respondsToSelector_("_setPreventsActivation:")):
+            return "skip:no_selector"
+        if bool(nsw._preventsActivation()):
+            return "ok:already"
+        nsw._setPreventsActivation_(True)
+        return "ok:set"
+    except Exception as exc:
+        log_swallow("sf_glass.make_popup_nonactivating", exc)
+        return "error:%s" % type(exc).__name__
+
+
+def _ns_panel_class():
+    import AppKit
+    return AppKit.NSPanel
+
+
 # 弹层补齐的节奏。**Show 那一次不够**是实测出来的（2026-10-13，源码版 + 真实 HID 右键）：
 # 右键后 6~9ms 菜单窗就建好了（layer 101、bounds 152x173），Show 事件里改公开行为 +
 # 调一次私有 CGS，`isOnActiveSpace()` 仍是假、在屏列表里查不到它；再补一次（第 2 拍）

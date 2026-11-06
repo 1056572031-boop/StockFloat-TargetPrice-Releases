@@ -24,14 +24,16 @@ from public_docs_check import problems  # noqa: E402
 PUBLIC_BRANCH = "public-source"
 PUBLIC_FEEDBACK_REPO = b"1056572031-boop/Skyrocket-Private-Feedback"
 PUBLIC_FEEDBACK_ORIGIN = b"https://skyrocket-feedback-1056572031.pages.dev"
-# tests/test_agents_pointers.py 只守 AGENTS.md 与 docs/agents/ 的指引关系，这两处本身不外发，
-# 测试若随快照带出，公开 CI 会因找不到文件而红（v1.4.111 实测：3 条 FileNotFoundError + 1 条断言失败）。
+# 两张表分工不同，新增条目前先判断它属于哪一张：
+# EXCLUDED 是内部文件，既不导出，也不许出现在要公开的历史里（历史审计硬拒绝）。
 EXCLUDED = ("AGENTS.md", "DELIVERY_CHECKLIST.md", "QC_CHECKLIST.md", "backups", "outputs",
             "TESTS_AUDIT_2026-09-14.md", "REFACTOR_CHANGES_V1.3.46.md", "tools/archive",
-            "tests/test_agents_pointers.py",
             "目标价功能技术方案_v6.md", "目标价功能评估_基于v1.2.74.md")
-# 这条测试曾随 v1.4.111 公开快照发布；今后导出时继续排除，但不能把已公开的旧历史当成私有历史。
-HISTORICALLY_PUBLIC = ("tests/test_agents_pointers.py",)
+# EXPORT_ONLY 只在导出时丢弃，不进历史审计：文件本身不含隐私，只是依赖公开快照里没有的内部文档，
+# 带出去会让公开 CI 变红；它可能早已随旧版本公开过，旧历史不能反过来拦住今后的发布。
+# tests/test_agents_pointers.py 只守 AGENTS.md 与 docs/agents/ 的指引关系，这两处本身不外发
+# （v1.4.111 实测：3 条 FileNotFoundError + 1 条断言失败；它也随 v1.4.111 公开快照发布过）。
+EXPORT_ONLY = ("tests/test_agents_pointers.py",)
 DOCS = ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md", "docs/INSTALL.md",
         "docs/CONTRIBUTING.md")
 # docs/ 下对外公开的文件只有这三份（README 与安装说明链接得到的，加许可与贡献所需）。
@@ -72,8 +74,10 @@ def excluded(name: str) -> bool:
 
 
 def export_excluded(name: str) -> bool:
-    """导出时丢弃的文件：内部清单，加上 docs/ 下没登记为对外的文件。"""
-    return excluded(name) or (name.startswith("docs/") and name not in PUBLIC_DOCS_DIR_FILES)
+    """导出时丢弃的文件：内部清单、只导出时丢弃的清单，加上 docs/ 下没登记为对外的文件。"""
+    return (excluded(name)
+            or any(name == item or name.startswith(item + "/") for item in EXPORT_ONLY)
+            or (name.startswith("docs/") and name not in PUBLIC_DOCS_DIR_FILES))
 
 
 def sanitize(text: str, home: str) -> str:
@@ -181,7 +185,7 @@ def audit_history(root: Path, home: str, secrets=()) -> None:
     issues = []
     for entry in objects:
         oid, _, name = entry.partition(" ")
-        if name and (excluded(name) and name not in HISTORICALLY_PUBLIC or
+        if name and (excluded(name) or
                      re.search(r"\.(dmg|log|ips)$|(^|/)config\.json$", name)):
             issues.append("internal history entry: " + name)
         if name:
@@ -256,6 +260,35 @@ def export_source(out: Path, root: Path = ROOT) -> None:
     run(["git", "add", "-A"], out)
     run(["git", "commit", "-qm", "Corresponding source v" + APP_VERSION], out)
     audit_history(out, home, signing_secrets(root))
+
+
+# 快照回归里必须洗掉的环境：探针短路、关覆盖率、乱序这些开关会让“没跑”冒充“跑过”；
+# GIT_* 来自提交钩子，指向被提交的那棵树，继承进来会让子进程里的 git 操作落到真仓库上。
+SNAPSHOT_SCRUBBED_ENV = ("SF_SKIP_COVERAGE", "SF_RANDOM_ORDER", "SF_GUARD_PROBE",
+                         "SF_LOCK_PROBE", "SF_LOCK_PROBE_DIR")
+
+
+def regress_snapshot(root: Path = ROOT, command=None, work: Path | None = None) -> int:
+    """在导出的公开快照副本里，按公开 CI 的口径跑一遍回归，返回命令退出码。
+
+    公开 CI 跑的是脱敏快照而不是开发树，只在快照里才红的那一类（v1.4.102、v1.4.104、v1.4.111）
+    以前要到发布之后才看得见。本函数只导出和本地运行：不提交到公开仓库、不推送、不上传。
+    """
+    base = work if work is not None else root / "build"
+    base.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="public_regress_v%s_" % APP_VERSION, dir=base)) / "source"
+    export_source(out, root)
+    # 解释器环境不属于快照内容：挂一条未跟踪的链接，让 run_tests.sh 找得到工程内 .venv。
+    if (root / ".venv").exists():
+        (out / ".venv").symlink_to((root / ".venv").resolve())
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_") and key not in SNAPSHOT_SCRUBBED_ENV}
+    env.update(SF_PUBLIC_REGRESSION="1", QT_QPA_PLATFORM="offscreen")
+    argv = list(command) if command is not None else ["./run_tests.sh"]
+    print("Public snapshot regression in " + str(out))
+    code = subprocess.run(argv, cwd=out, env=env).returncode
+    print("Public snapshot regression exit code: %d" % code)
+    return code
 
 
 def push_source(out: Path) -> str:
@@ -356,7 +389,12 @@ def main(argv=None) -> int:
     parser.add_argument("--source-only", action="store_true")
     parser.add_argument("--audit", type=Path)
     parser.add_argument("--audit-public-history", action="store_true")
+    parser.add_argument("--regress-snapshot", action="store_true")
     args = parser.parse_args(argv)
+    if args.regress_snapshot:
+        if args.self_test or args.publish or args.source_only or args.audit or args.audit_public_history:
+            parser.error("--regress-snapshot cannot be combined with another action")
+        return regress_snapshot()
     if args.audit_public_history:
         if args.self_test or args.publish or args.source_only or args.audit:
             parser.error("--audit-public-history cannot be combined with another action")

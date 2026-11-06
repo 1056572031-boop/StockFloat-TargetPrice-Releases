@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sf_glass  # noqa: E402
 import sf_quote  # noqa: E402
 import stock_float_window as m  # noqa: E402
+from PyQt6.QtCore import QPoint  # noqa: E402
+from PyQt6.QtGui import QContextMenuEvent  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QWidget  # noqa: E402
 from tests._base import SFCase  # noqa: E402
 
@@ -386,6 +388,131 @@ class MainWindowWiresIt(SFCase):
         self.win.timer.stop()
         self.win.top_timer.stop()
         self.assertTrue(sf_glass.space_join_filter_installed())
+
+    def test_context_menu_is_made_nonactivating_after_it_pops_up(self):
+        """右键菜单弹出之后必须调一次"点菜单不激活程序"（台账 N35）。
+
+        顺序也是判据：原生窗口在 popup() 之后才存在，先调就取不到 NSWindow。
+        """
+        self.win = self.track_widget(m.FloatWindow())
+        self.win.running = False
+        self.win.timer.stop()
+        self.win.top_timer.stop()
+        order = []
+        event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(20, 20), QPoint(100, 100))
+        with patch("PyQt6.QtWidgets.QMenu.popup", lambda *a, **k: order.append("popup")), \
+                patch.object(m, "make_popup_nonactivating",
+                             side_effect=lambda menu: order.append("nonactivating")) as made:
+            self.win.contextMenuEvent(event)
+        self.assertEqual(order, ["popup", "nonactivating"],
+                         "菜单必须先弹出、再设成点击不激活程序")
+        self.assertEqual(made.call_count, 1)
+
+
+class _FakePanel:
+    """NSPanel 替身：只记"被写了什么"，不碰 WindowServer。"""
+
+    def __init__(self, is_panel=True, has_selector=True, prevents=False, raise_on_set=False):
+        self._is_panel = is_panel
+        self._has_selector = has_selector
+        self._prevents = prevents
+        self._raise_on_set = raise_on_set
+        self.writes = []
+
+    def isKindOfClass_(self, cls):
+        return self._is_panel
+
+    def respondsToSelector_(self, selector):
+        return self._has_selector and selector == "_setPreventsActivation:"
+
+    def _preventsActivation(self):
+        return self._prevents
+
+    def _setPreventsActivation_(self, value):
+        if self._raise_on_set:
+            raise RuntimeError("AppKit 拒收")
+        self._prevents = bool(value)
+        self.writes.append(("_setPreventsActivation_", bool(value)))
+
+
+class MakePopupNonactivating(SFCase):
+    """点菜单不能把本程序激活：激活发生在按下之后、菜单随之收起，第一下点击就丢了。
+
+    现场与对照数据见 `sf_glass.make_popup_nonactivating` 的说明（真实 HID 点击，
+    先激活别的程序再点菜单 8/8 丢，设上之后 3/3 中）。这里验的是函数本身做了什么、
+    不该做什么时没做；"系统层面点击真的送到了"只有真点击能证明，不在这一层。
+    """
+
+    def _run(self, fake):
+        with mock.patch.object(sf_glass, "native_cocoa_active", lambda: True), \
+                mock.patch.object(sf_glass, "content_ns_window", lambda w: fake), \
+                mock.patch.object(sf_glass, "_ns_panel_class", lambda: object):
+            return sf_glass.make_popup_nonactivating(object())
+
+    def test_offscreen_returns_before_touching_appkit(self):
+        with mock.patch.object(sf_glass, "native_cocoa_active", lambda: False), \
+                mock.patch.object(sf_glass, "content_ns_window") as cnw:
+            out = sf_glass.make_popup_nonactivating(object())
+        self.assertEqual(out, "skip:not_cocoa")
+        cnw.assert_not_called()      # offscreen 下 winId() 不是 NSView，伸手进去是段错误
+
+    def test_sets_prevents_activation_on_a_panel(self):
+        fake = _FakePanel()
+        self.assertEqual(self._run(fake), "ok:set")
+        self.assertEqual(fake.writes, [("_setPreventsActivation_", True)])
+
+    def test_already_set_is_not_written_again(self):
+        fake = _FakePanel(prevents=True)
+        self.assertEqual(self._run(fake), "ok:already")
+        self.assertEqual(fake.writes, [])
+
+    def test_a_non_panel_window_is_left_alone(self):
+        fake = _FakePanel(is_panel=False)
+        self.assertEqual(self._run(fake), "skip:not_panel")
+        self.assertEqual(fake.writes, [])
+
+    def test_missing_private_selector_falls_back_to_old_behaviour(self):
+        """私有选择子哪天被系统拿掉：不动、不崩，回到"多点一下"的旧行为。"""
+        fake = _FakePanel(has_selector=False)
+        self.assertEqual(self._run(fake), "skip:no_selector")
+        self.assertEqual(fake.writes, [])
+
+    def test_no_native_window_is_reported_not_raised(self):
+        with mock.patch.object(sf_glass, "native_cocoa_active", lambda: True), \
+                mock.patch.object(sf_glass, "content_ns_window", lambda w: None):
+            self.assertEqual(sf_glass.make_popup_nonactivating(object()), "skip:no_nswindow")
+
+    def test_failure_to_reach_the_native_window_leaves_a_trace(self):
+        """取原生窗口这一步自己抛错：不外抛、留 SWALLOWED，菜单照常弹出（回到旧行为）。"""
+        swallowed = []
+
+        def boom(widget):
+            raise RuntimeError("winId 不可用")
+
+        with mock.patch.object(sf_glass, "native_cocoa_active", lambda: True), \
+                mock.patch.object(sf_glass, "content_ns_window", boom), \
+                mock.patch.object(sf_glass, "log_swallow", lambda where, exc: swallowed.append(where)):
+            out = sf_glass.make_popup_nonactivating(object())
+        self.assertEqual(out, "error:no_nswindow")
+        self.assertEqual(swallowed, ["sf_glass.make_popup_nonactivating"])
+
+    def test_panel_class_is_the_real_appkit_nspanel(self):
+        """判"是不是面板"用的类必须是 AppKit 的 NSPanel，不是随手写的别的名字。"""
+        try:
+            import AppKit
+        except Exception as exc:               # 非 macOS / 没装 pyobjc：如实跳过
+            self.skipTest("取不到 AppKit：%r" % (exc,))
+            return
+        self.assertIs(sf_glass._ns_panel_class(), AppKit.NSPanel)  # discipline-ok(R5): 模块级私有取类函数，没有公开入口；与 AppKit 同名类对拍
+
+    def test_failure_leaves_a_trace(self):
+        """这一族失效的长相是"功能不见了、界面零痕迹"，所以失败必须留 SWALLOWED。"""
+        fake = _FakePanel(raise_on_set=True)
+        swallowed = []
+        with mock.patch.object(sf_glass, "log_swallow", lambda where, exc: swallowed.append(where)):
+            out = self._run(fake)
+        self.assertEqual(out, "error:RuntimeError")
+        self.assertEqual(swallowed, ["sf_glass.make_popup_nonactivating"])
 
 
 if __name__ == "__main__":

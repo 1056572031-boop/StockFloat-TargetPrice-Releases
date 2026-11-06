@@ -1052,15 +1052,24 @@ def self_test() -> int:
     ok += 2
     # 锚点扫描自己也是一条判据：喂一份形状已知的日志，片段数/起点/持续/未解析行数
     # 必须全对得上。一条只会说"没锚点"的扫描器，就是又一枚永不失败的检查。
+    # 样例时间必须相对当前时刻生成：scan_log 默认只看最近 30 天，写死历史日期会让自检在窗口
+    # 滚动后整批失效。保留一行 2020 年旧日志，继续验证过期记录会被过滤。
+    sample_now = dt.datetime.now().replace(microsecond=0) - dt.timedelta(hours=1)
+
+    def sample_stamp(seconds: float) -> str:
+        # 日志行的毫秒固定 3 位（LOG_LINE_RE），%f 是 6 位，截掉后三位
+        return (sample_now + dt.timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
     sample = (
-        "[2026-10-07 09:00:00.100 a1b2c3] INFO: STARTUP v1.4.45 run=a1b2c3\n"
-        "[2026-10-07 09:00:01.200 a1b2c3] WARNING: re-top: glass above main ×3\n"
-        "[2026-10-07 09:00:02.300 a1b2c3] WARNING: re-top: glass above main\n"
-        "[2026-10-07 09:00:03.400 a1b2c3] WARNING: order probe blind: pair not both on-screen\n"
-        "[2026-10-08 10:00:04.500 d4e5f6] ERROR: SWALLOWED sf_glass._force_top: AttributeError\n"
+        f"[{sample_stamp(0.1)} a1b2c3] INFO: STARTUP v1.4.45 run=a1b2c3\n"
+        f"[{sample_stamp(1.2)} a1b2c3] WARNING: re-top: glass above main ×3\n"
+        f"[{sample_stamp(2.3)} a1b2c3] WARNING: re-top: glass above main\n"
+        f"[{sample_stamp(3.4)} a1b2c3] WARNING: order probe blind: pair not both on-screen\n"
+        f"[{sample_stamp(4.5)} d4e5f6] ERROR: SWALLOWED sf_glass._force_top: AttributeError\n"
         "这一行不是标准格式（traceback 续行）\n"
         "[2020-01-01 00:00:00.000 a1b2c3] WARNING: re-top: glass above main\n"
     )
+    expected_glass_first = sample_now + dt.timedelta(seconds=1.2)
     with tempfile.TemporaryDirectory() as td2:
         lg = Path(td2) / "debug.log"
         lg.write_text(sample, encoding="utf-8")
@@ -1073,7 +1082,7 @@ def self_test() -> int:
             print("FAIL 锚点扫描的形状不对：期望", want, "实得", got)
             return 1
         glass = [e for e in eps if e["anchor"] == "glass_above_main"][0]
-        if str(glass["first"]) != "2026-10-07 09:00:01.200000":
+        if glass["first"] != expected_glass_first:
             print("FAIL 锚点起点取错（应是该类**第一**行的时刻）：", glass["first"])
             return 1
         if abs(glass["span_sec"] - 1.1) > 0.01:

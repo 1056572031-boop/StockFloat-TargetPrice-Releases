@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-05",
+  "updated": "2026-11-06",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4913,6 +4913,34 @@
       "evidence": "verified",
       "found_by": "maintainer_found",
       "missed_shape": "fault_injection"
+    },
+    {
+      "id": "N35",
+      "symptom": "右键菜单里的选项要点好几次才生效：菜单能弹出、鼠标能悬停到「反馈问题」，但前两次没有任何按下或按键到达菜单就收起（hover_no_press），第三次才选中",
+      "component": "context-menu",
+      "channel": "online_user",
+      "introduced_version": null,
+      "introduced_note": null,
+      "found_version": "1.4.112",
+      "fixed_version": "1.4.113",
+      "failed_lines": [
+        "verify",
+        "locate"
+      ],
+      "why_missed": "三道防线都没覆盖『别的程序在前台时点菜单』：静态层看不到（代码没错，Qt 菜单窗默认会让点击激活本程序）；验证层的真点击走查与全部菜单用例都在本程序已前台或探针自己前台时点菜单，从没先把别的程序切到前台再点；定位层只记 hover/按下计数，激活发生在按下之后、Qt 一次按下都没记到，诊断包里只剩『悬停后收起』",
+      "defense_added": [
+        "sf_glass.make_popup_nonactivating",
+        "stock_float_window 右键菜单接线"
+      ],
+      "observed_at": "2026-11-06T11:20:28+08:00",
+      "observed_origin": "log",
+      "rootcause_at": "2026-11-06 12:38:26+08:00",
+      "locate_unknown_reason": null,
+      "source": "反馈案件 feedback-750398f2，运行 3b9cb4，debug.log 11:20:24 至 11:20:37 三次菜单会话，前两次 reason=hover_no_press",
+      "evidence": "verified",
+      "found_by": "user_report",
+      "rootcause_origin": "now",
+      "missed_shape": "real_environment"
     }
   ],
   "rounds": [
@@ -5697,6 +5725,18 @@
         "2026-11-05 v1.4.111 公开仓 CI 的 test-offscreen 红了（4 条，全在 tests/test_agents_pointers.py：公开快照按设计不带 AGENTS.md 与 docs/agents/，该测试却被带出去）。已把它加进 tools/public_release.py 的导出排除清单，并新增 test_export_excludes_internal_pointer_guard_tests 守住；提交 795a058 时用 tools/mutation_probe.py 去掉该排除项，新用例变红。随后 v1.4.112 候选前置核验发现：已公开的 v1.4.111 历史仍含这条测试，历史审计会误把它当内部文件拦住；新增 HISTORICALLY_PUBLIC 白名单与历史审计回归，保留 AGENTS.md 等真正内部文件的硬拒绝。另用 mutation_probe.py 去掉历史放行条件后，新用例变红。另外导出 HEAD 到临时目录逐个核对：被带出的 331 个测试文件里没有第二个读取这两处内部文档的。"
       ],
       "zero_reason": "本轮开工前线上台账没有新增的用户报回逃逸，escapes_this_round 保持 0。v1.4.111 公开仓 CI 红的是测试与公开快照的耦合，由维护者自己盯 CI 发现，应用本身未受影响，没有计入线上逃逸；这也不等于这类问题已被机器判据整类拦住：公开快照里的测试只在公开仓云端才真正跑一遍，本地完整关卡不会模拟，这一类（v1.4.102、v1.4.104、v1.4.111 各出现过一次，成因各不相同）目前仍靠人在发布后看 CI 才发现，整类判据尚未做。本版包内只有版本号与阶段标签变化，没有产品代码改动；0 不等于上线后无故障。"
+    },
+    {
+      "version": "1.4.113",
+      "date": "2026-11-06",
+      "reviewed": true,
+      "escapes_this_round": 1,
+      "defense_added": [
+        "sf_glass.make_popup_nonactivating 与 stock_float_window 右键菜单接线",
+        "sf_quote_delivery 限期扫描节流测试与完整回归",
+        "装机版真点击走查仍需发布后独立验收"
+      ],
+      "zero_reason": "本轮发现并修复 N35：其他程序在前台时右键菜单第一次点击可能被系统用于激活本程序，用户需要多点几次；根因、修复和验证判据已登记。除此之外本轮没有新增逃逸。发布后仍需用最终装机版完成真实 HID 点击走查，1 条不等于所有真实场景已通过。"
     }
   ],
   "comparison_policy": {

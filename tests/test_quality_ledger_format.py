@@ -123,6 +123,24 @@ class TestLedgerFormat(SFCase):
         code, out = self._run_self_test()
         self.assertEqual(code, 0, out)
 
+    def test_self_test_does_not_depend_on_todays_date(self):
+        # 2026-11-06：自检里的锚点样例写死在 2026-10-07，满 30 天那天起扫描窗口把它们全部丢掉，
+        # 整档 9 条同时变红，而产品一行没改。把“现在”拨到一年后，自检仍须通过。
+        import datetime as real_dt
+        import types
+
+        class FutureDatetime(real_dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return super().now(tz) + real_dt.timedelta(days=365)  # discipline-ok(R4): 这里就是时钟注入本身：故意把 quality_trend 看到的“现在”拨到一年后，fixed_clock 只改 _beijing_now，改不到这个模块
+
+        shifted = types.SimpleNamespace(
+            **{name: getattr(real_dt, name) for name in dir(real_dt) if not name.startswith("__")})
+        shifted.datetime = FutureDatetime
+        with mock.patch.object(qt, "dt", shifted):
+            code, out = self._run_self_test()
+        self.assertEqual(code, 0, out)
+
     def test_self_test_notices_a_layout_check_that_cries_wolf(self):
         with mock.patch.object(qt, "format_problems", lambda path=None: ["always"]):
             code, out = self._run_self_test()

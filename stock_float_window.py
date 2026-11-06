@@ -48,7 +48,7 @@ from sf_ui_render import font_diagnostics, paint_diagnostics   # 诊断：渲染
 
 # ---- 模块化拆分 sf_glass：显式导入 ----
 from sf_glass import (GlassMixin, TOOL_WINDOW_LEVEL, active_space_id, install_space_join_filter,
-                      native_cocoa_active, content_ns_window)
+                      native_cocoa_active, content_ns_window, make_popup_nonactivating)
 # v1.4.29：`_objc_deps` 原来只在 sf_glass 里有名分（sf_glass 从 sf_icons 导入它），
 # 而本模块的 `_raise_tool_window` 直接裸调它 → 每次调用抛 NameError、被自己下面的
 # `except Exception: pass` 吞掉，工具窗抬层从写下那天起一次也没执行过（真机实测：
@@ -2262,6 +2262,9 @@ QMenu::separator {
         sf_menu_trace.begin_menu(m, context=lambda: _menu_context(self))
         m.aboutToHide.connect(lambda menu=m: self._on_ctx_menu_closed(menu))
         m.popup(e.globalPos())  # PyQt6 适配：QContextMenuEvent 无 globalPosition()，用 globalPos()
+        # 点菜单不能把本程序激活：激活发生在按下之后、菜单随之收起，第一下点击就丢了
+        # （「右键菜单要点好几次」，见 sf_glass.make_popup_nonactivating 的实测说明）。
+        make_popup_nonactivating(m)
 
     def _queue_feedback_open(self):
         """Open feedback after the context menu has completed its close event."""

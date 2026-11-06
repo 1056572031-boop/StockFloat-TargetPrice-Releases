@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 
 _MEMORY_SPILL_MAX = 8192
 UNKNOWN_REVISION_MAX_AGE_SEC = 15.0
+# 限期扫描的最小间隔。主窗每 100ms 轮询一次，而限期是 15 秒：每拍都打开队列库、全表 LIKE 扫描
+# 没有意义（实测 5000 行约 2ms，随队列长度线性增长）。1 秒一次最多让丢弃比限期晚 1 秒。
+UNKNOWN_REVISION_SWEEP_INTERVAL_SEC = 1.0
 
 
 class TargetTickBuffer:
@@ -39,6 +42,7 @@ class TargetTickBuffer:
         self._paged_codes = set()
         self.blocked_stocks = set()
         self._unknown_first_seen: dict[int, float] = {}
+        self._unknown_last_sweep: float | None = None
         self._sequence = 0
         self._taken = {}
 
@@ -531,10 +535,17 @@ class TargetTickBuffer:
         `now` 用单调时钟；首次见到的时刻只存内存，重启后重新计时，所以一行最多多留一个限期。"""
         if not self._persistent_path:
             return 0
+        last = self._unknown_last_sweep
+        if last is not None and 0 <= now - last < UNKNOWN_REVISION_SWEEP_INTERVAL_SEC:
+            # 刚扫过：本拍不再打开队列库。时钟倒退（差值为负）时照常扫，不让扫描停摆。
+            return 0
         from sf_target_tick_store import TargetTickStore
         if not self._lock.acquire(blocking=False):
             raise BlockingIOError("target tick producer is busy")
         try:
+            # 取到缓冲锁才记扫描时刻：生产者正忙时没有扫，下一拍要能马上重试。
+            # 扫描本身出错也算这一次，免得队列库持续出错时每拍都重试一遍。
+            self._unknown_last_sweep = now
             with TargetTickStore(self._persistent_path) as store:
                 rows = store.unknown_revision_rows()
                 alive = {tick_id for tick_id, _ in rows}

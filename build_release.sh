@@ -236,6 +236,22 @@ elif grep -q '本构建仅用于本机覆盖安装' "$PROJ/README.md"; then
   exit 1
 fi
 
+# ---- 0-) 公开快照回归（用户 2026-11-05 要求；v1.4.111 事故）----
+# 公开 CI 跑的是脱敏后的公开快照，不是开发树。开发树里全绿的测试，到了快照里可能读不到被丢弃的
+# 内部文件而变红（v1.4.102、v1.4.104、v1.4.111 三次，成因各不相同），而公开 CI 排在发布之后：
+# 发布撤不回，只能再发一版。这里把同一口径的回归提前到所有不可逆动作之前：导出快照副本，
+# 在副本里按公开 CI 的环境跑一整轮 run_tests.sh；红了就中止，不移动任何产物。
+# 只导出和本地运行，不提交到公开仓库、不推送、不上传（见 tools/public_release.py 的 regress_snapshot）。
+# 不跑的三种情况：本机模式不发公开快照；--publish-prepared 的候选在 --prepare-only 时已经跑过，
+# 发布阶段只核验不重做；--skip-tests 是“同一份代码重做 DMG/OTA”，回归关卡本身也被跳过。
+if [ "$LOCAL_ONLY" -eq 0 ] && [ "$USE_PREPARED" -eq 0 ] && [ "$SKIP_TESTS" -eq 0 ]; then
+  step_begin "0- 公开快照回归（导出快照副本里跑完整回归）"
+  "$VENV_PY" tools/public_release.py --regress-snapshot || {
+    echo "!! 公开快照回归未通过 —— 中止发版（公开 CI 会同样变红）；未移动旧产物" >&2
+    echo "!!   若上面写的是「检测到正在运行的正式版」：先退出 Skyrocket 再重跑。" >&2
+    exit 1; }
+fi
+
 # ---- 0) 回归关卡（v1.4.59 起，S7-②）----
 # 为什么要把它做成打包前的第一件事，而不是文档里的一句「发版前先跑回归」：
 # 30 轮走查实测 build_release.sh 从未调用过 run_tests.sh / static_gate —— 所有产物核验

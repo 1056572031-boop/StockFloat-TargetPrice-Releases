@@ -20,8 +20,20 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.112
-# ---- v1.4.112：内部维护版（公开源码快照不再带出依赖内部文档的指针测试） ----
+version 1.4.113
+# ---- v1.4.113：右键菜单首次点击与目标价扫描节流 ----
+# 基线 8f1bc96（线上 v1.4.112 的源码提交，post_release.json 的 release_source.head）。
+# 本轮产品代码改动：sf_glass 的菜单非激活处理、stock_float_window 的菜单接线、sf_quote_delivery 的限期扫描节流。
+# sf_glass 新增 make_popup_nonactivating；sf_quote_delivery 新增 UNKNOWN_REVISION_SWEEP_INTERVAL_SEC。
+check sf_glass::make_popup_nonactivating
+check sf_quote_delivery::UNKNOWN_REVISION_SWEEP_INTERVAL_SEC
+testref tests/test_popup_fullscreen_space.py::MakePopupNonactivating::test_sets_prevents_activation_on_a_panel
+testref tests/test_popup_fullscreen_space.py::MainWindowWiresIt::test_context_menu_is_made_nonactivating_after_it_pops_up
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_poll_does_not_rescan_unknown_revisions_on_every_tick
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_busy_producer_does_not_consume_the_sweep_slot
+# stock_float_window 只接线，不新增可独立核验的顶层特征；由上面的 MainWindowWiresIt 用例覆盖。
+
+
 # 基线 c885ed3（线上 v1.4.111 的源码提交，post_release.json 的 release_source.head）。相对基线只有四类改动：
 # tools/public_release.py 的导出排除清单加一项，并允许这条在 v1.4.111 已公开过的测试留在历史审计中、但继续从后续快照导出时排除；tests/test_public_release.py 加两条守住导出与历史边界的用例、
 # outputs/release-candidates/ 下 v1.4.111 的证据归档，以及本版的版本号和说明文字。
@@ -487,9 +499,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.112 Beta**
+checkfile Contents/Resources/docs/README.md::v1.4.113 Beta**
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.112
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.113
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code
