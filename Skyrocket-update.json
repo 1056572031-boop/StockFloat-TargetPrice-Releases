@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.112",
-  "published_at": "2026-11-05T12:05:11Z",
+  "version": "1.4.113",
+  "published_at": "2026-11-06T07:08:15Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 本版为内部维护更新，日常使用没有变化。",
+  "notes": "1. 修复其他程序在前台时，右键菜单第一次点击不生效、要多点几次的问题。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.112-macos.zip",
-    "size": 27252753,
-    "sha256": "561cf719b75b9aa4dc2f0c34e006f4ca1cc30ac92fea28445ad647f40f858937"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.113-macos.zip",
+    "size": 27253898,
+    "sha256": "e9da897b8ea4ebf3e093f333d37dc35218e43bab5880abad8c3a5dc42a6442d8"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "wUa2LY9ziEMASlVVqdvTs4j8nKaSBXZ5e377RVBhItBDYRNwPzQoC0+JT0QqkkFwzChbVvf5Bt85GFpiVanlDg=="
+    "value": "zqjc/NrwYZMvSlWWh5E6tuOrIGy7Lswv0YQJX3F+pCnbHwjsDM9+IBFlUFe0SUoyZd1eyXFOq+wg9GBRPgKkDg=="
   }
 }
