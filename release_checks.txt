@@ -20,8 +20,21 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.113
-# ---- v1.4.113：右键菜单首次点击与目标价扫描节流 ----
+version 1.4.114
+# ---- v1.4.114：诊断导出退出收口与异常留痕 ----
+# 基线 9af3f42（当前开发树的完整回归基线）。本轮产品代码改动：诊断导出控制器增加关闭态/取消与有界等待；主窗退出接入诊断控制器；行情熔断与通知授权异常改为可检索留痕。
+# 由行为测试覆盖线程退出、发布取消、异常日志和主窗退出告警；包内特征使用稳定的新增方法/日志入口核验。
+check sf_diagnostics_controller::close
+check sf_diagnostics_controller::finish_sync
+check stock_float_window::_on_poll_result
+check stock_float_window::_request_notify_auth
+testref tests/test_diagnostics_controller.py::TestDiagnosticsExportController::test_close_during_blocked_export_drops_publish_and_callback
+testref tests/test_diagnostics_controller.py::TestDiagnosticsExportController::test_close_during_publish_drops_completion_callback
+testref tests/test_coverage_notify_update.py::TestWindowNotificationAuthorization::test_authorization_failure_is_silent_to_the_caller
+testref tests/test_coverage_notify_update.py::TestWindowPollBackoffError::test_poll_backoff_failure_is_reported_as_swallowed
+testref tests/test_quit_lifecycle.py::TestShutdownThreads::test_diagnostics_export_warning_does_not_block_shutdown
+
+
 # 基线 8f1bc96（线上 v1.4.112 的源码提交，post_release.json 的 release_source.head）。
 # 本轮产品代码改动：sf_glass 的菜单非激活处理、stock_float_window 的菜单接线、sf_quote_delivery 的限期扫描节流。
 # sf_glass 新增 make_popup_nonactivating；sf_quote_delivery 新增 UNKNOWN_REVISION_SWEEP_INTERVAL_SEC。
@@ -499,9 +512,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.113 Beta**
+checkfile Contents/Resources/docs/README.md::v1.4.114 Beta**
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.113
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.114
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

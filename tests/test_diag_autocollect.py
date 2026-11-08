@@ -298,6 +298,34 @@ class AutoCollectCase(DiagnosticsBranchCase):
         self.assertTrue(hits, "对照失败：sf_constants 里没有命中词表的名字，上一条判据就成了空转")
 
 
+    def test_identity_lookup_failures_are_named_in_issues(self):
+        with mock.patch.dict(os.environ, {"USER": "", "USERNAME": ""}, clear=False), \
+                mock.patch.object(sf_diag.getpass, "getuser", side_effect=OSError("no user")), \
+                mock.patch.object(sf_diag.os.path, "expanduser", side_effect=OSError("no home")):
+            issues = []
+            needles = sf_diag.identity_needles(issues)
+        self.assertFalse(any(needle.hint for needle in needles))
+        self.assertTrue(any("getpass.getuser" in item for item in issues))
+        self.assertTrue(any("expanduser" in item for item in issues))
+
+    def test_unreadable_module_and_object_are_named_without_aborting_collect(self):
+        module = types.ModuleType("sf_probe_unreadable_vars")
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+        with mock.patch.object(sf_diag, "_module_names", return_value=[module.__name__]), \
+                mock.patch.object(sf_diag, "collect_module", side_effect=RuntimeError("module broken")):
+            body = sf_diag.collect(None)
+        self.assertTrue(any("module broken" in item for item in body["issues"]))
+
+        class BrokenOwner:
+            @property
+            def __dict__(self):
+                raise RuntimeError("owner broken")
+
+        body = sf_diag.collect(BrokenOwner())
+        self.assertTrue(any("owner broken" in item for item in body["issues"]))
+
+
 class PureCollectorCase(SFCase):
     """不建窗口的三件事：词表与真实写法对齐、身份词表拒收、采集器自己不留静默。"""
 

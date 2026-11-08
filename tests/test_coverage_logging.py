@@ -567,6 +567,26 @@ class TestBecomeSingleInstance(SFCase):
         sf_logging.SINGLE_SOCK = self._old
         super().tearDown()
 
+    def test_lock_unavailable_refuses_startup_without_opening_listener(self):
+        with mock.patch("sf_logging.acquire_instance_lock", side_effect=OSError("lock busy")), \
+                mock.patch.object(sf_logging, "log_line") as lg:
+            self.assertFalse(sf_logging._become_single_instance())  # discipline-ok(R5): 单实例锁是私有启动接缝，没有公开探针
+        self.assertTrue(any("lock unavailable" in call.args[0] for call in lg.call_args_list))
+
+    def test_listener_creation_failure_releases_lease_and_does_not_raise(self):
+        lease = mock.Mock()
+        with mock.patch("sf_logging.acquire_instance_lock", return_value=lease), \
+                mock.patch.object(sf_logging, "_open_single_listener", side_effect=RuntimeError("bind failed")):
+            with self.assertRaises(RuntimeError):
+                sf_logging._become_single_instance()  # discipline-ok(R5): 异常清理只能从私有启动协调器观察
+        lease.close.assert_called_once()
+
+    def test_socket_chmod_failure_is_recorded_but_listener_stays_alive(self):
+        with mock.patch("os.chmod", side_effect=OSError("chmod denied")), \
+                mock.patch.object(sf_logging, "_note_internal_failure") as note:
+            self.assertTrue(sf_logging._open_single_listener())  # discipline-ok(R5): chmod 失败分支没有公开入口
+        self.assertTrue(any(call.args[0] == "single_instance_chmod" for call in note.call_args_list))
+
     def test_existing_listener_means_not_the_single_instance(self):
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(srv.close)

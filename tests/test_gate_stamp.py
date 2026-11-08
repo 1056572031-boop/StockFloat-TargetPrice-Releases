@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -112,6 +113,25 @@ class TestStampLifecycle(_Repo):
         self.assertEqual(self.cli("wat").returncode, 2)
 
 
+    def test_cli_path_and_quiet_write_are_supported(self):
+        path = self.cli("path")
+        self.assertEqual(path.returncode, 0, path.stdout + path.stderr)
+        self.assertTrue(path.stdout.strip().endswith("build/.gate_stamp"))
+        quiet = self.cli("write", "--quiet")
+        self.assertEqual(quiet.returncode, 0, quiet.stdout + quiet.stderr)
+        self.assertEqual(quiet.stdout, "")
+
+    def test_empty_arguments_print_usage_and_return_two(self):
+        result = self.cli()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("用法", result.stdout + result.stderr)
+
+    def test_unknown_args_are_reported_by_cli(self):
+        result = self.cli("write", "--bad")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("不认识参数", result.stdout + result.stderr)
+
+
 class TestFingerprintScope(_Repo):
     """判据范围：会进包的东西都算，纯文字交付物都不算。"""
 
@@ -180,6 +200,28 @@ class TestFingerprintScope(_Repo):
 
 class TestStampCannotLie(_Repo):
     """坏时间戳一律不算数（宁拦不误放）；非 git 目录也不许自洽通过。"""
+
+    def test_git_failures_and_unreadable_tokens_fail_closed(self):
+        with mock.patch.object(G, "_git", return_value=G.NO_GIT):
+            self.assertEqual(G.git_head(self.repo), G.NO_GIT)
+            self.assertEqual(G.build_input_paths(self.repo), [])
+        with mock.patch("os.lstat", side_effect=OSError("gone")):
+            self.assertEqual(G.file_token(os.path.join(self.repo, "a.py")), "missing")
+        with mock.patch("builtins.open", side_effect=OSError("denied")):
+            self.assertEqual(G.file_token(os.path.join(self.repo, "a.py")), "unreadable")
+
+    def test_non_object_stamp_is_not_usable(self):
+        G.write_stamp(self.repo)
+        self.write("build/.gate_stamp", "[]")
+        self.assertFalse(G.read_stamp(self.repo))
+        usable, why = self.ok()
+        self.assertFalse(usable)
+        self.assertIn("没有关卡时间戳", why)
+
+    def test_read_stamp_invalid_json_returns_none(self):
+        self.write("build/.gate_stamp", "{broken")
+        self.assertIsNone(G.read_stamp(self.repo))
+
 
     def test_corrupt_stamp(self):
         G.write_stamp(self.repo)

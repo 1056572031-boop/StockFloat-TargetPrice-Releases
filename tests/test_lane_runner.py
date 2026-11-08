@@ -168,21 +168,22 @@ class TestMain(LaneCase):
     MODULES = {"a": 10, "b": 7, "c": 5}      # no weights -> plan is [["a"], ["b", "c"]] on two lanes
 
     def run_main(self, argv, results=None, no_result=(), no_log=(), timed_out=False,
-                 cov=(True, "merged"), discover_error=None, out_path=""):
+                 cov=(True, "merged"), discover_error=None, out_path="", modules=None, weights=None):
         results = results or {}
         ran = []
+        discovered = dict(self.MODULES if modules is None else modules)
 
         def fake_discover(_python):
             if discover_error:
                 raise RuntimeError(discover_error)
-            return dict(self.MODULES)
+            return dict(discovered)
 
         def fake_run(_python, plan, _coverage, _timeout, _extra):
             ran.append(plan)
             lanes = {}
             for index, lane in enumerate(plan):
                 files = lr.lane_files(index)
-                body = {"schema": 1, "rc": 0, "total": sum(self.MODULES[m] for m in lane), "failures": [],
+                body = {"schema": 1, "rc": 0, "total": sum(discovered[m] for m in lane), "failures": [],
                         "flaky": [], "ui_violations": 0, "dirty": []}
                 body.update(results.get(index, {}))
                 if index not in no_result:
@@ -198,7 +199,7 @@ class TestMain(LaneCase):
         with mock.patch.dict(os.environ, env), \
                 mock.patch.object(lr, "discover", fake_discover), \
                 mock.patch.object(lr, "run_lanes", fake_run), \
-                mock.patch.object(lr, "load_weights", lambda: {}), \
+                mock.patch.object(lr, "load_weights", lambda: {} if weights is None else dict(weights)), \
                 mock.patch.object(lr, "combine_coverage", lambda *a, **k: cov):
             rc, out = invoke(lr.main, argv)
         return rc, out, ran
@@ -245,6 +246,22 @@ class TestMain(LaneCase):
             rc, out, _ran = self.run_main(["--lanes", str(lr.MAX_LANES), "--plan-only"])
         self.assertEqual((rc, asked), (0, [lr.MAX_LANES]))
         self.assertNotIn("超过上限", out)
+
+    def test_main_auto_default_reuses_the_discovered_module_snapshot(self):
+        calls = []
+        modules = {"a": 10, "b": 7}
+
+        def discover_once(_python):
+            calls.append("discover")
+            return dict(modules)
+
+        with mock.patch.object(lr, "discover", discover_once), \
+                mock.patch.object(lr, "load_weights", return_value={}), \
+                mock.patch.object(lr, "hardware_lanes", return_value=1):
+            rc, out = invoke(lr.main, ["--plan-only"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(calls, ["discover"], "自动方案不应为车道数再次发现模块")
+        self.assertIn("L0:", out)
 
     def test_unknown_only_module_is_refused(self):
         rc, out, ran = self.run_main(["--only", "zzz_not_a_module"])
@@ -302,10 +319,25 @@ class TestMain(LaneCase):
         self.assertIn("车道整体超时", out)
 
     def test_default_lane_count_never_exceeds_the_module_count(self):
-        with mock.patch.object(lr, "auto_lanes", lambda: 9):
+        with mock.patch.object(lr, "auto_lanes", lambda _modules=None, _weights=None: 9):
             rc, out, ran = self.run_main([])
         self.assertEqual(rc, 0, out)
         self.assertEqual(sorted(len(lane) for lane in ran[0]), [1, 1, 1])
+
+    def test_the_auto_default_prints_the_work_based_rationale(self):
+        modules = dict(self.MODULES)
+        modules.update({name: 5 for name in lr.SERIAL_CORE})
+        weights = {name: 40.0 for name in modules}
+        with mock.patch.object(lr.os, "cpu_count", lambda: 10):
+            rc, out, ran = self.run_main([], modules=modules, weights=weights)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("按工作量推导", out)
+        self.assertIn("串行核心地板", out)
+
+    def test_the_auto_default_without_weights_announces_the_hardware_fallback(self):
+        rc, out, ran = self.run_main([])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("硬件兜底", out)
 
     def test_self_test_flag_and_module_entry_point(self):
         before = lr.LANES_DIR
@@ -319,10 +351,155 @@ class TestMain(LaneCase):
         self.assertEqual(caught.exception.code, 0)
         self.assertIn("self-test 通过", out_buf.getvalue())
 
-    def test_auto_lanes_scales_with_cores_and_has_a_floor_and_a_cap(self):
-        for cores, expected in ((None, 1), (1, 1), (4, 2), (64, 4)):
-            with self.subTest(cores=cores), mock.patch.object(lr.os, "cpu_count", lambda c=cores: c):
-                self.assertEqual(lr.auto_lanes(), expected)
+    def test_auto_lanes_without_discovery_falls_back_to_the_hardware_formula(self):
+        with mock.patch.object(lr, "discover", side_effect=RuntimeError("boom")):
+            for cores, expected in ((None, 1), (1, 1), (4, 2), (64, 4)):
+                with self.subTest(cores=cores), mock.patch.object(lr.os, "cpu_count", lambda c=cores: c):
+                    self.assertEqual(lr.auto_lanes(), expected)
+
+    def test_auto_lanes_derives_the_count_from_discovered_work(self):
+        modules, weights = TestChooseLanes.incident_shape(self)
+        with mock.patch.object(lr, "discover", lambda _py: dict(modules)), \
+                mock.patch.object(lr, "load_weights", lambda: dict(weights)), \
+                mock.patch.object(lr.os, "cpu_count", lambda: 10):
+            self.assertEqual(lr.auto_lanes(), 6)
+
+    def test_auto_lanes_with_empty_weights_stays_conservative(self):
+        modules, _weights = TestChooseLanes.incident_shape(self)
+        with mock.patch.object(lr, "discover", lambda _py: dict(modules)), \
+                mock.patch.object(lr, "load_weights", lambda: {}), \
+                mock.patch.object(lr.os, "cpu_count", lambda: 10):
+            self.assertEqual(lr.auto_lanes(), 4)
+
+
+class TestMeasuredWeights(LaneCase):
+    """权重自刷新：上一轮完整回归的实测耗时（build/test-durations.json）盖过库存估计表。
+
+    2026-11-07 实测根因：库存表把最重的模块记成 0.01s（实测 232s），6 车道因此失衡，
+    444s 的长尾车道对 255s 的理论均衡下限。实测档案只影响均衡、不影响判定；
+    build/ 整个被 gitignore，读它不会在关卡期间改动任何被跟踪文件。
+    """
+
+    def write_tracked(self, seconds):
+        path = self.tmp / "tracked.json"
+        path.write_text(json.dumps({"seconds": seconds}), encoding="utf-8")
+        return path
+
+    def write_measured(self, rows):
+        path = self.tmp / "measured.json"
+        path.write_text(json.dumps({"schema": 1, "modules": rows}), encoding="utf-8")
+        return path
+
+    def test_measured_seconds_override_a_stale_tracked_estimate(self):
+        tracked = self.write_tracked({"heavy": 0.01, "light": 2.0})
+        measured = self.write_measured([{"module": "heavy", "seconds": 232.0, "cases": 121}])
+        weights = lr.load_weights(tracked, measured)
+        self.assertEqual(weights["heavy"], 232.0, "实测必须盖过库存的失真估计")
+        self.assertEqual(weights["light"], 2.0, "没有实测记录的模块保留库存值")
+
+    def test_modules_only_in_the_measured_archive_are_added(self):
+        tracked = self.write_tracked({"a": 1.0})
+        measured = self.write_measured([{"module": "new_mod", "seconds": 47.4, "cases": 30}])
+        self.assertEqual(lr.load_weights(tracked, measured)["new_mod"], 47.4)
+
+    def test_a_missing_measured_archive_leaves_the_tracked_table_unchanged(self):
+        tracked = self.write_tracked({"a": 1.5})
+        self.assertEqual(lr.load_weights(tracked, self.tmp / "missing.json"), {"a": 1.5})
+
+    def test_a_corrupt_measured_archive_falls_back_instead_of_crashing(self):
+        tracked = self.write_tracked({"a": 1.5})
+        measured = self.tmp / "measured.json"
+        measured.write_text("{not json", encoding="utf-8")
+        self.assertEqual(lr.load_weights(tracked, measured), {"a": 1.5})
+
+    def test_invalid_rows_are_skipped_while_valid_rows_still_apply(self):
+        tracked = self.write_tracked({"a": 1.0})
+        rows = [{"module": "neg", "seconds": -5.0, "cases": 1},
+                {"module": "nan", "seconds": float("nan"), "cases": 1},
+                {"module": "inf", "seconds": float("inf"), "cases": 1},
+                {"module": "bool", "seconds": True, "cases": 1},
+                {"module": "str", "seconds": "12", "cases": 1},
+                "整行不是字典", 42, None,
+                {"module": "good", "seconds": 9.0, "cases": 2}]
+        weights = lr.load_weights(tracked, self.write_measured(rows))
+        self.assertEqual(weights, {"a": 1.0, "good": 9.0})
+
+    def test_invalid_tracked_weights_are_ignored_without_poisoning_valid_entries(self):
+        tracked = self.write_tracked({"negative": -1.0, "nan": float("nan"),
+                                      "inf": float("inf"), "bool": True,
+                                      "text": "12", "good": 4.5})
+        self.assertEqual(lr.load_weights(tracked, self.tmp / "missing.json"), {"good": 4.5})
+
+    def test_a_zero_second_measurement_is_kept_as_a_real_observation(self):
+        tracked = self.write_tracked({"skipped_mod": 30.0})
+        measured = self.write_measured([{"module": "skipped_mod", "seconds": 0.0, "cases": 0}])
+        self.assertEqual(lr.load_weights(tracked, measured)["skipped_mod"], 0.0)
+
+
+class TestChooseLanes(LaneCase):
+    """车道数由工作量推导：取"总工作量/N 不高于地板×1.05"的最小 N。
+
+    地板 = max(串行核心合计, 最重单模块)，两者都劈不开。数字取自 2026-11-07 实测：
+    隔离树形状（总约 1490s、核心 250s）→ 6 条；主树 8 车道实跑里最重单模块独占
+    一条车道 311s 压过核心 275s，整轮停在单模块地板上——再加车道只多耗内存。
+    """
+
+    def incident_shape(self):
+        core = {"test_update_helper": 10, "test_install_path_routes": 10,
+                "test_installer_script_branches": 10}
+        weights = {name: 170.0 if name == "test_update_helper" else 40.0 for name in core}
+        modules = dict(core)
+        for i in range(124):
+            modules["filler_%03d" % i] = 10
+            weights["filler_%03d" % i] = 10.0
+        return modules, weights   # 串行核心 250s，其余 1240s，总 1490s
+
+    def test_the_incident_shape_lands_on_six_lanes_on_a_ten_core_machine(self):
+        modules, weights = self.incident_shape()
+        self.assertEqual(lr.choose_lanes(modules, weights, 10), 6)
+
+    def test_one_more_lane_beyond_the_floor_is_not_worth_it(self):
+        modules, weights = self.incident_shape()
+        weights["test_update_helper"] = 400.0     # 地板抬到 480s，4 条就触底
+        self.assertEqual(lr.choose_lanes(modules, weights, 10), 4)
+
+    def test_a_single_module_heavier_than_the_core_becomes_the_floor(self):
+        """2026-11-07 主树 8 车道实测：最重单模块独占一条车道跑 311s，压过串行核心的 275s。
+
+        地板是两者的较大值：车道再多也劈不开单个模块。总 700s、核心 100s、单模块 400s
+        时，按核心地板会推出 7 条（白耗内存），按真实地板 2 条就触底。
+        """
+        modules = {"test_update_helper": 10, "test_install_path_routes": 10, "heavy": 121}
+        weights = {"test_update_helper": 60.0, "test_install_path_routes": 40.0, "heavy": 400.0}
+        for i in range(10):
+            modules["filler_%02d" % i] = 20
+            weights["filler_%02d" % i] = 20.0
+        self.assertEqual(lr.choose_lanes(modules, weights, 10), 2)
+
+    def test_weak_machines_are_capped_by_cores_not_by_the_work_formula(self):
+        modules, weights = self.incident_shape()
+        self.assertEqual(lr.choose_lanes(modules, weights, 4), 2)
+        self.assertEqual(lr.choose_lanes(modules, weights, 2), 1)
+
+    def test_the_hard_cap_still_applies_to_the_derived_count(self):
+        modules, weights = self.incident_shape()
+        weights["test_update_helper"] = 1.0       # 地板极小，推导值远超上限
+        self.assertEqual(lr.choose_lanes(modules, weights, 64), lr.MAX_LANES)
+
+    def test_missing_weights_fall_back_to_the_hardware_formula(self):
+        modules, _weights = self.incident_shape()
+        for cores, expected in ((None, 1), (1, 1), (4, 2), (10, 4), (64, 4)):
+            with self.subTest(cores=cores):
+                self.assertEqual(lr.choose_lanes(modules, {}, cores), expected)
+
+    def test_a_subset_without_the_serial_core_falls_back_to_the_hardware_formula(self):
+        self.assertEqual(lr.choose_lanes({"a": 10, "b": 10}, {"a": 5.0, "b": 5.0}, 10), 4)
+
+    def test_zero_case_modules_do_not_crash_the_derivation(self):
+        modules, weights = self.incident_shape()
+        modules["empty_mod"] = 0
+        self.assertEqual(lr.choose_lanes(modules, weights, 10), 6)
+
 
 class TestCommandAndJudgeEdges(LaneCase):
     def test_lane_command_lists_every_module_and_adds_coverage_only_when_asked(self):
@@ -521,7 +698,7 @@ class TestLaneResultFile(SFCase):
 
 
 class TestPreCommitLanesDefault(SFCase):
-    """git-hooks/pre-commit 里 lanes_default 片段：没人设置 SF_LANES 时按核数给默认值，设置了就尊重。
+    """git-hooks/pre-commit 里 lanes_default 片段：没人设置 SF_LANES 时按工作量推导给默认值，设置了就尊重。
 
     抽出 BEGIN/END lanes_default 之间那一段，用钩子同款的 `set -euo pipefail` 在 bash 里逐个环境跑，
     环境从零构造。期望值取自 lane_runner.auto_lanes()，不写死本机核数。
@@ -561,7 +738,7 @@ class TestPreCommitLanesDefault(SFCase):
         self.assertEqual(self.resolve(py="/nonexistent/python3"), "")
 
     def test_a_useless_computed_value_is_dropped_instead_of_passed_on(self):
-        """用桩模块让“按核数算出的数”可控：少于 2 条或不是数字都要留空，走串行。"""
+        """用桩模块让“推导出的默认值”可控：少于 2 条或不是数字都要留空，走串行。"""
         for stub_value, expected in (("1", ""), ("0", ""), ("'abc'", ""), ("''", ""), ("5", "5"), ("2", "2")):
             with self.subTest(computed=stub_value), tempfile.TemporaryDirectory(prefix="sf_hookstub_") as tmp:
                 tools = pathlib.Path(tmp) / "tools"

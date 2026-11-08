@@ -15,15 +15,15 @@ from sf_logging import log_line, log_swallow
 # 2026-11-02 走查 F-D-07：make_app_icon 顺带落盘的 icon.png 路径此前写死在用户数据目录，
 # 环境变量管不到 —— 走查探针与单测直接调它就改写了用户真实目录里的 icon.png。
 # 现在可经 SF_ICON_PATH 改道（口径同 SF_CONFIG_PATH / SF_LAST_QUOTE_PATH）；不设时行为逐字不变。
-# 记下 import 时的默认值，是为了分清"环境变量改道"与"测试直接改写本模块的 ICON_PATH"：
-# 后者（存量用例的做法）优先，环境变量不许把它盖掉。
+# 测试隔离环境优先于存量用例直接改写的模块全局，避免 teardown 时序把图写回真实目录。
 _DEFAULT_ICON_PATH = ICON_PATH
 
 
 def _icon_target_path():
-    if ICON_PATH != _DEFAULT_ICON_PATH:
-        return ICON_PATH
-    return os.environ.get("SF_ICON_PATH") or ICON_PATH
+    override = os.environ.get("SF_ICON_PATH")
+    if override:
+        return override
+    return ICON_PATH
 
 # 主界面与各弹窗共用的顶部按钮 SVG；弹窗禁止再用近似自绘造型。
 _SEARCH_ICON_SVG = (

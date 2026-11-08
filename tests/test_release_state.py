@@ -72,8 +72,12 @@ class ReleaseStateCase(SFCase):
     def record(self, complete=False):
         path = self.root / ("build/complete.json" if complete else "build/quality.json")
         state = release.validate(self.root, self.state)
-        roles = {role: {"path": str(Path(item["path"]).relative_to(path.parent))}
-                 for role, item in state["artifacts"].items()}
+        roles = {}
+        for role, item in state["artifacts"].items():
+            artifact = Path(item["path"])
+            roles[role] = {"path": str(artifact.relative_to(path.parent)),
+                           **{key: item[key] for key in ("sha256", "entries", "kind", "content_sha256")
+                              if key in item}}
         value = {"release_artifacts": {"version": self.version, "roles": roles},
                  "release_qualification": {"stage": "complete" if complete else "pre_release"}}
         path.write_text(json.dumps(value))
@@ -243,6 +247,77 @@ class ReleaseStateCase(SFCase):
             release.make_candidate(self.root, self.state, self.version, self.app, self.dmg, self.archive, self.ota)
         self.assertEqual(release.validate(self.root, self.state)["stage"], "source_qualified")
 
+    def test_quality_accepts_same_artifact_fingerprints_from_another_tree(self):
+        with tempfile.TemporaryDirectory() as other:
+            other_root = Path(other)
+            copied = other_root / self.archive.name
+            copied.write_bytes(self.archive.read_bytes())
+            copied.chmod(self.archive.stat().st_mode & 0o777)
+            self.candidate()
+            state = json.loads(self.state.read_text(encoding="utf-8"))
+            record_path = self.record()
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["release_artifacts"]["roles"]["zip"]["path"] = str(copied)  # discipline-ok(R5): 直接构造跨树产物路径以验证指纹绑定而非路径绑定
+            quality_path = self.root / "build/quality-cross-tree.json"
+            quality_path.write_text(json.dumps(record), encoding="utf-8")
+            with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
+                checked = release.quality(self.root, state, quality_path)
+            self.assertEqual(record["release_artifacts"]["version"], checked["release_artifacts"]["version"])
+            record["release_artifacts"]["roles"]["zip"]["path"] = None  # discipline-ok(R5): 构造非法协议字段以验证路径解析拒绝
+            quality_path.write_text(json.dumps(record), encoding="utf-8")
+            with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]), \
+                    self.assertRaisesRegex(ValueError, "产物指纹"):
+                release.quality(self.root, state, quality_path)
+
+
+    def test_quality_rejects_missing_or_mismatched_artifact_fingerprints(self):
+        self.candidate()
+        record_path = self.record()
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        roles = record["release_artifacts"]["roles"]
+        roles["zip"] = None
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]), \
+                self.assertRaisesRegex(ValueError, "候选产物角色"):
+            release.begin_publish(self.root, self.state, record_path)
+        record = json.loads(self.record().read_text(encoding="utf-8"))
+        record["release_artifacts"]["roles"]["zip"]["sha256"] = "changed"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]), \
+                self.assertRaisesRegex(ValueError, "产物指纹"):
+            release.begin_publish(self.root, self.state, record_path)
+
+    def test_complete_quality_rejects_incomplete_or_unbound_frozen_record(self):
+        self.candidate()
+        record_path = self.record(complete=True)
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["release_qualification"]["stage"] = "pre_release"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "尚未完成"):
+            release._complete_quality(record_path, release.validate(self.root, self.state))  # discipline-ok(R5): 直接测试冻结质量记录的内部校验边界
+        with self.assertRaisesRegex(ValueError, "尚未完成"):
+            release.quality(self.root, release.validate(self.root, self.state), record_path, complete=True)
+        record["release_qualification"]["stage"] = "complete"
+        record["release_artifacts"]["version"] = "wrong-version"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "版本不匹配"):
+            release._complete_quality(record_path, release.validate(self.root, self.state))  # discipline-ok(R5): 直接测试冻结质量记录的内部校验边界
+        record["release_artifacts"]["version"] = self.version
+        record["artifact_fingerprint"] = {"source": "wrong"}
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "冻结发布源码"):
+            release._complete_quality(record_path, release.validate(self.root, self.state))  # discipline-ok(R5): 直接测试冻结质量记录的内部校验边界
+        record["artifact_fingerprint"] = {"source": release.validate(self.root, self.state)["source"]["gate_fingerprint"]}
+        record["release_artifacts"]["roles"]["zip"] = None
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "候选产物角色"):
+            release._complete_quality(record_path, release.validate(self.root, self.state))  # discipline-ok(R5): 直接测试冻结质量记录的内部校验边界
+        record["release_artifacts"]["roles"]["zip"] = self.record().read_text() and json.loads(self.record().read_text())["release_artifacts"]["roles"]["zip"]
+        record["release_artifacts"]["roles"]["zip"]["sha256"] = "changed"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "产物指纹"):
+            release._complete_quality(record_path, release.validate(self.root, self.state))  # discipline-ok(R5): 直接测试冻结质量记录的内部校验边界
+
     def test_publish_requires_authoritative_quality_and_exact_artifact_paths(self):
         self.candidate()
         record = self.record()
@@ -263,8 +338,66 @@ class ReleaseStateCase(SFCase):
         changed["release_artifacts"]["roles"]["zip"]["path"] = self.dmg.name
         record.write_text(json.dumps(changed))
         with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]), \
-                self.assertRaisesRegex(ValueError, "候选路径"):
+                self.assertRaisesRegex(ValueError, "指纹"):
             release.begin_publish(self.root, self.state, record)
+
+    def test_finish_rejects_invalid_pending_state_and_post_release_bindings(self):
+        self.candidate()
+        record = self.record()
+        with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
+            pending = release.begin_publish(self.root, self.state, record)
+        complete = self.record(complete=True)
+        complete_value = json.loads(complete.read_text())
+        complete_value["artifact_fingerprint"] = {"source": pending["source"]["gate_fingerprint"]}
+        complete.write_text(json.dumps(complete_value))
+        readback = self.root / "build/final-readback.json"
+        readback.write_text("{}")
+        state_value = json.loads(self.state.read_text())
+        state_value["stage"] = "source_open"
+        self.state.write_text(json.dumps(state_value))
+        with self.assertRaisesRegex(ValueError, "released_pending_acceptance"):
+            release.finish(self.root, self.state, complete, readback)
+        self.state.write_text(json.dumps(pending))
+        valid = self.acceptance_value(pending)
+        start = dt.datetime.fromisoformat(pending["updated_at"])
+        for timestamp, message in (("bad-time", "读回时间无效"),
+                                   (start.replace(tzinfo=None).isoformat(), "读回时间无效"),
+                                   ((start - dt.timedelta(seconds=1)).isoformat(), "实际观察"),
+                                   ((start + dt.timedelta(days=1)).isoformat(), "实际观察")):
+            value = copy.deepcopy(valid)
+            value["generated_at"] = timestamp
+            readback.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, message):
+                release.finish(self.root, self.state, complete, readback)
+        value = self.acceptance_value(pending)
+        value["checks"]["public_ci"]["observation"]["head_sha"] = "other-commit"
+        readback.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "公开发布回执、源码与 CI"):
+            release.finish(self.root, self.state, complete, readback)
+        value = self.acceptance_value(pending)
+        publication = Path(value["publication"]["path"])
+        original_publication = publication.read_bytes()
+        body = json.loads(original_publication)
+        body["source_zip"] = None
+        publication.write_text(json.dumps(body))
+        value["publication"] = release.reference(publication)
+        readback.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "缺少源码或校验文件身份"):
+            release.finish(self.root, self.state, complete, readback)
+        publication.write_bytes(original_publication)
+        value = self.acceptance_value(pending)
+        value["downloaded_files"].pop("online-manifest.json")
+        readback.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "完整下载证据缺失"):
+            release.finish(self.root, self.state, complete, readback)
+        value = self.acceptance_value(pending)
+        downloaded = Path(value["downloaded_files"][self.archive.name]["path"])
+        downloaded.write_bytes(b"wrong downloaded bytes")
+        value["downloaded_files"][self.archive.name] = release.reference(downloaded)
+        readback.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "实际下载内容"):
+            release.finish(self.root, self.state, complete, readback)
+        self.assertEqual(release.validate(self.root, self.state)["stage"], "released_pending_acceptance")
 
     def test_complete_requires_separate_complete_record_and_all_channel_checks(self):
         self.candidate()
@@ -277,12 +410,15 @@ class ReleaseStateCase(SFCase):
             with self.assertRaisesRegex(ValueError, "真实验收"):
                 release.finish(self.root, self.state, record, readback)
             complete_record = self.record(complete=True)
+            complete_value = json.loads(complete_record.read_text())
+            complete_value["artifact_fingerprint"] = {"source": pending["source"]["gate_fingerprint"]}
+            complete_record.write_text(json.dumps(complete_value))
             with self.assertRaisesRegex(ValueError, "独立读回"):
                 release.finish(self.root, self.state, complete_record, readback)
             value = {key: pending[key] for key in ("version", "source", "artifacts")}
             value.update(verified=True, checks={}, generated_at=pending["updated_at"])
             readback.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "未全部通过"):
+            with self.assertRaisesRegex(ValueError, "渠道或最终启动"):
                 release.finish(self.root, self.state, complete_record, readback)
             value["checks"] = {name: {"status": "passed"} for name in
                                ("ota_manifest", "zip", "dmg", "public_source", "checksums", "public_ci", "final_startup")}
@@ -297,11 +433,11 @@ class ReleaseStateCase(SFCase):
             value = self.acceptance_value(pending)
             value["downloaded_files"][self.archive.name]["sha256"] = "changed"
             readback.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "下载证据已变化"):
+            with self.assertRaisesRegex(ValueError, "发布后下载证据已变化"):
                 release.finish(self.root, self.state, complete_record, readback)
             value = self.acceptance_value(pending)
             readback.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "点击走查"):
+            with self.assertRaisesRegex(ValueError, "缺少装机点击走查证据"):
                 release.finish(self.root, self.state, complete_record, readback)
             for walkthrough in (self.walkthrough(pending, passed=False),
                                 self.walkthrough(pending, same_app=False)):

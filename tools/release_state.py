@@ -111,9 +111,22 @@ def quality(root: Path, state: dict[str, Any], record_path: Path, complete: bool
         errors.append("质量记录版本不匹配")
     for role, item in state["artifacts"].items():
         value = record.get("release_artifacts", {}).get("roles", {}).get(role, {})
-        declared = evidence.resolve_reference(record_path.parent, value.get("path", ""))
-        if declared.resolve() != Path(item["path"]):
-            errors.append("质量记录未绑定状态中的候选路径: " + role)
+        if not isinstance(value, dict):
+            errors.append("质量记录缺少候选产物角色: " + role)
+            continue
+        declared_path = value.get("path", "")
+        try:
+            declared = Path(declared_path).resolve() if isinstance(declared_path, str) \
+                and Path(declared_path).is_absolute() else evidence.resolve_reference(record_path.parent, declared_path)
+            declared_token = evidence.artifact_token(declared)
+        except (OSError, ValueError, TypeError):
+            declared_token = None
+        expected_token = {key: value.get(key) for key in ("sha256", "entries", "kind", "content_sha256")
+                          if key in value}
+        state_token = {key: item.get(key) for key in ("sha256", "entries", "kind", "content_sha256")
+                       if key in item}
+        if declared_token is None or declared_token != expected_token or expected_token != state_token:
+            errors.append("质量记录候选产物指纹未绑定状态: " + role)
     if complete and record.get("release_qualification", {}).get("stage") != "complete":
         errors.append("质量记录尚未完成真实验收")
     if errors:
@@ -163,10 +176,37 @@ def _bundle_version(app: Path) -> str:
     return value
 
 
+def _complete_quality(record_path: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Validate a frozen post-release record without revalidating today's source tree."""
+    record = evidence.load(record_path)
+    if record.get("release_qualification", {}).get("stage") != "complete":
+        raise ValueError("质量记录尚未完成真实验收")
+    if record.get("release_artifacts", {}).get("version") != state["version"]:
+        raise ValueError("质量记录版本不匹配")
+    if record.get("artifact_fingerprint", {}).get("source") != state["source"].get("gate_fingerprint"):
+        raise ValueError("发布后记录未绑定冻结发布源码")
+    roles = record.get("release_artifacts", {}).get("roles", {})
+    for role, item in state["artifacts"].items():
+        value = roles.get(role)
+        if not isinstance(value, dict):
+            raise ValueError("质量记录缺少候选产物角色: " + role)
+        for key in ("sha256", "entries", "kind", "content_sha256"):
+            if key in item and value.get(key) != item.get(key):
+                raise ValueError("质量记录候选产物指纹未绑定状态: " + role)
+    return record
+
+
 def finish(root: Path, path: Path, record_path: Path, readback: Path,
            walkthrough: Path | None = None) -> dict[str, Any]:
-    state = validate(root, path, "released_pending_acceptance")
-    quality(root, state, record_path, complete=True)
+    """Finish a historical release using its frozen source/artifact identity.
+
+    Maintenance commits after publication must not invalidate a release that has
+    already passed independent readback and real-device walkthrough checks.
+    """
+    state = evidence.load(path)
+    if state.get("schema_version") != 1 or state.get("stage") != "released_pending_acceptance":
+        raise ValueError("发布状态不是 released_pending_acceptance")
+    record = _complete_quality(record_path, state)
     report = evidence.load(readback)
     if (report.get("verified") is not True or report.get("version") != state["version"]
             or report.get("artifacts") != state["artifacts"]

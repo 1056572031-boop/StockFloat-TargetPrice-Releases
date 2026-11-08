@@ -20,6 +20,8 @@ class DiagnosticsExportController:
         self._exporting = False
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._cancel = threading.Event()
+        self._closed = False
 
     @property
     def exporting(self) -> bool:
@@ -48,8 +50,9 @@ class DiagnosticsExportController:
         requested: str,
         on_ready: Callable[[tuple[Any, Any]], None],
     ) -> threading.Thread | None:
-        if self.exporting:
+        if self.exporting or self._closed:
             return None
+        self._cancel.clear()
         self.exporting = True
         worker = threading.Thread(
             target=self._run,
@@ -69,8 +72,21 @@ class DiagnosticsExportController:
         on_ready: Callable[[tuple[Any, Any]], None],
     ) -> None:
         """兼容旧测试/调用方，沿用同一收口实现但不另起线程。"""
+        if self._closed:
+            return
+        self._cancel.clear()
         self.exporting = True
         self._run(archive, temporary, requested, on_ready)
+
+    def close(self, timeout: float = 0.5) -> bool:
+        """阻止后台导出发布，并在有限时间内等待当前归档线程结束。"""
+        with self._lock:
+            self._closed = True
+            self._cancel.set()
+            worker = self._thread
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=max(0.0, float(timeout)))
+        return worker is None or not worker.is_alive()
 
     def _run(
         self,
@@ -82,6 +98,8 @@ class DiagnosticsExportController:
         result: tuple[Any, Any] = (None, None)
         try:
             archive.finish()
+            if self._cancel.is_set():
+                return
             result = (self._publish(temporary, requested), None)
         except Exception as exc:
             log_line("diagnostics export error: %r" % (exc,), "ERROR")
@@ -95,6 +113,8 @@ class DiagnosticsExportController:
                 log_line("diagnostics temporary cleanup error: %r" % (exc,), "WARNING")
             self.exporting = False
             self.thread = None
+        if self._cancel.is_set():
+            return
         try:
             on_ready(result)
         except RuntimeError as exc:

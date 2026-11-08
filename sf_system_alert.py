@@ -844,6 +844,6 @@ def show_progress_alert(message, info="", cancel="取消", on_result=None,
         return None
     try:
         return NativeAlert(message, info, (cancel,), None, cancel,
-                           icon_path, on_result, progress=True)
+                           icon_path, on_result, progress=True, center_text=True)
     except Exception:
         return None

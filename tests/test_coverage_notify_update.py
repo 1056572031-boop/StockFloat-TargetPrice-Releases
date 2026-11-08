@@ -463,8 +463,28 @@ class TestWindowNotificationAuthorization(SFCase):
     def test_authorization_failure_is_silent_to_the_caller(self):
         host = object()
         with mock.patch.object(stock_window, "request_authorization",
-                               side_effect=RuntimeError("notification unavailable")):
+                               side_effect=RuntimeError("notification unavailable")), \
+                mock.patch.object(stock_window, "log_swallow") as swallowed:
             _request_notify_auth(host)
+        swallowed.assert_called_once()
+        self.assertEqual(swallowed.call_args.args[0],  # discipline-ok(R5): 读取桩参数核对日志归属
+                         "stock_float_window._request_notify_auth")
+
+
+class TestWindowPollBackoffError(SFCase):
+    def test_poll_backoff_failure_is_reported_as_swallowed(self):
+        host = FloatWindow.__new__(FloatWindow)  # discipline-ok(R5): 无窗口初始化地构造纯状态测试宿主
+        host._poll_lock = threading.Lock()  # discipline-ok(R5): 为纯状态转移异常夹具装配锁
+        host._poll_state = "normal"  # discipline-ok(R5): 为被测熔断状态机装配初始状态
+        host._poll_fail = 0  # discipline-ok(R5): 为被测熔断状态机装配失败计数
+        with mock.patch.object(stock_window, "feature_enabled", return_value=True), \
+                mock.patch.object(stock_window, "next_poll_backoff",
+                                  side_effect=RuntimeError("state transition failed")), \
+                mock.patch.object(stock_window, "log_swallow") as swallowed:
+            FloatWindow._on_poll_result(host, False)  # discipline-ok(R5): 直接调用被测私有状态入口
+        swallowed.assert_called_once()
+        self.assertEqual(swallowed.call_args.args[0],  # discipline-ok(R5): 读取桩参数核对日志归属
+                         "stock_float_window._on_poll_result")
 
 
 # ==========================================================================

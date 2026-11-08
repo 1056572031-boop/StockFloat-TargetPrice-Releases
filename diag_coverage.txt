@@ -27,6 +27,14 @@
 
 # "这个模块坏了用户会说什么" 的答案必须落到具体通路；纯函数/维护端模块才可申报 skip。
 
+# 本轮 sf_system_alert 只让下载进度弹窗启用既有居中段落能力；弹窗实例随调用完成销毁，不持有独立常驻运行态。
+version 1.4.114
+skip sf_system_alert 本轮只让 show_progress_alert 创建下载进度弹窗时传入既有 center_text 参数；弹窗生命周期由调用方持有，原生桥接失败仍经 _swallow 写入 debug.log 与 last_failures.json，下载与更新状态由 runtime.json 的 update 分组输出。
+
+# 模块级状态仍由主窗与既有诊断通路承载；本轮只改变下载进度框的段落对齐策略。
+version 1.4.113
+skip sf_system_alert 本轮只调整 NativeAlert 下载进度框的文本段落对齐，不新增独立常驻运行态；弹窗生命周期由调用方持有，原生桥接失败继续经 SWALLOWED 写入 debug.log 与 last_failures.json，更新状态由 runtime.json 的 update 分组输出。
+
 version 1.4.108
 # 本版反馈上传优化没有新增独立常驻运行态；用户可见阶段、失败类别与队列最终事实仍由 feedback.json、反馈窗与 debug.log 输出。
 skip sf_feedback_capture 主动采集、投影与上传前校验均为请求级处理，无模块级可变状态；失败停在反馈窗阶段并写入 outbox 错误，feedback.json 只报告最终队列事实。

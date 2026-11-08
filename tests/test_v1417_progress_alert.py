@@ -213,6 +213,16 @@ class ProgressAlertBridgeTest(unittest.TestCase):
         return sf_system_alert.show_progress_alert(
             message="正在下载更新…", info="准备中 0%", on_result=on_result)
 
+    def test_download_progress_alert_requests_centered_text_layout(self):
+        """下载进度框的标题与副文案必须使用居中段落样式。"""
+        with patch.object(sf_system_alert, "NativeAlert") as native:
+            native.return_value = object()
+            result = sf_system_alert.show_progress_alert(
+                message="正在下载更新…", info="准备中 0%")
+        self.assertIs(result, native.return_value)
+        self.assertEqual(native.call_args.kwargs["center_text"], True,
+                         "下载进度框必须显式启用段落居中，普通更新说明仍保持原对齐")
+
     def test_system_progress_bar_is_mounted_as_accessory(self):
         handle = self._open()
         self.assertIsInstance(handle, sf_system_alert.NativeAlert)

@@ -31,8 +31,8 @@ echo "== [pre-commit] py_compile 通过 =="
 
 # BEGIN lanes_default（tests/test_lane_runner.py 把这一段抽出来逐个环境值验证）
 # 提交检查默认走并行车道（用户 2026-10-26 决定）。调用者已经设置了 SF_LANES 就原样尊重：
-# SF_LANES=0 或 SF_LANES= 强制串行，SF_LANES=3 指定三条。没设置时按核数取车道数，
-# 取不到、不是数字或少于 2 条就留空，走原来的串行路径。
+# SF_LANES=0 或 SF_LANES= 强制串行，SF_LANES=3 指定三条。没设置时由 auto_lanes() 按上一轮
+# 实测工作量推导（发现失败退回核数公式），取不到、不是数字或少于 2 条就留空，走原来的串行路径。
 if [ -z "${SF_LANES+x}" ]; then
   SF_LANES="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import lane_runner; print(lane_runner.auto_lanes())' "$REPO_ROOT/tools" 2>/dev/null)" || SF_LANES=""
   case "$SF_LANES" in ""|*[!0-9]*|0|1) SF_LANES="" ;; esac

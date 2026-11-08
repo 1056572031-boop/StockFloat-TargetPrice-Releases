@@ -295,6 +295,65 @@ class GateSelfCheck(SFCase):
         self.assertIn("没有明确的发布基线", proc.stdout + proc.stderr)
 
 
+    def test_main_reports_distribution_without_running_the_gate(self):
+        with patch.object(gate, "report", return_value="产品模块 1 个\n") as report:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = gate.main(["--report"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(output.getvalue(), "产品模块 1 个\n\n")
+        report.assert_called_once()
+
+    def test_main_reports_refusal_and_returns_two(self):
+        result = {"refuse": "没有明确的发布基线", "empty_round": False}
+        with patch.object(gate, "check", return_value=result):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = gate.main(["--range", "A..B"])
+        self.assertEqual(rc, 2)
+        self.assertIn("无法下结论", output.getvalue())
+
+    def test_main_reports_empty_round_declaration_problem_and_returns_one(self):
+        result = {"refuse": "", "empty_round": True, "declaration_problems": ["理由为空"]}
+        with patch.object(gate, "check", return_value=result):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = gate.main(["--version", "9.9.9"])
+        self.assertEqual(rc, 1)
+        self.assertIn("申报清单：理由为空", output.getvalue())
+
+    def test_main_prints_all_result_categories_and_passes(self):
+        result = {"refuse": "", "empty_round": False,
+                  "version": "9.9.9", "range": "A..B", "range_note": "显式基线",
+                  "counts": {"product_modules": 20, "curated": 3, "stateful": 4, "changed": 2},
+                  "changed": ["sf_utils", "sf_notify"], "auto_only": ["sf_auto"],
+                  "declaration_problems": ["理由不足"], "stale_declarations": ["sf_old"],
+                  "redundant_declarations": ["sf_notify"], "undeclared": [] , "ok": True}
+        with patch.object(gate, "check", return_value=result):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = gate.main(["--range", "A..B", "--version", "9.9.9"])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        for needle in ("诊断覆盖核对", "本轮改动：", "只靠自动采集", "申报清单：",
+                       "本轮没改", "已经在包里", "诊断覆盖核对通过"):
+            self.assertIn(needle, text)
+
+    def test_main_reports_undeclared_changes_before_other_failures(self):
+        result = {"refuse": "", "empty_round": False,
+                  "version": "9.9.9", "range": "A..B", "range_note": "显式基线",
+                  "counts": {"product_modules": 20, "curated": 3, "stateful": 4, "changed": 1},
+                  "changed": ["sf_utils"], "auto_only": [], "declaration_problems": [],
+                  "stale_declarations": [], "redundant_declarations": [],
+                  "undeclared": ["sf_utils"], "ok": False}
+        with patch.object(gate, "check", return_value=result):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = gate.main(["--range", "A..B"])
+        self.assertEqual(rc, 1)
+        self.assertIn("答不上来", output.getvalue())
+
+
 class GateOnTheReleaseChain(SFCase):
     """3.9 关的位置：核验必须排在不可逆动作之前（同 TestReleaseChainCallsTheGate 的理由）。"""
 

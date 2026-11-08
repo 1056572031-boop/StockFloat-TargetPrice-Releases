@@ -146,7 +146,13 @@ class PublicReleaseCase(SFCase):
             self.assertTrue(any("release_notes.txt:" in item for item in self.document_problems()))
         notes.write_text(original)
         guide = self.root / "docs/INSTALL.md"
-        guide.write_text(guide.read_text().replace("Skyrocket-%s-SHA256SUMS.txt" % docs.APP_VERSION, "old-checksums.txt"))
+        guide_text = guide.read_text()
+        # 完整回归可能由本机打包模式驱动，根仓库的 INSTALL.md 此时刻意是本机说明，
+        # 不含公开下载产物名。这里显式补入公开校验名，再单独验证缺少当前校验文件名会被拦住。
+        guide_text += "\nSkyrocket-V%s.dmg\nSkyrocket-%s-SHA256SUMS.txt\n" % (docs.APP_VERSION, docs.APP_VERSION)
+        guide.write_text(guide_text.replace("本构建仅用于本机覆盖安装", "公开构建")
+                                   .replace("Skyrocket-%s-SHA256SUMS.txt" % docs.APP_VERSION,
+                                            "old-checksums.txt"))
         self.assertTrue(any("missing current artifact" in item for item in self.document_problems()))
 
     def test_over_limit_report_names_the_real_count_and_how_far_over(self):
@@ -560,11 +566,19 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
         self.assertEqual(publisher.RAW_MANIFEST_URL, C.UPDATE_MANIFEST_URL)
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(guide.contact(), C.SUPPORT_EMAIL)
-        # Public documents intentionally contain rendered URLs, not Python expressions.
+        install_body = (ROOT / "docs/INSTALL.md").read_text()
+        local_only = os.environ.get("SF_LOCAL_ONLY") == "1"
         for name in ("README.md", "docs/INSTALL.md"):
             body = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("https://github.com/" + C.RELEASE_REPO, body)
-        self.assertIn(C.SUPPORT_EMAIL, (ROOT / "docs/INSTALL.md").read_text())
+            if local_only and name == "docs/INSTALL.md":
+                self.assertIn("本构建仅用于本机覆盖安装", body)
+            else:
+                self.assertIn("https://github.com/" + C.RELEASE_REPO, body)
+        if local_only:
+            self.assertNotIn(C.RELEASE_REPO, install_body)
+        else:
+            self.assertIn(C.SUPPORT_EMAIL, install_body)
+
 
     def test_identity_reader_rejects_missing_duplicate_and_executable_values(self):
         config = self.root / "identity.py"

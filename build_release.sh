@@ -190,6 +190,15 @@ fi
 # These checks are read-only and independent. Run them together so a normal
 # release does not pay independent startup/scan costs back-to-back. Each
 # result is still collected and every failure blocks the release.
+if [ "$LOCAL_ONLY" -eq 1 ]; then
+  export SF_LOCAL_ONLY=1
+else
+  unset SF_LOCAL_ONLY
+fi
+if [ "$LOCAL_ONLY" -eq 1 ]; then
+  "$VENV_PY" tools/render_install_guide.py --local-only \
+    || { echo "!! 本机版安装说明渲染失败，拒绝打包" >&2; exit 1; }
+fi
 PRECHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/skyrocket-release-precheck.XXXXXX")"
 cleanup_prechecks() {
   [ -d "$PRECHECK_DIR" ] || return 0

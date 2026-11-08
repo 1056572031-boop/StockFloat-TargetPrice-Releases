@@ -112,6 +112,16 @@ def pick_receipt(directory: Path, command: str, fingerprint: str) -> tuple[Path,
     return hits[0]
 
 
+def _receipt_output_paths(argv: list[Any], expected_name: str) -> list[str]:
+    paths = [item for item in argv if isinstance(item, str)]
+    for index, item in enumerate(argv[:-1]):
+        if item == "--out" and isinstance(argv[index + 1], str):
+            output = Path(argv[index + 1])
+            if output.name != expected_name and expected_name == "result.json":
+                paths.append(str(output / expected_name))
+    return paths
+
+
 def pick_receipt_contains(directory: Path, needle: str | Path, fingerprint: str,
                           root: Path | None = None) -> tuple[Path, dict[str, Any]]:
     expected_name = Path(needle).name
@@ -120,12 +130,12 @@ def pick_receipt_contains(directory: Path, needle: str | Path, fingerprint: str,
         expected_path = (Path(needle) if Path(needle).is_absolute() else root / Path(needle)).resolve()
     hits: list[tuple[Path, dict[str, Any]]] = []
     for path, value in receipt_candidates(directory):
-        argv = value.get("argv")
         candidates: list[str] = []
         if isinstance(value.get("output_paths"), list):
             candidates.extend(item for item in value["output_paths"] if isinstance(item, str))
+        argv = value.get("argv")
         if isinstance(argv, list):
-            candidates.extend(item for item in argv if isinstance(item, str))
+            candidates.extend(_receipt_output_paths(argv, expected_name))
         matched = False
         for item in candidates:
             if expected_path is None:
@@ -260,6 +270,8 @@ def bind(root: Path, version: str, limitations: dict[str, list[str]], old_app: P
     if len(diag_hits) != 1:
         raise EvidenceError(f"诊断覆盖凭据必须恰好一份且同源（找到 {len(diag_hits)} 份）")
     candidate_app, candidate_zip = app_paths(root, version, app, zip_path)
+    candidate_dmg = root / "build" / f"Skyrocket-V{version}.dmg"
+    candidate_ota = root / "build" / "update_assets" / f"V{version}" / "Skyrocket-update.json"
     delivery = evidence_dir(root, version) / "delivery.json"
     old_display = display_path(old_app, root)
     bound_commands = [
@@ -279,10 +291,10 @@ def bind(root: Path, version: str, limitations: dict[str, list[str]], old_app: P
     value["status"] = "release_candidate"
     value["release_qualification"]["stage"] = "pre_release"
     value["release_artifacts"] = {"version": version, "roles": {
-        "app": {"path": relative_path(candidate_app, root)},
-        "dmg": {"path": relative_path(root / "build" / f"Skyrocket-V{version}.dmg", root)},
-        "zip": {"path": relative_path(candidate_zip, root)},
-        "ota_manifest": {"path": relative_path(root / "build" / "update_assets" / f"V{version}" / "Skyrocket-update.json", root)}},
+        "app": {"path": relative_path(candidate_app, root), **evidence.artifact_token(candidate_app)},
+        "dmg": {"path": relative_path(candidate_dmg, root), **evidence.artifact_token(candidate_dmg)},
+        "zip": {"path": relative_path(candidate_zip, root), **evidence.artifact_token(candidate_zip)},
+        "ota_manifest": {"path": relative_path(candidate_ota, root), **evidence.artifact_token(candidate_ota)}},
         "ota": {"archive_role": "zip", "manifest_role": "ota_manifest"}}
     value["artifact_fingerprint"] = artifact_fingerprint(root, version, candidate_app, candidate_zip)
     value["verification_evidence"] = pre_receipts
@@ -342,8 +354,8 @@ def complete(root: Path, version: str, limitations: dict[str, list[str]], state:
     if value.get("artifact_fingerprint", {}).get("source") != fingerprint:
         raise EvidenceError("发布后记录候选源码指纹已变化")
     directory = evidence_path or evidence_dir(root, version, True)
-    read_receipt = pick_receipt_contains(directory, readback.name, fingerprint, root)
-    walk_receipt = pick_receipt_contains(directory, walkthrough.name, fingerprint, root)
+    read_receipt = pick_receipt_contains(directory, readback, fingerprint, root)
+    walk_receipt = pick_receipt_contains(directory, walkthrough, fingerprint, root)
     value = copy.deepcopy(value)
     value["change_id"] = "CHANGE-" + uuid.uuid4().hex[:12]
     value["release_qualification"]["stage"] = "complete"

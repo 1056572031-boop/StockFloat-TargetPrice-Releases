@@ -147,6 +147,14 @@ class TestReleaseEvidence(SFCase):
             bound_record = quality.load(path)
             self.assertEqual("release_candidate", bound_record["status"])
             self.assertEqual("fp", bound_record["artifact_fingerprint"]["source"])
+            for role in ("app", "dmg", "zip", "ota_manifest"):
+                self.assertEqual({"sha256": "artifact", "entries": 1, "kind": "directory"},
+                                 {key: bound_record["release_artifacts"]["roles"][role].get(key)
+                                  for key in ("sha256", "entries", "kind", "content_sha256")
+                                  if key in bound_record["release_artifacts"]["roles"][role]})
+            for role in ("app", "dmg", "zip", "ota_manifest"):
+                token = bound_record["release_artifacts"]["roles"][role]
+                self.assertNotIn("artifact_token", token)
             with patch.object(tool, "write_qualification"), \
                     patch.object(tool, "pick_receipt", return_value=self.receipt(root / "sessions" / "bad", "true", "fp")), \
                     patch.object(quality, "source_snapshot", return_value={"fingerprint": "fp"}), \
@@ -323,13 +331,40 @@ class TestReleaseEvidence(SFCase):
             with self.assertRaisesRegex(tool.EvidenceError, "恰好一份"):
                 tool.pick_receipt_contains(root / "sessions", "readback.json", "fp", root)
 
+    def test_pick_receipt_contains_expands_evidence_directory_to_result_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = root / "click" / "result.json"
+            result.parent.mkdir()
+            result.write_text("{}", encoding="utf-8")
+            receipt = self.receipt(root / "sessions" / "click",
+                                   "python --out click", "fp")
+            self.assertEqual(receipt[0], tool.pick_receipt_contains(
+                root / "sessions", result, "fp", root)[0])
+
+    def test_receipt_output_paths_expands_dotted_out_directory(self):
+        self.assertIn("build/click-1.4.113-complete/result.json", tool._receipt_output_paths(  # discipline-ok(R5): 核验收口工具的命令行协议输出
+            ["python", "--out", "build/click-1.4.113-complete"], "result.json"))
+
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "build" / "readback.json"
+            report.parent.mkdir()
+            report.write_text("{}", encoding="utf-8")
+            receipt = self.receipt(root / "sessions" / "read", "python --out build/readback.json", "fp")
+            with patch.object(tool, "receipt_candidates", return_value=[receipt]):
+                picked = tool.pick_receipt_contains(root / "sessions", report, "fp", root)
+            self.assertEqual(receipt[0], picked[0])
+
     def test_complete_rejects_stale_or_unbound_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = tool.record_path(root, self.version)
             record = quality.template()
             record["status"] = "release_candidate"
-            record["artifact_fingerprint"]["source"] = "old"
+            record["artifact_fingerprint"]["source"] = "old"  # discipline-ok(R5): 直接构造发布记录字段以验证过期源码指纹保护
+
             quality.atomic_json(path, record)
             with patch.object(quality, "source_snapshot", return_value={"fingerprint": "new"}):
                 with self.assertRaisesRegex(tool.EvidenceError, "源码指纹"):
@@ -340,24 +375,28 @@ class TestReleaseEvidence(SFCase):
             path = tool.record_path(root, self.version)
             record = quality.template()
             record["status"] = "development"
-            record["artifact_fingerprint"]["source"] = "old"
+            record["artifact_fingerprint"]["source"] = "old"  # discipline-ok(R5): 直接构造发布记录字段以验证过期源码指纹保护
+
             quality.atomic_json(path, record)
             with patch.object(quality, "source_snapshot", return_value={"fingerprint": "new"}):
                 with self.assertRaisesRegex(tool.EvidenceError, "release_candidate|源码指纹"):
                     tool.complete(root, self.version, self.limitations(), root / "state", root / "read", root / "walk")
+
 
     def test_remaining_guard_and_cli_branches(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = tool.record_path(root, self.version)
             record = quality.template()
-            record["artifact_fingerprint"]["source"] = "old"
+            record["artifact_fingerprint"]["source"] = "old"  # discipline-ok(R5): 直接构造发布记录字段以验证过期源码指纹保护
+
             quality.atomic_json(path, record)
             with patch.object(quality, "source_snapshot", return_value={"fingerprint": "new"}):
                 with self.assertRaisesRegex(tool.EvidenceError, "候选记录源码指纹"):
                     tool.bind(root, self.version, self.limitations(), root / "old")
             outside_old = Path.home() / ".release-evidence-fixture-old.app"
-            record["artifact_fingerprint"]["source"] = "pending"
+            record["artifact_fingerprint"]["source"] = "pending"  # discipline-ok(R5): 直接构造发布记录字段以验证 pending 状态的前置收口保护
+
             quality.atomic_json(path, record)
             diag = self.receipt(root / "sessions" / "outside-diag",
                                 f"./.venv/bin/python3 tools/diag_coverage_check.py --version {self.version}", "fp")
@@ -392,7 +431,8 @@ class TestReleaseEvidence(SFCase):
             self.assertEqual(2, tool.main(["wait-ci", "--repo", "r/o", "--sha", "s", "--timeout", "0"]))
             with patch.object(tool, "wait_ci", return_value=0):
                 self.assertEqual(1, tool.self_test())
-            record["artifact_fingerprint"]["source"] = "pending"
+            record["artifact_fingerprint"]["source"] = "pending"  # discipline-ok(R5): 直接构造发布记录字段以验证 pending 状态的前置收口保护
+
             record["status"] = "release_candidate"
             record["release_qualification"]["baseline"] = "base"
             quality.atomic_json(path, record)

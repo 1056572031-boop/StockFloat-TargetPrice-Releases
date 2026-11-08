@@ -88,6 +88,17 @@ class _FakeSearchThread(object):
         return True
 
 
+class _FakeDiagnosticsController(object):
+    """模拟诊断导出控制器：验证退出时仍运行的告警分支。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def close(self, timeout=0.5):
+        self.calls.append(timeout)
+        return False
+
+
 class _QuitCase(unittest.TestCase):
     """创建离屏主窗的公共夹具（与 test_v165._WinCase 同构）。"""
 
@@ -249,6 +260,18 @@ class TestShutdownThreads(_QuitCase):
         w._minute_thread = None
         w._shutdown_threads()
         self.assertEqual(dead.joins, [], "已结束的线程不应再 join")
+
+    def test_diagnostics_export_warning_does_not_block_shutdown(self):
+        w = self.win
+        diagnostics = _FakeDiagnosticsController()
+        w._diagnostics_controller = diagnostics  # discipline-ok(R5): 退出夹具注入被测控制器
+        w._threads_stopped = True  # discipline-ok(R5): 跳过已验证的其它线程，仅覆盖诊断告警分支
+
+        with patch.object(m, "log_line") as log:
+            w._shutdown_threads()  # discipline-ok(R5): 直接驱动退出收口以覆盖诊断告警分支
+        self.assertEqual(diagnostics.calls, [0.5])  # discipline-ok(R5): 读取替身调用记录核对退出等待
+        log.assert_called_once_with(
+            "diagnostics export still running during exit", "WARNING")
 
 
 class TestAboutToQuitWiring(_QuitCase):

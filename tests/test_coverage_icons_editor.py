@@ -125,13 +125,19 @@ class IconCase(SFCase):
     def setUp(self):
         super().setUp()
         self.d = tempfile.mkdtemp()
-        self._saved = (sf_icons.ICON_PATH, sf_icons._button_images_cache)
+        self._saved = (sf_icons.ICON_PATH, sf_icons._button_images_cache,
+                       os.environ.get("SF_ICON_PATH"))
         # make_app_icon 顺带把图写到 ICON_PATH（用户数据目录）。测试里统一改道到临时目录，
-        # 免得每条用例都去刷一次真用户目录里的那份副产物。
+        # 同时覆盖运行器设置的环境路径，避免存量模块级改道逃出隔离目录。
         sf_icons.ICON_PATH = os.path.join(self.d, "icon.png")
+        os.environ["SF_ICON_PATH"] = sf_icons.ICON_PATH
 
     def tearDown(self):
-        (sf_icons.ICON_PATH, sf_icons._button_images_cache) = self._saved
+        sf_icons.ICON_PATH, sf_icons._button_images_cache, icon_path = self._saved
+        if icon_path is None:
+            os.environ.pop("SF_ICON_PATH", None)
+        else:
+            os.environ["SF_ICON_PATH"] = icon_path
         super().tearDown()
 
 
@@ -389,10 +395,12 @@ class TestAppIcon(IconCase):
         blocker = os.path.join(self.d, "blocker")
         with open(blocker, "w") as fh:
             fh.write("a regular file where a directory is expected")
-        sf_icons.ICON_PATH = os.path.join(blocker, "dir", "icon.png")
+        blocked_path = os.path.join(blocker, "dir", "icon.png")
+        sf_icons.ICON_PATH = blocked_path
+        os.environ["SF_ICON_PATH"] = blocked_path
         img = sf_icons.make_app_icon()
         self.assertEqual(img.width(), APP_ICON_PX)
-        self.assertFalse(os.path.exists(sf_icons.ICON_PATH), "路径不该被建出来：否则这条用例没走到失败分支")
+        self.assertFalse(os.path.exists(blocked_path), "路径不该被建出来：否则没走到失败分支")
 
 
 # --------------------------------------------------------------------------

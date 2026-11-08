@@ -17,9 +17,11 @@
     与本仓"依赖精确锁定 + 可复现"的口径冲突）。
 """
 
+import contextlib
 import importlib.util
 import io
 import os
+import pathlib
 import sys
 import unittest
 
@@ -32,7 +34,9 @@ try:
 except ImportError:                                     # pragma: no cover
     from tests._base import SFCase                     # noqa: E402
 
-# 在这里跑的 = 纯分析型自检：不 mount 卷、不装 app、不起 GUI 进程。
+# 在这里跑的 = 离线/临时目录判据自检：不 mount 卷、不装 app、不起真实 GUI/摄像头/发布动作。
+# 个别工具会调用本机 AppKit/Vision 或扩展属性，但输入和落点都在临时目录；这只验证判据形状，
+# 不替代真实安装版、摄像头、玻璃层、DMG 或发布链验收。
 IN_SUITE = (
     "stable_signing",            # Native certificate-pinned identity and planted signature failures.
     "verify_card_corners",       # independent corner pixels: matched / second-card / blank evidence
@@ -98,9 +102,28 @@ class ChainToolSelfTestsRunInProcess(SFCase):
     """每个工具的 self_test() 必须在本进程里跑过且返回成功。
 
     判据落在返回值上，不读源码文本：自检函数哪天被改成"永远返回 0"，
-    由它自己种的错形被抓不到时 —— 那正是 `test_discipline_scan`/`static_gate`
+    由它自己种的错形抓不到时 —— 那正是 `test_discipline_scan`/`static_gate`
     这些工具自己反复防的那类事，这里用同一把尺子量它们。
     """
+
+    def test_every_listed_tool_self_test_runs_in_the_parent_process(self):
+        failures = []
+        for name in IN_SUITE:
+            mod = _load(name)
+            fn = vars(mod).get("self_test")
+            if not callable(fn):
+                failures.append("%s: 缺少可调用 self_test" % name)
+                continue
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = fn(pathlib.Path(ROOT)) if name == "diag_coverage_check" else fn()
+            except Exception as exc:
+                failures.append("%s: %s: %s" % (name, type(exc).__name__, exc))
+                continue
+            if rc != 0:
+                failures.append("%s: rc=%r\n%s" % (name, rc, (out.getvalue() + err.getvalue())[-500:]))
+        self.assertEqual(failures, [], "链上工具主进程自检失败：%s" % failures)
 
     def test_every_listed_tool_exposes_a_self_test(self):
         missing = []
@@ -125,10 +148,10 @@ class ChainToolSelfTestsRunInProcess(SFCase):
                          % unaccounted)
 
     def test_cli_self_test_ownership_is_documented(self):
-        """工具自检的唯一执行者是 test_release_gates 的独立 CLI 路径。
+        """命令行自检仍由独立进程负责，主进程自检只补覆盖率账和纯判据回归。
 
-        这里不再在本进程重复执行 self_test：同一批工具若在进程内和子进程各跑一遍，
-        只会重复创建临时仓库/解释器/系统资源；CLI 测试已覆盖真实退出码和隔离环境。
+        CLI 路径继续证明真实退出码与隔离环境；这里的主进程路径不替代它，
+        只让纯离线 self_test() 的执行分支进入覆盖率记录。
         """
         self.assertTrue(IN_SUITE, "链上工具自检清单不能为空")
         self.assertNotIn("static_gate", SKIPPED)

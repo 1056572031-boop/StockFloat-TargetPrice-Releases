@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 from unittest import main
 
 from sf_diagnostics_controller import DiagnosticsExportController
@@ -19,6 +20,18 @@ class _Archive:
         if self.error is not None:
             raise self.error
         self.finished = True
+
+
+class _BlockingArchive(_Archive):
+    def __init__(self):
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def finish(self):
+        self.entered.set()
+        self.release.wait(2.0)
+        super().finish()
 
 
 class TestDiagnosticsExportController(SFCase):
@@ -69,11 +82,54 @@ class TestDiagnosticsExportController(SFCase):
             self.controller.start(archive, temporary, "requested", self.results.append))
         os.unlink(temporary)
 
+    def test_finish_sync_is_rejected_after_close(self):
+        temporary = self._temporary()
+        self.controller.close()
+
+        self.controller.finish_sync(_Archive(), temporary, "requested", self.results.append)
+
+        self.assertEqual(self.results, [])
+        self.assertEqual(self.published, [])
+        self.assertTrue(os.path.exists(temporary))
+        os.unlink(temporary)
+
+    def test_close_during_publish_drops_completion_callback(self):
+        temporary = self._temporary()
+        archive = _Archive()
+
+        def publish_and_close(path, requested):
+            self.controller.close()
+            self.published.append((path, requested))
+            return "/tmp/diagnostics.zip"
+
+        self.controller._publish = publish_and_close  # discipline-ok(R5): 注入发布期间关闭的竞态
+        self.controller.finish_sync(archive, temporary, "requested", self.results.append)
+
+        self.assertEqual(self.published, [(temporary, "requested")])
+        self.assertEqual(self.results, [])
+        self.assertFalse(os.path.exists(temporary))
+
     def test_finish_sync_uses_the_same_completion_contract(self):
         temporary = self._temporary()
         self.controller.finish_sync(_Archive(), temporary, "requested", self.results.append)
 
         self.assertEqual(self.results, [("/tmp/diagnostics.zip", None)])
+        self.assertFalse(self.controller.exporting)
+
+    def test_close_during_blocked_export_drops_publish_and_callback(self):
+        temporary = self._temporary()
+        archive = _BlockingArchive()
+        worker = self.controller.start(
+            archive, temporary, "requested", self.results.append)
+
+        self.assertIsNotNone(worker)
+        self.assertTrue(archive.entered.wait(1.0))
+        self.controller.close(timeout=0.05)
+        archive.release.set()
+        self.assertTrue(wait_for(lambda: not worker.is_alive()))
+
+        self.assertEqual(self.published, [])
+        self.assertEqual(self.results, [])
         self.assertFalse(self.controller.exporting)
 
 

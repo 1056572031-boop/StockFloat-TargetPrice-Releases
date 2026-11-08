@@ -306,14 +306,21 @@ class TestAppIconPathCanBeRedirected(SFCase):
         self.assertTrue(os.path.exists(self.default), "不设环境变量时必须仍写默认路径（行为不变）")
 
     def test_direct_module_override_still_beats_the_env_var(self):
-        """存量用例（test_coverage_icons_editor）直接改写 sf_icons.ICON_PATH 改道：
-        将来测试环境全局设了 SF_ICON_PATH 也不许把它们的路径盖掉。"""
+        """测试隔离环境优先于存量模块级路径，避免图标写出测试临时目录。"""
         self._env(SF_ICON_PATH=self.override)
         explicit = os.path.join(self.tmp, "explicit", "icon.png")
         self.track_patch(mock.patch.object(self.sf_icons, "ICON_PATH", explicit))
         self.sf_icons.make_app_icon("light")
+        self.assertTrue(os.path.exists(self.override))
+        self.assertFalse(os.path.exists(explicit))
+
+    def test_direct_module_override_still_works_without_an_environment_override(self):
+        """未设置环境变量时保留直接改写模块路径的既有行为。"""
+        self._env()
+        explicit = os.path.join(self.tmp, "explicit", "icon.png")
+        self.track_patch(mock.patch.object(self.sf_icons, "ICON_PATH", explicit))
+        self.sf_icons.make_app_icon("light")
         self.assertTrue(os.path.exists(explicit))
-        self.assertFalse(os.path.exists(self.override))
 
 
 if __name__ == "__main__":

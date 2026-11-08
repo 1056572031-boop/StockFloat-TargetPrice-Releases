@@ -3450,8 +3450,8 @@ QMenu::separator {
                         log_line("poll backoff: state %s -> %s (fail=%d)" % (old, new_state, new_fail), "WARNING")
                     else:
                         log_line("poll backoff: state %s -> %s (recovered)" % (old, new_state), "INFO")
-        except Exception:
-            pass
+        except Exception as exc:
+            log_swallow("stock_float_window._on_poll_result", exc)
 
     def _minute_loop_wrapper(self):
         """5.1 v1.2.27：分时线程入口，与 _quote_loop_wrapper 相同策略（异常记日志 +
@@ -5681,8 +5681,8 @@ QMenu::separator {
         """请求通知授权（结果不回溯阻断保存，v6 §5.2）。"""
         try:
             request_authorization()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_swallow("stock_float_window._request_notify_auth", exc)
 
     def _panel_targets_transaction(self, code, revision, action):
         import sf_config
@@ -7480,6 +7480,9 @@ QMenu::separator {
             performance.stop()
         if controller is not None:
             controller.stop()
+        diagnostics = getattr(self, "_diagnostics_controller", None)
+        if diagnostics is not None and not diagnostics.close(timeout=0.5):
+            log_line("diagnostics export still running during exit", "WARNING")
         if getattr(self, "_threads_stopped", False):
             return
         self._threads_stopped = True

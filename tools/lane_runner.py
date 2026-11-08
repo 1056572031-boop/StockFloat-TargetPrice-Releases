@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -28,8 +29,11 @@ from typing import TextIO
 ROOT = Path(__file__).resolve().parent.parent
 LANES_DIR = ROOT / "build" / "lanes"
 WEIGHTS_FILE = Path(__file__).with_name("lane_weights.json")
+# 上一轮完整回归的实测耗时（run_tests.sh 默认落点）。build/ 整个被 gitignore，
+# 读它不会在关卡期间改动任何被跟踪文件。
+MEASURED_DURATIONS = ROOT / "build" / "test-durations.json"
 DEFAULT_SEC_PER_CASE = 0.14      # 没有权重记录的新模块：按全套平均每条用例估
-MAX_LANES = 8                    # 实测 5 条以上不再更快；每条车道约 0.4~0.8GB，敲错成 64 会把机器拖垮
+MAX_LANES = 8                    # 实测 8 条已触到单模块地板，再多只耗内存；每条车道约 0.4~1.1GB，敲错成 64 会把机器拖垮
 LANE_TIMEOUT_SEC = 2400.0
 POLL_SEC = 1.0                   # 轮询车道进程的间隔
 PROGRESS_SEC = 60.0              # 多久打一行进度；只是让长时间静默的日志有心跳
@@ -43,13 +47,48 @@ SERIAL_CORE = {
     "test_installer_script_branches": "起替身并检查“旧版是否在运行”",
 }
 
-def load_weights(path: Path = WEIGHTS_FILE) -> dict[str, float]:
-    """模块 -> 估计秒数。读不到就返回空表，全部退回“按用例数估”，不影响正确性只影响均衡。"""
+
+def _nonnegative_seconds(value: object) -> float | None:
+    """只接受有限、非负、非布尔数字，避免坏权重污染车道推导。"""
+    if (not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(value) or value < 0):
+        return None
+    return float(value)
+
+
+def load_weights(path: Path = WEIGHTS_FILE, measured: Path = MEASURED_DURATIONS) -> dict[str, float]:
+    """模块 -> 估计秒数：库存表打底，上一轮实测耗时盖在上面。只影响均衡，不影响判定。
+
+    2026-11-07 实测根因：库存表（2026-10-26 一次性写入后从未刷新）把当时最重的模块之一
+    test_quality_quote_delivery 记成 0.01s，它后来实测 232s，于是"最长优先"把它当轻活
+    堆进一条车道，6 车道跑出 444s 长尾（理论均衡下限 255s）。实测档案每轮完整回归自动
+    重写，让它盖过库存值，秤就永远是最近一轮的实测。档案缺失、损坏或单行形状不对时
+    逐行退回库存值，不抛错；两边都读不到就返回空表，全部退回"按用例数估"。
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return {str(k): float(v) for k, v in data.get("seconds", {}).items()}
-    except (OSError, ValueError, AttributeError):
-        return {}
+        raw_weights = data.get("seconds", {})
+        weights = {}
+        if isinstance(raw_weights, dict):
+            for name, value in raw_weights.items():
+                seconds = _nonnegative_seconds(value)
+                if seconds is not None:
+                    weights[str(name)] = seconds
+    except (OSError, ValueError, AttributeError, TypeError):
+        weights = {}
+    try:
+        report = json.loads(measured.read_text(encoding="utf-8"))
+        rows = report.get("modules") if isinstance(report, dict) else None
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name, seconds = row.get("module"), _nonnegative_seconds(row.get("seconds"))
+                if isinstance(name, str) and seconds is not None:
+                    weights[name] = seconds
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return weights
 
 
 def discover(python: str) -> dict[str, int]:
@@ -339,9 +378,11 @@ def _plan_checks(tmp: Path) -> dict[str, bool]:
     alone = sorted(len(lane) for lane in heavy) == [1, 3] and ["x"] in heavy
     weights = tmp / "w.json"
     weights.write_text("{not json", encoding="utf-8")
-    bad = load_weights(weights)
+    # 显式指向不存在的实测档案：这两条只验库存表本身的读法，不被本机真实档案叠加。
+    absent = tmp / "no-measured.json"
+    bad = load_weights(weights, absent)
     weights.write_text(json.dumps({"seconds": {"a": 1.5}}), encoding="utf-8")
-    good = load_weights(weights)
+    good = load_weights(weights, absent)
     log = tmp / "lane.log"
     log.write_text("t1 ... ok\nt2 ... FAIL\nt3 ... skipped 'why'\nnoise\nt4 ... ERROR\n", encoding="utf-8")
     return {
@@ -355,7 +396,17 @@ def _plan_checks(tmp: Path) -> dict[str, bool]:
         "权重文件正常能读": good == {"a": 1.5},
         "进度计数认 ok/FAIL/skipped/ERROR": done_count(log) == 4,
         "读不到日志时进度为 0": done_count(tmp / "missing.log") == 0,
-        "自动车道数在 1 到 4 之间": 1 <= auto_lanes() <= 4,
+        "自动车道数在 1 到上限之间": 1 <= auto_lanes() <= MAX_LANES,
+        "工作量推导在实测形状上取 6 条": choose_lanes(
+            dict({name: 10 for name in SERIAL_CORE}, **{"f%03d" % i: 10 for i in range(124)}),
+            dict({name: (170.0 if name == "test_update_helper" else 40.0) for name in SERIAL_CORE},
+                 **{"f%03d" % i: 10.0 for i in range(124)}), 10) == 6,
+        "没有权重退回硬件口径": choose_lanes(mods, {}, 10) == hardware_lanes(10),
+        # 单模块压过串行核心时地板取它：总 700、核心 100、单模块 400 → 2 条触底，不是 7 条。
+        "最重单模块压过核心时地板取它": choose_lanes(
+            {"test_update_helper": 10, "test_install_path_routes": 10, "heavy": 121, "f": 200},
+            {"test_update_helper": 60.0, "test_install_path_routes": 40.0, "heavy": 400.0, "f": 200.0},
+            10) == 2,
         "读不到的文件日志尾部有说明": "读不到" in tail(tmp / "missing.log"),
         "日志尾部取最后几行": tail(log, 1).strip().endswith("ERROR"),
     }
@@ -420,9 +471,76 @@ def self_test() -> int:
     return 0
 
 
-def auto_lanes() -> int:
-    """没指定车道数时按核数取：核数少的机器（例如云端运行器）自动退回少车道，1 条就等于串行。"""
-    return max(1, min(4, (os.cpu_count() or 2) // 2))
+def hardware_lanes(cpu_count: int | None) -> int:
+    """没有可用权重时的保守兜底：按核数取，最多 4 条（2026-10-26 至 2026-11-07 的默认口径）。"""
+    return max(1, min(4, (cpu_count or 2) // 2))
+
+
+# 推导车道数时允许的"超出地板"余量：均衡负载在地板的 5% 以内就算触底，
+# 不为边际收益多开车道（每条车道约 0.4~1.1GB 常驻内存）。
+LANES_FLOOR_TOLERANCE = 1.05
+
+
+def choose_lanes(modules: dict[str, int], weights: dict[str, float], cpu_count: int | None) -> int:
+    """纯函数：车道数由工作量推导，不猜硬件。
+
+    地板取两者的较大值：串行核心（SERIAL_CORE 三个模块必须同车道串行）的权重和，
+    以及最重单模块的权重——两者都劈不开，车道再多墙钟也压不穿。2026-11-07 主树
+    8 车道实测：最重单模块 test_quality_quote_delivery 独占一条车道跑 311s，压过
+    串行核心的 275s，整轮恰好停在单模块地板上。取"总工作量 / N ≤ 地板 × 1.05"
+    的最小 N，不为边际收益多开车道（每条车道约 0.4~1.1GB）。核数上限留 2 核给
+    系统与用例子进程突发；权重缺失、串行核心不在套件里（--only 子集）或地板为零时，
+    退回 hardware_lanes 的保守口径。只影响跑多快，不影响任何判定。
+    """
+    def weight(name: str) -> float:
+        return weights.get(name, modules[name] * DEFAULT_SEC_PER_CASE)
+
+    core = [name for name in SERIAL_CORE if name in modules]
+    core_load = sum(weight(name) for name in core)
+    total = sum(weight(name) for name in modules)
+    # 没有任何权重记录时不用"用例数×0.14"的粗估去推导（它会把车道数顶到上限），
+    # 退回保守的硬件口径；--only 子集没有串行核心时同样无从谈地板。
+    if not weights or not core or core_load <= 0 or total <= 0:
+        return hardware_lanes(cpu_count)
+    floor = max(core_load, max(weight(name) for name in modules))
+    needed = math.ceil(total / (floor * LANES_FLOOR_TOLERANCE))
+    cpu_cap = max(1, (cpu_count or 2) - 2)
+    return max(1, min(needed, cpu_cap, MAX_LANES))
+
+
+def auto_lanes(modules: dict[str, int] | None = None,
+               weights: dict[str, float] | None = None) -> int:
+    """没指定车道数时的默认：按同一份已发现模块快照推导。
+
+    传入 modules/weights 时复用调用方快照，避免主流程重复启动发现子进程或读取档案；
+    直接调用时仍自行发现和读取。发现失败退回按核数的保守口径。
+    """
+    if modules is None:
+        try:
+            modules = discover(sys.executable)
+        except RuntimeError:
+            return hardware_lanes(os.cpu_count())
+    if weights is None:
+        weights = load_weights()
+    return choose_lanes(modules, weights, os.cpu_count())
+
+
+def lanes_rationale(modules: dict[str, int], weights: dict[str, float],
+                    cpu_count: int | None, chosen: int) -> str:
+    """把"为什么是这个车道数"说清楚：阈值来源可见，不让人对着数字猜。"""
+    def weight(name: str) -> float:
+        return weights.get(name, modules[name] * DEFAULT_SEC_PER_CASE)
+
+    core = [name for name in SERIAL_CORE if name in modules]
+    core_load = sum(weight(name) for name in core)
+    total = sum(weight(name) for name in modules)
+    if not weights or not core or core_load <= 0 or total <= 0:
+        return "车道数 %d：无可用权重或套件里没有串行核心，按核数保守取（硬件兜底口径）" % chosen
+    heaviest = max(weight(name) for name in modules)
+    return ("车道数 %d：按工作量推导（总工作量 %.0fs，串行核心地板 %.0fs，最重单模块 %.0fs，"
+            "取大 %.0fs×%.2f，核数上限 %d）"
+            % (chosen, total, core_load, heaviest, max(core_load, heaviest),
+               LANES_FLOOR_TOLERANCE, max(1, (cpu_count or 2) - 2)))
 
 
 def tail(path: Path, lines: int = 25) -> str:
@@ -459,12 +577,14 @@ def main(argv=None) -> int:
             print("!! --only 里有不存在的模块：%s" % ", ".join(unknown))
             return 2
         modules = {m: modules[m] for m in args.only}
-    lanes_wanted = args.lanes or auto_lanes()
+    weights = load_weights()
+    lanes_wanted = args.lanes or auto_lanes(modules, weights)
     if lanes_wanted > MAX_LANES:
         print("   车道数 %d 超过上限，按 %d 条跑（上限的理由见 MAX_LANES 的注释）" % (lanes_wanted, MAX_LANES))
         lanes_wanted = MAX_LANES
-    plan = plan_lanes(modules, lanes_wanted, load_weights())
-    weights = load_weights()
+    if not args.lanes:
+        print("   " + lanes_rationale(modules, weights, os.cpu_count(), lanes_wanted))
+    plan = plan_lanes(modules, lanes_wanted, weights)
     print("== 车道总指挥：%d 个模块 / %d 条用例 → %d 条车道%s ==" % (
         len(modules), sum(modules.values()), len(plan), "（冒烟子集，不是完整关卡）" if subset else ""))
     for index, lane in enumerate(plan):

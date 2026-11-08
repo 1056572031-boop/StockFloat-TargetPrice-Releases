@@ -55,6 +55,51 @@ class TestQualityEvidenceValidation(SFCase):
         self.record.pop("acceptance_map")
         self.assertTrue(any("acceptance_map" in item for item in evidence.validate(self.record)))
 
+    def test_scenario_matrix_rejects_wrong_shapes_and_status_combinations(self):
+        cases = [
+            (None, "真实场景矩阵必须是数组"),
+            (["not-object"], "必须是对象"),
+            ([{"id": 1}], "id 必须是字符串"),
+            ([{"id": "unknown", "status": "unverified", "required": False,
+               "reason": "x"}], "未知真实场景"),
+            ([{"id": "local_mac", "status": "broken", "required": True}], "状态无效"),
+            ([{"id": "local_mac", "status": "unverified", "required": "yes"}], "required 必须是布尔值"),
+            ([{"id": "local_mac", "status": "unverified", "required": False}], "缺少非空 reason"),
+            ([{"id": "fullscreen", "status": "not_applicable", "required": True,
+               "reason": "x"}], "豁免仍是必需"),
+            ([{"id": "local_mac", "status": "passed", "required": False,
+               "receipts": []}], "通过场景必须保持"),
+            ([{"id": "local_mac", "status": "passed", "required": True,
+               "receipts": [""]}], "receipt 路径无效"),
+            ([{"id": "local_mac", "status": "unverified", "required": False,
+               "reason": "x", "observation": {}}], "不得携带通过证据"),
+        ]
+        for scenarios, needle in cases:
+            with self.subTest(needle=needle):
+                record = {"scenarios": scenarios}
+                errors = evidence.validate_scenarios(record)
+                self.assertTrue(any(needle in item for item in errors), errors)
+
+    def test_release_policy_rejects_missing_or_modified_closed_policy(self):
+        record = evidence.template()
+        for mutation in ("missing", "exclusions", "boundaries"):
+            with self.subTest(mutation=mutation):
+                candidate = copy.deepcopy(record)
+                if mutation == "missing":
+                    candidate.pop("release_qualification", None)
+                elif mutation == "exclusions":
+                    candidate["release_qualification"]["excluded_scenarios"] = {}
+                else:
+                    candidate["release_qualification"]["capability_boundaries"] = {}
+                errors = evidence.validate_release_policy(candidate)
+                self.assertTrue(errors, mutation)
+
+    def test_validate_rejects_non_object_and_incomplete_records(self):
+        self.assertIn("记录必须是 JSON 对象", evidence.validate([]))
+        errors = evidence.validate({"schema_version": 99, "change_id": "", "intent": ""})
+        self.assertTrue(any("schema_version" in item for item in errors))
+        self.assertTrue(any("缺少必填字段" in item for item in errors))
+
 
 class TestArtifactFingerprint(SFCase):
     def setUp(self):
