@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.113",
-  "published_at": "2026-11-06T07:08:15Z",
+  "version": "1.4.114",
+  "published_at": "2026-11-08T15:29:23Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 修复其他程序在前台时，右键菜单第一次点击不生效、要多点几次的问题。",
+  "notes": "1. 退出程序时，正在导出的诊断资料会安全收尾，不再留下未完成的导出任务。\n2. 行情状态或通知授权发生异常时，会留下可供排查的记录，不再悄悄失去反馈。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.113-macos.zip",
-    "size": 27253898,
-    "sha256": "e9da897b8ea4ebf3e093f333d37dc35218e43bab5880abad8c3a5dc42a6442d8"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.114-macos.zip",
+    "size": 27253966,
+    "sha256": "13749387b79e53049446040473150c7c9d05d670dafee334c2c5acf56f10cf04"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "zqjc/NrwYZMvSlWWh5E6tuOrIGy7Lswv0YQJX3F+pCnbHwjsDM9+IBFlUFe0SUoyZd1eyXFOq+wg9GBRPgKkDg=="
+    "value": "y609C+37MVQIsQ7eAaqnFo4wog7pm7cs6fw4tx6nWw9Vss+weYgCGLZ/r69mbS64J1D7im8chvNmSeuLXFqGBA=="
   }
 }
