@@ -44,18 +44,39 @@ def init_state(root: Path, path: Path, version: str) -> dict[str, Any]:
     return state
 
 
-def validate(root: Path, path: Path, expected_stage: str | None = None) -> dict[str, Any]:
+def _load_state(path: Path, expected_stage: str | None = None) -> dict[str, Any]:
     state = evidence.load(path)
     if state.get("schema_version") != 1 or state.get("stage") not in STAGES:
         raise ValueError("发布状态结构无效")
-    if state.get("source") != source_snapshot(root):
-        raise ValueError("发布状态已失效：源码或文档已变化，必须重新回归并生成候选")
     if expected_stage and state["stage"] != expected_stage:
         raise ValueError(f"发布状态不是 {expected_stage}: {state['stage']}")
+    return state
+
+
+def _validate_bound_files(state: dict[str, Any]) -> None:
     for group in ("artifacts", "observations"):
         for item in state[group].values():
             if reference(Path(item["path"])) != item:
                 raise ValueError("已绑定文件发生变化: " + item["path"])
+
+
+def validate(root: Path, path: Path, expected_stage: str | None = None) -> dict[str, Any]:
+    state = _load_state(path, expected_stage)
+    if state.get("source") != source_snapshot(root):
+        raise ValueError("发布状态已失效：源码或文档已变化，必须重新回归并生成候选")
+    _validate_bound_files(state)
+    return state
+
+
+def validate_historical(path: Path, expected_stage: str | None = None) -> dict[str, Any]:
+    """Validate frozen release bindings without requiring the current tree to match.
+
+    Once a release is complete, later archival commits are allowed to advance HEAD.
+    They must not rewrite the published source/artifact identity, but reports still
+    need to detect any changed bound evidence files.
+    """
+    state = _load_state(path, expected_stage)
+    _validate_bound_files(state)
     return state
 
 
@@ -268,17 +289,40 @@ def finish(root: Path, path: Path, record_path: Path, readback: Path,
     return advance(path, state, "complete")
 
 
+def _bound_complete_observation(state: dict[str, Any], name: str, supplied: Path | None) -> Path:
+    """Resolve a complete-report input only when it is the frozen bound evidence."""
+    expected = state.get("observations", {}).get(name)
+    if not isinstance(expected, dict) or not isinstance(expected.get("path"), str):
+        raise ValueError("完成状态缺少已绑定证据: " + name)
+    path = supplied or Path(expected["path"])
+    if reference(path) != expected:
+        raise ValueError("完成状态报告证据未绑定: " + name)
+    return path
+
+
 def report(root: Path, path: Path, record_path: Path | None = None,
            readback: Path | None = None, delivery: Path | None = None) -> dict[str, Any]:
-    state = evidence.load(path)
+    state = _load_state(path)
     blockers = []
-    current = True
-    try:
-        validate(root, path)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        blockers.append(str(exc))
-        current = False
-    if record_path is None:
+    current_tree_advanced = False
+    if state["stage"] == "complete":
+        try:
+            validate_historical(path, "complete")
+            current_tree_advanced = state["source"] != source_snapshot(root)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            blockers.append(str(exc))
+    else:
+        try:
+            validate(root, path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            blockers.append(str(exc))
+    if state["stage"] == "complete":
+        try:
+            record_path = _bound_complete_observation(state, "acceptance_quality", record_path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            blockers.append(str(exc))
+            record_path = None
+    elif record_path is None:
         bound = state.get("observations", {})
         item = bound.get("acceptance_quality", bound.get("publish_quality"))
         record_path = Path(item["path"]) if item else None
@@ -289,7 +333,10 @@ def report(root: Path, path: Path, record_path: Path | None = None,
         record = {}
     if record_path and state.get("artifacts"):
         try:
-            quality(root, state, record_path, complete=state["stage"] == "complete")
+            if state["stage"] == "complete":
+                _complete_quality(record_path, state)
+            else:
+                quality(root, state, record_path)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             blockers.append(str(exc))
     scenarios = {item["id"]: item for item in record.get("scenarios", [])}
@@ -299,7 +346,13 @@ def report(root: Path, path: Path, record_path: Path | None = None,
     delivery_matrix = {name: {"status": "unverified"} for name in
                        ("candidate_startup", "fresh_install", "upgrade_install", "ota_forward",
                         "ota_rollback", "user_data_readback", "old_app_restart")}
-    if readback is None and "readback" in state["observations"]:
+    if state["stage"] == "complete":
+        try:
+            readback = _bound_complete_observation(state, "readback", readback)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            blockers.append(str(exc))
+            readback = None
+    elif readback is None and "readback" in state["observations"]:
         readback = Path(state["observations"]["readback"]["path"])
     for kind, input_path in (("readback", readback), ("delivery", delivery)):
         if input_path is None:
@@ -318,9 +371,11 @@ def report(root: Path, path: Path, record_path: Path | None = None,
                 delivery_matrix.update(value.get("matrix", {}))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             blockers.append(str(exc))
+    effective_stage = state["stage"] if state["stage"] == "complete" or not blockers else "source_open"
     return {"schema_version": 1, "generated_at": evidence.now(), "version": state["version"],
-            "recorded_stage": state["stage"], "effective_stage": state["stage"] if current else "source_open",
+            "recorded_stage": state["stage"], "effective_stage": effective_stage,
             "complete": state["stage"] == "complete" and not blockers,
+            "current_tree_advanced": current_tree_advanced,
             "source": state["source"], "artifacts": state["artifacts"],
             "observations": state["observations"], "matrix": matrix, "blockers": blockers,
             "channels": channels, "candidate_delivery": delivery_matrix,
@@ -334,7 +389,10 @@ def write_report(root: Path, path: Path, output: Path, record_path: Path | None 
     value = report(root, path, record_path, readback, delivery)
     evidence.atomic_json(output, value)
     lines = ["# 发布总报告", "", "版本：" + value["version"], "阶段：" + value["effective_stage"],
-             "发布验收完成：" + ("是" if value["complete"] else "否"), "", value["boundary"], "", "## 阻断项"]
+             "发布验收完成：" + ("是" if value["complete"] else "否")]
+    if value["current_tree_advanced"]:
+        lines.append("当前源码树已前进；本报告仍按冻结发布身份核验历史发布结果。")
+    lines += ["", value["boundary"], "", "## 阻断项"]
     lines += ["- " + item for item in value["blockers"]] or ["- 未发现阻断；不代表未执行项目通过"]
     lines += ["", "## 场景矩阵", "", "| 项目 | 状态 | 说明 |", "| --- | --- | --- |"]
     lines += [f"| {item['id']} | {item['status']} | {item.get('reason', '')} |" for item in value["matrix"]]

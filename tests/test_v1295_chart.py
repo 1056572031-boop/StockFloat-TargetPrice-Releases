@@ -51,7 +51,8 @@ class TestChartMetrics(unittest.TestCase):
     def test_range_is_finite_for_every_dirty_input(self):
         for name, pts in _DIRTY_SETS:
             o = _obj(pts=pts)
-            m = R.RenderMixin._chart_metrics(o, pts, RECT)
+            m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
+
             self.assertTrue(math.isfinite(m["lo"]) and math.isfinite(m["hi"]),
                             "%s：lo/hi 必须是有限数，实得 %r / %r" % (name, m["lo"], m["hi"]))
             self.assertGreater(m["hi"], m["lo"], "%s：区间不得退化成零宽度" % name)
@@ -60,9 +61,30 @@ class TestChartMetrics(unittest.TestCase):
         """正常数据的取值不能被防御逻辑改动。"""
         pts = [("0930", 10.0), ("0931", 11.0)]
         o = _obj(pts=pts)
-        m = R.RenderMixin._chart_metrics(o, pts, RECT)
+        m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
         self.assertAlmostEqual(m["lo"], 9.9, places=6)
         self.assertAlmostEqual(m["hi"], 11.1, places=6)
+
+    def test_current_quote_price_is_in_chart_range(self):
+        """实时行情领先于分时末点时，红点坐标不得被旧区间夹到图顶。"""
+        pts = [("0930", 12.0, 12.0), ("0931", 12.0, 12.0)]
+        o = _obj(quote={"pre_close": 12.0, "price": "15.0"}, pts=pts)
+        m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
+        self.assertGreaterEqual(m["hi"], 15.0)
+        self.assertLess(R.RenderMixin._chart_y(o, RECT, m, 15.0),
+                        R.RenderMixin._chart_y(o, RECT, m, 12.0))
+
+    def test_invalid_quote_price_conversion_is_safe(self):
+        """行情对象能伪装成数字但转换失败时，图表仍回退到分时/昨收区间。"""
+        class BadFloat(float):
+            def __float__(self):
+                raise ValueError("bad price")
+
+        pts = [("0930", 12.0, 12.0), ("0931", 12.0, 12.0)]
+        o = _obj(quote={"pre_close": 12.0, "price": BadFloat(15.0)}, pts=pts)
+        m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
+        self.assertTrue(math.isfinite(m["lo"]) and math.isfinite(m["hi"]))
+        self.assertLess(m["hi"], 15.0)
 
 
 class TestChartY(unittest.TestCase):
@@ -70,7 +92,8 @@ class TestChartY(unittest.TestCase):
     def test_y_is_finite_for_dirty_price(self):
         pts = [("0930", 10.1), ("0931", 10.2)]
         o = _obj(pts=pts)
-        m = R.RenderMixin._chart_metrics(o, pts, RECT)
+        m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
+
         for bad in (_INF, -_INF, _NAN, "abc", None):
             y = R.RenderMixin._chart_y(o, RECT, m, bad)
             self.assertTrue(math.isfinite(y),
@@ -88,7 +111,8 @@ class TestChartY(unittest.TestCase):
     def test_y_within_rect(self):
         pts = [("0930", 10.0), ("0931", 11.0)]
         o = _obj(pts=pts)
-        m = R.RenderMixin._chart_metrics(o, pts, RECT)
+        m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
+
         for price in (10.0, 10.5, 11.0, 999.0, -999.0):
             y = R.RenderMixin._chart_y(o, RECT, m, price)
             self.assertGreaterEqual(y, RECT.top() - 1e-6)
@@ -100,7 +124,8 @@ class TestClampAndCache(unittest.TestCase):
     def test_clamp_price(self):
         pts = [("0930", 10.0), ("0931", 11.0)]
         o = _obj(pts=pts)
-        m = R.RenderMixin._chart_metrics(o, pts, RECT)
+        m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
+
         self.assertAlmostEqual(R.RenderMixin._clamp_price(o, 10.5, m), 10.5)
         # 非有限值回落到昨收（比"贴着图框边缘"更贴近真实含义），再夹进区间
         self.assertAlmostEqual(R.RenderMixin._clamp_price(o, _INF, m), 10.0)
@@ -115,7 +140,8 @@ class TestClampAndCache(unittest.TestCase):
         """均价为 inf 时，归一化数组不得出现 nan/inf。"""
         pts = [("0930", 10.0, _INF), ("0931", 10.5, _NAN), ("0932", 11.0, 10.4)]
         o = _obj(pts=pts)
-        m = R.RenderMixin._chart_metrics(o, pts, RECT)
+        m = R.RenderMixin._chart_metrics(o, pts, RECT)  # discipline-ok(R5): chart metrics is the production seam under test
+
         xs, np_, na = R.RenderMixin._chart_pts_cache(o, RECT, m)
         for arr, label in ((xs, "xs"), (np_, "np"), (na, "na")):
             for v in arr:

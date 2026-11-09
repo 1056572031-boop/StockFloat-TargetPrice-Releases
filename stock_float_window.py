@@ -4273,7 +4273,7 @@ QMenu::separator {
                 else:
                     tick_batch = ([] if paused else ticks.take(self.code, global_order=True)
                                   if ticks.persistent and callable(consume_old) else ticks.take(self.code))
-            except TimeoutError as exc:
+            except (BlockingIOError, TimeoutError) as exc:
                 # 配置锁被行情线程短暂占用是可恢复的轮询竞争（探针实测持锁毫秒级）：目标价行情
                 # 仍在持久化队列里，下一拍重试，所以短暂占用只留节流日志，不记 SWALLOWED。
                 # 但持续占用意味着目标价一直没被判定，那是真正的静默失效：连续超过

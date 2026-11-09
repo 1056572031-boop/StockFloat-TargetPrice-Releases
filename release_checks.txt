@@ -20,7 +20,22 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.114
+version 1.4.115
+# ---- v1.4.115：实时价分时图、诊断导出与目标价锁竞争 ----
+# 当前价先于分时数据到达时，图表范围与红点均以有效实时行情为准；诊断导出并发点击只保留一个任务；目标价消费把 BlockingIOError 与超时锁竞争统一为可恢复的延后重试。
+check sf_ui_render::_chart_metrics
+check sf_ui_render::_draw_chart_dot
+check sf_diagnostics_controller::_lock
+check stock_float_window::_evaluate_received_quote
+testref tests/test_v1295_chart.py::TestChartMetrics::test_current_quote_price_is_in_chart_range
+testref tests/test_v1295_chart.py::TestChartMetrics::test_invalid_quote_price_conversion_is_safe
+testref tests/test_diagnostics_controller.py::TestDiagnosticsExportController::test_concurrent_start_accepts_only_one_export
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_target_tick_read_blocking_ioerror_is_deferred_without_swallowed_failure
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_sustained_target_tick_read_blocking_ioerror_is_reported_as_swallowed
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_target_tick_read_blocking_ioerror_timer_resets_after_successful_consumption
+
+# v1.4.114 的归档特征如下，仅保留历史说明。
+# version 1.4.114
 # ---- v1.4.114：诊断导出退出收口与异常留痕 ----
 # 基线 9af3f42（当前开发树的完整回归基线）。本轮产品代码改动：诊断导出控制器增加关闭态/取消与有界等待；主窗退出接入诊断控制器；行情熔断与通知授权异常改为可检索留痕。
 # 由行为测试覆盖线程退出、发布取消、异常日志和主窗退出告警；包内特征使用稳定的新增方法/日志入口核验。
@@ -512,9 +527,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.114 Beta**
+checkfile Contents/Resources/docs/README.md::v1.4.115 Beta**
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.114
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.115
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

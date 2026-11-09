@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-08",
+  "updated": "2026-11-09",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -5745,6 +5745,18 @@
       "escapes_this_round": 0,
       "defense_added": [],
       "zero_reason": "本轮修复来自维护者对退出生命周期和异常留痕的源码走查与定向回归；当前候选尚未发布，没有新增用户、装机现场或第二台机器报回的线上逃逸。0 仅表示本轮没有可归入线上逃逸台账的新发现，不表示诊断导出取消、行情异常留痕、通知授权异常或真实安装升级已在发布环境验证。"
+    },
+    {
+      "version": "1.4.115",
+      "date": "2026-11-09",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "分时图当前价：test_v1295_chart 覆盖实时行情领先分时末点时的纵轴范围与回退脏值。",
+        "诊断导出并发：test_diagnostics_controller 连续 200 轮并发启动，确认只接受一个任务。",
+        "目标价锁竞争：test_target_commit_retry 覆盖 BlockingIOError 与超时竞争的延后重试、持续升级和成功恢复。"
+      ],
+      "zero_reason": "本轮修复来自维护者复核和并发边界测试，没有新增 online_user、second_machine 或 installed_field 报回的线上逃逸。0 仅表示本轮未登记新逃逸，不表示分时图当前价、诊断导出或目标价锁竞争已在最终装机版、OTA 更新和真实点击场景完成验收；这些仍须在发布后独立读回。"
     }
   ],
   "comparison_policy": {

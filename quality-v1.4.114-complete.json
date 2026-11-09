@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "change_id": "CHANGE-f3374f44f932",
+  "status": "release_candidate",
+  "intent": "发布 v1.4.114 候选；本记录由发布证据工具起草，真实场景保持未验证（发布后独立读回与装机版走查）",
+  "scope": [
+    "quality-v1.4.114.json",
+    "quality-v1.4.114.manifest.json",
+    "quality-v1.4.114-complete.json",
+    "quality-v1.4.114-complete.manifest.json",
+    "outputs/release-candidates/v1.4.114/online-manifest.json",
+    "outputs/release-candidates/v1.4.114/post_release.json",
+    "outputs/release-candidates/v1.4.114/publish.log"
+  ],
+  "acceptance": [
+    "回归关卡、公开资料和诊断覆盖均有当前源码同源凭据",
+    "候选冻结包、特征、签名和候选交付核验均有当前源码同源凭据",
+    "发布后独立读回报告有同源执行凭据",
+    "装机版走查结果有同源执行凭据"
+  ],
+  "acceptance_map": [
+    {
+      "acceptance": "回归关卡、公开资料和诊断覆盖均有当前源码同源凭据",
+      "evidence_index": 0
+    },
+    {
+      "acceptance": "回归关卡、公开资料和诊断覆盖均有当前源码同源凭据",
+      "evidence_index": 1
+    },
+    {
+      "acceptance": "回归关卡、公开资料和诊断覆盖均有当前源码同源凭据",
+      "evidence_index": 2
+    },
+    {
+      "acceptance": "候选冻结包、特征、签名和候选交付核验均有当前源码同源凭据",
+      "evidence_index": 3
+    },
+    {
+      "acceptance": "候选冻结包、特征、签名和候选交付核验均有当前源码同源凭据",
+      "evidence_index": 4
+    },
+    {
+      "acceptance": "候选冻结包、特征、签名和候选交付核验均有当前源码同源凭据",
+      "evidence_index": 5
+    },
+    {
+      "acceptance": "候选冻结包、特征、签名和候选交付核验均有当前源码同源凭据",
+      "evidence_index": 6
+    },
+    {
+      "acceptance": "发布后独立读回报告有同源执行凭据",
+      "evidence_index": 7
+    },
+    {
+      "acceptance": "装机版走查结果有同源执行凭据",
+      "evidence_index": 8
+    }
+  ],
+  "verification_evidence": [
+    {
+      "command": "./.venv/bin/python3 tools/gate_stamp.py check",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/f99b158fff184e2da31a4a94434bbb76/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 tools/public_docs_check.py",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/a5099f0dbaad4159b38404f19267d024/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 tools/diag_coverage_check.py --version 1.4.114 --baseline c5c81f6819123faa58c057507fdc7951ecdee347",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/a71d86936b4f4d26a8219c6cdfb7ffbd/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 tools/smoke_frozen_app.py dist/Skyrocket.app",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/5deb1ddcbcde4ee99d93eb3bbca71d82/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 tools/release_feature_check.py dist/Skyrocket.app",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/4df6ba17111f4141a15a065e14d2ffe1/receipt.json"
+    },
+    {
+      "command": "/usr/bin/codesign --verify --deep --strict dist/Skyrocket.app",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/8b5feea0f354436ab5396203e943118e/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.114/Skyrocket-1.4.114-macos.zip --out build/quality-evidence-v1.4.114/delivery.json --old-app /Applications/Skyrocket.app",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/23342e9d7f0944bf95dd20b69333a82a/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"verified\"] is True; assert all(d[\"checks\"][k][\"status\"] == \"passed\" for k in (\"ota_manifest\",\"zip\",\"dmg\",\"public_source\",\"checksums\",\"public_ci\",\"final_startup\")); assert d[\"version\"] == \"1.4.114\"' '/Users/example/Documents/程序-源文件/【实时股价】目标价版/build/release-evidence-v1.4.114/readback-v1.json'",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/77ba370be7d24c58bad5828fdd19fcd8/receipt.json"
+    },
+    {
+      "command": "./.venv/bin/python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d[\"summary\"]; assert d[\"version\"] == \"1.4.114\"; assert s[\"ok\"] is True and (s[\"ran\"],s[\"passed\"],s[\"failed\"],s[\"skipped\"]) == (6,6,0,0); assert d[\"user_data\"][\"ok\"] is True; assert all(x[\"status\"] == \"pass\" for x in d[\"results\"])' '/Users/example/Documents/程序-源文件/【实时股价】目标价版/build/release-evidence-v1.4.114/click-walkthrough/result.json'",
+      "exit_code": 0,
+      "receipt": "build/quality-evidence-v1.4.114/12520d77227f4e61a0ab099e1fcfd25a/receipt.json"
+    }
+  ],
+  "artifact_fingerprint": {
+    "source": "646de9a0d5066748304944fa61341d63",
+    "artifacts": [
+      {
+        "path": "dist/Skyrocket.app"
+      },
+      {
+        "path": "build/Skyrocket-V1.4.114.dmg"
+      },
+      {
+        "path": "build/update_assets/V1.4.114/Skyrocket-1.4.114-macos.zip"
+      },
+      {
+        "path": "build/update_assets/V1.4.114/Skyrocket-update.json"
+      }
+    ]
+  },
+  "release_qualification": {
+    "stage": "complete",
+    "policy_version": 2,
+    "excluded_scenarios": {
+      "fullscreen": "用户永久排除第三方浏览器专项；不代表常规自动全屏测试通过",
+      "camera_upgrade": "用户永久排除 camera_upgrade 专项；不代表摄像头升级验证通过",
+      "second_mac": "用户永久排除 second_mac 专项；不代表第二台 Mac 实测通过",
+      "browser_download": "用户永久排除 browser_download/Gatekeeper 专项；不代表下载与 Gatekeeper 实测通过"
+    },
+    "capability_boundaries": {
+      "intel": {
+        "status": "not_applicable",
+        "required": false,
+        "reason": "当前产品不支持 ARM 包安装到 Intel；不支持不代表通过，也不得声称 Intel 实测通过"
+      }
+    },
+    "baseline": "c5c81f6819123faa58c057507fdc7951ecdee347"
+  },
+  "release_artifacts": {
+    "version": "1.4.114",
+    "roles": {
+      "app": {
+        "path": "dist/Skyrocket.app",
+        "sha256": "8a4f7da4d5c394db8b5362e9a60bc2ec0110bdd56917596ccd2ed9960f81a112",
+        "entries": 236,
+        "kind": "directory"
+      },
+      "dmg": {
+        "path": "build/Skyrocket-V1.4.114.dmg",
+        "sha256": "aea202969455eb1ef8b8589902405e3cebe6a1e9c3a4ad1e04087b5f30d0fca1",
+        "entries": 1,
+        "kind": "file",
+        "content_sha256": "df717b4ead19c23de1f948eeaaf112e64c587c003220933580ba680e1e93e779"
+      },
+      "zip": {
+        "path": "build/update_assets/V1.4.114/Skyrocket-1.4.114-macos.zip",
+        "sha256": "2fec6f0907e1f6f32df7100905cb973e2dc9c260e5ffa440aa36ca65815cb203",
+        "entries": 1,
+        "kind": "file",
+        "content_sha256": "13749387b79e53049446040473150c7c9d05d670dafee334c2c5acf56f10cf04"
+      },
+      "ota_manifest": {
+        "path": "build/update_assets/V1.4.114/Skyrocket-update.json",
+        "sha256": "69f788587c811479ba153df03416698a0445720fcad896b139d995fe574f1913",
+        "entries": 1,
+        "kind": "file",
+        "content_sha256": "d7f897a7177e288da0e23e9aa3c5e287da1bd258d1faabc1a73c888c7a797872"
+      }
+    },
+    "ota": {
+      "archive_role": "zip",
+      "manifest_role": "ota_manifest"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "local_mac",
+      "status": "passed",
+      "required": true,
+      "reason": "候选冻结包冒烟证据",
+      "receipts": [
+        "build/quality-evidence-v1.4.114/5deb1ddcbcde4ee99d93eb3bbca71d82/receipt.json"
+      ],
+      "observation": {
+        "source": "646de9a0d5066748304944fa61341d63",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "release_evidence",
+        "procedure": "./.venv/bin/python3 tools/smoke_frozen_app.py dist/Skyrocket.app",
+        "observed_at": "2026-11-08T15:30:49.311808+00:00",
+        "artifact_sha256": "8a4f7da4d5c394db8b5362e9a60bc2ec0110bdd56917596ccd2ed9960f81a112",
+        "signals": {
+          "first_frame": true,
+          "clean_exit": true
+        },
+        "attachments": [
+          {
+            "path": "build/quality-evidence-v1.4.114/5deb1ddcbcde4ee99d93eb3bbca71d82/command.log",
+            "sha256": "e037238a671670b506e04f8473dc66ee1d3d561eb86709cf34db8833b9026921"
+          }
+        ]
+      }
+    },
+    {
+      "id": "second_mac",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 second_mac 专项；不代表第二台 Mac 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "intel",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "当前产品不支持 ARM 包安装到 Intel；不支持不代表通过，也不得声称 Intel 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "fresh_install",
+      "status": "passed",
+      "required": true,
+      "reason": "候选交付隔离验收证据",
+      "receipts": [
+        "build/quality-evidence-v1.4.114/23342e9d7f0944bf95dd20b69333a82a/receipt.json"
+      ],
+      "observation": {
+        "source": "646de9a0d5066748304944fa61341d63",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "release_evidence",
+        "procedure": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.114/Skyrocket-1.4.114-macos.zip --out build/quality-evidence-v1.4.114/delivery.json --old-app /Applications/Skyrocket.app",
+        "observed_at": "2026-11-08T15:32:14.117254+00:00",
+        "artifact_sha256": "8a4f7da4d5c394db8b5362e9a60bc2ec0110bdd56917596ccd2ed9960f81a112",
+        "signals": {
+          "installed_version": true,
+          "signature_valid": true,
+          "first_frame": true
+        },
+        "attachments": [
+          {
+            "path": "build/quality-evidence-v1.4.114/23342e9d7f0944bf95dd20b69333a82a/command.log",
+            "sha256": "4e64e7211f686a29d684aafd7aa2f5d5403579983afd1444bec002ed9fd1a169"
+          }
+        ]
+      }
+    },
+    {
+      "id": "upgrade_install",
+      "status": "passed",
+      "required": true,
+      "reason": "候选交付隔离验收证据",
+      "receipts": [
+        "build/quality-evidence-v1.4.114/23342e9d7f0944bf95dd20b69333a82a/receipt.json"
+      ],
+      "observation": {
+        "source": "646de9a0d5066748304944fa61341d63",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "release_evidence",
+        "procedure": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.114/Skyrocket-1.4.114-macos.zip --out build/quality-evidence-v1.4.114/delivery.json --old-app /Applications/Skyrocket.app",
+        "observed_at": "2026-11-08T15:32:14.117254+00:00",
+        "artifact_sha256": "8a4f7da4d5c394db8b5362e9a60bc2ec0110bdd56917596ccd2ed9960f81a112",
+        "signals": {
+          "installed_version": true,
+          "user_data_preserved": true,
+          "first_frame": true
+        },
+        "attachments": [
+          {
+            "path": "build/quality-evidence-v1.4.114/23342e9d7f0944bf95dd20b69333a82a/command.log",
+            "sha256": "4e64e7211f686a29d684aafd7aa2f5d5403579983afd1444bec002ed9fd1a169"
+          }
+        ]
+      }
+    },
+    {
+      "id": "camera_upgrade",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 camera_upgrade 专项；不代表摄像头升级验证通过",
+      "receipts": []
+    },
+    {
+      "id": "fullscreen",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除第三方浏览器专项；不代表常规自动全屏测试通过",
+      "receipts": []
+    },
+    {
+      "id": "browser_download",
+      "status": "not_applicable",
+      "required": false,
+      "reason": "用户永久排除 browser_download/Gatekeeper 专项；不代表下载与 Gatekeeper 实测通过",
+      "receipts": []
+    },
+    {
+      "id": "ota_rollback",
+      "status": "passed",
+      "required": true,
+      "reason": "候选交付隔离验收证据",
+      "receipts": [
+        "build/quality-evidence-v1.4.114/23342e9d7f0944bf95dd20b69333a82a/receipt.json"
+      ],
+      "observation": {
+        "source": "646de9a0d5066748304944fa61341d63",
+        "device_id": "cd42f851e9e6fbd94ec25ee711e9b99be20044a8624c176e9b5488787b0bba3b",
+        "observer": "release_evidence",
+        "procedure": "./.venv/bin/python3 tools/verify_candidate_delivery.py --app dist/Skyrocket.app --zip build/update_assets/V1.4.114/Skyrocket-1.4.114-macos.zip --out build/quality-evidence-v1.4.114/delivery.json --old-app /Applications/Skyrocket.app",
+        "observed_at": "2026-11-08T15:32:14.117254+00:00",
+        "artifact_sha256": "8a4f7da4d5c394db8b5362e9a60bc2ec0110bdd56917596ccd2ed9960f81a112",
+        "signals": {
+          "failure_injected": true,
+          "rollback_restored": true,
+          "old_app_started": true,
+          "user_data_preserved": true
+        },
+        "attachments": [
+          {
+            "path": "build/quality-evidence-v1.4.114/23342e9d7f0944bf95dd20b69333a82a/command.log",
+            "sha256": "4e64e7211f686a29d684aafd7aa2f5d5403579983afd1444bec002ed9fd1a169"
+          }
+        ]
+      }
+    }
+  ],
+  "unverified_limitations": [
+    "发布后读回只证明线上资产、清单、下载入口、公开源码及公开 CI 当时一致，不证明所有用户机器上的实际使用。",
+    "真实系统通知重新开启、真实睡眠唤醒和 macOS 14.4 装机条件仍需设备与权限满足后单独验收。"
+  ]
+}

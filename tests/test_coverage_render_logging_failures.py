@@ -93,10 +93,15 @@ class RecordingPainter(QPainter):
     def __init__(self, image):
         super().__init__(image)
         self.labels = []
+        self.ellipses = []
 
     def drawText(self, *args):
         self.labels.append(args[-1])
         return super().drawText(*args)
+
+    def drawEllipse(self, *args):
+        self.ellipses.append(args)
+        return super().drawEllipse(*args)
 
 
 class RenderFailureEvidence(SFCase):
@@ -181,6 +186,63 @@ class RenderFailureEvidence(SFCase):
             finally:
                 painter.end()
         return image.constBits().asstring(image.sizeInBytes())
+
+    def _dot_center_y(self, target, rect, metrics):
+        image = self.image()
+        painter = RecordingPainter(image)
+        try:
+            draw_dot(target, painter, rect, metrics)
+        finally:
+            painter.end()
+        return painter.ellipses[-1][0].y()
+
+    def test_live_dot_follows_current_quote_when_minute_tail_is_stale(self):
+        """红点应跟随当前行情，而不是停在滞后的分时末点。"""
+        rect = QRectF(10, 10, 164, 80)
+        metrics = {"n": 2, "color": QColor("red")}
+        target = types.SimpleNamespace(
+            minute_points=[("0930", 12), ("0931", 12)],
+            quote={"price": "15.0"},
+            _price_is_fallback=False,
+            _minute_stale=False,
+            _chart_x=lambda rect_, metrics_, index: rect_.right(),
+            _chart_y=lambda rect_, metrics_, price: rect_.bottom() - float(price),
+        )
+        self.assertAlmostEqual(self._dot_center_y(target, rect, metrics), rect.bottom() - 15.0)
+
+    def test_cached_quote_does_not_move_live_dot(self):
+        """首屏缓存价不是真实当前价，红点必须回退到分时末点。"""
+        rect = QRectF(10, 10, 164, 80)
+        target = types.SimpleNamespace(
+            minute_points=[("0930", 12), ("0931", 12)],
+            quote={"price": "15.0"},
+            _price_is_fallback=True,
+            _minute_stale=False,
+            _chart_x=lambda rect_, metrics_, index: rect_.right(),
+            _chart_y=lambda rect_, metrics_, price: rect_.bottom() - float(price),
+        )
+        self.assertAlmostEqual(
+            self._dot_center_y(target, rect, {"n": 2, "color": QColor("red")}),
+            rect.bottom() - 12.0,
+        )
+
+    def test_invalid_current_quote_falls_back_to_minute_tail(self):
+        """非法当前价不能把红点变成错误坐标，必须回退到分时末点。"""
+        rect = QRectF(10, 10, 164, 80)
+        for price in ("", "nan", "inf", "0", "-1"):
+            target = types.SimpleNamespace(
+                minute_points=[("0930", 12), ("0931", 12)],
+                quote={"price": price},
+                _price_is_fallback=False,
+                _minute_stale=False,
+                _chart_x=lambda rect_, metrics_, index: rect_.right(),
+                _chart_y=lambda rect_, metrics_, value: rect_.bottom() - float(value),
+            )
+            with self.subTest(price=price):
+                self.assertAlmostEqual(
+                    self._dot_center_y(target, rect, {"n": 2, "color": QColor("red")}),
+                    rect.bottom() - 12.0,
+                )
 
     def test_stale_dot_is_frozen_while_live_dot_breathes(self):
         period = render.CHART_DOT_BREATH_PERIOD

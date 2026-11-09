@@ -34,6 +34,25 @@ class _BlockingArchive(_Archive):
         super().finish()
 
 
+class _ConcurrentStartController(DiagnosticsExportController):
+    def __init__(self, publish):
+        super().__init__(publish)
+        self._exporting_writes = threading.Barrier(2)
+
+    @property
+    def exporting(self):
+        return DiagnosticsExportController.exporting.fget(self)
+
+    @exporting.setter
+    def exporting(self, value):
+        if value:
+            try:
+                self._exporting_writes.wait(timeout=1.0)
+            except threading.BrokenBarrierError:
+                pass
+        DiagnosticsExportController.exporting.fset(self, value)
+
+
 class TestDiagnosticsExportController(SFCase):
     def setUp(self):
         super().setUp()
@@ -92,6 +111,42 @@ class TestDiagnosticsExportController(SFCase):
         self.assertEqual(self.published, [])
         self.assertTrue(os.path.exists(temporary))
         os.unlink(temporary)
+
+    def test_concurrent_start_accepts_only_one_export(self):
+        """两个入口同时请求时，只允许一个诊断导出占用控制器。"""
+        controller = _ConcurrentStartController(
+            lambda temporary, requested: self._publish(temporary, requested),
+        )
+        for _ in range(200):
+            archives = [_BlockingArchive(), _BlockingArchive()]
+            temporary = [self._temporary(), self._temporary()]
+            workers = []
+            barrier = threading.Barrier(2)
+
+            def start_export(index):
+                barrier.wait()
+                worker = controller.start(
+                    archives[index], temporary[index], "requested", self.results.append)
+                if worker is not None:
+                    workers.append(worker)
+
+            threads = [threading.Thread(target=start_export, args=(index,)) for index in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertLessEqual(len(workers), 1)
+            for archive in archives:
+                archive.release.set()
+            for worker in workers:
+                worker.join(1.0)
+            for path in temporary:
+                if os.path.exists(path):
+                    os.unlink(path)
+
+            if self.results:
+                self.results.clear()
 
     def test_close_during_publish_drops_completion_callback(self):
         temporary = self._temporary()

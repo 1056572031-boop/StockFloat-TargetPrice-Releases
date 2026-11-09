@@ -1799,6 +1799,16 @@ class RenderMixin:
                 v = pt[1]
                 if isinstance(v, (int, float)) and math.isfinite(float(v)):
                     prices.append(float(v))
+            try:
+                quote = vars(self).get("quote")
+                value = quote.get("price") if isinstance(quote, dict) else None
+                if not getattr(self, "_price_is_fallback", False) \
+                        and isinstance(value, (str, int, float)):
+                    value = float(value)
+                    if math.isfinite(value) and value > 0:
+                        prices.append(value)
+            except (TypeError, ValueError) as exc:
+                log_swallow("sf_ui_render._chart_metrics.quote_price", exc)
             if isinstance(pre_close, (int, float)) and math.isfinite(float(pre_close)):
                 prices.append(float(pre_close))
             for pt in pts:
@@ -2077,7 +2087,20 @@ class RenderMixin:
         def _draw_chart_dot(self, p, rect, m):
             """当前点 —— 持续呼吸灯效果（平滑透明度/大小周期性变化）"""
             pts = self.minute_points
-            cpt = QPoint(int(self._chart_x(rect, m, m["n"] - 1)), int(self._chart_y(rect, m, pts[-1][1])))
+            current_price = None
+            try:
+                quote = vars(self).get("quote")
+                value = quote.get("price") if isinstance(quote, dict) else None
+                if not getattr(self, "_price_is_fallback", False) \
+                        and isinstance(value, (str, int, float)):
+                    value = float(value)
+                    if math.isfinite(value) and value > 0:
+                        current_price = value
+            except (TypeError, ValueError) as exc:
+                log_swallow("sf_ui_render._draw_chart_dot.quote_price", exc)
+            # 行情与分时请求独立刷新：红点代表屏幕当前价，行情暂不可用时才退回分时末点。
+            dot_price = current_price if current_price is not None else pts[-1][1]
+            cpt = QPoint(int(self._chart_x(rect, m, m["n"] - 1)), int(self._chart_y(rect, m, dot_price)))
             color = m["color"]
             # 呼吸相位：0→1 平滑循环，周期约 CHART_DOT_BREATH_PERIOD 秒
             phase = (time.monotonic() % CHART_DOT_BREATH_PERIOD) / CHART_DOT_BREATH_PERIOD

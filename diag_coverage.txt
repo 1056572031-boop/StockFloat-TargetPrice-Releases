@@ -27,6 +27,9 @@
 
 # "这个模块坏了用户会说什么" 的答案必须落到具体通路；纯函数/维护端模块才可申报 skip。
 
+# 本轮图表与目标价的运行态仍由主窗已有诊断快照带出；诊断导出控制器本身仅持有一次性任务锁，自动采集会记录其工作状态。
+version 1.4.115
+
 # 本轮 sf_system_alert 只让下载进度弹窗启用既有居中段落能力；弹窗实例随调用完成销毁，不持有独立常驻运行态。
 version 1.4.114
 skip sf_system_alert 本轮只让 show_progress_alert 创建下载进度弹窗时传入既有 center_text 参数；弹窗生命周期由调用方持有，原生桥接失败仍经 _swallow 写入 debug.log 与 last_failures.json，下载与更新状态由 runtime.json 的 update 分组输出。

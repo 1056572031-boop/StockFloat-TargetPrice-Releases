@@ -507,7 +507,91 @@ class ReleaseStateCase(SFCase):
         self.assertIn("不等于通过", out.with_suffix(".md").read_text())
         self.assertTrue(release.report(self.root, self.state, self.root / "build/missing-quality.json")["blockers"])
         (self.root / "x.py").write_text("changed")
-        self.assertTrue(release.report(self.root, self.state)["blockers"])
+        invalid = release.report(self.root, self.state)
+        self.assertTrue(invalid["blockers"])
+        self.assertEqual("source_open", invalid["effective_stage"])
+
+    def test_report_downgrades_invalid_candidate_to_source_open(self):
+        self.candidate()
+        (self.root / "x.py").write_text("changed")
+
+        report = release.report(self.root, self.state)
+
+        self.assertEqual("candidate_ready", report["recorded_stage"])
+        self.assertEqual("source_open", report["effective_stage"])
+        self.assertTrue(report["blockers"])
+
+    def test_report_preserves_completed_history_after_archive_only_commit(self):
+        self.candidate()
+        pre_record = self.record()
+        with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
+            pending = release.begin_publish(self.root, self.state, pre_record)
+        complete_record = self.record(complete=True)
+        complete_value = json.loads(complete_record.read_text())
+        complete_value["artifact_fingerprint"] = {"source": pending["source"]["gate_fingerprint"]}
+        complete_record.write_text(json.dumps(complete_value))
+        readback = self.root / "build/readback.json"
+        readback.write_text(json.dumps(self.acceptance_value(pending)))
+        walkthrough = self.walkthrough(pending)
+        release.finish(self.root, self.state, complete_record, readback, walkthrough)
+        (self.root / "outputs/release-candidates/archive-index.json").parent.mkdir(parents=True)
+        (self.root / "outputs/release-candidates/archive-index.json").write_text("archive only")
+        self.git("add", "outputs/release-candidates/archive-index.json")
+        self.git("commit", "-qm", "archive release evidence")
+
+        report = release.report(self.root, self.state, complete_record, readback)
+        out = self.root / "build/history-report.json"
+        release.write_report(self.root, self.state, out, complete_record, readback)
+
+        self.assertEqual("complete", report["recorded_stage"])
+        self.assertEqual("complete", report["effective_stage"])
+        self.assertTrue(report["complete"])
+        self.assertTrue(report["current_tree_advanced"])
+        self.assertEqual([], report["blockers"])
+        self.assertIn("当前源码树已前进", out.with_suffix(".md").read_text())
+
+    def test_report_rejects_unbound_complete_quality_or_readback(self):
+        self.candidate()
+        pre_record = self.record()
+        with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
+            pending = release.begin_publish(self.root, self.state, pre_record)
+        complete_record = self.record(complete=True)
+        complete_value = json.loads(complete_record.read_text())
+        complete_value["artifact_fingerprint"] = {"source": pending["source"]["gate_fingerprint"]}
+        complete_record.write_text(json.dumps(complete_value))
+        readback = self.root / "build/readback.json"
+        readback.write_text(json.dumps(self.acceptance_value(pending)))
+        walkthrough = self.walkthrough(pending)
+        release.finish(self.root, self.state, complete_record, readback, walkthrough)
+        copied_record = self.root / "build/copied-complete.json"
+        copied_record.write_bytes(complete_record.read_bytes())
+        copied_record.with_suffix(".manifest.json").write_bytes(complete_record.with_suffix(".manifest.json").read_bytes())
+        copied_readback = self.root / "build/copied-readback.json"
+        copied_readback.write_bytes(readback.read_bytes())
+
+        for quality, report in ((copied_record, readback), (complete_record, copied_readback)):
+            result = release.report(self.root, self.state, quality, report)
+            self.assertFalse(result["complete"])
+            self.assertTrue(result["blockers"])
+        state_value = json.loads(self.state.read_text())
+        state_value["observations"].pop("acceptance_quality")
+        self.state.write_text(json.dumps(state_value))
+        missing = release.report(self.root, self.state, None, readback)
+        self.assertFalse(missing["complete"])
+        self.assertIn("完成状态缺少已绑定证据: acceptance_quality", missing["blockers"])
+
+    def test_report_uses_bound_readback_for_active_state(self):
+        state = self.candidate()
+        readback = self.root / "build/bound-readback.json"
+        readback.write_text(json.dumps({"source": state["source"], "artifacts": state["artifacts"],
+                                       "checks": {"public_ci": {"status": "passed"}}}))
+        state_value = json.loads(self.state.read_text())
+        state_value["observations"]["readback"] = release.reference(readback)
+        self.state.write_text(json.dumps(state_value))
+
+        report = release.report(self.root, self.state)
+
+        self.assertEqual("passed", report["channels"]["public_ci"]["status"])
 
     def test_cli_validates_required_arguments_and_errors(self):
         with contextlib.redirect_stderr(io.StringIO()):

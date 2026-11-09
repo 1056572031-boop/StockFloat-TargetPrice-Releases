@@ -3114,6 +3114,81 @@ class TargetCommitRetry(_Host):
                 self.win._poll()  # discipline-ok(R5): 新的一次占锁，不能沿用旧的起点而立刻升级。
         swallowed.assert_not_called()
 
+    def test_target_tick_read_blocking_ioerror_is_deferred_without_swallowed_failure(self):
+        from sf_quote_delivery import TargetTickBuffer
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-blocking-ioerror.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.win.running = True
+        with mock.patch.object(sf_config, "config_transaction",
+                                side_effect=BlockingIOError("configuration lock is busy")), \
+                mock.patch.object(window, "log_swallow") as swallowed, \
+                mock.patch.object(window, "log_line_throttled") as throttled:
+            self.win._poll()  # discipline-ok(R5): 非阻塞锁瞬时竞争必须延后一拍。
+        swallowed.assert_not_called()
+        self.assertTrue(any(call.args[0] == "target.tick_read_lock_unavailable"
+                            for call in throttled.call_args_list),
+                        "BlockingIOError 锁竞争必须留节流日志，但不能立即记成 SWALLOWED")
+
+    def test_sustained_target_tick_read_blocking_ioerror_is_reported_as_swallowed(self):
+        from sf_quote_delivery import TargetTickBuffer
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-blocking-sustained.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.win.running = True
+        clock = [1000.0]
+        with mock.patch.object(window.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(sf_config, "config_transaction",
+                                  side_effect=BlockingIOError("configuration lock is busy")), \
+                mock.patch.object(window, "log_swallow") as swallowed, \
+                mock.patch.object(window, "log_line_throttled"):
+            self.win._poll()  # discipline-ok(R5): 第一拍仍是瞬时竞争，不升级。
+            swallowed.assert_not_called()
+            clock[0] += window.TARGET_READ_BUSY_ESCALATE_SEC + 1.0
+            self.win._poll()  # discipline-ok(R5): 持续竞争超过阈值后必须留 SWALLOWED。
+        self.assertTrue(any(call.args[0] == "stock_float_window._poll.target_tick_read"
+                            for call in swallowed.call_args_list),
+                        "持续 BlockingIOError 竞争超过阈值后必须升级为 SWALLOWED")
+
+    def test_target_tick_read_blocking_ioerror_timer_resets_after_successful_consumption(self):
+        import sf_quote
+        from sf_quote_delivery import TargetTickBuffer
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        alert = targets.make_alert(targets.TARGET_DIR_ABOVE, 100.0, now=now)
+        alert["code"] = self.win.code
+        self._open_saved_panel([alert])
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-blocking-reset.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.track_patch(mock.patch.object(window, "_beijing_now", return_value=now))
+        self.track_patch(mock.patch.object(targets, "_beijing_now", return_value=now))
+        self.track_patch(mock.patch.object(window.FloatWindow, "_is_trading_time", return_value=True))
+        self.track_patch(mock.patch("sf_quote_delivery.quote_is_current", return_value=True))
+        self.win.running = True
+        pending = sf_quote.QuoteData({"code": self.win.code, "price": "101"}, "20261015100000")
+        pending.received_at = now
+        pending.target_revision = sf_config.alerts_revision(self.win.code)
+        ticks.add_ordered(self.win.code, pending)
+        self.assertTrue(ticks.has_pending(self.win.code), "前提：队列中有一笔待消费行情")
+        clock = [1000.0]
+        busy = mock.patch.object(sf_config, "config_transaction",
+                                 side_effect=BlockingIOError("configuration lock is busy"))
+        with mock.patch.object(window.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(window, "log_swallow") as swallowed, \
+                mock.patch.object(window, "log_line_throttled"):
+            with busy:
+                self.win._poll()  # discipline-ok(R5): 开始一段 BlockingIOError 竞争。
+            self.assertTrue(ticks.has_pending(self.win.code),
+                            "锁竞争时行情必须留在持久化队列中等待重试")
+            clock[0] += window.TARGET_READ_BUSY_ESCALATE_SEC + 1.0
+            self.win._poll()  # discipline-ok(R5): 成功消费后必须清零连续竞争计时。
+            self.assertFalse(ticks.has_pending(self.win.code),
+                             "锁恢复后必须消费并确认待处理行情")
+            self.assertEqual(real_load_alerts(self.win.code)[0]["state"], "hit",
+                             "恢复后的真实行情必须完成目标价评估")
+            with busy:
+                self.win._poll()  # discipline-ok(R5): 新竞争从当前时刻重新计时。
+        swallowed.assert_not_called()
+        self.assertEqual(swallowed.call_count, 0,
+                         "成功消费后重新发生的瞬时竞争不能沿用旧计时立即升级")
+
     def test_target_tick_lock_blocks_other_process(self):
         import subprocess
         import sys

@@ -50,19 +50,20 @@ class DiagnosticsExportController:
         requested: str,
         on_ready: Callable[[tuple[Any, Any]], None],
     ) -> threading.Thread | None:
-        if self.exporting or self._closed:
-            return None
-        self._cancel.clear()
-        self.exporting = True
-        worker = threading.Thread(
-            target=self._run,
-            args=(archive, temporary, requested, on_ready),
-            name="diagnostics-export",
-            daemon=True,
-        )
-        self.thread = worker
-        worker.start()
-        return worker
+        with self._lock:
+            if self._exporting or self._closed:
+                return None
+            self._cancel.clear()
+            self._exporting = True
+            worker = threading.Thread(
+                target=self._run,
+                args=(archive, temporary, requested, on_ready),
+                name="diagnostics-export",
+                daemon=True,
+            )
+            self._thread = worker
+            worker.start()
+            return worker
 
     def finish_sync(
         self,
