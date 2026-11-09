@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.114",
-  "published_at": "2026-11-08T15:29:23Z",
+  "version": "1.4.115",
+  "published_at": "2026-11-09T11:20:08Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 退出程序时，正在导出的诊断资料会安全收尾，不再留下未完成的导出任务。\n2. 行情状态或通知授权发生异常时，会留下可供排查的记录，不再悄悄失去反馈。",
+  "notes": "1. 分时图的当前价标记与刻度会跟随最新行情，不再停在旧数据位置。\n2. 诊断资料导出时重复点击，只会保留一次任务，避免重复导出。\n3. 目标价行情短暂被占用时会自动稍后重试，避免漏掉提醒。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.114-macos.zip",
-    "size": 27253966,
-    "sha256": "13749387b79e53049446040473150c7c9d05d670dafee334c2c5acf56f10cf04"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.115-macos.zip",
+    "size": 27256157,
+    "sha256": "67cf6e1c4bcbc3a8871d746255db2230731e6f2ed8146e6bf0d9a33d3407dc05"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "y609C+37MVQIsQ7eAaqnFo4wog7pm7cs6fw4tx6nWw9Vss+weYgCGLZ/r69mbS64J1D7im8chvNmSeuLXFqGBA=="
+    "value": "V6AmbG1NLF0nWVuGnBm791oERGH/ZIZu3+in1cm12MWezsmfL8pXrFc11DB2ucWG3y+U32oHAuGHC3ItI45eCA=="
   }
 }
