@@ -62,6 +62,16 @@ class TestReleaseEvidence(SFCase):
             with self.assertRaises(tool.EvidenceError):
                 tool.load_limitations(path)
 
+    def test_timeline_entry_rejects_unknown_event_and_missing_end_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = root / "receipt.json"
+            receipt.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(tool.EvidenceError, "未知"):
+                tool.timeline_entry(root, self.version, "unknown", receipt, {"ended_at": "2030-01-01T00:00:00+00:00"})
+            with self.assertRaisesRegex(tool.EvidenceError, "结束时刻"):
+                tool.timeline_entry(root, self.version, "candidate_frozen", receipt, {})
+
     def test_receipt_selection_scope_and_qualification_helpers(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -146,7 +156,11 @@ class TestReleaseEvidence(SFCase):
                 path = tool.bind(root, self.version, self.limitations(), old, app, zip_path)
             bound_record = quality.load(path)
             self.assertEqual("release_candidate", bound_record["status"])
-            self.assertEqual("fp", bound_record["artifact_fingerprint"]["source"])
+            frozen = bound_record["release_timeline"]["candidate_frozen"]
+            self.assertEqual(self.version, frozen["version"])
+            self.assertEqual("verified", frozen["status"])
+            self.assertEqual("sessions/6/receipt.json", frozen["evidence_path"])
+            self.assertEqual(quality.sha256_file(sessions / "6" / "receipt.json"), frozen["evidence_sha256"])
             for role in ("app", "dmg", "zip", "ota_manifest"):
                 self.assertEqual({"sha256": "artifact", "entries": 1, "kind": "directory"},
                                  {key: bound_record["release_artifacts"]["roles"][role].get(key)
@@ -155,6 +169,18 @@ class TestReleaseEvidence(SFCase):
             for role in ("app", "dmg", "zip", "ota_manifest"):
                 token = bound_record["release_artifacts"]["roles"][role]
                 self.assertNotIn("artifact_token", token)
+            quality.atomic_json(path, record)
+            before_state_failure = path.read_bytes()
+            state_path = root / "build" / "release-state.json"
+            with patch.object(tool, "evidence_dir", return_value=sessions), \
+                    patch.object(tool, "write_qualification"), \
+                    patch.object(quality, "source_snapshot", return_value={"fingerprint": "fp"}), \
+                    patch.object(quality, "validate", return_value=[]), \
+                    patch.object(quality, "artifact_token", return_value={"sha256": "artifact", "entries": 1, "kind": "directory"}), \
+                    patch.object(tool.release_state, "bind_candidate_evidence", side_effect=ValueError("state mismatch")):
+                with self.assertRaisesRegex(tool.EvidenceError, "候选状态未绑定"):
+                    tool.bind(root, self.version, self.limitations(), old, app, zip_path, state_path)
+            self.assertEqual(before_state_failure, path.read_bytes())
             with patch.object(tool, "write_qualification"), \
                     patch.object(tool, "pick_receipt", return_value=self.receipt(root / "sessions" / "bad", "true", "fp")), \
                     patch.object(quality, "source_snapshot", return_value={"fingerprint": "fp"}), \
@@ -420,9 +446,14 @@ class TestReleaseEvidence(SFCase):
                                              sleeper=lambda _: None))
             limits = root / "limits.json"
             limits.write_text(json.dumps(self.limitations()), encoding="utf-8")
-            with patch.object(tool, "bind", return_value=path):
+            state_path = root / "state.json"
+            with patch.object(tool, "bind", return_value=path) as bind_call:
                 self.assertEqual(0, tool.main(["bind", "--old-app", str(root / "old"),
-                                               "--limitations-file", str(limits)]))
+                                               "--limitations-file", str(limits),
+                                               "--state", str(state_path)]))
+            self.assertEqual(state_path, bind_call.call_args.args[-1])
+            self.assertEqual(2, tool.main(["bind", "--old-app", str(root / "old"),
+                                           "--limitations-file", str(limits)]))
             with patch.object(tool, "complete", return_value=path):
                 self.assertEqual(0, tool.main(["complete", "--state", str(root / "state"),
                                                "--readback", str(root / "read"),

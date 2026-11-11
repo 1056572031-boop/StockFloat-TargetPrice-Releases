@@ -372,6 +372,37 @@ class TestReleaseChainCallsTheGate(SFCase):
             pos = s.find(marker)
             self.assertGreater(pos, call, "快照回归排在 %s 之后 —— 那已经撤不回了" % what)
 
+    def test_build_release_reuses_publicly_uploaded_zip_for_ota_publish(self):
+        """公开发布先上传 ZIP 后，OTA 发布器必须以 resume 模式逐字节复用它。"""
+        source = self._text("build_release.sh")
+        public = source.find('tools/public_release.py --publish')
+        ota = source.find('tools/publish_update_release.py --assets')
+        self.assertGreater(public, 0)
+        self.assertGreater(ota, public)
+        ota_call = source[ota:source.find("\necho", ota)]
+        self.assertIn("--resume", ota_call,
+                      "公开发布已先上传同名 ZIP，OTA 发布必须使用 --resume 复用并读回校验")
+
+    def test_normal_dmg_build_rechecks_final_image_through_isolated_install(self):
+        """普通构建生成的最终 DMG 必须走真实挂载、隔离安装和首启冒烟。"""
+        source = self._text("build_release.sh")
+        create = source.find("hdiutil create")
+        self.assertGreater(create, 0)
+        prepared = 'tools/verify_install_paths.py --prepared-dmg "$DMG_OUT"'
+        occurrences = []
+        start = 0
+        while True:
+            found = source.find(prepared, start)
+            if found < 0:
+                break
+            occurrences.append(found)
+            start = found + 1
+        self.assertGreaterEqual(len(occurrences), 2,
+                                "最终 DMG 的普通构建路径缺少隔离安装与首启复验")
+        self.assertGreater(occurrences[-1], create,
+                           "最终 DMG 生成后必须再以 --prepared-dmg 验收")
+        self.assertLess(occurrences[-1], source.find("# ---- 5) 候选 OTA 资产", create))
+
     def test_diag_coverage_gate_gets_the_real_release_baseline(self):
         """3.9 诊断覆盖关必须拿到真实发布基线，不许按版本号推断区间（v1.4.101 之后补）。
 

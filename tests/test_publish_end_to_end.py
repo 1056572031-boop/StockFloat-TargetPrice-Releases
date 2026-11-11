@@ -843,6 +843,25 @@ class PublishEndToEndTest(unittest.TestCase):
         self.state.release["assets"] = assets
         return {"assets": assets}
 
+    def test_verify_public_release_assets_allows_percent_encoded_browser_urls(self):
+        expected = self._public_asset_expected()
+        release = self._public_release(expected)
+        encoded_tag = urllib.parse.quote(self.tool.TAG, safe="")
+        public_root = "https://github.com/%s/releases/download/%s/" % (
+            self.tool.REPO, encoded_tag)
+        for asset in release["assets"]:
+            asset["browser_download_url"] = public_root + asset["name"]
+        verified = self.tool.verify_public_release_assets(release, "1.4.17", expected)
+        self.assertEqual(set(verified), set(expected))
+
+    def test_verify_public_release_assets_allows_empty_browser_urls(self):
+        expected = self._public_asset_expected()
+        release = self._public_release(expected)
+        for asset in release["assets"]:
+            asset["browser_download_url"] = ""
+        verified = self.tool.verify_public_release_assets(release, "1.4.17", expected)
+        self.assertEqual(set(verified), set(expected))
+
     def test_verify_public_release_assets_rejects_malformed_expected_shapes(self):
         base = self._public_asset_expected()
         cases = (
@@ -896,6 +915,17 @@ class PublishEndToEndTest(unittest.TestCase):
 
         self.state.blobs["Skyrocket-V1.4.17.dmg"] = b"different"
         with self.assertRaisesRegex(SystemExit, "原始字节不匹配"):
+            self.tool.verify_public_release_assets(release, "1.4.17", expected)
+
+    def test_verify_public_release_assets_rejects_percent_encoded_wrong_browser_url(self):
+        expected = self._public_asset_expected()
+        release = self._public_release(expected)
+        encoded_tag = urllib.parse.quote(self.tool.TAG, safe="")
+        wrong_url = "https://example.invalid/releases/download/%s/%s" % (
+            encoded_tag, "Skyrocket-V1.4.17.dmg")
+        next(asset for asset in release["assets"]
+             if asset["name"] == "Skyrocket-V1.4.17.dmg")["browser_download_url"] = wrong_url
+        with self.assertRaisesRegex(SystemExit, "下载地址不匹配"):
             self.tool.verify_public_release_assets(release, "1.4.17", expected)
 
     def test_main_rejects_unreadable_manifest_before_credentials(self):

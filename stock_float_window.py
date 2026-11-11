@@ -23,6 +23,14 @@ from sf_run_session import (PHASE_CLEAN_EXIT, PHASE_UPDATE_HANDOFF,
 _SESSION_TERMINAL_PHASES = frozenset({PHASE_CLEAN_EXIT, PHASE_UPDATE_HANDOFF})
 
 
+def first_install_screen(cursor_pos=None, screen_at=None, primary_screen=None):
+    """Choose the screen under the pointer, falling back to the primary screen."""
+    cursor_pos = QCursor.pos() if cursor_pos is None else cursor_pos
+    screen_at = QGuiApplication.screenAt if screen_at is None else screen_at
+    primary_screen = QApplication.primaryScreen if primary_screen is None else primary_screen
+    return screen_at(cursor_pos) or primary_screen()
+
+
 def first_install_position(available: "QRect", width: int, height: int) -> tuple[int, int]:
     """Place a first-run window within the active screen's usable area."""
     x = available.x() + max(0, (available.width() - width) // 2)
@@ -34,7 +42,7 @@ guard_temporary_launch()
 
 from PyQt6.QtCore import (Qt, QTimer, QPoint, QRect, pyqtSignal,
                           QCoreApplication, QEvent)
-from PyQt6.QtGui import (QAction, QColor, QIcon, QPixmap,
+from PyQt6.QtGui import (QAction, QColor, QCursor, QGuiApplication, QIcon, QPixmap,
                          QFont, QFontInfo)
 from typing import Any, Optional
 from PyQt6.QtWidgets import QApplication, QWidget, QToolTip, QProgressBar, QMessageBox
@@ -1371,7 +1379,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         startup_h = int(h0) if h0 and int(h0) >= collapsed + CHART_MIN_H else collapsed + CHART_H
         self.resize(W, startup_h)
         if self._first_install:
-            screen = QApplication.primaryScreen()
+            screen = first_install_screen()
             if screen is not None:
                 x, y = first_install_position(screen.availableGeometry(), W, startup_h)
         self.move(x, y)

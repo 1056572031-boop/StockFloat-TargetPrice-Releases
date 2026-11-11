@@ -539,11 +539,13 @@ def status_matrix(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def release_timeline(record: dict[str, Any], version: str) -> dict[str, Any]:
+def release_timeline(record: dict[str, Any], version: str, base: Path | None = None,
+                     required_events: tuple[str, ...] = ()) -> dict[str, Any]:
     """Project release timeline facts already present in a record.
 
-    Missing entries remain unverified. This projection never uses the clock,
-    filesystem metadata, or external services to fill historical gaps.
+    Historical projection remains read-only when no evidence base is supplied.
+    A caller that needs a release credential must supply ``base`` and name the
+    events it relies on; a matching attachment hash alone is not a receipt.
     """
     errors: list[str] = []
     release = record.get("release_artifacts") if isinstance(record, dict) else None
@@ -558,9 +560,13 @@ def release_timeline(record: dict[str, Any], version: str) -> dict[str, Any]:
     entries = source if isinstance(source, dict) else {}
     events: list[dict[str, Any]] = []
     parsed_at: dict[str, dt.datetime] = {}
+    fingerprint = record.get("artifact_fingerprint", {}).get("source") if isinstance(record, dict) else None
+    roles = release.get("roles", {}) if isinstance(release, dict) else {}
     for event_name in RELEASE_TIMELINE_EVENTS:
         entry = entries.get(event_name)
         if not isinstance(entry, dict):
+            if event_name in required_events:
+                errors.append(f"时间线事件缺失: {event_name}")
             events.append({"event": event_name, "at": None, "version": version,
                            "status": "unverified", "evidence_path": None})
             continue
@@ -569,12 +575,57 @@ def release_timeline(record: dict[str, Any], version: str) -> dict[str, Any]:
         event_at = entry.get("at")
         status = entry.get("status")
         evidence_path = entry.get("evidence_path")
+        evidence_valid = True
         if event_version != version:
             errors.append(f"时间线事件版本不一致: {event_name} ({event_version!r} != {version!r})")
         if not isinstance(status, str) or not status.strip():
             status = "unverified"
         if not isinstance(evidence_path, str) or not evidence_path.strip():
             evidence_path = None
+        if base is not None and event_name in required_events:
+            evidence_valid = False
+            evidence_sha256 = entry.get("evidence_sha256")
+            if not isinstance(evidence_sha256, str) or not evidence_sha256:
+                errors.append(f"时间线收据缺少 SHA-256: {event_name}")
+            elif evidence_path is None:
+                errors.append(f"时间线收据路径无效: {event_name}")
+            else:
+                try:
+                    receipt_path = resolve_reference(base, evidence_path)
+                    if not receipt_path.is_file() or sha256_file(receipt_path) != evidence_sha256:
+                        errors.append(f"时间线收据缺失或篡改: {event_name}")
+                    elif not isinstance(fingerprint, str) or not fingerprint:
+                        errors.append(f"时间线收据缺少候选源码指纹: {event_name}")
+                    else:
+                        receipt_errors = check_receipt(receipt_path, fingerprint)
+                        if receipt_errors:
+                            errors.append(f"时间线收据无效: {event_name} ({'; '.join(receipt_errors)})")
+                        else:
+                            receipt = load(receipt_path)
+                            if event_at != receipt.get("ended_at"):
+                                errors.append(f"时间线事件时刻未绑定收据结束时刻: {event_name}")
+                            else:
+                                argv = receipt.get("argv", [])
+                                if event_name == "candidate_frozen":
+                                    app = roles.get("app", {}).get("path") if isinstance(roles, dict) else None
+                                    archive = roles.get("zip", {}).get("path") if isinstance(roles, dict) else None
+                                    expected = entry.get("command")
+                                    if (not isinstance(app, str) or not isinstance(archive, str)
+                                            or not isinstance(expected, list) or expected != argv
+                                            or len(argv) != 10
+                                            or argv[:2] != ["./.venv/bin/python3", "tools/verify_candidate_delivery.py"]
+                                            or argv[2:6] != ["--app", app, "--zip", archive]
+                                            or argv[6] != "--out" or not isinstance(argv[7], str)
+                                            or Path(argv[7]).name != "delivery.json"
+                                            or argv[8] != "--old-app" or not isinstance(argv[9], str)
+                                            or not argv[9]):
+                                        errors.append(f"时间线收据不证明候选冻结: {event_name}")
+                                    else:
+                                        evidence_valid = True
+                                else:
+                                    evidence_valid = True
+                except (OSError, TypeError, ValueError):
+                    errors.append(f"时间线收据路径无效: {event_name}")
         event_at_valid = True
         if not isinstance(event_at, str) or not event_at.strip():
             event_at = None
@@ -591,7 +642,7 @@ def release_timeline(record: dict[str, Any], version: str) -> dict[str, Any]:
                 errors.append(f"时间线事件时间无效或非 UTC: {event_name}")
 
         if (not event_at_valid or event_at is None or evidence_path is None
-                or status == "unverified"):
+                or status == "unverified" or not evidence_valid):
             status = "unverified"
             event_at = None
             evidence_path = None

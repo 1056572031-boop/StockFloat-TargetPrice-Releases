@@ -84,6 +84,16 @@ class ReleaseStateCase(SFCase):
         path.with_suffix(".manifest.json").write_text("{}")
         return path
 
+    def begin_bound_candidate(self, record):
+        state = release.validate(self.root, self.state, "candidate_ready")
+        receipt = self.root / "build/candidate-freeze-receipt.json"
+        receipt.write_text("fixture", encoding="utf-8")
+        quality_ref, frozen_ref = release.reference(record), release.reference(receipt)
+        state["observations"].update(candidate_quality=quality_ref, candidate_frozen=frozen_ref)
+        release.evidence.atomic_json(self.state, state)
+        with mock.patch.object(release, "candidate_evidence", return_value=(quality_ref, frozen_ref)):
+            return release.begin_publish(self.root, self.state, record)
+
     def acceptance_value(self, state):
         source_zip = self.root / "build/source.zip"
         source_zip.write_bytes(b"source archive fixture")
@@ -236,6 +246,69 @@ class ReleaseStateCase(SFCase):
         with self.assertRaisesRegex(ValueError, "发生变化"):
             release.validate(self.root, self.state)
 
+    def test_candidate_requires_bound_freeze_receipt_before_publish(self):
+        state = self.candidate()
+        record_path = self.root / "build/quality.json"
+        receipt_path = record_path.parent / "candidate-receipt.json"
+        receipt_path.write_text("candidate receipt", encoding="utf-8")
+        record = {
+            "release_timeline": {
+                "candidate_frozen": {
+                    "at": "2030-01-01T00:00:00+00:00",
+                    "version": self.version,
+                    "status": "verified",
+                    "evidence_path": receipt_path.name,
+                    "evidence_sha256": release.evidence.sha256_file(receipt_path),
+                }
+            }
+        }
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        record_path.with_suffix(".manifest.json").write_text("{}", encoding="utf-8")
+        with mock.patch.object(release, "quality", return_value=record):
+            with self.assertRaisesRegex(ValueError, "候选冻结"):
+                release.begin_publish(self.root, self.state, record_path)
+
+        timeline = {
+            "errors": [],
+            "events": [{"event": "candidate_frozen", "at": "2030-01-01T00:00:00+00:00",
+                        "version": self.version, "status": "verified",
+                        "evidence_path": receipt_path.name}],
+        }
+        with mock.patch.object(release.evidence, "release_timeline", return_value=timeline), \
+                mock.patch.object(release, "quality", return_value=record):
+            bound = release.bind_candidate_evidence(self.root, self.state, record_path)
+        self.assertEqual("candidate_ready", bound["stage"])
+        self.assertEqual(release.reference(record_path), bound["observations"]["candidate_quality"])
+        self.assertEqual(release.reference(receipt_path), bound["observations"]["candidate_frozen"])
+        self.assertEqual(state["artifacts"], bound["artifacts"])
+        incomplete = copy.deepcopy(record)
+        incomplete["release_timeline"]["candidate_frozen"]["status"] = "unverified"
+        with mock.patch.object(release, "quality", return_value=incomplete), \
+                self.assertRaisesRegex(ValueError, "候选冻结"):
+            release.bind_candidate_evidence(self.root, self.state, record_path)
+        state_value = release.validate(self.root, self.state)
+        alternate_record = self.root / "build/alternate-quality.json"
+        alternate_record.write_text("alternate quality", encoding="utf-8")
+        state_value["observations"]["candidate_quality"] = release.reference(alternate_record)
+        release.evidence.atomic_json(self.state, state_value)
+        with mock.patch.object(release, "quality", return_value=record), \
+                mock.patch.object(release.evidence, "release_timeline", return_value=timeline), \
+                self.assertRaisesRegex(ValueError, "尚未绑定"):
+            release.begin_publish(self.root, self.state, record_path)
+        with mock.patch.object(release, "quality", return_value=record), \
+                mock.patch.object(release.evidence, "release_timeline", return_value={
+                    "errors": ["时间线事件缺失: candidate_frozen"], "events": [],
+                }), \
+                self.assertRaisesRegex(ValueError, "事件缺失"):
+            release.candidate_evidence(self.root, state_value, record_path, record)
+        with mock.patch.object(release, "quality", return_value=record), \
+                mock.patch.object(release.evidence, "release_timeline", return_value={
+                    "errors": [],
+                    "events": [{"event": "candidate_frozen", "status": "unverified", "evidence_path": None}],
+                }), \
+                self.assertRaisesRegex(ValueError, "未验证"):
+            release.candidate_evidence(self.root, state_value, record_path, record)
+
     def test_wrong_version_and_ota_binding_reject(self):
         self.qualify()
         with self.assertRaisesRegex(ValueError, "版本"):
@@ -345,7 +418,7 @@ class ReleaseStateCase(SFCase):
         self.candidate()
         record = self.record()
         with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
-            pending = release.begin_publish(self.root, self.state, record)
+            pending = self.begin_bound_candidate(record)
         complete = self.record(complete=True)
         complete_value = json.loads(complete.read_text())
         complete_value["artifact_fingerprint"] = {"source": pending["source"]["gate_fingerprint"]}
@@ -403,7 +476,7 @@ class ReleaseStateCase(SFCase):
         self.candidate()
         record = self.record()
         with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
-            pending = release.begin_publish(self.root, self.state, record)
+            pending = self.begin_bound_candidate(record)
             self.assertEqual(release.report(self.root, self.state)["recorded_stage"], "released_pending_acceptance")
             readback = self.root / "build/readback.json"
             readback.write_text("{}")
@@ -455,7 +528,7 @@ class ReleaseStateCase(SFCase):
         self.candidate()
         record = self.record()
         with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
-            pending = release.begin_publish(self.root, self.state, record)
+            pending = self.begin_bound_candidate(record)
             complete = self.record(complete=True)
             valid = self.acceptance_value(pending)
             path = self.root / "build/final-readback.json"
@@ -525,7 +598,7 @@ class ReleaseStateCase(SFCase):
         self.candidate()
         pre_record = self.record()
         with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
-            pending = release.begin_publish(self.root, self.state, pre_record)
+            pending = self.begin_bound_candidate(pre_record)
         complete_record = self.record(complete=True)
         complete_value = json.loads(complete_record.read_text())
         complete_value["artifact_fingerprint"] = {"source": pending["source"]["gate_fingerprint"]}
@@ -554,7 +627,7 @@ class ReleaseStateCase(SFCase):
         self.candidate()
         pre_record = self.record()
         with mock.patch.object(release.evidence, "verify_release_candidate", return_value=[]):
-            pending = release.begin_publish(self.root, self.state, pre_record)
+            pending = self.begin_bound_candidate(pre_record)
         complete_record = self.record(complete=True)
         complete_value = json.loads(complete_record.read_text())
         complete_value["artifact_fingerprint"] = {"source": pending["source"]["gate_fingerprint"]}

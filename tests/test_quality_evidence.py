@@ -467,6 +467,121 @@ class TestReleaseTimeline(SFCase):
         self.assertTrue(any("site_deployed" in error for error in result["errors"]), result)
         self.assertTrue(any("acceptance_completed" in error for error in result["errors"]), result)
 
+    def test_candidate_freeze_rejects_same_directory_non_receipt_attachment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            attachment = base / "candidate.json"
+            attachment.write_text(json.dumps({"claim": "candidate frozen"}), encoding="utf-8")
+            record = self.record_with_timeline({
+                "candidate_frozen": {
+                    "at": self.TIMES["candidate_frozen"],
+                    "version": self.VERSION,
+                    "status": "verified",
+                    "evidence_path": attachment.name,
+                    "evidence_sha256": evidence.sha256_file(attachment),
+                }
+            })
+
+            result = evidence.release_timeline(record, self.VERSION, base,
+                                                required_events=("candidate_frozen",))
+
+        candidate = next(item for item in result["events"] if item["event"] == "candidate_frozen")
+        self.assertEqual("unverified", candidate["status"])
+        self.assertIsNone(candidate["at"])
+        self.assertTrue(any("candidate_frozen" in item for item in result["errors"]), result)
+
+    def test_candidate_freeze_rejects_receipt_with_tool_name_only_as_argument(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            clean_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+            subprocess.run(["git", "init", "--quiet", str(source)], env=clean_env,
+                           check=True, capture_output=True)
+            (source / "probe.py").write_text("print('fixture')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "probe.py"], cwd=source, env=clean_env,
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                            "commit", "-qm", "fixture"], cwd=source, env=clean_env,
+                           check=True, capture_output=True)
+            app = base / "Skyrocket.app"
+            app.mkdir()
+            archive = base / "Skyrocket.zip"
+            archive.write_bytes(b"zip")
+            receipt_path = evidence.run_command(
+                source, base / "evidence", ["/usr/bin/true", "tools/verify_candidate_delivery.py",
+                                              "--app", app.relative_to(base).as_posix(),
+                                              "--zip", archive.relative_to(base).as_posix()], 3,
+                timeout=10)
+            receipt = evidence.load(receipt_path)
+            record = self.record_with_timeline({
+                "candidate_frozen": {
+                    "at": receipt["ended_at"],
+                    "version": self.VERSION,
+                    "status": "verified",
+                    "evidence_path": receipt_path.relative_to(base).as_posix(),
+                    "evidence_sha256": evidence.sha256_file(receipt_path),
+                }
+            })
+            record["artifact_fingerprint"]["source"] = receipt["source_start"]
+            record["release_artifacts"]["roles"] = {
+                "app": {"path": app.relative_to(base).as_posix()},
+                "zip": {"path": archive.relative_to(base).as_posix()},
+            }
+
+            result = evidence.release_timeline(record, self.VERSION, base,
+                                                required_events=("candidate_frozen",))
+
+        candidate = next(item for item in result["events"] if item["event"] == "candidate_frozen")
+        self.assertEqual("unverified", candidate["status"])
+        self.assertTrue(any("候选冻结" in item for item in result["errors"]), result)
+
+    def test_required_timeline_receipt_covers_missing_tampered_and_valid_shapes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            receipt_path = base / "receipt.json"
+            receipt_path.write_text("receipt", encoding="utf-8")
+            app, archive = "dist/Skyrocket.app", "update.zip"
+            command = ["./.venv/bin/python3", "tools/verify_candidate_delivery.py", "--app", app,
+                       "--zip", archive, "--out", "delivery.json", "--old-app", "old.app"]
+            receipt = {"ended_at": "2030-01-01T00:00:00+00:00", "argv": command}
+            def record(entry):
+                value = self.record_with_timeline({"candidate_frozen": entry})
+                value["artifact_fingerprint"]["source"] = "fp"
+                value["release_artifacts"]["roles"] = {"app": {"path": app}, "zip": {"path": archive}}
+                return value
+            common = {"at": receipt["ended_at"], "version": self.VERSION, "status": "verified",
+                      "evidence_path": receipt_path.name, "evidence_sha256": evidence.sha256_file(receipt_path),
+                      "command": command}
+            with patch.object(evidence, "check_receipt", return_value=[]), \
+                    patch.object(evidence, "load", return_value=receipt):
+                cases = (
+                    ({key: value for key, value in common.items() if key != "evidence_sha256"}, "SHA-256"),
+                    ({**common, "evidence_path": ""}, "路径无效"),
+                    ({**common, "evidence_path": "../escape.json"}, "路径无效"),
+                    ({**common, "evidence_sha256": "changed"}, "缺失或篡改"),
+                    ({**common, "at": "2030-01-01T00:01:00+00:00"}, "结束时刻"),
+                )
+                for entry, needle in cases:
+                    with self.subTest(needle=needle):
+                        result = evidence.release_timeline(record(entry), self.VERSION, base,
+                                                           required_events=("candidate_frozen",))
+                        self.assertTrue(any(needle in item for item in result["errors"]), result)
+                valid = evidence.release_timeline(record(common), self.VERSION, base,
+                                                  required_events=("candidate_frozen",))
+                self.assertEqual([], valid["errors"])
+                absent_record = self.record_with_timeline({})
+                absent_record["artifact_fingerprint"]["source"] = "fp"
+                absent_record["release_artifacts"]["roles"] = {"app": {"path": app}, "zip": {"path": archive}}
+                missing = evidence.release_timeline(absent_record, self.VERSION, base,
+                                                    required_events=("candidate_frozen",))
+                self.assertTrue(any("事件缺失" in item for item in missing["errors"]), missing)
+                other = self.record_with_timeline({"zip_uploaded": common})
+                other["artifact_fingerprint"]["source"] = "fp"
+                result = evidence.release_timeline(other, self.VERSION, base,
+                                                   required_events=("zip_uploaded",))
+                self.assertEqual([], result["errors"])
+
 
 class TestArtifactFingerprint(SFCase):
     def setUp(self):

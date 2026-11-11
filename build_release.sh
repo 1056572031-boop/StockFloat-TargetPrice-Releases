@@ -572,6 +572,11 @@ else
   echo "!! 挂不上刚做出来的 DMG，卷内外观这一条没验到 —— 停在这里，不猜它没问题" >&2
   exit 1
 fi
+# 普通构建路径也必须验收**最终 DMG 字节**：仅检查构建前的 dist app，或只读卷内
+# 图标元数据，都不能证明用户双击安装后的标签清理、安装日志和首次启动仍然成立。
+"$VENV_PY" tools/verify_install_paths.py --prepared-dmg "$DMG_OUT" \
+  || { echo "!! 最终 DMG 的隔离安装与首次启动复验未过，拒绝继续发布" >&2; exit 1; }
+echo "   最终 DMG：隔离安装、来历标签清理、安装日志与首次启动复验通过"
 
 echo "== DMG 构建完毕 =="
 ls -lh "$DMG_OUT" | awk '{print "   " $5, $9}'
@@ -751,7 +756,7 @@ mkdir -p "$PUBLIC_ASSET_DIR"
 "$VENV_PY" tools/public_release.py --publish --assets-output "$PUBLIC_ASSET_DIR" \
   || { echo "!! 公开源码或分发资料未齐，拒绝切换 OTA 清单" >&2; exit 1; }
 "$VENV_PY" tools/publish_update_release.py --assets "$UPDATE_ASSET_DIR" \
-  --public-assets "$PUBLIC_ASSET_DIR" --notes "$NOTES_FILE"
+  --public-assets "$PUBLIC_ASSET_DIR" --notes "$NOTES_FILE" --resume
 echo "   GitHub 发布说明来源: $NOTES_FILE"
 
 # ---- 6.0) 公开下载入口（必须在 OTA 发布与公开发布之后部署并读回） ----

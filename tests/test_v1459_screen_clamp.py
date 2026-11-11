@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PyQt6.QtCore import QRect                                # noqa: E402
+from PyQt6.QtCore import QRect, QPoint                                # noqa: E402
 from PyQt6.QtGui import QGuiApplication                       # noqa: E402
 from PyQt6.QtWidgets import QApplication, QWidget             # noqa: E402
 
@@ -156,13 +156,44 @@ class RestoreClampsToScreen(SFCase):
     def test_existing_configuration_keeps_its_saved_position(self):
         self.assertEqual((self.win.x(), self.win.y()), (100, 100))
 
-    def test_first_install_uses_active_screen_position_after_final_resize(self):
+    def test_first_install_screen_prefers_pointer_screen_and_falls_back_to_primary(self):
+        secondary = _FakeScreen(QRect(2000, 37, 1512, 875))
+        pointer = QPoint(2200, 300)
+        screen = m.first_install_screen(
+            cursor_pos=pointer,
+            screen_at=lambda point: secondary if point == pointer else None,
+            primary_screen=lambda: _FakeScreen(USABLE),
+        )
+        self.assertIs(screen, secondary)
+        fallback = m.first_install_screen(
+            cursor_pos=pointer,
+            screen_at=lambda point: None,
+            primary_screen=lambda: _FakeScreen(USABLE),
+        )
+        self.assertEqual(fallback.availableGeometry(), USABLE)
+
+    def test_first_install_screen_uses_qt_defaults_without_injected_queries(self):
+        secondary = _FakeScreen(QRect(2000, 37, 1512, 875))
+        pointer = QPoint(2200, 300)
+        with patch.object(m.QCursor, "pos", staticmethod(lambda: pointer)), \
+                patch.object(m.QGuiApplication, "screenAt", return_value=secondary) as screen_at, \
+                patch.object(m.QApplication, "primaryScreen") as primary_screen:
+            self.assertIs(m.first_install_screen(), secondary)
+        screen_at.assert_called_once_with(pointer)
+        primary_screen.assert_not_called()
+
+    def test_first_install_uses_selected_screen_after_final_resize(self):
         with patch.object(m, "is_first_install", return_value=True), \
+                patch.object(m, "first_install_screen", return_value=_FakeScreen(USABLE)), \
                 patch.object(m, "first_install_position", return_value=(333, 222)) as placed:
             win = m.FloatWindow()
             self.track_widget(win)
         self.assertEqual((win.x(), win.y()), (333, 222))
         self.assertEqual(placed.call_args.args[1:], (win.width(), win.height()))
+
+
+    def test_first_install_uses_active_screen_position_after_final_resize(self):
+        self.test_first_install_uses_selected_screen_after_final_resize()
 
     def test_restore_clamps_and_repositions(self):
         self.win._minimized = True   # discipline-ok(R5): offscreen 下没有公开入口能构造这个现场

@@ -155,9 +155,39 @@ def quality(root: Path, state: dict[str, Any], record_path: Path, complete: bool
     return record
 
 
+def candidate_evidence(root: Path, state: dict[str, Any], record_path: Path,
+                       record: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the immutable quality record and receipt proving this candidate froze."""
+    record = record if record is not None else evidence.load(record_path)
+    timeline = evidence.release_timeline(record, state["version"], record_path.parent,
+                                         required_events=("candidate_frozen",))
+    if timeline["errors"]:
+        raise ValueError("候选冻结时间线无效: " + "; ".join(timeline["errors"]))
+    frozen = next(item for item in timeline["events"] if item["event"] == "candidate_frozen")
+    if frozen["status"] != "verified" or not frozen["evidence_path"]:
+        raise ValueError("候选冻结时间线未验证")
+    receipt = evidence.resolve_reference(record_path.parent, frozen["evidence_path"])
+    return reference(record_path), reference(receipt)
+
+
+def bind_candidate_evidence(root: Path, path: Path, record_path: Path) -> dict[str, Any]:
+    """Bind the qualified record and its semantic candidate-freeze receipt to state."""
+    state = validate(root, path, "candidate_ready")
+    record = quality(root, state, record_path)
+    quality_ref, frozen_ref = candidate_evidence(root, state, record_path, record)
+    state["observations"]["candidate_quality"] = quality_ref
+    state["observations"]["candidate_frozen"] = frozen_ref
+    evidence.atomic_json(path, state)
+    return state
+
+
 def begin_publish(root: Path, path: Path, record_path: Path) -> dict[str, Any]:
     state = validate(root, path, "candidate_ready")
-    quality(root, state, record_path)
+    record = quality(root, state, record_path)
+    quality_ref, frozen_ref = candidate_evidence(root, state, record_path, record)
+    if (state["observations"].get("candidate_quality") != quality_ref
+            or state["observations"].get("candidate_frozen") != frozen_ref):
+        raise ValueError("候选冻结收据尚未绑定发布状态")
     state["observations"]["publish_quality"] = reference(record_path)
     state["observations"]["publish_manifest"] = reference(record_path.with_suffix(".manifest.json"))
     # Mark pending before the first irreversible write; interruption is never complete.

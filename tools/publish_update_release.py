@@ -281,7 +281,7 @@ def verify_public_release_assets(release, version, expected, token=None):
             raise SystemExit("公开资产 %s 大小不匹配：线上 %r，期望 %d" %
                              (name, asset.get("size"), len(local)))
         browser_url = asset.get("browser_download_url")
-        if browser_url is not None and browser_url != public_asset_download_url(name):
+        if browser_url and urllib.parse.unquote(browser_url) != public_asset_download_url(name):
             raise SystemExit("公开资产 %s 下载地址不匹配" % name)
         remote = download_asset(token or "", asset)
         if remote != local:

@@ -252,8 +252,21 @@ def observation(receipt: dict[str, Any], procedure: str, artifact_sha: str,
                                                     "sha256": evidence.sha256_file(attachment)}]}
 
 
+def timeline_entry(root: Path, version: str, event: str, receipt_path: Path,
+                   receipt: dict[str, Any]) -> dict[str, Any]:
+    if event not in evidence.RELEASE_TIMELINE_EVENTS:
+        raise EvidenceError(f"未知发布时间线事件: {event}")
+    ended_at = receipt.get("ended_at")
+    if not isinstance(ended_at, str) or not ended_at.strip():
+        raise EvidenceError(f"时间线收据缺少结束时刻: {event}")
+    return {"at": ended_at, "version": version, "status": "verified",
+            "evidence_path": relative_receipt(receipt_path, root),
+            "evidence_sha256": evidence.sha256_file(receipt_path),
+            "command": list(receipt.get("argv", []))}
+
+
 def bind(root: Path, version: str, limitations: dict[str, list[str]], old_app: Path,
-         app: Path | None = None, zip_path: Path | None = None) -> Path:
+         app: Path | None = None, zip_path: Path | None = None, state: Path | None = None) -> Path:
     path = record_path(root, version)
     value = evidence.load(path)
     fingerprint = evidence.source_snapshot(root)["fingerprint"]
@@ -322,11 +335,27 @@ def bind(root: Path, version: str, limitations: dict[str, list[str]], old_app: P
                         if item["id"] == "upgrade_install" else
                         {"failure_injected": True, "rollback_restored": True, "old_app_started": True,
                          "user_data_preserved": True}, delivery_path.parent / delivery_receipt.get("log", "command.log"), root))
+    value["release_timeline"] = {
+        "candidate_frozen": timeline_entry(root, version, "candidate_frozen", delivery_path, delivery_receipt),
+    }
     errors = evidence.validate(value)
     if errors:
         raise EvidenceError("绑定记录无效: " + "; ".join(errors))
+    generated = (path, manifest_path(root, version),
+                 evidence_dir(root, version) / "verify.json", evidence_dir(root, version) / "qualify.json")
+    before = {item: item.read_bytes() if item.is_file() else None for item in generated}
     evidence.atomic_json(path, value)
     write_qualification(root, value, path)
+    if state is not None:
+        try:
+            release_state.bind_candidate_evidence(root, state, path)
+        except ValueError as exc:
+            for item, content in before.items():
+                if content is None:
+                    item.unlink(missing_ok=True)
+                else:
+                    item.write_bytes(content)
+            raise EvidenceError("候选状态未绑定冻结收据: " + str(exc)) from exc
     return path
 
 
@@ -477,9 +506,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "pre-record":
             return 0 if pre_record(root, version, args.baseline or "", limitations) else 1
         if args.command == "bind":
-            if not args.old_app:
-                raise EvidenceError("bind 必须提供 --old-app")
-            return 0 if bind(root, version, limitations, args.old_app, args.app, args.zip_path) else 1
+            if not args.old_app or args.state is None:
+                raise EvidenceError("bind 必须提供 --old-app、--state")
+            return 0 if bind(root, version, limitations, args.old_app, args.app, args.zip_path, args.state) else 1
         required = (args.state, args.readback, args.walkthrough)
         if any(item is None for item in required):
             raise EvidenceError("complete 必须提供 --state、--readback、--walkthrough")

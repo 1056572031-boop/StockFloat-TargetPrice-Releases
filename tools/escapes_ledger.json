@@ -4945,6 +4945,18 @@
   ],
   "rounds": [
     {
+      "version": "1.4.117",
+      "date": "2026-11-11",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "发布器对 GitHub percent-encoded 中文发行标签和空 browser_download_url 的规范化校验，并由错误编码地址回归守住拒绝边界",
+        "发版链在公开 ZIP 上传后强制以 --resume 逐字节复用，并在普通 DMG 生成后执行最终 DMG 隔离安装、来历标签清理、安装日志和首次启动复验",
+        "首次安装窗口按鼠标所在屏幕定位并回退主屏，保留已有配置位置；首装数学、默认 Qt API 和最终尺寸接线均有回归"
+      ],
+      "zero_reason": "本轮修复来自发布前本地复核和候选链阻断，没有新的线上逃逸报回；完整回归与发布链定向测试均通过，真实发布、安装和线上渠道仍保持未验证"
+    },
+    {
       "version": "1.4.91",
       "date": "2026-10-15",
       "reviewed": true,
