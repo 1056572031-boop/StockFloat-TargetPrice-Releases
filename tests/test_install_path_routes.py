@@ -202,7 +202,7 @@ class TestRoutesInProcess(RouteCase):
                 work = self.work / ("post-install-" + expected)
 
                 def install_then_inject(_script, _work, target_dir, **_kwargs):
-                    source = VIP.real_app()
+                    source, _ = VIP.light_signed_app(work, "post-install-source")
                     target = target_dir / VIP.CURRENT_APP_NAME
                     import shutil
                     shutil.copytree(source, target)
@@ -213,7 +213,8 @@ class TestRoutesInProcess(RouteCase):
                     return 0, "", "zh_CN.UTF-8"
 
                 with mock.patch.object(VIP, "run_from_volume", side_effect=install_then_inject), \
-                        mock.patch.object(VIP, "has_quarantine_anywhere", return_value=quarantine):
+                        mock.patch.object(VIP, "has_quarantine_anywhere", return_value=quarantine), \
+                        mock.patch.object(VIP, "real_app", side_effect=VIP.NoFixture("测试机没有真实应用")):
                     ok, detail = VIP.verify_prepared_dmg(image, work,
                                                          smoke_runner=lambda _app: (0, {}))
                 self.assertFalse(ok, detail)
