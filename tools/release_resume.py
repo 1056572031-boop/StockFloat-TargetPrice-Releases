@@ -59,7 +59,7 @@ AHEAD_FILE = "rest-7-ahead-after-push.txt"
 LIVE_MANIFEST_MARK = "线上清单读回一致"
 SMOKE_VERDICT = "结论: 冒烟通过"
 SMOKE_STEP = "8-final-smoke"
-PUBLISH_STEP = "6-publish"
+PUBLISH_STEP = "6-publish-ota"
 # 与回归关卡探针相关的开关不许带进真实发布步骤（build_release.sh 同样不继承它们）。
 SCRUBBED_ENV = ("SF_GUARD_PROBE", "SF_LOCK_PROBE", "SF_LOCK_PROBE_DIR", "SF_PUBLIC_REGRESSION",
                 "SF_SKIP_COVERAGE", "SF_RANDOM_ORDER", "SF_LANES", "SF_REJECT_NETWORK",
@@ -85,7 +85,8 @@ def plan(py: str, version: str, branch: str, app: Path,
     给了 record（本轮已绑定的质量记录）才在最前面加上第 6 步：用 publish_update_release.py --resume 接着做
     上传之后的清单切换，线上已有同名版本 ZIP 且字节一致才复用，否则照旧拒绝覆盖。"""
     steps = [
-        ("6.0-public-release", True, [py, "tools/public_release.py", "--publish"]),
+        ("6.0-public-release", True, [py, "tools/public_release.py", "--publish",
+                                       "--assets-output", "build/public_assets/V" + version]),
         ("6.1-download-entry", True, ["bash", "-c", "cd services/download-analytics && SF_DEPLOY_PROVENANCE=auto node deploy-pages.mjs"]),
         ("6.2-render-guide", True, [py, "tools/render_install_guide.py"]),
         ("6.2-check-guide", True, [py, "tools/render_install_guide.py", "--check"]),
@@ -95,9 +96,11 @@ def plan(py: str, version: str, branch: str, app: Path,
                                  "--timeout", "30"]),
     ]
     if record is not None:
-        steps.insert(0, (PUBLISH_STEP, True, [
-            "/usr/bin/env", "SF_QUALITY_RECORD=" + str(record), py, "tools/publish_update_release.py",
-            "--assets", "build/update_assets/V" + version, "--notes", "release_notes.txt", "--resume"]))
+        steps.insert(1, (PUBLISH_STEP, True, [
+            "/usr/bin/env", "SF_QUALITY_RECORD=" + str(record), py,
+            "tools/publish_update_release.py", "--assets", "build/update_assets/V" + version,
+            "--public-assets", "build/public_assets/V" + version,
+            "--notes", "release_notes.txt", "--resume"]))
     return steps
 
 

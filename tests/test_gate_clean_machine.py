@@ -166,6 +166,21 @@ class HonestVerdict(SFCase):
 class UnknownArgumentRefusesToAct(SFCase):
     """打错的参数不许落到默认动作上（默认动作 = 跑五条真核验）。"""
 
+    def test_prepared_dmg_path_returns_its_real_verdict_without_running_default_routes(self):
+        image = ROOT / "candidate.dmg"
+        with patch.object(sys, "argv", ["verify_install_paths.py", "--prepared-dmg", str(image)]), \
+                patch.object(VIP, "verify_prepared_dmg", return_value=(True, "ready")) as prepared, \
+                patch.object(VIP, "check_name_source") as first_route:
+            self.assertEqual(VIP.main(), 0)
+        prepared.assert_called_once()
+        first_route.assert_not_called()
+
+    def test_prepared_dmg_failure_returns_one(self):
+        image = ROOT / "candidate.dmg"
+        with patch.object(sys, "argv", ["verify_install_paths.py", "--prepared-dmg", str(image)]), \
+                patch.object(VIP, "verify_prepared_dmg", return_value=(False, "startup failed")):
+            self.assertEqual(VIP.main(), 1)
+
     def test_typo_does_not_run_the_default_routes(self):
         buf = io.StringIO()
         with patch.object(sys, "argv", ["verify_install_paths.py", "--slf-test"]), \
@@ -195,6 +210,20 @@ class UnknownArgumentRefusesToAct(SFCase):
                          "未知参数必须退 2，不许滑进正式核验那一档：%s"
                          % (cp.stdout + cp.stderr)[-200:])
         self.assertIn("不认识", cp.stdout + cp.stderr)
+
+
+class LightSignedFixtureCleanup(SFCase):
+    def test_ad_hoc_signing_unavailable_is_reported_and_keychain_cleanup_failure_is_ignored(self):
+        work = pathlib.Path(tempfile.mkdtemp(prefix="sf_light_fixture_"))
+        self.addCleanup(shutil.rmtree, str(work), True)
+        state = work / "light-probe" / "private"
+        state.mkdir(parents=True)
+        (state / "identity.keychain-db").write_bytes(b"fixture")
+        with patch.object(VIP.StableSigning, "initialize", return_value={"certificate_sha1": "A" * 40}), \
+                patch.object(VIP, "make_launchable_app", return_value=None), \
+                patch.object(VIP.StableSigning, "run", side_effect=ValueError("cleanup denied")):
+            with self.assertRaises(VIP.NoFixture):
+                VIP.light_signed_app(work, "probe")
 
 
 class EveryRouteSkippedRefusesToConclude(SFCase):

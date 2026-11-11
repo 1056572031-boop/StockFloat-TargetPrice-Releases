@@ -346,6 +346,13 @@ def publish_documents(source: Path) -> None:
             run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], checkout)
 
 
+def copy_public_assets(output: Path, assets: tuple[Path, ...]) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    for asset in assets:
+        destination = output / asset.name
+        shutil.copyfile(asset, destination)
+
+
 def self_test() -> int:
     home = "/Users/" + "private-owner"
     token = b"ghp_" + b"a" * 30
@@ -390,6 +397,8 @@ def main(argv=None) -> int:
     parser.add_argument("--audit", type=Path)
     parser.add_argument("--audit-public-history", action="store_true")
     parser.add_argument("--regress-snapshot", action="store_true")
+    parser.add_argument("--assets-output", type=Path,
+                        help="复制本轮四项公开发行资产到指定目录，供后续发布闸门读回")
     args = parser.parse_args(argv)
     if args.regress_snapshot:
         if args.self_test or args.publish or args.source_only or args.audit or args.audit_public_history:
@@ -425,6 +434,8 @@ def main(argv=None) -> int:
             sums.write_text("".join("%s  %s\n" % (hashlib.sha256(path.read_bytes()).hexdigest(), path.name)
                                     for path in (dmg, application, archive)), encoding="ascii")
             upload_asset(sums)
+            if args.assets_output:
+                copy_public_assets(args.assets_output, (dmg, application, archive, sums))
             publish_documents(out)
             import quality_evidence
             import release_state

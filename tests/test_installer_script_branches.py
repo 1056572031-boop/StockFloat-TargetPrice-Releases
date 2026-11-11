@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import verify_install_paths as VIP                      # noqa: E402
+import stable_signing as StableSigning                  # noqa: E402
 
 try:
     from _base import SFCase
@@ -67,6 +68,10 @@ class InstallerBranchCase(SFCase):
         self.vol.mkdir()
         self._markers = []
         self._standins = []
+        self._signing_state = self.work / "signing-state"
+        self._signing_policy = StableSigning.initialize(
+            self._signing_state, self.work / "signing-policy.json")
+        self.addCleanup(self._delete_signing_keychain)
         # 收尾顺序：先卸 uchg（否则删不掉），再结束夹具自己启动的替身进程。
         self.addCleanup(self._kill_standin)
         self.addCleanup(lambda: VIP.clear_immutable(self.work))
@@ -79,6 +84,15 @@ class InstallerBranchCase(SFCase):
 
     # ---------- 夹具 ----------
 
+    def _delete_signing_keychain(self):
+        keychain = self._signing_state / "identity.keychain-db"
+        if keychain.exists():
+            StableSigning.run(["/usr/bin/security", "delete-keychain", str(keychain)])
+
+    def _sign_volume_app(self, app):
+        StableSigning.sign(app, self._signing_policy, self._signing_state)
+        return app
+
     def make_volume_app(self, version=NEW_GEN, corrupt=False,
                         inner_tag=False, immutable_inner=False):
         """卷里那一枚包：签名过、身份对；corrupt / 内层标签按各条判据的需要种。"""
@@ -88,6 +102,7 @@ class InstallerBranchCase(SFCase):
         if app is None:
             self.skipTest("这台机器不能 ad-hoc 签名（codesign 不可用）："
                           "替身过不了脚本里那道 codesign 校验，这组判据跑不了")
+        self._sign_volume_app(app)
         if inner_tag:
             inner = app / "Contents" / "Info.plist"
             VIP.stamp_quarantine(inner)
@@ -119,7 +134,11 @@ class InstallerBranchCase(SFCase):
         # 直接跑仓库副本会让所有路线都停在"这个卷里没找到 Skyrocket.app"，
         # 测出来的是夹具位置不对，不是脚本行为不对。
         in_vol = self.vol / SCRIPT.name
-        shutil.copyfile(SCRIPT, in_vol)
+        body = SCRIPT.read_text(encoding="utf-8")
+        expected = 'OFFICIAL_CERT_SHA1="BF4480229378EEAF31022C6E377200F149F87D20"'
+        pinned = 'OFFICIAL_CERT_SHA1="%s"' % self._signing_policy["certificate_sha1"]
+        self.assertIn(expected, body, "安装器必须固定官方证书指纹，不能只验签名有效")
+        in_vol.write_text(body.replace(expected, pinned, 1), encoding="utf-8")
         in_vol.chmod(0o755)
         env = {"PATH": MIN_PATH, "HOME": str(self.home),
                "LANG": USER_LANG, "LC_ALL": USER_LANG, "LC_CTYPE": USER_LANG,
@@ -454,6 +473,28 @@ class InstallerBranchCase(SFCase):
         self.assertEqual(VIP.installed_version(self.target / VIP.CURRENT_APP_NAME), OLD_GEN,
                          "拒装这条也必须在破坏之前")
         self.assertEqual(self.trash_names(), [])
+
+    def test_同一应用标识但不同证书必须在动旧版前被拒绝(self):
+        marker = self._marker()
+        app = VIP.make_launchable_app(self.vol, VIP.CURRENT_APP_NAME, NEW_GEN, marker,
+                                      bundle_id=VIP.BUNDLE_ID)
+        if app is None:
+            self.skipTest("codesign 不可用")
+        self.place_old(OLD_GEN)
+        proc = self.run_script(SF_INSTALL_ALLOW_RUNNING="1")
+        body = self.out(proc)
+        self.assertNotEqual(proc.returncode, 0,
+                            "非官方证书签出的同标识包不应通过一键安装")
+        self.assertIn("不是官方", body)
+        self.assertEqual(VIP.installed_version(self.target / VIP.CURRENT_APP_NAME), OLD_GEN,
+                         "证书不对时旧版必须仍在原位")
+        self.assertEqual(self.trash_names(), [])
+
+    def test_官方证书签出的包可以安装(self):
+        self.make_volume_app(version=NEW_GEN)
+        proc = self.run_script(SF_INSTALL_ALLOW_RUNNING="1")
+        self.assertEqual(proc.returncode, 0, self.out(proc))
+        self.assertEqual(VIP.installed_version(self.target / VIP.CURRENT_APP_NAME), NEW_GEN)
 
 
 if __name__ == "__main__":

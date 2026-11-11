@@ -204,6 +204,96 @@ def verified_asset(release, archive, expected_size=None):
     raise SystemExit("上传后未验证到版本 ZIP，未更新线上清单")
 
 
+def required_public_asset_names(version, archive_name=None):
+    """Return the exact four public assets required for a release version."""
+    archive_name = archive_name or "Skyrocket-%s-macos.zip" % version
+    return (
+        "Skyrocket-V%s.dmg" % version,
+        archive_name,
+        "Skyrocket-%s-source.zip" % version,
+        "Skyrocket-%s-SHA256SUMS.txt" % version,
+    )
+
+
+def public_asset_paths(directory, version, archive_name=None):
+    """Resolve and require the four local public assets before any network call."""
+    directory = Path(directory).resolve()
+    if not directory.is_dir():
+        raise SystemExit("公开资产目录不存在：%s" % directory)
+    paths = {name: directory / name
+             for name in required_public_asset_names(version, archive_name)}
+    missing = [name for name, path in paths.items() if not path.is_file()]
+    if missing:
+        raise SystemExit("缺少公开资产：%s" % ", ".join(missing))
+    return paths
+
+
+def public_asset_snapshot(directory, version, archive_name=None):
+    """Read the local public assets into immutable bytes for the publication gate."""
+    try:
+        paths = public_asset_paths(directory, version, archive_name)
+        return {name: path.read_bytes() for name, path in paths.items()}
+    except OSError as exc:
+        raise SystemExit("公开资产读取失败：%s" % exc) from exc
+
+
+def public_asset_download_url(name):
+    """Return the fixed public GitHub download URL for one release asset."""
+    return "https://github.com/%s/releases/download/%s/%s" % (REPO, TAG, name)
+
+
+def verify_public_release_assets(release, version, expected, token=None):
+    """Verify the four public Release assets without changing remote state.
+
+    ``expected`` maps required asset names to local raw bytes. The API URL is
+    used for authenticated readback; when GitHub provides a browser URL, it
+    must also match the fixed public download address.
+    """
+    if not isinstance(expected, dict):
+        raise SystemExit("公开资产本地期望值必须是对象")
+    fixed = (
+        "Skyrocket-V%s.dmg" % version,
+        "Skyrocket-%s-source.zip" % version,
+        "Skyrocket-%s-SHA256SUMS.txt" % version,
+    )
+    archive_names = [name for name in expected
+                     if name.endswith("-macos.zip") and name in expected]
+    if len(archive_names) != 1:
+        raise SystemExit("公开资产的 macOS ZIP 必须恰好一个")
+    required = (fixed[0], archive_names[0], fixed[1], fixed[2])
+    missing = [name for name in required if name not in expected]
+    if missing:
+        raise SystemExit("缺少公开资产本地期望值：%s" % ", ".join(missing))
+    if not isinstance(release, dict) or not isinstance(release.get("assets"), list):
+        raise SystemExit("Release 缺少 assets 列表")
+
+    verified = {}
+    for name in required:
+        local = expected[name]
+        if not isinstance(local, bytes):
+            raise SystemExit("公开资产 %s 的本地期望值必须是原始字节" % name)
+        matches = [asset for asset in release["assets"]
+                   if isinstance(asset, dict) and asset.get("name") == name]
+        if len(matches) != 1:
+            raise SystemExit("公开资产 %s 必须恰好一个，实际 %d 个" % (name, len(matches)))
+        asset = matches[0]
+        if type(asset.get("size")) is not int or asset["size"] != len(local):
+            raise SystemExit("公开资产 %s 大小不匹配：线上 %r，期望 %d" %
+                             (name, asset.get("size"), len(local)))
+        browser_url = asset.get("browser_download_url")
+        if browser_url is not None and browser_url != public_asset_download_url(name):
+            raise SystemExit("公开资产 %s 下载地址不匹配" % name)
+        remote = download_asset(token or "", asset)
+        if remote != local:
+            raise SystemExit("公开资产 %s 原始字节不匹配" % name)
+        verified[name] = {
+            "name": name,
+            "size": len(remote),
+            "sha256": hashlib.sha256(remote).hexdigest(),
+        }
+    return verified
+
+
 # 读回是只读 GET，重读不会改变线上任何东西；中途断线（v1.4.105 实测 IncompleteRead，
 # 27MB 的包读到 5.6MB 与 0.3MB 就断）不该让一次已经上传成功的发布停在半路，
 # 而重新运行本工具会因同名资产被拒。重读之后仍要逐字节比对，不放宽任何判据。
@@ -574,6 +664,8 @@ def main():
     parser.add_argument("--notes", type=Path, required=True)
     parser.add_argument("--resume", action="store_true",
                         help="线上已有同名版本 ZIP 且字节与本地快照一致时复用它接着做；不一致仍拒绝覆盖")
+    parser.add_argument("--public-assets", type=Path,
+                        help="已上传公开资产的本地快照目录；用于 OTA 指针切换前的四资产读回")
     args = parser.parse_args()
     up, api = resolve_timeouts()
     print("   超时：版本 ZIP 上传 %.0f 秒（%s，默认 %.0f）/ 元数据与读回 %.0f 秒（%s）"
@@ -586,13 +678,26 @@ def main():
     manifest = assets / MANIFEST_PATH
     if len(archives) != 1 or not manifest.is_file():
         raise SystemExit("更新资产不完整或版本 ZIP 不唯一")
+    try:
+        manifest_metadata = json.loads(manifest.read_text(encoding="utf-8"))
+        expected_version = str(manifest_metadata.get("version") or "")
+    except (OSError, ValueError, TypeError) as exc:
+        raise SystemExit("发布前核验失败：更新清单无法读取：%s" % exc) from exc
+    public_assets = None
+    if args.public_assets is not None:
+        public_assets = public_asset_snapshot(args.public_assets, expected_version, archives[0].name)
     archive = archives[0]
     archive_bytes, manifest_bytes, expected_version = publication_snapshot(archive, manifest, args.notes)
+    if public_assets is not None and archive_bytes != public_assets[archive.name]:
+        raise SystemExit("公开资产快照与版本 ZIP 核验字节不一致")
     metadata = json.loads(manifest_bytes)
     notes = metadata["notes"]
     token = github_token()
     release = load_release(token)
     asset = upload_archive(token, release, archive, archive_bytes, resume=args.resume)
+    if public_assets is not None:
+        release = load_release(token)
+        verify_public_release_assets(release, expected_version, public_assets, token)
     # Bind the public release page before exposing the new manifest to clients.
     release = update_release_body(token, release, notes)
     # 新客户端的 raw 清单先切换：一旦它可见，ZIP 与公开说明已存在且已验证。

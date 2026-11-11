@@ -394,10 +394,14 @@ class TestPublishToolGuards(unittest.TestCase):
             with patch.object(self.tool, "request",
                               side_effect=lambda url, t, method="GET", **k: verbs.append(method)), \
                  patch.object(self.tool, "load_release",
-                              return_value=self._release([{"name": "m.json", "size": 99}])):
+                              return_value=self._release([{"name": "m.json", "size": 99,
+                                                           "url": "https://api.github.com/assets/9"}])), \
+                 patch.object(self.tool, "download_asset", return_value=b"old"):
                 with self.assertRaises(SystemExit):
                     self.tool.publish_legacy_manifest(
-                        "t", self._release([{"id": 9, "name": self.tool.MANIFEST_PATH}]), mf.read_bytes())
+                        "t", self._release([{"id": 9, "name": self.tool.MANIFEST_PATH,
+                                             "size": 3, "url": "https://api.github.com/assets/9"}]),
+                        mf.read_bytes())
             self.assertEqual(verbs[:2], ["DELETE", "POST"], "旧清单先删后传")
 
     def test_legacy_manifest_publishes_and_verifies_when_size_matches(self):

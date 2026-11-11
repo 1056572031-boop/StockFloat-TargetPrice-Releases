@@ -57,6 +57,11 @@ class TestFirstInstallDefaultHeight(unittest.TestCase):
         self.assertEqual(h, MIN_H, "首装默认高度应为最低高度")
         self.assertEqual(bg, BG_MODE_DEFAULT)
 
+    def test_只有完全没有当前备份和迁移配置才算首次安装(self):
+        self.assertTrue(sf_config.is_first_install())
+        self._write({"code": "sh600000"})
+        self.assertFalse(sf_config.is_first_install())
+
     def test_config_without_h_falls_back_to_min_height(self):
         """配置存在但缺高度字段：降级值同为最低高度"""
         self._write({"code": "sh600000", "x": 1, "y": 2, "bg": "glass"})

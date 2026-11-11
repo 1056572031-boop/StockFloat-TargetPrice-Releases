@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from tools import gate_stamp
 from tools import quality_evidence as evidence
+from sf_constants import APP_VERSION
 from tests._base import SFCase
 
 
@@ -99,6 +100,372 @@ class TestQualityEvidenceValidation(SFCase):
         errors = evidence.validate({"schema_version": 99, "change_id": "", "intent": ""})
         self.assertTrue(any("schema_version" in item for item in errors))
         self.assertTrue(any("缺少必填字段" in item for item in errors))
+
+
+class TestReleaseStatusMatrix(SFCase):
+    """发布、站点和真实场景必须分别可见，不能由历史读回越级完成。"""
+
+    PUBLISHED_AT = "2026-11-09T11:20:08+00:00"
+    DEPLOYED_AT = "2026-11-09T11:21:04+00:00"
+    OBSERVED_AT = "2026-11-09T11:22:44+00:00"
+
+    def record(self, publication=None, site=None, scenarios=None, **extra):
+        record = evidence.template()
+        record.update({"publication": publication, "site": site})
+        if scenarios is not None:
+            record["scenarios"] = scenarios
+        record.update(extra)
+        return record
+
+    def all_required_scenarios(self):
+        scenarios = copy.deepcopy(evidence.template()["scenarios"])
+        for scenario in scenarios:
+            if scenario["required"]:
+                scenario.update(status="passed", observed_at=self.OBSERVED_AT)
+        return scenarios
+
+    def expected(self, **overrides):
+        result = {
+            "publication_status": "pending",
+            "site_status": "pending",
+            "acceptance_status": "pending",
+            "verified_scenarios": [],
+            "unverified_scenarios": [
+                "local_mac", "fresh_install", "upgrade_install", "ota_rollback",
+            ],
+            "not_applicable_scenarios": [
+                "second_mac", "intel", "camera_upgrade", "fullscreen", "browser_download",
+            ],
+        }
+        result.update(overrides)
+        return result
+
+    def test_status_matrix_keeps_publication_site_and_acceptance_states_separate(self):
+        cases = (
+            (
+                "not published",
+                self.record(
+                    publication={"status": "not_published"},
+                    site={"status": "not_deployed"},
+                ),
+                self.expected(publication_status="not_published", site_status="not_deployed"),
+            ),
+            (
+                "published but not deployed",
+                self.record(
+                    publication={"status": "published", "published_at": self.PUBLISHED_AT},
+                    site={"status": "not_deployed"},
+                ),
+                self.expected(publication_status="published", site_status="not_deployed"),
+            ),
+            (
+                "deployed with required scenario unverified",
+                self.record(
+                    publication={"status": "published", "published_at": self.PUBLISHED_AT},
+                    site={"status": "deployed", "deployed_at": self.DEPLOYED_AT},
+                ),
+                self.expected(publication_status="published", site_status="deployed"),
+            ),
+            (
+                "all required scenarios passed",
+                self.record(
+                    publication={"status": "published", "published_at": self.PUBLISHED_AT},
+                    site={"status": "deployed", "deployed_at": self.DEPLOYED_AT},
+                    scenarios=self.all_required_scenarios(),
+                ),
+                self.expected(
+                    publication_status="published",
+                    site_status="deployed",
+                    acceptance_status="complete",
+                    verified_scenarios=[
+                        "local_mac", "fresh_install", "upgrade_install", "ota_rollback",
+                    ],
+                    unverified_scenarios=[],
+                ),
+            ),
+        )
+        for name, record, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(expected, evidence.status_matrix(record))
+
+    def test_status_matrix_treats_malformed_publication_and_site_as_not_ready(self):
+        cases = (
+            ({"publication": [], "site": {"status": "deployed", "deployed_at": self.DEPLOYED_AT}},
+             "not_published", "deployed"),
+            ({"publication": {"status": "published", "published_at": " "},
+              "site": {"status": []}},
+             "not_published", "not_deployed"),
+            ({"publication": {"status": "published", "published_at": 1},
+              "site": {"status": "deployed", "deployed_at": " "}},
+             "not_published", "not_deployed"),
+        )
+        for values, publication_status, site_status in cases:
+            with self.subTest(values=values):
+                result = evidence.status_matrix(self.record(**values))
+                self.assertEqual(publication_status, result["publication_status"])
+                self.assertEqual(site_status, result["site_status"])
+
+    def test_status_matrix_keeps_no_required_scenarios_pending(self):
+        scenarios = [
+            {"id": "optional", "status": "passed", "required": False,
+             "receipts": ["evidence/optional.json"]},
+        ]
+        result = evidence.status_matrix(self.record(
+            publication={"status": "published", "published_at": self.PUBLISHED_AT},
+            site={"status": "deployed", "deployed_at": self.DEPLOYED_AT},
+            scenarios=scenarios,
+        ))
+        self.assertEqual("pending", result["acceptance_status"])
+        self.assertEqual([], result["verified_scenarios"])
+        self.assertEqual(list(evidence.RELEASE_REQUIRED_SCENARIOS), result["unverified_scenarios"])
+        self.assertEqual(
+            ["second_mac", "intel", "camera_upgrade", "fullscreen", "browser_download"],
+            result["not_applicable_scenarios"],
+        )
+
+    def test_status_matrix_reports_verified_and_partial_required_scenarios(self):
+        scenarios = [
+            {"id": "verified", "status": "passed", "required": True,
+             "receipts": ["evidence/verified.json"]},
+            {"id": "pending", "status": "unverified", "required": True,
+             "receipts": []},
+        ]
+        result = evidence.status_matrix(self.record(scenarios=scenarios))
+        self.assertEqual("pending", result["acceptance_status"])
+        self.assertEqual([], result["verified_scenarios"])
+        self.assertEqual(list(evidence.RELEASE_REQUIRED_SCENARIOS), result["unverified_scenarios"])
+
+    def test_status_matrix_requires_evidence_for_passed_scenarios(self):
+        scenarios = [{"id": "verified", "status": "passed", "required": True,
+                      "receipts": []}]
+        result = evidence.status_matrix(self.record(scenarios=scenarios))
+        self.assertEqual("pending", result["acceptance_status"])
+        self.assertEqual([], result["verified_scenarios"])
+        self.assertEqual(list(evidence.RELEASE_REQUIRED_SCENARIOS), result["unverified_scenarios"])
+
+        self.assertEqual(self.expected(), evidence.status_matrix(self.record()))
+
+    def test_retrospective_readback_cannot_complete_acceptance(self):
+        record = self.record(
+            publication={"status": "published", "published_at": self.PUBLISHED_AT},
+            site={"status": "deployed", "deployed_at": self.DEPLOYED_AT},
+            scenarios=self.all_required_scenarios(),
+            evidence_kind="retrospective_readback_not_execution_receipt",
+        )
+        result = evidence.status_matrix(record)
+        self.assertEqual("published", result["publication_status"])
+        self.assertEqual("deployed", result["site_status"])
+        self.assertEqual("pending", result["acceptance_status"])
+
+    def test_status_matrix_with_no_required_policy_is_pending(self):
+        with patch.object(evidence, "RELEASE_REQUIRED_SCENARIOS", ()):
+            result = evidence.status_matrix(self.record())
+        self.assertEqual("pending", result["acceptance_status"])
+
+    def test_status_matrix_does_not_allow_record_to_disable_required_policy(self):
+        scenarios = [{"id": "local_mac", "status": "passed", "required": False,
+                      "receipts": ["evidence/local.json"]}]
+        result = evidence.status_matrix(self.record(scenarios=scenarios))
+        self.assertEqual("partial", result["acceptance_status"])
+        self.assertEqual(["local_mac"], result["verified_scenarios"])
+        self.assertEqual(
+            [name for name in evidence.RELEASE_REQUIRED_SCENARIOS if name != "local_mac"],
+            result["unverified_scenarios"],
+        )
+
+    def test_status_matrix_ignores_malformed_scenario_entries(self):
+        result = evidence.status_matrix(self.record(scenarios=["not-an-object", {"id": 7}]))
+        self.assertEqual("pending", result["acceptance_status"])
+        self.assertEqual([], result["verified_scenarios"])
+        self.assertEqual(
+            list(evidence.RELEASE_REQUIRED_SCENARIOS),
+            result["unverified_scenarios"],
+        )
+        self.assertEqual(
+            ["second_mac", "intel", "camera_upgrade", "fullscreen", "browser_download"],
+            result["not_applicable_scenarios"],
+        )
+
+
+class TestReleaseTimeline(SFCase):
+    """发布历史时间线只投影已有证据，不猜测缺失事实。"""
+
+    VERSION = APP_VERSION
+    EVENTS = (
+        "candidate_frozen",
+        "zip_uploaded",
+        "dmg_uploaded",
+        "source_uploaded",
+        "checksums_uploaded",
+        "ota_pointer_updated",
+        "site_deployed",
+        "acceptance_completed",
+    )
+    TIMES = {
+        "candidate_frozen": "2026-11-09T10:00:00+00:00",
+        "zip_uploaded": "2026-11-09T10:01:00+00:00",
+        "dmg_uploaded": "2026-11-09T10:02:00+00:00",
+        "source_uploaded": "2026-11-09T10:03:00+00:00",
+        "checksums_uploaded": "2026-11-09T10:04:00+00:00",
+        "ota_pointer_updated": "2026-11-09T10:05:00+00:00",
+        "site_deployed": "2026-11-09T10:06:00+00:00",
+        "acceptance_completed": "2026-11-09T10:07:00+00:00",
+    }
+
+    def record_with_timeline(self, entries=None):
+        record = evidence.template()
+        record["release_artifacts"]["version"] = self.VERSION
+        record["release_timeline"] = entries if entries is not None else {
+            event: {
+                "at": self.TIMES[event],
+                "version": self.VERSION,
+                "status": "verified",
+                "evidence_path": f"evidence/{event}.json",
+            }
+            for event in self.EVENTS
+        }
+        return record
+
+    def test_returns_all_release_events_with_required_fields(self):
+        result = evidence.release_timeline(self.record_with_timeline(), self.VERSION)
+
+        self.assertEqual([], result["errors"])
+        self.assertEqual(list(self.EVENTS), [item["event"] for item in result["events"]])
+        for item in result["events"]:
+            with self.subTest(event=item["event"]):
+                self.assertEqual(
+                    {"event", "at", "version", "status", "evidence_path"},
+                    set(item),
+                )
+                self.assertEqual(self.VERSION, item["version"])
+                self.assertEqual("verified", item["status"])
+                self.assertTrue(item["evidence_path"])
+
+    def test_missing_historical_evidence_is_unverified_without_guessing_time(self):
+        record = self.record_with_timeline({
+            "candidate_frozen": {
+                "at": self.TIMES["candidate_frozen"],
+                "version": self.VERSION,
+                "status": "verified",
+                "evidence_path": "evidence/candidate.json",
+            }
+        })
+        original = copy.deepcopy(record)
+        with patch.object(evidence, "utc_now", side_effect=AssertionError("不应读取当前时间")):
+            result = evidence.release_timeline(record, self.VERSION)
+
+        self.assertEqual([], result["errors"])
+        missing = {
+            item["event"]: item for item in result["events"]
+            if item["event"] != "candidate_frozen"
+        }
+        self.assertEqual(set(self.EVENTS) - {"candidate_frozen"}, set(missing))
+        for item in missing.values():
+            self.assertEqual("unverified", item["status"])
+            self.assertIsNone(item["at"])
+            self.assertIsNone(item["evidence_path"])
+        self.assertEqual(original, record, "时间线投影不得改写历史记录")
+
+    def test_timeline_rejects_nonzero_utc_offsets(self):
+        record = self.record_with_timeline()
+        record["release_timeline"]["zip_uploaded"]["at"] = "2026-11-09T10:01:00+08:00"
+        result = evidence.release_timeline(record, self.VERSION)
+        event = next(item for item in result["events"] if item["event"] == "zip_uploaded")
+        self.assertTrue(any("时间无效" in error for error in result["errors"]), result)
+        self.assertEqual("unverified", event["status"])
+        self.assertIsNone(event["at"])
+        self.assertIsNone(event["evidence_path"])
+
+    def test_timeline_downgrades_missing_evidence_or_status(self):
+        record = self.record_with_timeline()
+        record["release_timeline"]["dmg_uploaded"].pop("evidence_path")
+        record["release_timeline"]["source_uploaded"]["status"] = ""
+        result = evidence.release_timeline(record, self.VERSION)
+        for event_name in ("dmg_uploaded", "source_uploaded"):
+            with self.subTest(event=event_name):
+                event = next(item for item in result["events"] if item["event"] == event_name)
+                self.assertEqual("unverified", event["status"])
+                self.assertIsNone(event["at"])
+                self.assertIsNone(event["evidence_path"])
+        self.assertEqual([], result["errors"])
+
+        record = self.record_with_timeline()
+        result = evidence.release_timeline(record, self.VERSION)
+        at = {item["event"]: item["at"] for item in result["events"]}
+
+        for asset_event in (
+            "zip_uploaded", "dmg_uploaded", "source_uploaded", "checksums_uploaded"
+        ):
+            with self.subTest(asset_event=asset_event):
+                self.assertLess(at[asset_event], at["ota_pointer_updated"])
+
+    def test_timeline_reports_time_order_anomaly(self):
+        record = self.record_with_timeline()
+        record["release_timeline"]["ota_pointer_updated"]["at"] = "2026-11-09T09:59:00+00:00"
+        result = evidence.release_timeline(record, self.VERSION)
+        self.assertTrue(result["errors"])
+        self.assertTrue(any("时间" in error for error in result["errors"]), result)
+
+    def test_timeline_reports_record_and_asset_version_mismatches(self):
+        cases = (
+            ("record version", {"version": "historical-version"}, "record.version"),
+            ("asset version", {"release_artifacts": {"version": "historical-version"}},
+             "release_artifacts.version"),
+            ("event version", {"release_timeline": {
+                "zip_uploaded": {
+                    "at": self.TIMES["zip_uploaded"],
+                    "version": "historical-version",
+                    "status": "verified",
+                    "evidence_path": "evidence/zip.json",
+                },
+            }}, "时间线事件版本不一致"),
+        )
+        for name, mutation, needle in cases:
+            with self.subTest(name=name):
+                record = self.record_with_timeline()
+                if name == "event version":
+                    record["release_timeline"]["zip_uploaded"].update(
+                        mutation["release_timeline"]["zip_uploaded"]
+                    )
+                else:
+                    record.update(mutation)
+                result = evidence.release_timeline(record, self.VERSION)
+                self.assertTrue(any(needle in error for error in result["errors"]), result)
+
+    def test_timeline_rejects_invalid_or_naive_event_times(self):
+        cases = (
+            ("invalid", "not-a-time"),
+            ("naive", "2026-11-09T10:01:00"),
+            ("missing", None),
+        )
+        for name, value in cases:
+            with self.subTest(name=name):
+                record = self.record_with_timeline()
+                if value is None:
+                    record["release_timeline"]["zip_uploaded"].pop("at")
+                else:
+                    record["release_timeline"]["zip_uploaded"]["at"] = value
+                result = evidence.release_timeline(record, self.VERSION)
+                event = next(item for item in result["events"] if item["event"] == "zip_uploaded")
+                if value is not None:
+                    self.assertTrue(any("时间无效" in error for error in result["errors"]), result)
+                    self.assertEqual("unverified", event["status"])
+                    self.assertIsNone(event["at"])
+                    self.assertIsNone(event["evidence_path"])
+                else:
+                    self.assertEqual([], result["errors"])
+                    self.assertIsNone(event["at"])
+                    self.assertEqual("unverified", event["status"])
+    def test_timeline_reports_all_phase_order_violations(self):
+        record = self.record_with_timeline()
+        record["release_timeline"]["candidate_frozen"]["at"] = self.TIMES["acceptance_completed"]
+        record["release_timeline"]["site_deployed"]["at"] = self.TIMES["zip_uploaded"]
+        record["release_timeline"]["acceptance_completed"]["at"] = self.TIMES["candidate_frozen"]
+        result = evidence.release_timeline(record, self.VERSION)
+        self.assertGreaterEqual(len(result["errors"]), 3)
+        self.assertTrue(any("candidate_frozen" in error for error in result["errors"]), result)
+        self.assertTrue(any("site_deployed" in error for error in result["errors"]), result)
+        self.assertTrue(any("acceptance_completed" in error for error in result["errors"]), result)
 
 
 class TestArtifactFingerprint(SFCase):

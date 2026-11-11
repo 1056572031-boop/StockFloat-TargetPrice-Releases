@@ -67,6 +67,10 @@ class ReleaseDesktopStaging(SFCase):
         self.assertLess(self.source.index(source_qualified), self.source.index('hdiutil create'))
         self.assertLess(self.source.index(prepared_check), self.source.index('hdiutil create'))
         self.assertLess(self.source.index(QUALIFY), self.source.index(begin_publish))
+        prepared_verify = 'tools/verify_install_paths.py --prepared-dmg "$DMG_OUT"'
+        self.assertIn(prepared_verify, self.source)
+        self.assertLess(self.source.index(prepared_check), self.source.index(prepared_verify))
+        self.assertLess(self.source.index(prepared_verify), self.source.index(CALL))
         self.assertLess(self.source.index(begin_publish), self.source.index(CALL))
         self.assertLess(self.source.index(begin_publish), self.source.index('tools/publish_update_release.py --assets'))
         self.assertGreater(self.source.index('tools/release_state.py candidate --state'),

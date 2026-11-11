@@ -125,20 +125,25 @@ class PlanTests(_TempCase):
 
     def test_publish_step_exists_only_when_a_quality_record_is_given_and_comes_first(self):
         record = Path("/records/quality.json")
+        # 无质量记录的基础计划不包含 OTA 续跑；绑定质量记录时才插入新步骤。
+        self.assertNotIn("6-publish-ota", [name for name, _, _ in self.steps])
         with_publish = resume.plan("py", VERSION, "feat/x", APP, record)
-        self.assertEqual([name for name, _, _ in with_publish][1:], [name for name, _, _ in self.steps])
-        name, hard, argv = with_publish[0]
+        self.assertEqual([name for name, _, _ in with_publish][0], "6.0-public-release")
+        self.assertEqual([name for name, _, _ in with_publish][1], resume.PUBLISH_STEP)
+        self.assertEqual([name for name, _, _ in with_publish][2:], [name for name, _, _ in self.steps][1:])
+        name, hard, argv = with_publish[1]
         self.assertEqual((name, hard), (resume.PUBLISH_STEP, True))
         self.assertEqual(argv[:2], ["/usr/bin/env", "SF_QUALITY_RECORD=" + str(record)])
         self.assertIn("--resume", argv)
         self.assertEqual(argv[argv.index("--assets") + 1], "build/update_assets/V" + VERSION)
+        self.assertEqual(argv[argv.index("--public-assets") + 1], "build/public_assets/V" + VERSION)
         source = (REPO / "build_release.sh").read_text(encoding="utf-8")
         publish_at = source.find("tools/publish_update_release.py")
         self.assertGreater(publish_at, -1)
         self.assertLess(publish_at, source.find("node deploy-pages.mjs"), "脚本里第 6 步在 6.1 之前")
         # 下载入口的读回要核对 DMG、源码 ZIP、校验清单都已在发行页：它们由公开发布步骤上传，必须先于读回。
-        public_at = source.find('"$VENV_PY" tools/public_release.py --publish')
-        self.assertGreater(public_at, publish_at, "公开发布必须在 OTA 上传之后")
+        public_at = source.find('tools/public_release.py --publish')
+        self.assertGreater(public_at, -1, "找不到公开发布调用")
         self.assertLess(public_at, source.find("node deploy-pages.mjs"), "公开发布必须在下载入口读回之前")
 
     def test_every_release_asset_is_uploaded_before_the_download_entry_is_read_back(self):
@@ -740,8 +745,8 @@ class ComposeTests(_TempCase):
         ok, problems, out = self.compose([source], "with-step.log")
         self.assertEqual((ok, problems), (True, []))
         body = out.read_text(encoding="utf-8")
-        self.assertIn("6-publish=0", body)
-        self.assertIn("步骤 6-publish", body)
+        self.assertIn("6-publish-ota=0", body)
+        self.assertIn("步骤 6-publish-ota", body)
 
     def test_a_failed_publish_step_blocks_the_log_and_is_named(self):
         self.write_results()

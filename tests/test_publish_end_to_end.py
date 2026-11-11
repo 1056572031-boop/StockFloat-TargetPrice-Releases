@@ -276,6 +276,9 @@ class PublishEndToEndTest(unittest.TestCase):
             (app / "Contents" / "Info.plist").write_bytes(b"app-fixture")
             dmg = root / "Skyrocket-1.4.17.dmg"
             dmg.write_bytes(b"dmg-fixture")
+            (assets / "Skyrocket-V1.4.17.dmg").write_bytes(b"dmg-fixture")
+            (assets / "Skyrocket-1.4.17-source.zip").write_bytes(b"source-fixture")
+            (assets / "Skyrocket-1.4.17-SHA256SUMS.txt").write_bytes(b"checksum-fixture")
             (assets / self.tool.MANIFEST_PATH).write_text(
                 json.dumps({"version": "1.4.17",
                             "notes": notes if manifest_notes is None else manifest_notes,
@@ -461,7 +464,54 @@ class PublishEndToEndTest(unittest.TestCase):
             self._publish(assets, notes)
         self.assertEqual(self.state.download_attempts, 1)
 
-    # ---- --resume：读回中途断线后接着做，不重传、不覆盖 ----
+    def test_main_with_public_assets_rejects_missing_remote_public_asset_before_pointer(self):
+        assets, notes = self._workspace()
+        public_assets = assets.parent / "public-assets"
+        public_assets.mkdir()
+        for name in self.tool.required_public_asset_names("1.4.17", ARCHIVE_NAME):
+            (public_assets / name).write_bytes(b"public-" + name.encode())
+        self.state.release["assets"] = [
+            {"id": 1, "name": "Skyrocket-V1.4.17.dmg", "size": 0,
+             "url": self.state.base + "/repos/test/releases/assets/1"},
+        ]
+        with patch.object(sys, "argv", ["publish_update_release.py",
+                                         "--assets", str(assets), "--public-assets",
+                                         str(public_assets), "--notes", str(notes)]), \
+             patch.object(self.tool, "github_token", return_value="local-test-token"):
+            with self.assertRaisesRegex(SystemExit, "公开资产"):
+                self.tool.main()
+        self.assertEqual([], [item for item in self.state.log if item == ("PUT", "contents")])
+
+    def test_main_stops_before_pointer_when_remote_public_asset_bytes_differ(self):
+        assets, notes = self._workspace()
+        public_assets = assets.parent / "public-assets"
+        public_assets.mkdir()
+        expected = {}
+        for name in self.tool.required_public_asset_names("1.4.17", ARCHIVE_NAME):
+            content = ARCHIVE_BYTES if name == ARCHIVE_NAME else b"public-" + name.encode()
+            (public_assets / name).write_bytes(content)
+            expected[name] = content
+        remote_public = {name: content for name, content in expected.items() if name != ARCHIVE_NAME}
+        release = self._public_release(remote_public)
+        release["id"] = self.state.release["id"]
+        self.state.release = release
+        self.state.blobs["Skyrocket-1.4.17-source.zip"] = b"different"
+        with patch.object(sys, "argv", ["publish_update_release.py",
+                                         "--assets", str(assets), "--public-assets",
+                                         str(public_assets), "--notes", str(notes)]), \
+             patch.object(self.tool, "github_token", return_value="local-test-token"):
+            with self.assertRaisesRegex(SystemExit, "公开资产.*原始字节不匹配"):
+                self.tool.main()
+        self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_main_without_public_assets_keeps_ota_fixture_compatibility(self):
+        assets, notes = self._workspace()
+        with patch.object(self.tool, "github_token", return_value="local-test-token"), \
+             patch.object(sys, "argv", ["publish_update_release.py", "--assets",
+                                         str(assets), "--notes", str(notes)]):
+            self.tool.main()
+        self.assertIn(("PUT", "contents"), self.state.log)
+
     def _already_uploaded(self, blob, size=None):
         """造“ZIP 已上传、之后的步骤没做完”的线上状态。"""
         asset = {"id": 777, "name": ARCHIVE_NAME, "size": len(blob) if size is None else size,
@@ -700,6 +750,181 @@ class PublishEndToEndTest(unittest.TestCase):
                                                 "--notes", str(notes)]):
                     self.tool.main()
         self.assertEqual(self.state.log, [], "闸门没过就不该发出任何 HTTP 请求")
+
+    def test_missing_public_asset_never_moves_ota_pointer(self):
+        """公开资产快照任一缺失都必须停在 OTA 指针之前。"""
+        public = {
+            "Skyrocket-V1.4.17.dmg": b"dmg-fixture",
+            "Skyrocket-1.4.17-source.zip": b"source-fixture",
+            "Skyrocket-1.4.17-SHA256SUMS.txt": b"checksum-fixture",
+        }
+        for missing in public:
+            with self.subTest(missing=missing):
+                self.state.release = {"id": 77, "assets": []}
+                self.state.blobs.clear()
+                self.state.contents.clear()
+                self.state.log.clear()
+                assets, notes = self._workspace()
+                public_root = assets.parent / "public-assets"
+                public_root.mkdir()
+                for name, content in public.items():
+                    (public_root / name).write_bytes(content)
+                (public_root / missing).unlink()
+
+                with patch.object(sys, "argv", ["publish_update_release.py", "--assets",
+                                                 str(assets), "--public-assets", str(public_root),
+                                                 "--notes", str(notes)]), \
+                     patch.object(self.tool, "github_token", return_value="local-test-token"):
+                    with self.assertRaisesRegex(SystemExit, "公开资产"):
+                        self.tool.main()
+                self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_four_public_assets_are_accepted_by_gate(self):
+        expected = {
+            "Skyrocket-V1.4.17.dmg": b"dmg-fixture",
+            ARCHIVE_NAME: ARCHIVE_BYTES,
+            "Skyrocket-1.4.17-source.zip": b"source-fixture",
+            "Skyrocket-1.4.17-SHA256SUMS.txt": b"checksum-fixture",
+        }
+        release = {"assets": [
+            {"name": name, "size": len(content), "url": name}
+            for name, content in expected.items()
+        ]}
+        with patch.object(self.tool, "download_asset",
+                          side_effect=lambda _token, asset: expected[asset["name"]]):
+            verified = self.tool.verify_public_release_assets(release, "1.4.17", expected)
+        self.assertEqual(set(verified), set(expected))
+
+    def test_public_asset_paths_rejects_non_directory_and_missing_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            not_directory = root / "asset-file"
+            not_directory.write_bytes(b"not a directory")
+            with self.assertRaisesRegex(SystemExit, "公开资产目录不存在"):
+                self.tool.public_asset_paths(not_directory, "1.4.17")
+
+            assets = root / "assets"
+            assets.mkdir()
+            with self.assertRaisesRegex(SystemExit, "缺少公开资产"):
+                self.tool.public_asset_paths(assets, "1.4.17", ARCHIVE_NAME)
+
+    def test_public_asset_snapshot_reports_read_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            assets = pathlib.Path(directory)
+            names = self.tool.required_public_asset_names("1.4.17", ARCHIVE_NAME)
+            for name in names:
+                (assets / name).write_bytes(b"fixture")
+            with patch.object(pathlib.Path, "read_bytes", side_effect=OSError("read denied")):
+                with self.assertRaisesRegex(SystemExit, "公开资产读取失败"):
+                    self.tool.public_asset_snapshot(assets, "1.4.17", ARCHIVE_NAME)
+
+    def _public_asset_expected(self, archive_names=(ARCHIVE_NAME,)):
+        expected = {
+            "Skyrocket-V1.4.17.dmg": b"dmg",
+            "Skyrocket-1.4.17-source.zip": b"source",
+            "Skyrocket-1.4.17-SHA256SUMS.txt": b"sums",
+        }
+        expected.update({name: b"archive-%s" % name.encode() for name in archive_names})
+        return expected
+
+    def _public_release(self, expected, *, browser_urls=True):
+        assets = []
+        for asset_id, (name, content) in enumerate(expected.items(), 1):
+            asset = {
+                "id": asset_id,
+                "name": name,
+                "size": len(content),
+                "url": self.state.base + "/repos/test/releases/assets/%d" % asset_id,
+            }
+            if browser_urls:
+                asset["browser_download_url"] = self.tool.public_asset_download_url(name)
+            assets.append(asset)
+            self.state.blobs[name] = content
+        self.state.release["assets"] = assets
+        return {"assets": assets}
+
+    def test_verify_public_release_assets_rejects_malformed_expected_shapes(self):
+        base = self._public_asset_expected()
+        cases = (
+            (None, "公开资产本地期望值必须是对象"),
+            (self._public_asset_expected(archive_names=()), "macOS ZIP 必须恰好一个"),
+            (self._public_asset_expected((ARCHIVE_NAME, "Skyrocket-1.4.18-macos.zip")),
+             "macOS ZIP 必须恰好一个"),
+        )
+        for expected, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SystemExit, message):
+                    self.tool.verify_public_release_assets(
+                        {"assets": []}, "1.4.17", expected)
+
+        missing = dict(base)
+        del missing["Skyrocket-1.4.17-source.zip"]
+        with self.assertRaisesRegex(SystemExit, "缺少公开资产本地期望值"):
+            self.tool.verify_public_release_assets({"assets": []}, "1.4.17", missing)
+
+    def test_verify_public_release_assets_rejects_malformed_release_and_local_bytes(self):
+        expected = self._public_asset_expected()
+        with self.assertRaisesRegex(SystemExit, "Release 缺少 assets 列表"):
+            self.tool.verify_public_release_assets({"assets": {}}, "1.4.17", expected)
+
+        non_bytes = dict(expected)
+        non_bytes["Skyrocket-V1.4.17.dmg"] = "not bytes"
+        with self.assertRaisesRegex(SystemExit, "本地期望值必须是原始字节"):
+            self.tool.verify_public_release_assets({"assets": []}, "1.4.17", non_bytes)
+
+    def test_verify_public_release_assets_rejects_remote_metadata_and_bytes_mismatches(self):
+        expected = self._public_asset_expected()
+        release = self._public_release(expected)
+        cases = (
+            ("duplicate", lambda candidate: candidate["assets"].append(dict(candidate["assets"][0])),
+             "必须恰好一个"),
+            ("size", lambda asset: asset.update(size=asset["size"] + 1), "大小不匹配"),
+            ("url", lambda asset: asset.update(browser_download_url="https://example.invalid/wrong"),
+             "下载地址不匹配"),
+        )
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                candidate = json.loads(json.dumps(release))
+                if name == "duplicate":
+                    mutate(candidate)
+                else:
+                    target = next(item for item in candidate["assets"]
+                                  if item["name"] == "Skyrocket-V1.4.17.dmg")
+                    mutate(target)
+                with self.assertRaisesRegex(SystemExit, message):
+                    self.tool.verify_public_release_assets(candidate, "1.4.17", expected)
+
+        self.state.blobs["Skyrocket-V1.4.17.dmg"] = b"different"
+        with self.assertRaisesRegex(SystemExit, "原始字节不匹配"):
+            self.tool.verify_public_release_assets(release, "1.4.17", expected)
+
+    def test_main_rejects_unreadable_manifest_before_credentials(self):
+        assets, notes = self._workspace()
+        (assets / self.tool.MANIFEST_PATH).write_bytes(b"{")
+        with patch.object(self.tool, "github_token", side_effect=AssertionError("不得读取凭据")):
+            with self.assertRaisesRegex(SystemExit, "更新清单无法读取"):
+                self._publish(assets, notes)
+        self.assertEqual(self.state.log, [])
+
+    def test_main_rejects_archive_bytes_that_differ_from_public_snapshot(self):
+        assets, notes = self._workspace()
+        public_assets = assets.parent / "public-assets"
+        public_assets.mkdir()
+        for name in self.tool.required_public_asset_names("1.4.17", ARCHIVE_NAME):
+            source = assets / name
+            (public_assets / name).write_bytes(source.read_bytes() if source.exists() else b"public")
+        original = self.tool.publication_snapshot
+
+        def mismatching_snapshot(*args):
+            archive_bytes, manifest_bytes, version = original(*args)
+            return b"different archive bytes", manifest_bytes, version
+
+        with patch.object(self.tool, "publication_snapshot", side_effect=mismatching_snapshot), \
+             patch.object(sys, "argv", ["publish_update_release.py", "--assets", str(assets),
+                                         "--public-assets", str(public_assets), "--notes", str(notes)]):
+            with self.assertRaisesRegex(SystemExit, "公开资产快照与版本 ZIP 核验字节不一致"):
+                self.tool.main()
+        self.assertEqual(self.state.log, [])
 
     def test_notes_mismatch_stops_before_any_request(self):
         """清单里已签名的 notes 与 release_notes.txt 本版一节不一致 → 拒绝且零请求。

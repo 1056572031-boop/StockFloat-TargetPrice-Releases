@@ -18,8 +18,10 @@ LaunchServices 不可用），不假装通过。
 """
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -82,6 +84,140 @@ class TestRoutesInProcess(RouteCase):
     def test_R4_助手认两代包名(self):
         self.assertRoute(VIP.check_helper_accepts_both_names(self.work),
                          "R4 应当过：两代顶层名都能解到签名校验")
+
+    def test_已准备候选DMG必须经挂载后结构外观安装与启动复验(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared", fixture="light")
+        observed = []
+
+        def smoke_runner(app):
+            observed.append(app)
+            return 0, {"fixture": True}
+
+        self.assertRoute(VIP.verify_prepared_dmg(
+            image, self.work / "prepared-check", smoke_runner=smoke_runner),
+            "候选 DMG 应当具备完整卷内结构、正确安装器外观且能完成安装")
+        self.assertEqual(observed, [self.work / "prepared-check" / "prepared-apps" / VIP.CURRENT_APP_NAME],
+                         "启动验收必须针对一键安装刚装出的那一份，而不是源包")
+
+    def test_候选DMG安装后启动失败必须拒绝发布(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-startup-fail", fixture="light")
+        ok, detail = VIP.verify_prepared_dmg(
+            image, self.work / "prepared-startup-fail-check",
+            smoke_runner=lambda _app: (1, {"fixture": "startup-failed"}))
+        self.assertFalse(ok, "安装后应用起不来时，候选 DMG 不应通过：%s" % detail)
+        self.assertIn("首次启动", detail)
+
+    def test_候选DMG缺失时拒绝(self):
+        ok, detail = VIP.verify_prepared_dmg(self.work / "missing.dmg", self.work / "missing-check")
+        self.assertFalse(ok)
+        self.assertIn("不存在", detail)
+
+    def test_候选DMG根目录交付物不全时拒绝(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-missing", fixture="light")
+        with mock.patch.object(VIP, "mount") as mount:
+            def populate(_image, at):
+                (at / VIP.CURRENT_APP_NAME).mkdir(parents=True)
+            mount.side_effect = populate
+            ok, detail = VIP.verify_prepared_dmg(image, self.work / "prepared-missing-check")
+        self.assertFalse(ok)
+        self.assertIn("缺少交付文件", detail)
+
+    def test_候选DMG错误的Applications替身会拒绝(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-applications", fixture="light")
+        with mock.patch.object(VIP, "mount") as mount:
+            def populate(_image, at):
+                (at / VIP.CURRENT_APP_NAME).mkdir(parents=True)
+                for name in ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md"):
+                    (at / name).write_text(name, encoding="utf-8")
+                (at / "docs").mkdir()
+                (at / "docs" / "INSTALL.md").write_text("install", encoding="utf-8")
+                (at / "Applications").symlink_to("/tmp")
+            mount.side_effect = populate
+            ok, detail = VIP.verify_prepared_dmg(image, self.work / "prepared-applications-check")
+        self.assertFalse(ok)
+        self.assertIn("Applications", detail)
+
+    def test_轻量候选夹具缺官方证书钉住时拒绝造卷(self):
+        bad_script = self.work / "installer.command"
+        bad_script.write_text("#!/bin/sh\n", encoding="utf-8")
+        bad_script.chmod(0o755)
+        with mock.patch.object(VIP, "launcher_script", return_value=bad_script):
+            with self.assertRaises(VIP.NoFixture):
+                VIP.build_user_dmg(self.work, "missing-pin", fixture="light")
+
+    def test_候选DMG没有UTF8用户环境时拒绝(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-no-locale", fixture="light")
+        with mock.patch.object(VIP, "user_lang", return_value=None):
+            ok, detail = VIP.verify_prepared_dmg(image, self.work / "prepared-no-locale-check",
+                                                 smoke_runner=lambda _app: (0, {}))
+        self.assertFalse(ok)
+        self.assertIn("UTF-8 locale", detail)
+
+    def test_候选DMG默认使用冻结应用冒烟器(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-default-smoke", fixture="light")
+        fake_smoke = types.SimpleNamespace(run_smoke=lambda _app: (0, {"fixture": True}))
+        with mock.patch.dict(sys.modules, {"smoke_frozen_app": fake_smoke}):
+            self.assertRoute(VIP.verify_prepared_dmg(image, self.work / "prepared-default-smoke-check"),
+                             "未注入冒烟器时必须导入并使用冻结应用冒烟器")
+
+    def test_候选DMG安装器的外观标签安装和日志失败都会拒绝(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-failures", fixture="light")
+        failures = (
+            ("外观", {"AIC.check": (False, "wrong icon")}),
+            ("来历标签", {"has_quarantine": True}),
+            ("一键安装失败", {"run_from_volume": (1, "broken", "zh_CN.UTF-8")}),
+            ("没有装出应用", {"run_from_volume": (0, "", "zh_CN.UTF-8")}),
+        )
+        for expected, overrides in failures:
+            with self.subTest(expected=expected):
+                work = self.work / ("failure-" + expected)
+                with mock.patch.object(VIP, "AIC", types.SimpleNamespace(check=lambda _script: (True, ""))), \
+                        mock.patch.object(VIP, "has_quarantine", return_value=False), \
+                        mock.patch.object(VIP, "run_from_volume", return_value=(0, "", "zh_CN.UTF-8")):
+                    patches = []
+                    if "AIC.check" in overrides:
+                        patches.append(mock.patch.object(VIP, "AIC", types.SimpleNamespace(
+                            check=lambda _script: overrides["AIC.check"])))
+                    for name in ("has_quarantine", "run_from_volume"):
+                        if name in overrides:
+                            patches.append(mock.patch.object(VIP, name, return_value=overrides[name]))
+                    for patcher in patches:
+                        patcher.start()
+                    try:
+                        ok, detail = VIP.verify_prepared_dmg(image, work,
+                                                             smoke_runner=lambda _app: (0, {}))
+                    finally:
+                        for patcher in reversed(patches):
+                            patcher.stop()
+                self.assertFalse(ok, detail)
+                self.assertIn(expected, detail)
+
+    def test_候选DMG安装后残留标签与缺日志都会拒绝(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-post-install", fixture="light")
+        for expected, keep_logs, quarantine in (
+            ("仍有来历标签", True, (True, "Info.plist")),
+            ("没有安装日志", False, (False, "")),
+        ):
+            with self.subTest(expected=expected):
+                work = self.work / ("post-install-" + expected)
+
+                def install_then_inject(_script, _work, target_dir, **_kwargs):
+                    source = VIP.real_app()
+                    target = target_dir / VIP.CURRENT_APP_NAME
+                    import shutil
+                    shutil.copytree(source, target)
+                    if keep_logs:
+                        logs = VIP.route_home(work, "prepared-apps") / "Library" / "Logs"
+                        logs.mkdir(parents=True, exist_ok=True)
+                        (logs / "install.log").write_text("ok", encoding="utf-8")
+                    return 0, "", "zh_CN.UTF-8"
+
+                with mock.patch.object(VIP, "run_from_volume", side_effect=install_then_inject), \
+                        mock.patch.object(VIP, "has_quarantine_anywhere", return_value=quarantine):
+                    ok, detail = VIP.verify_prepared_dmg(image, work,
+                                                         smoke_runner=lambda _app: (0, {}))
+                self.assertFalse(ok, detail)
+                self.assertIn(expected, detail)
 
 
 class TestRoutesHaveTeeth(RouteCase):

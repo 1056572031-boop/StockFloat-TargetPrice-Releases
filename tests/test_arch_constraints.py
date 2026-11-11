@@ -503,11 +503,11 @@ class TestReleaseChainCallsTheGate(SFCase):
         """
         source = self._text("build_release.sh")
         ota = source.find('"$VENV_PY" tools/publish_update_release.py --assets')
-        public = source.find('"$VENV_PY" tools/public_release.py --publish')
+        public = source.find("tools/public_release.py --publish")
         deploy = source.find("node deploy-pages.mjs")
         self.assertGreater(ota, -1, "找不到 OTA 上传调用")
-        self.assertGreater(public, ota, "公开发布必须在 OTA 上传之后")
-        self.assertGreater(deploy, public, "下载入口读回要核对三项发行资产，公开发布必须先于它")
+        self.assertGreater(public, -1, "找不到公开发布调用")
+        self.assertGreater(deploy, public, "下载入口读回要核对四项发行资产，公开发布必须先于它")
 
     def test_build_release_pushes_source_after_ota_and_confirms_by_readback(self):
         """发版链第 7 步：推源码必须在 OTA 之后，且以**回读归零**为准。

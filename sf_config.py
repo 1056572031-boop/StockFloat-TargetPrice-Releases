@@ -543,6 +543,12 @@ def load_last_quote():
     return d
 
 
+def is_first_install() -> bool:
+    """仅当当前、备份与两代迁移配置均不存在时，才视为首次安装。"""
+    return not any(os.path.exists(path) for path in (
+        CONFIG_PATH, CONFIG_BACKUP_PATH, SPLIT_SOURCE_CONFIG_PATH, LEGACY_CONFIG_PATH))
+
+
 def load_config():
     global _untrusted_config_path
     failure: Exception | None = None

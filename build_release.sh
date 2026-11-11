@@ -494,7 +494,9 @@ if [ "$USE_PREPARED" -eq 1 ]; then
   DESKTOP_DMG="$DESKTOP_OUTPUT_DIR/${DMG_NAME}-V${VERSION}.dmg"
   DMG_OUT="$PROJ/build/${DMG_NAME}-V${VERSION}.dmg"
   [ -f "$DMG_OUT" ] || { echo "!! 缺少已准备 DMG：$DMG_OUT" >&2; exit 1; }
-  echo "== 使用已准备 DMG（不重新生成）=="
+  "$VENV_PY" tools/verify_install_paths.py --prepared-dmg "$DMG_OUT" \
+    || { echo "!! 已准备 DMG 的卷内结构、安装器外观或安装路线核验未过，拒绝继续发布" >&2; exit 1; }
+  echo "== 使用已准备 DMG（已重新挂载并完成卷内安装复验）=="
 else
 DESKTOP_DMG="$DESKTOP_OUTPUT_DIR/${DMG_NAME}-V${VERSION}.dmg"
 DMG_ROOT="$PROJ/build/dmg_root"
@@ -741,37 +743,18 @@ else
 fi
 
 if [ "$LOCAL_ONLY" -eq 0 ]; then
-# ---- 6) 自动更新发布资产（⚠ 本步会调 publish_update_release.py **直接对外发布**：
-#      上传版本 ZIP + 切换线上清单指针。跑本脚本 = 发版，执行前必须确认已获授权。
-#      2026-09-22 更正：原注释写作"只本地生成，上传须人工确认"，与实际不符，
-#      曾导致两次"OTA 未推送"的错误汇报。） ----
-# 分发目录只保留当前应用最新的自动更新 ZIP 与清单；旧文件先入项目回退区，再送废纸篓。
-step_begin "6 更新包拷贝、上传并切换线上清单"
-cp -p "$UPDATE_ZIP" "$DESKTOP_OUTPUT_DIR/$(basename "$UPDATE_ZIP")"
-cp -p "$UPDATE_JSON" "$DESKTOP_OUTPUT_DIR/Skyrocket-update.json"
-UPDATE_DESKTOP_BACKUP="$PROJ/build/_prev/update_assets_$STAMP"
-mkdir -p "$UPDATE_DESKTOP_BACKUP"
-for old in "$DESKTOP_OUTPUT_DIR"/Skyrocket-*-macos.zip "$DESKTOP_OUTPUT_DIR"/StockFloatTargetPrice-*-macos.zip; do
-  [ -e "$old" ] || continue
-  [ "$old" = "$DESKTOP_OUTPUT_DIR/$(basename "$UPDATE_ZIP")" ] && continue
-  mv "$old" "$UPDATE_DESKTOP_BACKUP/"
-  /usr/bin/trash "$UPDATE_DESKTOP_BACKUP/$(basename "$old")" 2>/dev/null || true
-done
-echo "   自动更新资产: $UPDATE_ASSET_DIR"
-# 清单和 GitHub 发布页强制读取同一份 release_notes.txt，发布后再由发版核验下载确认。
-"$VENV_PY" tools/publish_update_release.py --assets "$UPDATE_ASSET_DIR" --notes "$NOTES_FILE"
+# ---- 6) 公开资产上传与 OTA 清单切换 ----
+# 公开源码、DMG、校验清单先上传并复制成固定快照；OTA 发布器在切指针前逐字节读回四项资产。
+step_begin "6 公开资产、更新包上传并切换线上清单"
+PUBLIC_ASSET_DIR="$PROJ/build/public_assets/V$VERSION"
+mkdir -p "$PUBLIC_ASSET_DIR"
+"$VENV_PY" tools/public_release.py --publish --assets-output "$PUBLIC_ASSET_DIR" \
+  || { echo "!! 公开源码或分发资料未齐，拒绝切换 OTA 清单" >&2; exit 1; }
+"$VENV_PY" tools/publish_update_release.py --assets "$UPDATE_ASSET_DIR" \
+  --public-assets "$PUBLIC_ASSET_DIR" --notes "$NOTES_FILE"
 echo "   GitHub 发布说明来源: $NOTES_FILE"
 
-# ---- 6.0) 公开源码、许可与 DMG 同步（必须在下载入口读回之前）----
-# 6.1 的线上读回会逐项核对 DMG、源码 ZIP、校验清单是否已在发行页，而这三项就是本步上传的。
-# v1.4.109 与 v1.4.110 两次都因为本步排在 6.1 之后，在 6.1 处停住、靠手工补传再续跑。
-# 编号保持 6.1/6.2 不动（文档、证据文件名和续跑工具都按它们引用），所以这一步叫 6.0。
-step_begin "6.0 公开源码、许可与 DMG 同步"
-echo "== 6.0 对应源码、GPL 许可、公开文档与 DMG 同步发行 =="
-"$VENV_PY" tools/public_release.py --publish \
-  || { echo "!! OTA 已发布，但公开源码或分发资料未齐，不能报告完整交付" >&2; exit 1; }
-
-# ---- 6.1) 公开下载入口（必须在 OTA 发布与公开发布之后部署并读回）----
+# ---- 6.0) 公开下载入口（必须在 OTA 发布与公开发布之后部署并读回） ----
 # 安装说明改走入口后，入口本身就是交付路径。部署失败或仍是旧版都不能继续生成
 # 对外命令，否则本地检查只能看到入口的 302，无法证明对应 GitHub 资产真的能下载。
 step_begin "6.1 公开下载入口部署与读回"

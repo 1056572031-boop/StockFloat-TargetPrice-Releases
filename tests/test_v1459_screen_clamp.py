@@ -78,6 +78,20 @@ class _GeomHost:
         self._x, self._y = int(x), int(y)
 
 
+class FirstInstallPlacementMath(SFCase):
+    def test_first_install_centers_horizontally_in_available_geometry(self):
+        x, y = m.first_install_position(USABLE, 184, 224)
+        self.assertEqual(x, USABLE.x() + (USABLE.width() - 184) // 2)
+        self.assertEqual(y, USABLE.y() + (USABLE.height() - 224) // 3)
+
+    def test_first_install_position_stays_inside_available_geometry(self):
+        x, y = m.first_install_position(USABLE, 184, 224)
+        self.assertGreaterEqual(x, USABLE.x())
+        self.assertGreaterEqual(y, USABLE.y())
+        self.assertLessEqual(x + 184, USABLE.x() + USABLE.width())
+        self.assertLessEqual(y + 224, USABLE.y() + USABLE.height())
+
+
 class KeepOnScreenMath(SFCase):
     """`_keep_on_screen` 与 `_snap_to_edge` 必须用同一套几何口径。"""
 
@@ -124,6 +138,7 @@ class RestoreClampsToScreen(SFCase):
         self._patches = [
             patch.object(m, "load_config",
                          return_value=("sh600519", 100, 100, 224, "glass")),
+            patch.object(m, "is_first_install", return_value=False),
             patch.object(m, "save_config", lambda *a, **k: True),
             patch.object(m, "start_icon_worker", lambda: None),
             patch.object(m, "show_dock", lambda: None),
@@ -137,6 +152,17 @@ class RestoreClampsToScreen(SFCase):
             self.track_patch(p)
         self.win = m.FloatWindow()
         self.track_widget(self.win)
+
+    def test_existing_configuration_keeps_its_saved_position(self):
+        self.assertEqual((self.win.x(), self.win.y()), (100, 100))
+
+    def test_first_install_uses_active_screen_position_after_final_resize(self):
+        with patch.object(m, "is_first_install", return_value=True), \
+                patch.object(m, "first_install_position", return_value=(333, 222)) as placed:
+            win = m.FloatWindow()
+            self.track_widget(win)
+        self.assertEqual((win.x(), win.y()), (333, 222))
+        self.assertEqual(placed.call_args.args[1:], (win.width(), win.height()))
 
     def test_restore_clamps_and_repositions(self):
         self.win._minimized = True   # discipline-ok(R5): offscreen 下没有公开入口能构造这个现场

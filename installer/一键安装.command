@@ -44,6 +44,8 @@ APP_NAMES="Skyrocket.app 实时股价-目标价版.app"
 # bundle id 两代都认（与 updater/update_helper.sh 同一口径）：卷里那一份不是我们自己的
 # 包时，宁可不装也别把它放进「应用程序」。
 BUNDLE_IDS="com.skyrocket.app com.stockfloat.targetprice"
+# 公开证书 pin，不含私钥：一键安装只接收与发布链相同的官方身份。
+OFFICIAL_CERT_SHA1="BF4480229378EEAF31022C6E377200F149F87D20"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 PLIST=/usr/libexec/PlistBuddy
 # 等旧版退出的上限（秒）。绝不 SIGKILL —— 与助手同一条理由：
@@ -232,7 +234,10 @@ acquire_install_lock
 if ! /usr/bin/codesign --verify --deep --strict "$SRC" 2>/dev/null; then
   die_next_step "DMG 里的包体校验没过（多半是下载中断或被改动过），所以什么都没动 —— 重新下载一份再来一次"
 fi
-say "  源包完整（codesign 校验通过）"
+if ! /usr/bin/codesign --verify --strict -R "=identifier \"$IDENTIFIER\" and certificate leaf = H\"$OFFICIAL_CERT_SHA1\"" "$SRC" 2>/dev/null; then
+  die_next_step "DMG 里的包不是官方签名版本，所以什么都没动 —— 请从 Skyrocket 官方下载页重新下载"
+fi
+say "  源包完整且为官方签名（codesign 校验通过）"
 
 # 4) 目标目录与废纸篓都必须可用，先问清楚再动手。
 if [ ! -d "$INSTALL_DIR" ] || [ ! -w "$INSTALL_DIR" ]; then
@@ -326,7 +331,11 @@ if ! /usr/bin/codesign --verify --deep --strict "$STAGE" 2>/dev/null; then
   restore_old_app
   die_next_step "暂存包签名校验没过，旧版未被动过；请重新下载一份安装包"
 fi
-say "  暂存包完整（标签与签名校验通过）"
+if ! /usr/bin/codesign --verify --strict -R "=identifier \"$IDENTIFIER\" and certificate leaf = H\"$OFFICIAL_CERT_SHA1\"" "$STAGE" 2>/dev/null; then
+  restore_old_app
+  die_next_step "暂存包不是官方签名版本，旧版未被动过；请从 Skyrocket 官方下载页重新下载"
+fi
+say "  暂存包完整（标签与官方签名校验通过）"
 
 # 8) 校验完成后才移动旧版；两代名称都要迁移，后续失败统一回滚。
 # 新旧包可同时存在于 /Applications：这种升级不能只看 DEST（新版名），否则旧版

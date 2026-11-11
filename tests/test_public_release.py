@@ -805,6 +805,32 @@ assert make_update_assets.TAG == publish_update_release.TAG == release_identity.
         self.assertEqual(receipt["source_zip"]["kind"], "file")
         self.assertTrue(receipt["source_zip"]["content_sha256"])
 
+    def test_publish_copies_all_public_assets_for_the_ota_gate(self):
+        self.init_repo()
+        application = self.root / "build/update_assets" / ("V" + public.APP_VERSION) / (
+            "Skyrocket-%s-macos.zip" % public.APP_VERSION)
+        application.parent.mkdir(parents=True)
+        application.write_bytes(b"application")
+        (self.root / "build" / ("Skyrocket-V%s.dmg" % public.APP_VERSION)).write_bytes(b"dmg")
+        output = self.root / "gate-assets"
+
+        def archive_command(args, *extra, **kwargs):
+            Path(args[args.index("-o") + 1]).write_bytes(b"source")
+
+        with patch.object(public, "ROOT", self.root), patch.object(public, "export_source"), \
+                patch.object(public, "push_source", return_value="commit"), \
+                patch.object(public, "run", side_effect=archive_command), \
+                patch.object(public, "upload_asset"), patch.object(public, "publish_documents"):
+            self.assertEqual(public.main(["--publish", "--assets-output", str(output)]), 0)
+
+        expected_names = {
+            "Skyrocket-V%s.dmg" % public.APP_VERSION,
+            "Skyrocket-%s-macos.zip" % public.APP_VERSION,
+            "Skyrocket-%s-source.zip" % public.APP_VERSION,
+            "Skyrocket-%s-SHA256SUMS.txt" % public.APP_VERSION,
+        }
+        self.assertEqual(expected_names, {path.name for path in output.iterdir()})
+
     def test_main_stops_after_export_push_or_first_upload_failure(self):
         failures = ("export", "push", "upload")
         for failure in failures:

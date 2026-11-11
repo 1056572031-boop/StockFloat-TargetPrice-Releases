@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-09",
+  "updated": "2026-11-11",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -5757,6 +5757,18 @@
         "目标价锁竞争：test_target_commit_retry 覆盖 BlockingIOError 与超时竞争的延后重试、持续升级和成功恢复。"
       ],
       "zero_reason": "本轮修复来自维护者复核和并发边界测试，没有新增 online_user、second_machine 或 installed_field 报回的线上逃逸。0 仅表示本轮未登记新逃逸，不表示分时图当前价、诊断导出或目标价锁竞争已在最终装机版、OTA 更新和真实点击场景完成验收；这些仍须在发布后独立读回。"
+    },
+    {
+      "version": "1.4.116",
+      "date": "2026-11-11",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "安装器官方来源：tests/test_installer_script_branches.py 覆盖同一 Bundle ID 但不同证书在移动旧版前拒绝。",
+        "候选 DMG 交付：tests/test_install_path_routes.py 覆盖卷内交付物、安装器图标与显示名、隔离一键安装、递归来历标签清除和安装后冻结应用启动。",
+        "首次窗口位置：tests/test_v1459_screen_clamp.py 覆盖真正首次安装后的居中与屏幕可见区位置，并保留已有用户位置。"
+      ],
+      "zero_reason": "本轮没有新增 online_user、second_machine 或 installed_field 报回的已发布逃逸。安装器来源校验、候选 DMG 复验、安装后启动验收与首次窗口位置均由维护者走查发现并在发布前完整回归中验证；0 只表示没有新登记的线上逃逸，不表示最终装机版、OTA 更新、真实点击走查或第二台 Mac 已完成验收。"
     }
   ],
   "comparison_policy": {

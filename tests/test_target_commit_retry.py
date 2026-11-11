@@ -3533,6 +3533,14 @@ except BlockingIOError:
         except FileNotFoundError:
             return 0
 
+    def test_target_store_warning_explains_the_current_quote_was_not_evaluated(self):
+        from PyQt6.QtWidgets import QToolTip
+
+        with mock.patch.object(QToolTip, "showText") as shown:
+            self.win._show_target_store_unavailable()  # discipline-ok(R5): 现有状态提示入口
+        self.assertIn("本次行情未进入目标价判定", shown.call_args.args[1])
+        self.assertIn("提醒可能遗漏", shown.call_args.args[1])
+
     def test_revision_and_store_warnings_survive_a_broken_tooltip(self):
         """提示气泡本身画不出来时只能留一行日志，不能把行情线程或主线程带崩。"""
         from PyQt6.QtWidgets import QToolTip

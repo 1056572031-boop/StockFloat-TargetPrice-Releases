@@ -75,6 +75,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import apply_installer_icon as AIC  # noqa: E402  （图标的贴法与判据只有一份实现）
+import stable_signing as StableSigning  # noqa: E402  （轻量签名夹具复用正式身份机制）
 
 from sf_constants import (  # noqa: E402  （名字唯一来源，见 R0）
     APP_DISPLAY_NAME,
@@ -289,25 +290,30 @@ def make_launchable_app(parent: Path, name: str, version: str, marker: str,
     return app
 
 
-def light_signed_app(work: Path, tag: str) -> Path:
-    """几 KB 的**签名替身**，用来替代 71MB 真产物造卷 —— 只给变异自检用。
+def light_signed_app(work: Path, tag: str) -> tuple[Path, str]:
+    """几 KB 的临时固定身份替身，用来替代 71MB 真产物造卷。
 
-    为什么需要：`tests/test_release_gates.py::test_every_chain_tool_can_prove_it_fails`
-    会在一个 60 秒上限的用例里跑本工具的 `--self-test`。自检从 7 处种错涨到 15 处，
-    每处都要 ditto 一份真产物再造 HFS+ 卷（实测单枚 9.1 秒），整轮自检 52 秒起步，
-    撞的就是那条上限（第一次撞上时用例被 0:01:00 掐掉）。
-    判据本身不需要 71MB：这里种错要验的是**图标、显示名、可执行位、标签递归读回、
-    codesign 有没有牙、locale**，替身全都覆盖到（替身签名过 → codesign 判"完整"，
-    改掉它 → 判"被修改"，两向都在 tests/test_installer_script_branches.py 实测过）。
-    默认档（发版链 3.8 跑的全部路线）继续用真产物 —— 那一条宣称的是"用户拿到的那一份"。
+    一键安装器已固定官方证书，轻量夹具也必须用固定证书签出；但临时证书的 pin 仅被
+    写入临时卷内脚本，绝不修改仓库里的官方 pin，也不进入用户可取得的 DMG。
     """
     d = work / ("light-" + tag)
     d.mkdir(parents=True, exist_ok=True)
-    app = make_launchable_app(d, CURRENT_APP_NAME, APP_VERSION, marker="1",
-                              bundle_id=BUNDLE_ID)
-    if app is None:
-        raise NoFixture("这台机器不能 ad-hoc 签名，轻夹具造不出来（这条变异跑不了）")
-    return app
+    state = d / "private"
+    try:
+        policy = StableSigning.initialize(state, d / "policy.json")
+        app = make_launchable_app(d, CURRENT_APP_NAME, APP_VERSION, marker="1",
+                                  bundle_id=BUNDLE_ID)
+        if app is None:
+            raise NoFixture("这台机器不能 ad-hoc 签名，轻夹具造不出来（这条变异跑不了）")
+        StableSigning.sign(app, policy, state)
+        return app, policy["certificate_sha1"]
+    finally:
+        keychain = state / "identity.keychain-db"
+        if keychain.exists():
+            try:
+                StableSigning.run(["/usr/bin/security", "delete-keychain", str(keychain)])
+            except ValueError:
+                pass
 
 
 def zip_from(src_app: Path, out: Path) -> Path:
@@ -413,8 +419,9 @@ def build_user_dmg(work: Path, tag: str, stamp_script: bool = False,
     d = work / ("dmg-" + tag)
     payload = d / "payload"
     payload.mkdir(parents=True, exist_ok=True)
+    official_pin = ""
     if fixture == "light":
-        src = light_signed_app(d, tag)
+        src, official_pin = light_signed_app(d, tag)
     elif fixture == "real":
         src = real_app()
     else:
@@ -430,11 +437,20 @@ def build_user_dmg(work: Path, tag: str, stamp_script: bool = False,
             raise NoFixture("真产物的 Info.plist 里没有 APPL，坏包现场种不出来")
         plist.write_text(body.replace("APPL", "ZZZZ", 1), encoding="utf-8")
     launcher = launcher_script()
+    target_script = payload / launcher.name
     if script_text is None:
-        shutil.copyfile(launcher, payload / launcher.name)
+        shutil.copyfile(launcher, target_script)
     else:
-        (payload / launcher.name).write_text(script_text, encoding="utf-8")
-    os.chmod(payload / launcher.name, 0o755)
+        target_script.write_text(script_text, encoding="utf-8")
+    if official_pin:
+        body = target_script.read_text(encoding="utf-8")
+        expected = 'OFFICIAL_CERT_SHA1="BF4480229378EEAF31022C6E377200F149F87D20"'
+        if expected not in body:
+            raise NoFixture("安装器缺少官方证书 pin，轻量夹具不能代表正式安装")
+        target_script.write_text(
+            body.replace(expected, 'OFFICIAL_CERT_SHA1="%s"' % official_pin, 1),
+            encoding="utf-8")
+    os.chmod(target_script, 0o755)
     if inner_tag:
         inner = app / "Contents" / "Info.plist"
         if not inner.is_file():
@@ -447,10 +463,15 @@ def build_user_dmg(work: Path, tag: str, stamp_script: bool = False,
     if with_icon:
         # 与 build_release.sh 第 4 步同一步动作：外观是发版链贴上去的，夹具不贴就等于
         # 测了一个产品里不存在的形状
-        AIC.apply_icon(payload / launcher.name)
+        AIC.apply_icon(target_script)
     if hide_ext:
         # 顺序照发版链：图标在前、隐藏后缀在后（两者写的是同一条元数据的同一格 flags）
-        AIC.hide_extension(payload / launcher.name)
+        AIC.hide_extension(target_script)
+    (payload / "Applications").symlink_to("/Applications")
+    for name in ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md"):
+        (payload / name).write_text(name + "\n", encoding="utf-8")
+    (payload / "docs").mkdir()
+    (payload / "docs" / "INSTALL.md").write_text("install\n", encoding="utf-8")
     if stamp_script:
         # 必须在 hdiutil 造卷之前贴：贴完再打镜像，才等于"这个脚本本身被下载过"。
         stamp_quarantine(payload / launcher.name)
@@ -518,6 +539,60 @@ def volume_script(mnt: Path, work: Path, target_name: str,
     if old_version is not None:
         make_fake_app(target_dir, CURRENT_APP_NAME, version=old_version)
     return script, target_dir
+
+
+def verify_prepared_dmg(image: Path, work: Path,
+                         smoke_runner: Callable[[Path], tuple[int, dict]] | None = None) -> tuple[bool, str]:
+    """挂载已准备候选 DMG，核对卷内交付物并从卷内跑一次安装。
+
+    此函数不重建 DMG，因此验证对象就是将要复制、安装和发布的候选字节。
+    所有副作用落在调用者给出的临时目录，安装脚本保持核验模式而不启动程序。
+    """
+    if not image.is_file():
+        return False, "候选 DMG 不存在：%s" % image
+    mnt = work / "prepared-mount"
+    try:
+        mount(image, mnt)
+        required = [mnt / CURRENT_APP_NAME, mnt / "README.md", mnt / "SECURITY.md",
+                    mnt / "LICENSE", mnt / "NOTICE.md", mnt / "docs" / "INSTALL.md"]
+        missing = [str(path.relative_to(mnt)) for path in required if not path.exists()]
+        if missing:
+            return False, "候选 DMG 缺少交付文件：%s" % "、".join(missing)
+        applications = mnt / "Applications"
+        if not applications.is_symlink() or os.readlink(applications) != "/Applications":
+            return False, "候选 DMG 的 Applications 不是指向 /Applications 的替身"
+        script, target_dir = volume_script(mnt, work, "prepared-apps")
+        look_ok, look_note = AIC.check(script)
+        if not look_ok:
+            return False, "候选 DMG 里的一键安装外观不对：%s" % look_note
+        if has_quarantine(script):
+            return False, "候选 DMG 里的一键安装带来历标签，用户无法直接双击"
+        lang = user_lang()
+        ok, why = locale_guard(lang or "")
+        if not ok:
+            return False, why
+        rc, msg, _ = run_from_volume(script, work, target_dir, lang=lang,
+                                     SF_INSTALL_ALLOW_RUNNING="1")
+        installed = target_dir / CURRENT_APP_NAME
+        if rc != 0:
+            return False, "候选 DMG 的一键安装失败 rc=%s：%s" % (rc, msg[-320:])
+        if not installed.is_dir():
+            return False, "候选 DMG 的安装器报成功但没有装出应用"
+        still, where = has_quarantine_anywhere(installed)
+        if still:
+            return False, "候选 DMG 装出的应用仍有来历标签：%s" % where[:160]
+        logs = sorted((route_home(work, "prepared-apps") / "Library" / "Logs").glob("*.log"))
+        if not logs:
+            return False, "候选 DMG 安装后没有安装日志"
+        if smoke_runner is None:
+            from smoke_frozen_app import run_smoke
+            smoke_runner = run_smoke
+        smoke_rc, smoke_report = smoke_runner(installed)
+        if smoke_rc != 0:
+            return False, "候选 DMG 安装后的首次启动未通过：%s" % smoke_report
+        return True, "候选 DMG 的卷内结构、安装器外观、隔离安装与首次启动均通过"
+    finally:
+        unmount(mnt)
 
 
 def check_dmg_launcher_route(work: Path, stamp_script: bool = False,
@@ -1036,17 +1111,27 @@ def _run_helper_on_zip(helper: Path, work: Path, archive: Path) -> tuple[str, st
 # ---------------------------------------------------------------- 入口
 
 def main() -> int:
+    args = sys.argv[1:]
+    prepared = None
+    if args[:1] == ["--prepared-dmg"] and len(args) == 2:
+        prepared = Path(args[1]).resolve()
+        args = []
     # 未知参数退 2，**绝不落到默认动作里**（AGENTS §3.1 v1.4.61 那条链上规矩）：
     # 默认动作是"跑五条真核验"，一个打错的参数就把它跑起来，等于把拼错当成授权。
-    unknown = [a for a in sys.argv[1:] if a != "--self-test"]
-    if unknown:
-        print("!! 不认识这些参数：%s\n   用法：verify_install_paths.py [--self-test]"
-              % "、".join(unknown))
+    unknown = [a for a in args if a != "--self-test"]
+    if unknown or (prepared is not None and "--self-test" in args):
+        detail = "、".join(unknown) if unknown else "--self-test 不能与 --prepared-dmg 同用"
+        print("!! 不认识或不兼容的参数：%s\n   用法：verify_install_paths.py [--self-test | --prepared-dmg 候选.dmg]"
+              % detail)
         return 2
     work = Path(tempfile.mkdtemp(prefix="sf_install_paths_"))
     results: list[tuple[str, str, str]] = []
     try:
-        if "--self-test" in sys.argv:
+        if prepared is not None:
+            ok, detail = verify_prepared_dmg(prepared, work)
+            print("%s 已准备候选 DMG\n     %s" % ("✓" if ok else "✗", detail))
+            return 0 if ok else 1
+        if "--self-test" in args:
             cases = self_test(work / "st")
             # 数量从结果里算，不写死在文案里：写死的那次是"种七处错"，加到第九条之后
             # 文案就成了假话 —— 而这句话正是这条闸门对自己可信度的描述。

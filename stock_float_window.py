@@ -22,9 +22,17 @@ from sf_run_session import (PHASE_CLEAN_EXIT, PHASE_UPDATE_HANDOFF,
 
 _SESSION_TERMINAL_PHASES = frozenset({PHASE_CLEAN_EXIT, PHASE_UPDATE_HANDOFF})
 
+
+def first_install_position(available: "QRect", width: int, height: int) -> tuple[int, int]:
+    """Place a first-run window within the active screen's usable area."""
+    x = available.x() + max(0, (available.width() - width) // 2)
+    y = available.y() + max(0, (available.height() - height) // 3)
+    return x, y
+
+
 guard_temporary_launch()
 
-from PyQt6.QtCore import (Qt, QTimer, QPoint, pyqtSignal,
+from PyQt6.QtCore import (Qt, QTimer, QPoint, QRect, pyqtSignal,
                           QCoreApplication, QEvent)
 from PyQt6.QtGui import (QAction, QColor, QIcon, QPixmap,
                          QFont, QFontInfo)
@@ -113,7 +121,7 @@ from sf_network import get_last_http_status
 from sf_network import _NET_MONITOR, _NET_POOL
 
 # ---- 模块化拆分 sf_config：显式导入 ----
-from sf_config import load_config, save_config
+from sf_config import load_config, save_config, is_first_install
 # v1.3.45：首屏数据快照（冷启动预填，消除"占位符 → 真实数据"的内容跳变）
 from sf_config import load_last_quote, save_last_quote
 from sf_config import load_face_guard_pref, save_face_guard_pref
@@ -992,6 +1000,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         app = QApplication.instance()
         if app is not None:
             app.setQuitOnLastWindowClosed(False)
+        self._first_install = is_first_install()
         self.code, x, y, h0, self._bg_mode = load_config()
         # 1.3 v1.2.0：启动时从 config.json 加载 API 地址覆盖（改地址无需重新打包）
         load_api_urls()
@@ -1361,6 +1370,10 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 记忆高度低于「收起 + 最小图高」视为无效（多半是收起态高度被写盘），回落默认展开高度
         startup_h = int(h0) if h0 and int(h0) >= collapsed + CHART_MIN_H else collapsed + CHART_H
         self.resize(W, startup_h)
+        if self._first_install:
+            screen = QApplication.primaryScreen()
+            if screen is not None:
+                x, y = first_install_position(screen.availableGeometry(), W, startup_h)
         self.move(x, y)
         self.setMinimumHeight(MIN_H)
         self.setMaximumHeight(MAX_H)
@@ -3253,7 +3266,7 @@ QMenu::separator {
         try:
             from PyQt6.QtWidgets import QToolTip
             point = self.mapToGlobal(QPoint(self.width() // 2, 10))
-            QToolTip.showText(point, "目标价行情保存失败，提醒可能遗漏；请检查磁盘和权限", self)
+            QToolTip.showText(point, "目标价行情保存失败：本次行情未进入目标价判定，提醒可能遗漏；请检查磁盘和权限", self)
             QTimer.singleShot(5000, QToolTip.hideText)
         except Exception as exc:
             log_line("target tick warning display failed: %r" % (exc,), "WARNING")

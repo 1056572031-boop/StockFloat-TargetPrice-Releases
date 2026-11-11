@@ -84,6 +84,22 @@ RELEASE_POST_SCENARIOS = tuple(name for name in SCENARIOS
 RELEASE_REQUIRED_SCENARIOS = tuple(name for name in SCENARIOS
                                    if name not in PERMANENT_EXEMPTIONS
                                    and name not in CAPABILITY_BOUNDARIES)
+RELEASE_TIMELINE_EVENTS = (
+    "candidate_frozen",
+    "zip_uploaded",
+    "dmg_uploaded",
+    "source_uploaded",
+    "checksums_uploaded",
+    "ota_pointer_updated",
+    "site_deployed",
+    "acceptance_completed",
+)
+RELEASE_TIMELINE_ASSETS = (
+    "zip_uploaded",
+    "dmg_uploaded",
+    "source_uploaded",
+    "checksums_uploaded",
+)
 LEVELS = {1: "纯函数和规则", 2: "真实组件与隔离协作者", 3: "冻结产物与系统集成", 4: "用户设备和交付通路"}
 TEST_MATRIX = {
     "release_chain": {"levels": [1, 2, 3], "checks": ["full_regression", "mutation", "artifact_identity"]},
@@ -429,6 +445,177 @@ def template() -> dict[str, Any]:
                            else PERMANENT_EXEMPTIONS.get(s, "尚无真实执行证据"),
                            "receipts": []} for s in SCENARIOS],
             "unverified_limitations": ["修改单尚未完成；真机、Intel、浏览器下载与线上 OTA 均未验证"]}
+
+
+def status_matrix(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the independent release, site, and acceptance status facts.
+
+    This is intentionally a read-only projection.  It does not validate, mutate,
+    persist, or infer a publication from a retrospective readback.
+    """
+    publication = record.get("publication") if isinstance(record, dict) else None
+    site = record.get("site") if isinstance(record, dict) else None
+
+    if publication is None:
+        publication_status = "pending"
+    elif (isinstance(publication, dict)
+          and publication.get("status") == "published"
+          and isinstance(publication.get("published_at"), str)
+          and publication["published_at"].strip()):
+        publication_status = "published"
+    else:
+        publication_status = "not_published"
+
+    if site is None:
+        site_status = "pending"
+    elif (isinstance(site, dict)
+          and site.get("status") == "deployed"
+          and isinstance(site.get("deployed_at"), str)
+          and site["deployed_at"].strip()):
+        site_status = "deployed"
+    else:
+        site_status = "not_deployed"
+
+    verified: list[str] = []
+    unverified: list[str] = []
+    not_applicable: list[str] = []
+    scenarios = record.get("scenarios") if isinstance(record, dict) else None
+    scenario_by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(scenarios, list):
+        for scenario in scenarios:
+            if isinstance(scenario, dict) and isinstance(scenario.get("id"), str):
+                scenario_by_id.setdefault(scenario["id"], scenario)
+
+    for name in SCENARIOS:
+        if name in PERMANENT_EXEMPTIONS or name in CAPABILITY_BOUNDARIES:
+            not_applicable.append(name)
+            continue
+        scenario = scenario_by_id.get(name)
+        if scenario is None:
+            unverified.append(name)
+            continue
+        receipts = scenario.get("receipts")
+        receipts_present = isinstance(receipts, list) and any(
+            isinstance(reference, str) and reference.strip() for reference in receipts
+        )
+        observation = scenario.get("observation")
+        observation_present = isinstance(observation, dict) and bool(observation)
+        evidence_present = receipts_present or observation_present
+        evidence_present = evidence_present or bool(
+            isinstance(scenario.get("observed_at"), str) and scenario["observed_at"].strip()
+        )
+        if scenario.get("status") == "passed" and evidence_present:
+            verified.append(name)
+        else:
+            unverified.append(name)
+
+    required = [
+        name for name in RELEASE_REQUIRED_SCENARIOS
+        if name in SCENARIOS
+    ]
+    all_required_verified = bool(required) and all(name in verified for name in required)
+    retrospective = (
+        isinstance(record, dict)
+        and record.get("evidence_kind") == "retrospective_readback_not_execution_receipt"
+    )
+    if retrospective:
+        acceptance_status = "pending"
+    elif not required:
+        acceptance_status = "pending"
+    elif all_required_verified:
+        acceptance_status = "complete"
+    elif verified:
+        acceptance_status = "partial"
+    else:
+        acceptance_status = "pending"
+
+    return {
+        "publication_status": publication_status,
+        "site_status": site_status,
+        "acceptance_status": acceptance_status,
+        "verified_scenarios": verified,
+        "unverified_scenarios": unverified,
+        "not_applicable_scenarios": not_applicable,
+    }
+
+
+def release_timeline(record: dict[str, Any], version: str) -> dict[str, Any]:
+    """Project release timeline facts already present in a record.
+
+    Missing entries remain unverified. This projection never uses the clock,
+    filesystem metadata, or external services to fill historical gaps.
+    """
+    errors: list[str] = []
+    release = record.get("release_artifacts") if isinstance(record, dict) else None
+    record_version = record.get("version") if isinstance(record, dict) else None
+    asset_version = release.get("version") if isinstance(release, dict) else None
+    if record_version is not None and record_version != version:
+        errors.append(f"时间线版本与 record.version 不一致: {record_version!r} != {version!r}")
+    if asset_version != version:
+        errors.append(f"时间线版本与 release_artifacts.version 不一致: {asset_version!r} != {version!r}")
+
+    source = record.get("release_timeline") if isinstance(record, dict) else None
+    entries = source if isinstance(source, dict) else {}
+    events: list[dict[str, Any]] = []
+    parsed_at: dict[str, dt.datetime] = {}
+    for event_name in RELEASE_TIMELINE_EVENTS:
+        entry = entries.get(event_name)
+        if not isinstance(entry, dict):
+            events.append({"event": event_name, "at": None, "version": version,
+                           "status": "unverified", "evidence_path": None})
+            continue
+
+        event_version = entry.get("version")
+        event_at = entry.get("at")
+        status = entry.get("status")
+        evidence_path = entry.get("evidence_path")
+        if event_version != version:
+            errors.append(f"时间线事件版本不一致: {event_name} ({event_version!r} != {version!r})")
+        if not isinstance(status, str) or not status.strip():
+            status = "unverified"
+        if not isinstance(evidence_path, str) or not evidence_path.strip():
+            evidence_path = None
+        event_at_valid = True
+        if not isinstance(event_at, str) or not event_at.strip():
+            event_at = None
+        else:
+            try:
+                moment = dt.datetime.fromisoformat(event_at)
+                if moment.tzinfo is None or moment.utcoffset() is None:
+                    raise ValueError
+                if moment.utcoffset() != dt.timedelta(0):
+                    raise ValueError
+                parsed_at[event_name] = moment
+            except (TypeError, ValueError):
+                event_at_valid = False
+                errors.append(f"时间线事件时间无效或非 UTC: {event_name}")
+
+        if (not event_at_valid or event_at is None or evidence_path is None
+                or status == "unverified"):
+            status = "unverified"
+            event_at = None
+            evidence_path = None
+        events.append({"event": event_name, "at": event_at, "version": version,
+                       "status": status, "evidence_path": evidence_path})
+
+    ordered_events = (
+        "candidate_frozen", "zip_uploaded", "dmg_uploaded", "source_uploaded",
+        "checksums_uploaded", "ota_pointer_updated", "site_deployed", "acceptance_completed",
+    )
+    for earlier, later in zip(ordered_events, ordered_events[1:]):
+        earlier_at = parsed_at.get(earlier)
+        later_at = parsed_at.get(later)
+        if earlier_at is not None and later_at is not None and earlier_at >= later_at:
+            errors.append(f"时间线顺序错误: {earlier} 必须早于 {later}")
+
+    ota_at = parsed_at.get("ota_pointer_updated")
+    if ota_at is not None:
+        for event_name in RELEASE_TIMELINE_ASSETS:
+            asset_at = parsed_at.get(event_name)
+            if asset_at is not None and asset_at >= ota_at:
+                errors.append(f"时间线顺序错误: {event_name} 必须早于 ota_pointer_updated")
+
+    return {"version": version, "events": events, "errors": errors}
 
 
 def run_command(root: Path, output: Path, command: list[str], level: int,
