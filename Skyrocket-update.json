@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.115",
-  "published_at": "2026-11-09T11:20:08Z",
+  "version": "1.4.117",
+  "published_at": "2026-11-11T16:05:42Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 分时图的当前价标记与刻度会跟随最新行情，不再停在旧数据位置。\n2. 诊断资料导出时重复点击，只会保留一次任务，避免重复导出。\n3. 目标价行情短暂被占用时会自动稍后重试，避免漏掉提醒。",
+  "notes": "1. 修复更新文件已准备好时，系统偶发把它误判为地址异常、导致更新没有完成的问题。\n2. 修复第一次打开时窗口没有出现在鼠标所在屏幕的问题。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.115-macos.zip",
-    "size": 27256157,
-    "sha256": "67cf6e1c4bcbc3a8871d746255db2230731e6f2ed8146e6bf0d9a33d3407dc05"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.117-macos.zip",
+    "size": 27257401,
+    "sha256": "81329b1e69e18ec15a72328b3e55f76e32d7a15f02c223365a801b24aeecd9ad"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "V6AmbG1NLF0nWVuGnBm791oERGH/ZIZu3+in1cm12MWezsmfL8pXrFc11DB2ucWG3y+U32oHAuGHC3ItI45eCA=="
+    "value": "U5zQh8rPupUd5oTmaVwF4wN971lsXFAP90Wj06rVPb32IzV98SWU/ZjMER3WfNLi2cpgf9LPQWHZeG5UeK2+AQ=="
   }
 }
