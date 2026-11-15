@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import pathlib
@@ -179,6 +180,275 @@ class QuotePayloadGuards(SFCase):
         self.assertEqual(out["price"], "12.50", "解析层原样给字段，归一在出口做")
         self.assertTrue(any("semantic warn" in str(x) for x in seen),
                         "字段语义扰动不留痕 = 接口改版后没人知道数据已经不对")
+
+
+class RealMarketBoundaryRegressions(SFCase):
+    """真实回包形状的边界：可转债累计成交额按 10 倍成交量计价，港股时间带斜杠。"""
+
+    def test_convertible_bond_minute_average_keeps_price_scale(self):
+        rows = [
+            "0930 125.250 18 22545.00",
+            "0931 125.576 790 990489.00",
+        ]
+        raw = minute_payload("20261113", rows, "sh113062")
+        with mock.patch.object(q, "http_get", lambda *a, **k: raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=datetime.datetime(
+                    2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)):
+            out = minute_primary("sh113062")
+        self.assertAlmostEqual(out[1][2], 125.3784, places=3,
+                               msg="可转债分时均价应与价格同量级，不能被压到约十分之一")
+
+    def test_convertible_bond_unit_inference_ignores_anomalous_first_row(self):
+        rows = [
+            "0930 125.250 18 2254.50",
+            "0931 125.576 790 990489.00",
+            "0932 125.598 2833 3555347.00",
+        ]
+        raw = minute_payload("20261113", rows, "sh113062")
+        with mock.patch.object(q, "http_get", lambda *a, **k: raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=datetime.datetime(
+                    2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)):
+            out = minute_primary("sh113062")
+        self.assertAlmostEqual(out[2][2], 125.4976, places=3,
+                               msg="单位推断应忽略异常首行，不能把后续因子10均价压低")
+
+    def test_invalid_time_rows_do_not_change_minute_unit(self):
+        rows = ["0930 10 100 1000", "bad 10 100 100000", "1600 10 100 100000"]
+        raw = minute_payload("20261113", rows, "sh600519")
+        now = datetime.datetime(2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=now):
+            out = minute_primary("sh600519")
+        self.assertEqual(out, [("0930", 10.0, 10.0)])
+
+    def test_tiny_invalid_ratio_does_not_break_valid_minute(self):
+        rows = ["0930 10 100 1000", "0931 1e-300 1e-100 1"]
+        raw = minute_payload("20261113", rows, "sh600519")
+        now = datetime.datetime(2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=now):
+            out = minute_primary("sh600519")
+        self.assertEqual(out[0], ("0930", 10.0, 10.0))
+
+    def test_ambiguous_unit_does_not_draw_a_misleading_average(self):
+        rows = ["0930 10 100 1000", "0931 12 200 2100"]
+        raw = minute_payload("20261113", rows, "sh600519")
+        now = datetime.datetime(2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=now):
+            out = minute_primary("sh600519")
+        self.assertEqual([(p[0], p[1]) for p in out], [("0930", 10.0), ("0931", 12.0)])
+        self.assertTrue(all(p[2] is None for p in out))
+
+    def test_hong_kong_old_quote_after_a_share_close_is_not_current(self):
+        fields = [""] * 35
+        fields[1:5] = ["Tencent", "00700", "393.000", "398.800"]
+        fields[30] = "2026/11/13 15:00:00"
+        raw = 'v_hk00700="%s";' % "~".join(fields)
+        now = datetime.datetime(2026, 11, 13, 15, 30,
+                                tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_beijing_now", return_value=now), \
+                mock.patch.object(q, "is_holiday", return_value=False):
+            quote = quote_primary("hk00700")
+            self.assertFalse(q.quote_is_current(quote, now))
+
+    def test_hong_kong_old_quote_after_close_is_not_current(self):
+        fields = [""] * 35
+        fields[1:5] = ["Tencent", "00700", "393.000", "398.800"]
+        fields[30] = "2026/11/13 14:00:00"
+        raw = 'v_hk00700="%s";' % "~".join(fields)
+        now = datetime.datetime(2026, 11, 13, 16, 5,
+                                tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_beijing_now", return_value=now), \
+                mock.patch.object(q, "is_holiday", return_value=False):
+            quote = quote_primary("hk00700")
+            self.assertFalse(q.quote_is_current(quote, now))
+
+    def test_hong_kong_sina_layout_is_parsed_with_its_own_fields(self):
+        raw = ('var hq_str_hk00700="TENCENT,腾讯控股,393.000,398.800,395.200,'
+               '386.000,386.200,-12.600,-3.159,386.00000,386.20001,8126834810,'
+               '20821394,0.000,0.000,651.410,375.200,2026/11/13,13:57";')
+        with mock.patch.object(q, "http_get", return_value=raw):
+            quote = q.fetch_quote_fallback("hk00700")
+        self.assertEqual(quote["price"], "386.200")
+        self.assertEqual(quote["pre_close"], "398.800")
+        self.assertEqual(quote["high"], "395.200")
+        self.assertEqual(quote["low"], "386.000")
+        self.assertEqual(quote.source_time.isoformat(), "2026-11-13T13:57:00+08:00")
+        self.assertEqual(quote.source_code, "hk00700")
+
+    def test_hong_kong_sina_short_layout_is_rejected(self):
+        with mock.patch.object(q, "http_get", return_value='var hq_str_hk00700="Example,10,10,10,11,9";'):
+            with self.assertRaises(q.QuoteDataError):
+                q.fetch_quote_fallback("hk00700")
+
+    def test_hong_kong_sina_non_finite_price_is_rejected(self):
+        raw = ('var hq_str_hk00700="TENCENT,腾讯控股,393.000,398.800,395.200,386.000,nan,'
+               '-12.600,-3.159,386.00000,386.20001,8126834810,20821394,0.000,0.000,'
+               '651.410,375.200,2026/11/13,13:57";')
+        with mock.patch.object(q, "http_get", return_value=raw):
+            with self.assertRaises(q.QuoteDataError):
+                q.fetch_quote_fallback("hk00700")
+
+    def test_hong_kong_sina_invalid_source_time_is_rejected(self):
+        raw = ('var hq_str_hk00700="TENCENT,腾讯控股,393.000,398.800,395.200,386.000,386.200,'
+               '-12.600,-3.159,386.00000,386.20001,8126834810,20821394,0.000,0.000,'
+               '651.410,375.200,not-a-date,13:57";')
+        with mock.patch.object(q, "http_get", return_value=raw):
+            with self.assertRaises(q.QuoteDataError):
+                q.fetch_quote_fallback("hk00700")
+
+    def test_hong_kong_fresh_quote_after_close_is_current(self):
+        fields = [""] * 35
+        fields[1:5] = ["Tencent", "00700", "393.000", "398.800"]
+        fields[30] = "2026/11/13 16:04:00"
+        raw = 'v_hk00700="%s";' % "~".join(fields)
+        now = datetime.datetime(2026, 11, 13, 16, 5,
+                                tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_beijing_now", return_value=now), \
+                mock.patch.object(q, "is_holiday", return_value=False):
+            quote = quote_primary("hk00700")
+            self.assertTrue(q.quote_is_current(quote, now))
+
+    def test_rapid_price_move_keeps_average_when_incremental_trades_identify_unit(self):
+        rows = ["0930 10 100 1000", "0931 11 200 2100",
+                "0932 12 300 3200", "0933 12 400 4400"]
+        raw = minute_payload("20261113", rows, "sh600519")
+        now = datetime.datetime(2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=now):
+            out = minute_primary("sh600519")
+        self.assertEqual(out[-1][2], 11.0)
+
+    def test_duplicate_minutes_cannot_dominate_unit_inference(self):
+        rows = ["0930 10 100 10000", "0930 10 100 10000", "0931 10 1000 10000"]
+        raw = minute_payload("20261113", rows, "sh600519")
+        now = datetime.datetime(2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=now):
+            out = minute_primary("sh600519")
+        self.assertEqual([p[0] for p in out], ["0930", "0931"])
+        self.assertTrue(all(p[2] is None for p in out))
+
+    def test_duplicate_minute_conflict_is_not_used_for_unit_inference(self):
+        rows = ["0930 10 100 1000", "0930 10 200 20000",
+                "0931 10 300 30000", "0932 10 400 40000"]
+        raw = minute_payload("20261113", rows, "sh600519")
+        now = datetime.datetime(2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=now):
+            out = minute_primary("sh600519")
+        self.assertTrue(all(point[2] is None for point in out),
+                        "冲突重复分钟不能让错误因子主导全日均价")
+
+    def test_cumulative_volume_or_amount_rollback_does_not_infer_unit(self):
+        rows = ["0930 10 100 1000", "0931 10 90 900", "0932 10 110 1100"]
+        raw = minute_payload("20261113", rows, "sh600519")
+        now = datetime.datetime(2026, 11, 13, 10, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch.object(q, "http_get", return_value=raw), \
+                mock.patch.object(q, "_is_trading_time", return_value=True), \
+                mock.patch.object(q, "_beijing_now", return_value=now):
+            out = minute_primary("sh600519")
+        self.assertTrue(all(point[2] is None for point in out),
+                        "累计量回退时不能把累计字段当可信单位样本")
+
+    def test_hong_kong_continuous_morning_quote_is_current(self):
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 10:00:00",
+                            source_code="hk00700")
+        morning = datetime.datetime(2026, 11, 13, 10, 1,
+                                    tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "_beijing_now", return_value=morning):
+            self.assertTrue(q.quote_is_current(quote, morning),
+                            "港股上午连续竞价仍应接受两分钟内报价")
+
+    def test_hong_kong_continuous_future_source_time_is_not_current(self):
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 10:01:00",
+                            source_code="hk00700")
+        morning = datetime.datetime(2026, 11, 13, 10, 0,
+                                    tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "_beijing_now", return_value=morning):
+            self.assertFalse(q.quote_is_current(quote, morning),
+                             "港股连续竞价不能接受未来来源时间")
+
+    def test_hong_kong_after_market_quote_uses_same_day_freshness(self):
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 16:59:00",
+                            source_code="hk00700")
+        after_market = datetime.datetime(
+            2026, 11, 13, 17, 0,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "_beijing_now", return_value=after_market):
+            self.assertTrue(q.quote_is_current(quote, after_market),
+                            "港股收市后仍应接受同日新鲜报价")
+
+    def test_hong_kong_future_source_time_is_not_current_after_market(self):
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 17:01:00",
+                            source_code="hk00700")
+        after_market = datetime.datetime(
+            2026, 11, 13, 17, 0,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "_beijing_now", return_value=after_market):
+            self.assertFalse(q.quote_is_current(quote, after_market),
+                             "港股收市后不能接受未来时间戳")
+
+    def test_hong_kong_freshness_uses_market_session_not_a_share_clock(self):
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 12:10:00",
+                            source_code="hk00700")
+        lunch = datetime.datetime(2026, 11, 13, 12, 30,
+                                  tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "_beijing_now", return_value=lunch):
+            self.assertTrue(q.quote_is_current(quote, lunch),
+                            "港股午休仍是同一交易日的有效报价")
+
+    def test_hong_kong_stale_lunch_quote_is_not_current(self):
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 10:00:00",
+                            source_code="hk00700")
+        lunch = datetime.datetime(2026, 11, 13, 12, 30,
+                                  tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "_beijing_now", return_value=lunch):
+            self.assertFalse(q.quote_is_current(quote, lunch),
+                             "午休也不能接受超过一小时的旧报价")
+    def test_hong_kong_quote_during_closing_auction_is_current(self):
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 16:05:00",
+                            source_code="hk00700")
+        auction = datetime.datetime(2026, 11, 13, 16, 6,
+                                    tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        with mock.patch.object(q, "_beijing_now", return_value=auction):
+            self.assertTrue(q.quote_is_current(quote, auction),
+                            "港股收市竞价阶段仍应接受当日有效报价")
+
+    def test_hong_kong_slash_timestamp_is_current(self):
+        now = datetime.datetime(2026, 11, 13, 14, 12, 30,
+                                tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        quote = q.QuoteData({"price": "393.000"}, "2026/11/13 14:12:24",
+                            source_code="hk00700")
+        with mock.patch.object(q, "_beijing_now", return_value=now):
+            self.assertTrue(q.quote_is_current(quote),
+                            "腾讯港股时间带斜杠时也应解析为当前行情")
+
+    def test_stale_hong_kong_primary_switches_to_fresh_sina_backup(self):
+        now = datetime.datetime(2026, 11, 13, 16, 6,
+                                tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        stale = q.QuoteData({"price": "390.000"}, "2026/11/13 14:00:00",
+                            source_code="hk00700")
+        fresh = q.QuoteData({"price": "393.000"}, "2026/11/13 16:05:00",
+                            source_code="hk00700")
+        with mock.patch.object(q, "_beijing_now", return_value=now), \
+                mock.patch.object(q, "fetch_quote_fallback", return_value=fresh):
+            out = q.ensure_current_quote("hk00700", stale)
+        self.assertIs(out, fresh)
+        self.assertEqual(out.source_code, "hk00700")
+        self.assertEqual(out["price"], "393.000")
 
 
 class MinuteDateBranches(SFCase):

@@ -163,22 +163,46 @@ def _note(log, message: str) -> None:
         pass
 
 
+def _normalized_exclusions(exclude_paths: list[str] | None) -> tuple[str, ...]:
+    """Return real paths whose subtrees must not be scanned."""
+    normalized: list[str] = []
+    for path in exclude_paths or []:
+        try:
+            real = os.path.realpath(path)
+        except OSError:
+            continue
+        if real not in normalized:
+            normalized.append(real)
+    return tuple(normalized)
+
+
+def _is_excluded(path: str, exclusions: tuple[str, ...]) -> bool:
+    """Whether path is inside one of the explicitly excluded subtrees."""
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    return any(real == root or real.startswith(root + os.sep) for root in exclusions)
+
+
 def find_stale_apps(roots: list[str], bundle_id: str = BUNDLE_ID,
-                    max_depth: int = DEFAULT_MAX_DEPTH,
-                    log=None) -> list[tuple[str, str]]:
+                    max_depth: int = DEFAULT_MAX_DEPTH, log=None,
+                    exclude_paths: list[str] | None = None) -> list[tuple[str, str]]:
     """在临时目录里找出本程序的残留 .app，返回 (路径, 识别方式) 列表。
 
-    认 `bundle_id` **以及**改名的前代 id（`LEGACY_BUNDLE_IDS`）—— 同一款产品的
-    两代标识；第三方 app 仍然一个都不碰（AGENTS §3.1 那五条边界原样保留）。
-
-    `log`（可选，一行文本回调）：2026-11-02 走查 F-C-03 起，单个 .app 上的任何意外异常
-    只跳过这一份并经它留痕，不再中止整轮扫描。本模块刻意不 import sf_logging
-    （tools/sweep_temp_apps.py 要在没有 PyQt6 的系统 python3 上跑），所以用回调。
+    ``exclude_paths`` 用于发版等场景：当前工作树可能位于系统临时目录内，
+    但它不是待清扫的历史副本，必须连同整个子树跳过。
     """
     own_ids = {bundle_id} | set(LEGACY_BUNDLE_IDS)
+    exclusions = _normalized_exclusions(exclude_paths)
     found: list[tuple[str, str]] = []
     for root in roots:
         for base, dirs, _files in os.walk(root, followlinks=False):
+            if _is_excluded(base, exclusions):
+                dirs[:] = []
+                continue
+            dirs[:] = [name for name in dirs
+                       if not _is_excluded(os.path.join(base, name), exclusions)]
             depth = base.rstrip(os.sep).count(os.sep) - root.rstrip(os.sep).count(os.sep)
             if depth >= max_depth:
                 dirs[:] = []
@@ -220,19 +244,19 @@ def neutralize(app_dir: str) -> str:
     return target
 
 
-def sweep_temporary_copies(roots: list[str] | None = None, log=None) -> int:
+def sweep_temporary_copies(roots: list[str] | None = None, log=None,
+                           exclude_paths: list[str] | None = None) -> int:
     """执行一次清扫，返回被改名的副本数。任何单项失败都不影响其余项。
 
-    `log` 传入可写一行文本的回调（如 sf_logging.log_line）用于留痕；
-    本函数自身不抛异常，调用方无需兜底。
+    ``exclude_paths`` 用于发版隔离树，避免当前候选位于系统临时目录时被误扫。
     """
-
     def note(message: str) -> None:
         _note(log, message)
 
     changed = 0
     try:
-        hits = find_stale_apps(roots if roots is not None else temp_roots(), log=note)
+        hits = find_stale_apps(roots if roots is not None else temp_roots(),
+                               log=note, exclude_paths=exclude_paths)
         skip = running_bundle_paths()
     except OSError as exc:
         note("temp-sweep scan failed: %r" % (exc,))

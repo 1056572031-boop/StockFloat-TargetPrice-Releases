@@ -10,6 +10,8 @@
   工具窗层级提升潜伏几十个版本从未生效（v1.4.29 复核发现并修复）。
 """
 import ast
+import importlib.util
+import json
 import os
 import pathlib
 import sys
@@ -17,6 +19,15 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+
+
+def _load_architecture_increment_gate():
+    spec = importlib.util.spec_from_file_location(
+        "architecture_increment_gate", ROOT / "tools" / "architecture_increment_gate.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 import undefined_name_scan as U     # noqa: E402
 
@@ -119,6 +130,78 @@ class TestNoUndefinedNamesInProductModules(unittest.TestCase):
         r = U.analyze("forms.py", src)
         self.assertEqual([h["name"] for h in r["hits"]], [],
                          "误报清单：%s" % r["hits"])
+
+
+class TestArchitectureContractRegistration(SFCase):
+    """架构规则必须有机器可读登记，避免新增功能只靠口头约定。
+
+    这是形状契约而非产品行为断言：状态所有权和诊断出口需要在新增功能进入
+    主窗口前被明确登记；用 AST 检查登记的公开入口，避免启动 Qt/线程产生副作用。
+    """
+
+    @property
+    def contract(self):
+        if os.environ.get("SF_PUBLIC_REGRESSION") == "1":
+            self.skipTest("公开快照不含内部 docs/agents/architecture_contract.json；架构契约登记仅在私有源树核验")
+        path = ROOT / "docs" / "agents" / "architecture_contract.json"
+        self.assertTrue(path.is_file(),
+                        "新增功能的状态所有权与诊断出口必须登记在 architecture_contract.json")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_architecture_contract_file_is_present(self):
+        self.assertIsInstance(self.contract, dict)
+
+    def test_contract_declares_the_four_required_rules(self):
+        rules = self.contract.get("rules")
+        self.assertEqual(
+            set(rules or {}),
+            {"integration", "state_ownership", "window_budget", "diagnostics", "increment_gate"},
+            "架构登记必须覆盖接入、状态所有权、主窗口预算、诊断接口四类规则",
+        )
+
+    def test_each_state_entry_has_one_owner_and_diagnostic_port(self):
+        states = self.contract.get("state_owners")
+        self.assertIsInstance(states, list)
+        self.assertGreater(len(states), 0, "至少登记一个现有控制器状态，防止契约空表假绿")
+        for entry in states:
+            with self.subTest(entry=entry):
+                self.assertIsInstance(entry, dict)
+                for field in ("name", "owner", "write_scope", "diagnostic_port", "shutdown"):
+                    self.assertIsInstance(entry.get(field), str)
+                    self.assertTrue(entry[field].strip(), "状态登记字段不能为空：%s" % field)
+
+    def test_diagnostic_ports_are_real_public_definitions(self):
+        for entry in self.contract["state_owners"]:
+            module_name, separator, symbol = entry["diagnostic_port"].partition(":")
+            with self.subTest(port=entry["diagnostic_port"]):
+                self.assertTrue(separator, "诊断出口必须写成 module.py:symbol")
+                source = (ROOT / module_name).read_text(encoding="utf-8")
+                tree = ast.parse(source, filename=module_name)
+                names = {
+                    node.name for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                }
+                self.assertIn(symbol, names,
+                              "登记的诊断出口不存在：%s" % entry["diagnostic_port"])
+
+    def test_window_budget_has_explicit_allowed_and_reviewed_changes(self):
+        budget = self.contract["rules"]["window_budget"]
+        self.assertEqual(set(budget), {"allowed", "requires_review", "forbidden"})
+        for category in budget.values():
+            self.assertIsInstance(category, list)
+            self.assertTrue(category, "主窗口预算类别不能为空")
+
+    def test_increment_gate_rejects_new_architecture_violations(self):
+        gate = _load_architecture_increment_gate()
+        findings = gate.scan_repo(ROOT, "HEAD")
+        self.assertEqual(
+            findings, [],
+            "当前相对 HEAD 的新增代码违反架构接入规则：\n  "
+            + "\n  ".join(
+                "%s:%d %s %s" % (item.path, item.line, item.rule, item.message)
+                for item in findings
+            ),
+        )
 
 
 class TestProductModulesStillParse(unittest.TestCase):

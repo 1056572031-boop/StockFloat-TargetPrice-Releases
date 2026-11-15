@@ -356,7 +356,7 @@ fi
 # 的产物里留有完整可启动副本，被系统重新拉起后在 PyQt6 导入期 SIGSEGV。
 # 上面第 2 步只处理本轮 _prev，这里把临时目录里所有本程序的可启动副本一并中性化。
 # 只改名不删除、只认本程序 bundle id，失败不阻断发版。
-"$VENV_PY" tools/sweep_temp_apps.py --apply 2>&1 | tail -8 \
+"$VENV_PY" tools/sweep_temp_apps.py --apply --exclude "$PROJ" 2>&1 | tail -8 \
   || echo "   （临时目录清扫未完成，不影响本次发版）" >&2
 
 # ---- 3) PyInstaller 打包 ----
@@ -625,6 +625,20 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
     "$VENV_PY" tools/release_state.py candidate --state "$RELEASE_STATE" --version "$VERSION" \
       --app "$PROJ/dist/$APP_BUNDLE" --dmg "$DMG_OUT" --zip "$UPDATE_ZIP" --ota "$UPDATE_JSON"
   fi
+  RELEASE_LIMITATIONS="${SF_RELEASE_LIMITATIONS:-$PROJ/build/limitations-v${VERSION}.json}"
+  RELEASE_OLD_APP="${SF_RELEASE_OLD_APP:-}"
+  if [ ! -s "$RELEASE_LIMITATIONS" ]; then
+    echo "!! 候选限制文件不存在或为空：${RELEASE_LIMITATIONS}；未进入不可逆发布阶段" >&2
+    exit 1
+  fi
+  if [ -z "$RELEASE_OLD_APP" ] || [ ! -d "$RELEASE_OLD_APP" ]; then
+    echo "!! 缺少本轮真实旧版 APP：请设置 SF_RELEASE_OLD_APP 后再发布" >&2
+    exit 1
+  fi
+  "$VENV_PY" tools/release_evidence.py bind --root "$PROJ" --version "$VERSION" \
+    --limitations-file "$RELEASE_LIMITATIONS" --old-app "$RELEASE_OLD_APP" \
+    --quality "$QUALITY_RECORD" --app "$PROJ/dist/$APP_BUNDLE" --zip "$UPDATE_ZIP" --state "$RELEASE_STATE" \
+    || { echo "!! 候选冻结证据未绑定到发布状态，拒绝进入不可逆阶段" >&2; exit 1; }
   "$VENV_PY" tools/release_state.py begin-publish --state "$RELEASE_STATE" --quality "$QUALITY_RECORD"
 fi
 

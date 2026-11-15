@@ -50,6 +50,18 @@ class TargetTickStoreTests(SFCase):
         with TargetTickStore(self.path) as store:
             self.assertEqual([r.id for r in store.read("sh600000")], [ids[2]])
 
+    def test_reopened_hong_kong_quote_keeps_market_for_freshness(self):
+        from sf_quote import quote_is_current
+        quote = QuoteData({"code": "00700", "price": "393"},
+                          "2026/11/13 15:00:00", source_code="hk00700")
+        now = datetime(2026, 11, 13, 15, 30, tzinfo=timezone(timedelta(hours=8)))
+        with TargetTickStore(self.path) as store:
+            store.save("hk00700", quote)
+        with TargetTickStore(self.path) as store:
+            restored = store.read("hk00700")[0].quote
+        with mock.patch("sf_quote.is_holiday", return_value=False):
+            self.assertFalse(quote_is_current(restored, now))
+
     def test_tick_survives_writer_process_exit(self):
         import subprocess
         import sys

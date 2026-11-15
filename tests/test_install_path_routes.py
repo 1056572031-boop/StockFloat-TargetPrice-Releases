@@ -19,6 +19,7 @@ LaunchServices 不可用），不假装通过。
 import sys
 import tempfile
 import types
+import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,6 +52,147 @@ class RouteCase(SFCase):
 
 class TestRoutesInProcess(RouteCase):
     """六条路线的主进程版本（轻夹具）。红 = 判据抓到缺陷，或脚本/夹具真的坏了。"""
+
+    def test_run_timeout_kills_process_group_and_returns_explicit_timeout(self):
+        class FakeProcess:
+            pid = 4242
+
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+                self.stdout = mock.Mock(close=mock.Mock())
+                self.stderr = mock.Mock(close=mock.Mock())
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired(["fake"], timeout)
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return -15
+
+        fake = FakeProcess()
+        fake.waited = False
+        with mock.patch.object(VIP.subprocess, "Popen", return_value=fake) as popen, \
+                mock.patch.object(VIP.os, "killpg", side_effect=lambda *_: setattr(fake, "killed", True)) as killpg:
+            rc, msg = VIP.run(["fake"], timeout=3)
+        self.assertEqual(rc, 124)
+        self.assertIn("超时（3s）", msg)
+        self.assertTrue(getattr(fake, "killed", False))
+        self.assertTrue(fake.waited)
+        self.assertEqual(killpg.call_count, 2)
+        popen.assert_called_once()
+
+    def test_run_timeout_wait_timeout_is_still_explicit(self):
+        class FakeProcess:
+            pid = 4245
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired(["fake"], timeout)
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(["fake"], timeout)
+
+        with mock.patch.object(VIP.subprocess, "Popen", return_value=FakeProcess()), \
+                mock.patch.object(VIP.os, "killpg", side_effect=lambda *_: None):
+            rc, msg = VIP.run(["fake"], timeout=3)
+        self.assertEqual(rc, 124)
+        self.assertIn("进程组已强制终止", msg)
+
+    def test_mount_reports_detach_failure_after_marker_write_failure(self):
+        image = self.work / "marker-detach-failure.dmg"
+        image.write_bytes(b"fixture")
+        with mock.patch.object(VIP, "run", side_effect=[(0, "attached"), (1, "busy")]) as runner, \
+                mock.patch.object(Path, "write_text", side_effect=OSError("read-only marker")):
+            with self.assertRaisesRegex(VIP.NoFixture, "挂载状态记录失败.*卸载也失败.*busy"):
+                VIP.mount(image, self.work / "marker-detach-failure-mount")
+        self.assertEqual(runner.call_count, 2)
+
+    def test_mount_detaches_when_marker_write_fails(self):
+        image = self.work / "marker-failure.dmg"
+        image.write_bytes(b"fixture")
+        with mock.patch.object(VIP, "run", side_effect=[(0, "attached"), (0, "detached")]) as runner, \
+                mock.patch.object(Path, "write_text", side_effect=OSError("read-only marker")):
+            with self.assertRaisesRegex(VIP.NoFixture, "挂载状态记录失败.*read-only marker"):
+                VIP.mount(image, self.work / "marker-failure-mount")
+        self.assertEqual(runner.call_count, 2)
+        self.assertIn("hdiutil", runner.call_args_list[1].args[0][0])
+        self.assertIn("detach", runner.call_args_list[1].args[0])
+
+    def test_run_timeout_ignores_process_group_already_gone(self):
+        class FakeProcess:
+            pid = 4243
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired(["fake"], timeout)
+
+            def wait(self, timeout=None):
+                return -9
+
+        with mock.patch.object(VIP.subprocess, "Popen", return_value=FakeProcess()), \
+                mock.patch.object(VIP.os, "killpg", side_effect=ProcessLookupError):
+            rc, msg = VIP.run(["fake"], timeout=3)
+        self.assertEqual(rc, 124)
+        self.assertIn("超时（3s）", msg)
+
+    def test_run_timeout_ignores_process_group_gone_after_term(self):
+        class FakeProcess:
+            pid = 4244
+            stdout = None
+            stderr = None
+
+            def __init__(self):
+                self.calls = 0
+
+            def communicate(self, timeout=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise subprocess.TimeoutExpired(["fake"], timeout)
+                raise subprocess.TimeoutExpired(["fake"], timeout)
+
+            def wait(self, timeout=None):
+                return -9
+
+        with mock.patch.object(VIP.subprocess, "Popen", return_value=FakeProcess()), \
+                mock.patch.object(VIP.os, "killpg", side_effect=[None, ProcessLookupError]):
+            rc, msg = VIP.run(["fake"], timeout=3)
+        self.assertEqual(rc, 124)
+        self.assertIn("超时（3s）", msg)
+
+    def test_unmount_nonzero_failure_is_explicit(self):
+        mountpoint = self.work / "failed-unmount"
+        mountpoint.mkdir()
+        marker = mountpoint.with_name(mountpoint.name + VIP.MOUNT_MARKER)
+        marker.write_text("fixture", encoding="utf-8")
+        with mock.patch.object(VIP, "run", return_value=(1, "busy")):
+            with self.assertRaisesRegex(VIP.NoFixture, "卸载失败.*busy"):
+                VIP.unmount(mountpoint)
+        self.assertTrue(marker.exists())
+
+    def test_mount_timeout_reports_clear_failure(self):
+        image = self.work / "timeout.dmg"
+        image.write_bytes(b"fixture")
+        with mock.patch.object(VIP, "run", return_value=(124, "超时（3s）: /usr/bin/hdiutil")) as runner:
+            with self.assertRaisesRegex(VIP.NoFixture, "挂载超时.*3s"):
+                VIP.mount(image, self.work / "mount-timeout")
+        runner.assert_called_once()
+
+    def test_unmount_timeout_reports_clear_failure(self):
+        mountpoint = self.work / "mounted"
+        mountpoint.mkdir()
+        (mountpoint.with_name(mountpoint.name + VIP.MOUNT_MARKER)).write_text("fixture", encoding="utf-8")
+        with mock.patch.object(VIP, "run", return_value=(124, "超时（3s）: /usr/bin/hdiutil")):
+            with self.assertRaisesRegex(VIP.NoFixture, "卸载超时.*3s"):
+                VIP.unmount(mountpoint)
 
     def test_R0_名字同源(self):
         self.assertRoute(VIP.check_name_source(), "R0 应当过：两代顶层名都钉着")
@@ -202,7 +344,7 @@ class TestRoutesInProcess(RouteCase):
                 work = self.work / ("post-install-" + expected)
 
                 def install_then_inject(_script, _work, target_dir, **_kwargs):
-                    source, _ = VIP.light_signed_app(work, "post-install-source")
+                    source = VIP.real_app()
                     target = target_dir / VIP.CURRENT_APP_NAME
                     import shutil
                     shutil.copytree(source, target)
@@ -213,8 +355,7 @@ class TestRoutesInProcess(RouteCase):
                     return 0, "", "zh_CN.UTF-8"
 
                 with mock.patch.object(VIP, "run_from_volume", side_effect=install_then_inject), \
-                        mock.patch.object(VIP, "has_quarantine_anywhere", return_value=quarantine), \
-                        mock.patch.object(VIP, "real_app", side_effect=VIP.NoFixture("测试机没有真实应用")):
+                        mock.patch.object(VIP, "has_quarantine_anywhere", return_value=quarantine):
                     ok, detail = VIP.verify_prepared_dmg(image, work,
                                                          smoke_runner=lambda _app: (0, {}))
                 self.assertFalse(ok, detail)

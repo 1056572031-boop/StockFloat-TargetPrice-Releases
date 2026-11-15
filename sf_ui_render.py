@@ -165,22 +165,25 @@ def bottom_rows(quote):
     跌幅取 min(0, (low-pre_close)/pre_close*100)。昨收未知不回退今开。
     无涨/无跌显示灰色 0.00%；四标签始终保留，真实高低价格独立容错、不截断。
 
+    高低点始终使用行情快照中的日内极值；分钟采样不能代替盘中瞬时极值。
+
     返回 (row1, row2)，每项为 [(标签, 数值, 颜色)]；无行情时返回 None。
     """
     if not quote:
         return None
 
-    def positive_price(key):
+    def positive_value(value):
         try:
-            value = float(quote.get(key))
+            value = float(value)
             return value if math.isfinite(value) and value > 0 else None
         except (TypeError, ValueError, OverflowError):
             return None
 
-    pre_close = positive_price("pre_close")
+    pre_close = positive_value(quote.get("pre_close"))
+    high = positive_value(quote.get("high"))
+    low = positive_value(quote.get("low"))
 
-    def extreme_row(label, price_label, key):
-        price = positive_price(key)
+    def extreme_row(label, price_label, price, key):
         pct = ((price - pre_close) / pre_close * 100
                if price is not None and pre_close is not None else None)
         if pct is not None and math.isfinite(pct):
@@ -191,8 +194,8 @@ def bottom_rows(quote):
         price_text = _fmt_hl(quote.get(key)) if price is not None else "--"
         return [percentage, (price_label, price_text, FG_DIM)]
 
-    return (extreme_row("最大涨幅", "最高点", "high"),
-            extreme_row("最大跌幅", "最低点", "low"))
+    return (extreme_row("最大涨幅", "最高点", high, "high"),
+            extreme_row("最大跌幅", "最低点", low, "low"))
 
 
 def price_update_rect(w):
@@ -552,6 +555,21 @@ def chart_y_for_price(rect, lo, hi, price):
     return rect.top() + (float(hi) - v) / span * rect.height()
 
 
+def chart_current_price(host):
+    """返回可用于图表的有效实时价；兜底价不冒充实时点。"""
+    try:
+        quote = getattr(host, "quote", None)
+        value = quote.get("price") if isinstance(quote, dict) else None
+        if not getattr(host, "_price_is_fallback", False) \
+                and isinstance(value, (str, int, float)):
+            value = float(value)
+            if math.isfinite(value) and value > 0:
+                return value
+    except (TypeError, ValueError, OverflowError) as exc:
+        log_swallow("sf_ui_render.chart_current_price", exc)
+    return None
+
+
 # v1.2.47：右上角三按钮图标放大 2px（10→12，资源 20px 仍足够下采样）。
 # 图标保持以各按钮中心（w-BTN_X[name], BTN_CY=17）居中；相邻中心间隔为 22px，
 # 图标本体尺寸不变。
@@ -881,6 +899,8 @@ class RenderMixin:
         # 静态层面：mixin 的属性由宿主窗口提供，不声明就会被算进 attr-defined 债务；
         # 这条属性是能被子类实例共享、静态可查的那种，值得声明。
         _sf_first_frame_logged = False
+        # 宿主窗口提供的当前分时点集；类级空值只用于声明 mixin 的共享绘制契约。
+        minute_points: list = []
 
         # v1.3.51：均价线 QPainterPath 缓存（key, path, 末点下标, 末点均价）。
         # 类级默认 None —— 真正的窗口在 __init__ 里也会置 None，这里兜住未走
@@ -1799,16 +1819,9 @@ class RenderMixin:
                 v = pt[1]
                 if isinstance(v, (int, float)) and math.isfinite(float(v)):
                     prices.append(float(v))
-            try:
-                quote = vars(self).get("quote")
-                value = quote.get("price") if isinstance(quote, dict) else None
-                if not getattr(self, "_price_is_fallback", False) \
-                        and isinstance(value, (str, int, float)):
-                    value = float(value)
-                    if math.isfinite(value) and value > 0:
-                        prices.append(value)
-            except (TypeError, ValueError) as exc:
-                log_swallow("sf_ui_render._chart_metrics.quote_price", exc)
+            current_price = chart_current_price(self)
+            if current_price is not None:
+                prices.append(current_price)
             if isinstance(pre_close, (int, float)) and math.isfinite(float(pre_close)):
                 prices.append(float(pre_close))
             for pt in pts:
@@ -2087,17 +2100,7 @@ class RenderMixin:
         def _draw_chart_dot(self, p, rect, m):
             """当前点 —— 持续呼吸灯效果（平滑透明度/大小周期性变化）"""
             pts = self.minute_points
-            current_price = None
-            try:
-                quote = vars(self).get("quote")
-                value = quote.get("price") if isinstance(quote, dict) else None
-                if not getattr(self, "_price_is_fallback", False) \
-                        and isinstance(value, (str, int, float)):
-                    value = float(value)
-                    if math.isfinite(value) and value > 0:
-                        current_price = value
-            except (TypeError, ValueError) as exc:
-                log_swallow("sf_ui_render._draw_chart_dot.quote_price", exc)
+            current_price = chart_current_price(self)
             # 行情与分时请求独立刷新：红点代表屏幕当前价，行情暂不可用时才退回分时末点。
             dot_price = current_price if current_price is not None else pts[-1][1]
             cpt = QPoint(int(self._chart_x(rect, m, m["n"] - 1)), int(self._chart_y(rect, m, dot_price)))

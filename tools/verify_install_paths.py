@@ -61,6 +61,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -198,23 +199,39 @@ class NoFixture(RuntimeError):
 
 
 def run(cmd, env=None, timeout=240):
-    """统一出口：返回 (rc, stdout+stderr)。命令坏在哪儿要能被打印出来。
-
-    errors="replace" 是必需的：助手一旦被 awk 之类"吐出非法 UTF-8 再非零退出"的缺陷
-    击中（本轮 S6 种的就是这个），严格解码会在**核验器**里抛 UnicodeDecodeError ——
-    于是这道闸门不是红、而是崩，看起来像工具坏了，说不清被测对象到底哪儿不对。
-    """
+    """统一出口：带进程组 watchdog，外部工具卡住时可控失败并收尾。"""
     merged = dict(os.environ)
     if env:
         merged.update(env)
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                           env=merged, timeout=timeout)
-        return p.returncode, (p.stdout + p.stderr).strip()
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, errors="replace", env=merged,
+                             start_new_session=True)
+        try:
+            stdout, stderr = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                stdout, stderr = p.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    p.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+                for stream in (p.stdout, p.stderr):
+                    if stream is not None:
+                        stream.close()
+                return 124, "超时（%ss）: %s（进程组已强制终止）" % (timeout, cmd[0])
+        return p.returncode, ((stdout or "") + (stderr or "")).strip()
     except OSError as exc:
         return 127, "无法执行 %s: %s" % (cmd[0], exc)
-    except subprocess.TimeoutExpired:
-        return 124, "超时（%ss）: %s" % (timeout, cmd[0])
 
 
 def has_quarantine(path: Path) -> bool:
@@ -486,17 +503,38 @@ def build_user_dmg(work: Path, tag: str, stamp_script: bool = False,
     return image, app
 
 
+MOUNT_MARKER = ".sf-hdiutil-mounted"
+
+
 def mount(image: Path, at: Path) -> None:
     at.mkdir(parents=True, exist_ok=True)
     rc, msg = run(["/usr/bin/hdiutil", "attach", "-nobrowse", "-readonly",
                    "-mountpoint", str(at), str(image)])
+    if rc == 124:
+        raise NoFixture("挂载超时（3s）: " + msg[-300:])
     if rc != 0:
         raise NoFixture("挂载失败: " + msg[-300:])
+    marker = at.with_name(at.name + MOUNT_MARKER)
+    try:
+        marker.write_text(str(image), encoding="utf-8")
+    except OSError as exc:
+        detach_rc, detach_msg = run(["/usr/bin/hdiutil", "detach", "-force", str(at)])
+        detail = "挂载状态记录失败: %s" % exc
+        if detach_rc != 0:
+            detail += "；卸载也失败 rc=%s：%s" % (detach_rc, detach_msg[-160:])
+        raise NoFixture(detail) from exc
 
 
 def unmount(at: Path) -> None:
-    if at.exists():
-        run(["/usr/bin/hdiutil", "detach", "-force", str(at)])
+    marker = at.with_name(at.name + MOUNT_MARKER)
+    if not marker.is_file():
+        return
+    rc, msg = run(["/usr/bin/hdiutil", "detach", "-force", str(at)])
+    if rc == 124:
+        raise NoFixture("卸载超时（3s）: " + msg[-300:])
+    if rc != 0:
+        raise NoFixture("卸载失败: " + msg[-300:])
+    marker.unlink(missing_ok=True)
 
 
 def installed_version(app: Path) -> str:

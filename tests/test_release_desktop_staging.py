@@ -63,7 +63,14 @@ class ReleaseDesktopStaging(SFCase):
         # The observable contract here is irreversible shell call order, not Python source shape.
         source_qualified = 'tools/release_state.py qualify-source --state "$RELEASE_STATE"'
         begin_publish = 'tools/release_state.py begin-publish --state "$RELEASE_STATE"'
+        bind_candidate = 'tools/release_evidence.py bind --root "$PROJ" --version "$VERSION"'
+        bind_quality = '--quality "$QUALITY_RECORD"'
         prepared_check = 'tools/release_state.py validate --state "$RELEASE_STATE" --stage candidate_ready'
+        self.assertIn(bind_candidate, self.source)
+        self.assertIn(bind_quality, self.source)
+        self.assertLess(self.source.index(bind_candidate), self.source.index(begin_publish))
+        self.assertLess(self.source.index(bind_candidate), self.source.index(CALL))
+        self.assertLess(self.source.index(bind_candidate), self.source.index('tools/publish_update_release.py --assets'))
         self.assertLess(self.source.index(source_qualified), self.source.index('hdiutil create'))
         self.assertLess(self.source.index(prepared_check), self.source.index('hdiutil create'))
         self.assertLess(self.source.index(QUALIFY), self.source.index(begin_publish))

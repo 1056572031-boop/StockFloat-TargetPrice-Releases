@@ -507,6 +507,7 @@ class PublishEndToEndTest(unittest.TestCase):
     def test_main_without_public_assets_keeps_ota_fixture_compatibility(self):
         assets, notes = self._workspace()
         with patch.object(self.tool, "github_token", return_value="local-test-token"), \
+             patch.object(self.tool, "RAW_MANIFEST_URL", self.raw_root + "/manifest"), \
              patch.object(sys, "argv", ["publish_update_release.py", "--assets",
                                          str(assets), "--notes", str(notes)]):
             self.tool.main()

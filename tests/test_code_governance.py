@@ -146,7 +146,10 @@ class QuoteNumericFieldContracts(SFCase):
                                ("hk00700", "10.125"), ("usaapl", "10.12")):
             with self.subTest(code=code):
                 primary = self._fetch(primary_payload(primary_fields()), code=code)
-                fallback = self._fetch(fallback_payload(), code=code, primary=False)
+                fallback_input = (('var hq_str_hk00700="EXAMPLE,Example,10,10,11,9,'
+                                   '10.125,0.125,1.25,0,0,1,1,0,0,11,9,2026/11/13,10:00";')
+                                  if code.startswith("hk") else fallback_payload())
+                fallback = self._fetch(fallback_input, code=code, primary=False)
                 self.assertEqual(primary["price"], expected)
                 self.assertEqual(fallback["price"], expected)
 

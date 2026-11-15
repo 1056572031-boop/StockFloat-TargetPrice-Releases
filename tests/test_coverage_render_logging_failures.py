@@ -210,6 +210,28 @@ class RenderFailureEvidence(SFCase):
         )
         self.assertAlmostEqual(self._dot_center_y(target, rect, metrics), rect.bottom() - 15.0)
 
+    def test_live_dot_reads_property_backed_quote(self):
+        class PropertyQuoteHost:
+            minute_points = [("0930", 12), ("0931", 12)]
+            _price_is_fallback = False
+            _minute_stale = False
+
+            @property
+            def quote(self):
+                return {"price": "15.0"}
+
+            def _chart_x(self, rect, metrics, index):
+                return rect.right()
+
+            def _chart_y(self, rect, metrics, price):
+                return rect.bottom() - float(price)
+
+        rect = QRectF(10, 10, 164, 80)
+        self.assertAlmostEqual(
+            self._dot_center_y(PropertyQuoteHost(), rect, {"n": 2, "color": QColor("red")}),
+            rect.bottom() - 15.0,
+        )
+
     def test_cached_quote_does_not_move_live_dot(self):
         """首屏缓存价不是真实当前价，红点必须回退到分时末点。"""
         rect = QRectF(10, 10, 164, 80)

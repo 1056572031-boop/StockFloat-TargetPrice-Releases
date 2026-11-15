@@ -270,7 +270,7 @@ class TargetTickStore:
         result = []
         for tick_id, stock, text in rows:
             payload = json.loads(text)
-            quote = QuoteData(_decode(payload["values"]))
+            quote = QuoteData(_decode(payload["values"]), source_code=stock)
             quote.source_time = (datetime.fromisoformat(payload["source_time"])
                                  if payload["source_time"] is not None else None)
             quote.received_at = (datetime.fromisoformat(payload["received_at"])

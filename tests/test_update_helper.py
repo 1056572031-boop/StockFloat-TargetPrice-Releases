@@ -37,6 +37,12 @@ HELPER = ROOT / "updater" / "update_helper.sh"
 BUNDLE_ID = "com.skyrocket.app"
 APP_NAME = "Skyrocket.app"
 
+
+def _dead_pid() -> str:
+    child = subprocess.Popen(["/usr/bin/true"])
+    child.wait(timeout=10)
+    return str(child.pid)
+
 # 助手在每一站的"停站理由"（result.json 的 message）。测试断言的是站名，不是行号。
 STATION_OK_UNTIL_SIGNATURE = "new_app_signature_invalid"
 
@@ -78,6 +84,14 @@ def _sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+class TestHelperFixturePid(SFCase):
+    def test_helper_fixture_uses_a_real_dead_pid(self):
+        source = pathlib.Path(__file__).read_text(encoding="utf-8")
+        fixed_pid = '"--pid", "' + "2147483646" + '"'
+        self.assertNotIn(fixed_pid, source,
+                         "测试不得依赖可能被系统复用的固定 PID")
+
+
 class _HelperCase(SFCase):
     """公共夹具：一个临时"应用程序"目录 + 一份旧版 + 一次助手调用。"""
 
@@ -108,7 +122,7 @@ class _HelperCase(SFCase):
         result = self.work / "result.json"
         sha = _sha256(archive)
         proc = subprocess.run(["/bin/sh", str(HELPER),
-                               "--pid", "2147483646", "--archive", str(archive),
+                               "--pid", _dead_pid(), "--archive", str(archive),
                                "--sha256", sha, "--version", "9.9.9",
                                "--target", str(target), "--result", str(result)],
                               capture_output=True, text=True, errors="replace",
@@ -226,7 +240,7 @@ class TestHelperRejectsBadArchive(_HelperCase):
         archive.write_bytes(archive.read_bytes()[:-1] + (b"\n" if tail != b"\n" else b" "))
         sha = _sha256(archive)
         result = self.work / "result.json"
-        subprocess.run(["/bin/sh", str(HELPER), "--pid", "2147483646",
+        subprocess.run(["/bin/sh", str(HELPER), "--pid", _dead_pid(),
                         "--archive", str(archive), "--sha256", "0" * 64,
                         "--version", "9.9.9", "--target", str(self.old),
                         "--result", str(result)], capture_output=True, timeout=120)
@@ -445,7 +459,7 @@ class TestHelperPositiveRoute(_PositiveRouteSupport, _HelperCase):
         target = self.applications / APP_NAME
         result = self.work / "result.json"          # 故意放在安装目录之外：与生产一致
         env = dict(os.environ, TMPDIR=str(self.tmp))
-        proc = subprocess.run(["/bin/sh", str(HELPER), "--pid", "2147483646",
+        proc = subprocess.run(["/bin/sh", str(HELPER), "--pid", _dead_pid(),
                                "--archive", str(archive), "--sha256", sha,
                                "--version", "9.9.9", "--target", str(target),
                                "--result", str(result)],
@@ -490,7 +504,7 @@ class TestHelperVerificationHome(SFCase):
 
     def invoke(self, home, target=None, helper=HELPER, extra=(), env_extra=None):
         import hashlib
-        args = ["/bin/sh", str(helper), "--pid", "2147483646",
+        args = ["/bin/sh", str(helper), "--pid", _dead_pid(),
                 "--archive", str(self.archive), "--sha256",
                 hashlib.sha256(self.archive.read_bytes()).hexdigest(),
                 "--version", "9.9.9", "--target", str(target or self.target),
@@ -761,7 +775,7 @@ class TestHandoffAcknowledgement(_PositiveRouteSupport, _HelperCase):
         self.old_plist = (target / "Contents" / "Info.plist").read_bytes()
         new_plist = (probe / "Contents" / "Info.plist").read_bytes()
         result = self.work / "result.json"
-        argv = ["/bin/sh", str(HELPER), "--pid", "2147483646", "--archive", str(archive),
+        argv = ["/bin/sh", str(HELPER), "--pid", _dead_pid(), "--archive", str(archive),
                 "--sha256", sha, "--version", version, "--target", str(target),
                 "--result", str(result)]
         if hid:

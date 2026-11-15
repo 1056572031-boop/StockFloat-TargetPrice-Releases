@@ -266,8 +266,9 @@ def timeline_entry(root: Path, version: str, event: str, receipt_path: Path,
 
 
 def bind(root: Path, version: str, limitations: dict[str, list[str]], old_app: Path,
-         app: Path | None = None, zip_path: Path | None = None, state: Path | None = None) -> Path:
-    path = record_path(root, version)
+         app: Path | None = None, zip_path: Path | None = None, state: Path | None = None,
+         quality_path: Path | None = None) -> Path:
+    path = (quality_path or record_path(root, version)).resolve()
     value = evidence.load(path)
     fingerprint = evidence.source_snapshot(root)["fingerprint"]
     if value.get("artifact_fingerprint", {}).get("source") not in ("pending", fingerprint):
@@ -311,6 +312,9 @@ def bind(root: Path, version: str, limitations: dict[str, list[str]], old_app: P
         "ota": {"archive_role": "zip", "manifest_role": "ota_manifest"}}
     value["artifact_fingerprint"] = artifact_fingerprint(root, version, candidate_app, candidate_zip)
     value["verification_evidence"] = pre_receipts
+    generated_scope = {path.name, manifest_path(root, version).name,
+                       path.with_name(path.stem + ".qualification-report.json").name}
+    value["scope"] = sorted(set(value.get("scope", [])) | generated_scope)
     value["acceptance"] = ["回归关卡、公开资料和诊断覆盖均有当前源码同源凭据",
                             "候选冻结包、特征、签名和候选交付核验均有当前源码同源凭据"]
     value["acceptance_map"] = [{"acceptance": value["acceptance"][0], "evidence_index": i} for i in range(3)]
@@ -474,6 +478,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--app", type=Path)
     value.add_argument("--zip", dest="zip_path", type=Path)
     value.add_argument("--state", type=Path)
+    value.add_argument("--quality", type=Path)
     value.add_argument("--readback", type=Path)
     value.add_argument("--walkthrough", type=Path)
     value.add_argument("--evidence-dir", type=Path)
@@ -508,7 +513,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "bind":
             if not args.old_app or args.state is None:
                 raise EvidenceError("bind 必须提供 --old-app、--state")
-            return 0 if bind(root, version, limitations, args.old_app, args.app, args.zip_path, args.state) else 1
+            return 0 if bind(root, version, limitations, args.old_app, args.app, args.zip_path,
+                             args.state, args.quality) else 1
         required = (args.state, args.readback, args.walkthrough)
         if any(item is None for item in required):
             raise EvidenceError("complete 必须提供 --state、--readback、--walkthrough")

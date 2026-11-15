@@ -68,17 +68,33 @@ class QuoteData(dict):
     _plain_original: dict
     _target_unprotected: bool
 
-    def __init__(self, values, timestamp=""):
+    def __init__(self, values, timestamp="", source_code=""):
         super().__init__(values)
+        self.source_code = source_code
         self.source_time: datetime.datetime | None = None
         self.received_at = _beijing_now()
-        for pattern in ("%Y%m%d%H%M%S", "%Y-%m-%d %H:%M:%S"):
+        for pattern in ("%Y%m%d%H%M%S", "%Y-%m-%d %H:%M:%S",
+                        "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
             try:
                 self.source_time = datetime.datetime.strptime(str(timestamp), pattern).replace(
                     tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
                 break
             except ValueError:
                 continue
+
+
+def _hong_kong_market_session(now):
+    """返回港股连续交易/午休/收市竞价的当前阶段。"""
+    minute = now.hour * 60 + now.minute
+    if 9 * 60 + 30 <= minute <= 12 * 60:
+        return "continuous"
+    if 13 * 60 <= minute <= 16 * 60:
+        return "continuous"
+    if 12 * 60 < minute < 13 * 60:
+        return "lunch"
+    if 16 * 60 < minute <= 16 * 60 + 10:
+        return "auction"
+    return None
 
 
 def quote_is_current(quote, now=None):
@@ -94,6 +110,18 @@ def quote_is_current(quote, now=None):
     age = (now - stamp).total_seconds()
     if age < -60:
         return False
+    # 港股午休和收市竞价仍属于当日有效交易阶段；连续竞价沿用两分钟新鲜度。
+    if str(getattr(quote, "source_code", "")).lower().startswith("hk"):
+        session = _hong_kong_market_session(now)
+        if session == "auction":
+            source_minute = stamp.hour * 60 + stamp.minute
+            return (stamp.date() == now.date() and source_minute > 16 * 60
+                    and age >= 0)
+        if session == "lunch":
+            return stamp.date() == now.date() and 0 <= age <= 3600
+        if session == "continuous":
+            return stamp.date() == now.date() and 0 <= age <= 120
+        return stamp.date() == now.date() and 0 <= age <= 120
     if _is_trading_time(now):
         return stamp.date() == now.date() and age <= 120
     day = now.date()
@@ -466,6 +494,27 @@ def fetch_quote_fallback(code):
     _require_payload_terminator(data, "fallback")
     payload = data.split('="', 1)[1].rstrip('";\n')
     fields = payload.split(",")
+    if str(code).lower().startswith("hk"):
+        # Sina's Hong Kong payload uses different indexes than its A-share data.
+        if len(fields) < 19 or not fields[1].strip():
+            raise QuoteDataError("fallback Hong Kong payload is incomplete")
+        try:
+            pre_close, price = float(fields[3]), float(fields[6])
+            if not math.isfinite(pre_close) or not math.isfinite(price):
+                raise ValueError("non-finite")
+        except ValueError as exc:
+            raise QuoteDataError("fallback Hong Kong prices invalid") from exc
+        change = price - pre_close if pre_close > 0 else None
+        pct = change / pre_close * 100 if change is not None else None
+        result = QuoteData({
+            "name": fields[1], "code": code, "price": _norm_price(code, fields[6]),
+            "pre_close": fields[3], "change": str(change) if change is not None else "",
+            "pct": str(pct) if pct is not None else "",
+            "high": _optional_quote_field(fields, 4), "low": _optional_quote_field(fields, 5),
+        }, timestamp=fields[17] + " " + fields[18], source_code=code)
+        if result.source_time is None:
+            raise QuoteDataError("fallback Hong Kong source time invalid")
+        return result
     # 新浪字段：0名称 1今开 2昨收 3现价 4最高 5最低 ...
     if len(fields) < 6 or not fields[0].strip() or not fields[3].strip():
         raise QuoteDataError("fallback field count short or empty name/price")
@@ -616,7 +665,7 @@ def _fetch_quote_primary(code):
         # 1.1 v1.2.0：成交量/涨停价/跌停价（腾讯字段 36/47/48），容错读取，缺失置空串
         "volume": _optional_quote_field(fields, 36),
         "limit_up": _optional_quote_field(fields, 47), "limit_down": _optional_quote_field(fields, 48),
-    }, timestamp=fields[30] if len(fields) > 30 else "")
+    }, timestamp=fields[30] if len(fields) > 30 else "", source_code=code)
 
 def _beijing_now():
     """固定按北京时间（UTC+8，中国无夏令时）取当前时间，避免依赖本机时区/时钟。
@@ -1078,20 +1127,72 @@ def _fetch_minute_primary(code):
     open_min = 9 * 60 + 30              # 开盘 9:30
     cur_min = now.hour * 60 + now.minute
     close_min = 15 * 60                 # 收盘 15:00
-    # 标定成交量单位：第3列累计成交量、第4列累计成交额(元)。腾讯行情对科创板(688)
-    # 返回"股"，其余板块返回"手"；均价=成交额/成交量，单位"手"需再×100。
-    # 用首行 price*vol≈amount 判定单位是否"股"，否则按"手"（unit_factor=100）。
-    unit_factor = 100.0
-    if rows:
-        fp = rows[0].split(" ")
-        if len(fp) >= 4:
-            try:
-                p0, v0, a0 = float(fp[1]), float(fp[2]), float(fp[3])
-                # 5% 容差：接口金额字段本身有舍入，不能要求 price*vol 精确等于 amount。
-                if v0 > 0 and a0 > 0 and abs(p0 * v0 - a0) / a0 < 0.05:
-                    unit_factor = 1.0
-            except Exception:
-                pass
+    # 标定成交量单位：第3列累计成交量、第4列累计成交额(元)。不同品种的接口单位
+    # 可能是股、十股或手；从所有有效累计行拟合 1/10/100，不能只看首行。
+    unit_factor = None
+    ratios_by_minute: dict[str, float] = {}
+    samples_by_minute: dict[str, tuple[float, float, float]] = {}
+    unit_samples_invalid = False
+    for row in rows:
+        fp = row.split(" ")
+        if len(fp) < 4:
+            continue
+        t = fp[0].replace(":", "")
+        if len(t) != 4 or not t.isdigit() or int(t[:2]) > 23 or int(t[2:]) > 59:
+            continue
+        minute = int(t[:2]) * 60 + int(t[2:])
+        upper = min(cur_min, close_min) if cur_only else close_min
+        if minute < open_min or minute > upper:
+            continue
+        try:
+            p0, v0, a0 = float(fp[1]), float(fp[2]), float(fp[3])
+            product = p0 * v0
+            if (p0 > 0 and v0 > 0 and a0 > 0 and math.isfinite(a0)
+                    and math.isfinite(product) and product > 0):
+                ratio = a0 / product
+                if math.isfinite(ratio):
+                    previous = samples_by_minute.get(t)
+                    if previous is not None:
+                        previous_ratio = ratios_by_minute[t]
+                        if abs(ratio - previous_ratio) / max(previous_ratio, 1e-12) >= 0.05:
+                            unit_samples_invalid = True
+                    else:
+                        ratios_by_minute[t] = ratio
+                        samples_by_minute[t] = (p0, v0, a0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    ordered_samples = [samples_by_minute[t] for t in sorted(samples_by_minute)]
+    for previous, current in zip(ordered_samples, ordered_samples[1:]):
+        if current[1] < previous[1] or current[2] < previous[2]:
+            unit_samples_invalid = True
+            break
+    ratios = [] if unit_samples_invalid else list(ratios_by_minute.values())
+    matches = {
+        candidate: sum(abs(r - candidate) / candidate < 0.05 for r in ratios)
+        for candidate in (1.0, 10.0, 100.0)
+    }
+    if ratios:
+        candidate, hits = max(matches.items(), key=lambda item: item[1])
+        if hits > len(ratios) / 2:
+            unit_factor = candidate
+    if unit_factor is None and not unit_samples_invalid:
+        incremental = []
+        for previous, current in zip(ordered_samples, ordered_samples[1:]):
+            price, volume, amount = current
+            delta_volume, delta_amount = volume - previous[1], amount - previous[2]
+            product = price * delta_volume
+            if delta_volume > 0 and delta_amount > 0 and math.isfinite(product) and product > 0:
+                ratio = delta_amount / product
+                if math.isfinite(ratio):
+                    incremental.append(ratio)
+        if incremental:
+            matches = {
+                candidate: sum(abs(r - candidate) / candidate < 0.05 for r in incremental)
+                for candidate in (1.0, 10.0, 100.0)
+            }
+            candidate, hits = max(matches.items(), key=lambda item: item[1])
+            if hits > len(incremental) / 2:
+                unit_factor = candidate
     points = MinutePoints(day=source_day)
     for r in rows:
         parts = r.split(" ")
@@ -1124,8 +1225,8 @@ def _fetch_minute_primary(code):
             if len(parts) >= 4:
                 vol = float(parts[2])      # 累计成交量（截至该分钟，非增量，勿累加）
                 amount = float(parts[3])   # 累计成交额（元）
-                avg = (amount / (vol * unit_factor)) if vol > 0 else price
-                if not math.isfinite(avg) or avg <= 0:
+                avg = ((amount / (vol * unit_factor)) if unit_factor is not None else None) if vol > 0 else price
+                if avg is not None and (not math.isfinite(avg) or avg <= 0):
                     avg = price
             else:
                 avg = None

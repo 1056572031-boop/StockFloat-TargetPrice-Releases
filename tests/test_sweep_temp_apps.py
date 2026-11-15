@@ -51,6 +51,43 @@ class TestFindStaleApps(unittest.TestCase):
         return [path for path, _reason in
                 sweep.find_stale_apps([self.root], sweep.BUNDLE_ID, max_depth=6)]
 
+    def test_exclusion_realpath_error_is_ignored(self):
+        import sf_temp_sweep
+
+        class BrokenPath:
+            def __fspath__(self):
+                raise OSError("gone")
+
+        self.assertEqual(sf_temp_sweep._normalized_exclusions([BrokenPath()]), ())  # discipline-ok(R5): 必须验证排除路径规范化失败时的安全降级
+
+    def test_excluded_path_realpath_error_is_not_excluded(self):
+        import sf_temp_sweep
+
+        class BrokenPath:
+            def __fspath__(self):
+                raise OSError("gone")
+
+        self.assertFalse(sf_temp_sweep._is_excluded(BrokenPath(), (self.root,)))  # discipline-ok(R5): 必须验证排除路径判断失败时不误伤扫描
+
+    def test_excluded_scan_root_is_skipped(self):
+        app = _make_app(self.root, "实时股价-目标价版.app", sweep.BUNDLE_ID)
+        self.assertEqual(
+            sweep.find_stale_apps([self.root], sweep.BUNDLE_ID,
+                                  max_depth=6, exclude_paths=[self.root]),
+            [],
+        )
+        self.assertTrue(os.path.isdir(app))
+
+    def test_current_release_tree_is_excluded_from_temp_scan(self):
+        """发版隔离树位于 /tmp 时，清扫不得把当前候选 APP 当成残留副本。"""
+        workspace = os.path.join(self.root, "release-worktree")
+        app = _make_app(os.path.join(workspace, "dist"), "Skyrocket.app", sweep.BUNDLE_ID)
+        hits = sweep.find_stale_apps(
+            [self.root], sweep.BUNDLE_ID, max_depth=6, exclude_paths=[workspace]
+        )
+        self.assertEqual(hits, [], "当前发布树不能被临时副本清扫器改名")
+        self.assertTrue(os.path.isdir(app))
+
     def test_own_launchable_copy_is_found(self):
         app = _make_app(self.root, "实时股价-目标价版.app", sweep.BUNDLE_ID)
         self.assertEqual(self._hits(), [app])

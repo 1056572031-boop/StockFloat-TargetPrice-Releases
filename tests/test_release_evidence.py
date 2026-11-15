@@ -156,6 +156,7 @@ class TestReleaseEvidence(SFCase):
                 path = tool.bind(root, self.version, self.limitations(), old, app, zip_path)
             bound_record = quality.load(path)
             self.assertEqual("release_candidate", bound_record["status"])
+            self.assertIn(f"quality-v{self.version}.qualification-report.json", bound_record["scope"])
             frozen = bound_record["release_timeline"]["candidate_frozen"]
             self.assertEqual(self.version, frozen["version"])
             self.assertEqual("verified", frozen["status"])
@@ -447,11 +448,14 @@ class TestReleaseEvidence(SFCase):
             limits = root / "limits.json"
             limits.write_text(json.dumps(self.limitations()), encoding="utf-8")
             state_path = root / "state.json"
+            quality_path = root / "custom-quality.json"
             with patch.object(tool, "bind", return_value=path) as bind_call:
                 self.assertEqual(0, tool.main(["bind", "--old-app", str(root / "old"),
                                                "--limitations-file", str(limits),
+                                               "--quality", str(quality_path),
                                                "--state", str(state_path)]))
-            self.assertEqual(state_path, bind_call.call_args.args[-1])
+            self.assertEqual(state_path, bind_call.call_args.args[-2])
+            self.assertEqual(quality_path, bind_call.call_args.args[-1])
             self.assertEqual(2, tool.main(["bind", "--old-app", str(root / "old"),
                                            "--limitations-file", str(limits)]))
             with patch.object(tool, "complete", return_value=path):

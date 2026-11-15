@@ -137,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="要中性化的 CFBundleIdentifier（默认 %s）" % BUNDLE_ID)
     parser.add_argument("--max-depth", type=int, default=DEFAULT_MAX_DEPTH,
                         help="临时目录内最大扫描深度（默认 %d）" % DEFAULT_MAX_DEPTH)
+    parser.add_argument("--exclude", action="append", default=[],
+                        help="不扫描此目录及其子树；可重复指定")
     args = parser.parse_args(argv)
 
     roots = temp_roots()
@@ -148,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         print("正式版: 未安装在 /Applications")
 
     skip = running_bundle_paths()
-    hits = find_stale_apps(roots, args.bundle_id, args.max_depth)
+    hits = find_stale_apps(roots, args.bundle_id, args.max_depth,
+                           exclude_paths=args.exclude)
     if not hits:
         print("未发现可启动的残留副本。")
         return 0

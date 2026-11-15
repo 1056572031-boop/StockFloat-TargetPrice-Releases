@@ -6,15 +6,18 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
 import plistlib
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,8 +32,8 @@ def run(cmd: list[str]) -> None:
                    errors="replace", timeout=180)
 
 
-def metadata(app: Path) -> dict:
-    if app.name != "Skyrocket.app" or not app.is_dir():
+def metadata(app: Path, require_standard_name: bool = True) -> dict:
+    if not app.is_dir() or (require_standard_name and app.name != "Skyrocket.app"):
         raise ValueError("候选顶层必须是 Skyrocket.app 目录")
     with (app / "Contents" / "Info.plist").open("rb") as fh:
         info = plistlib.load(fh)
@@ -50,8 +53,105 @@ def metadata(app: Path) -> dict:
     return info
 
 
+def _xattrs(path: Path) -> list[list[str]]:
+    """Read xattrs as stable name/hex-value pairs without relying on os APIs."""
+    try:
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        listxattr = libc.listxattr
+        listxattr.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        listxattr.restype = ctypes.c_ssize_t
+        getxattr = libc.getxattr
+        getxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p,
+                             ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int]
+        getxattr.restype = ctypes.c_ssize_t
+    except OSError as exc:
+        raise RuntimeError(f"无法加载扩展属性接口: {path}") from exc
+
+    encoded = os.fsencode(path)
+    flags = 1  # XATTR_NOFOLLOW: attributes belong to the directory entry itself.
+    size = listxattr(encoded, None, 0, flags)
+    if size < 0:
+        error = ctypes.get_errno()
+        raise RuntimeError(f"无法读取候选扩展属性 {path}: errno {error}")
+    names_buffer = ctypes.create_string_buffer(size) if size else None
+    if size and listxattr(encoded, names_buffer, size, flags) < 0:
+        error = ctypes.get_errno()
+        raise RuntimeError(f"无法读取候选扩展属性 {path}: errno {error}")
+    names = names_buffer.raw[:size].split(b"\0") if names_buffer is not None else []
+    result = []
+    for raw_name in sorted(filter(None, names)):
+        value_size = getxattr(encoded, raw_name, None, 0, 0, flags)
+        if value_size < 0:
+            error = ctypes.get_errno()
+            raise RuntimeError(f"无法读取候选扩展属性 {path}: errno {error}")
+        value_buffer = ctypes.create_string_buffer(value_size) if value_size else None
+        if value_size and getxattr(encoded, raw_name, value_buffer, value_size, 0, flags) < 0:
+            error = ctypes.get_errno()
+            raise RuntimeError(f"无法读取候选扩展属性 {path}: errno {error}")
+        value = value_buffer.raw[:value_size] if value_buffer is not None else b""
+        result.append([raw_name.decode("utf-8", "surrogateescape"), value.hex()])
+    return result
+
+
+def artifact_token(app: Path) -> dict:
+    """Hash a bundle's complete filesystem identity, including xattrs and links."""
+    if not app.is_dir() or app.is_symlink():
+        raise ValueError(f"候选 APP 缺失或顶层是软链接: {app}")
+    entries: list[list[object]] = []
+    paths = [app, *sorted(app.rglob("*"), key=lambda item: item.relative_to(app).as_posix())]
+    for item in paths:
+        relative = "." if item == app else item.relative_to(app).as_posix()
+        item_stat = item.lstat()
+        mode = stat.S_IMODE(item_stat.st_mode)
+        file_type = stat.S_IFMT(item_stat.st_mode)
+        if item.is_symlink():
+            target = os.readlink(item)
+            if not item.resolve().is_relative_to(app.resolve()):
+                raise ValueError(f"候选 APP 软链接越界: {relative}")
+            identity: object = ["symlink", target]
+        elif item.is_file():
+            identity = ["file", hashlib.sha256(item.read_bytes()).hexdigest()]
+        elif item.is_dir():
+            identity = ["directory"]
+        else:
+            raise ValueError(f"候选 APP 含非普通文件: {relative}")
+        entries.append([relative, file_type, mode, identity, _xattrs(item)])
+    digest = hashlib.sha256(json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+    return {"sha256": digest, "entries": len(entries), "kind": "directory"}
+
+
+def verify_archive(archive: Path, expected: dict, root: Path) -> tuple[str, Path]:
+    extract_root = root / "archive"
+    extract_root.mkdir()
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            names = bundle.namelist()
+            if not names:
+                raise ValueError("候选 ZIP 为空")
+            roots = set()
+            for name in names:
+                path = Path(name)
+                if path.is_absolute() or ".." in path.parts:
+                    raise ValueError("候选 ZIP 含越界路径")
+                if name.startswith("/") or not path.parts:
+                    raise ValueError("候选 ZIP 含非法条目路径")
+                roots.add(path.parts[0])
+            if roots != {"Skyrocket.app"}:
+                raise ValueError("候选 ZIP 顶层必须只有 Skyrocket.app")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("候选 ZIP 不是有效归档") from exc
+    run(["/usr/bin/ditto", "-x", "-k", str(archive), str(extract_root)])
+    extracted = extract_root / "Skyrocket.app"
+    actual = metadata(extracted)
+    if actual.get("CFBundleShortVersionString") != expected.get("CFBundleShortVersionString"):
+        raise ValueError("候选 ZIP 版本与 APP 不一致")
+    run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(extracted)])
+    return "Skyrocket.app", extracted
+
+
 def preflight(app: Path, archive: Path, root: Path) -> dict:
     expected = metadata(app)
+    app_token = artifact_token(app)
     if not archive.is_file() or archive.suffix.lower() != ".zip":
         raise ValueError("--zip 必须是 zip 文件")
     copied = root / "copy" / "Skyrocket.app"
@@ -59,9 +159,15 @@ def preflight(app: Path, archive: Path, root: Path) -> dict:
     run(["/usr/bin/ditto", str(app), str(copied)])
     for bundle in (app, copied):
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)])
+    top_level, extracted = verify_archive(archive, expected, root)
+    archive_token = artifact_token(extracted)
+    if archive_token != app_token:
+        raise ValueError("候选 ZIP 内 APP 与输入 APP 的 artifact 身份不一致")
     return {"version": expected["CFBundleShortVersionString"],
             "app_and_copy_signatures_valid": True, "copied_with": "ditto",
-            "archive_verified": False}
+            "archive_verified": True, "archive_top_level": top_level,
+            "archive_app": str(extracted), "app_artifact_token": app_token,
+            "archive_app_artifact_token": archive_token}
 
 
 def smoke(app: Path) -> dict:
@@ -266,7 +372,7 @@ def verify(app: Path, archive: Path, out: Path, old: Path | None = None) -> int:
             require_helper(HELPER)
             if old is None:
                 raise ValueError("必须提供 --old-app 真正已签名旧包，不能用候选冒充升级")
-            old_info = metadata(old)
+            old_info = metadata(old, require_standard_name=False)
             if old_info["CFBundleShortVersionString"] == metadata(app)["CFBundleShortVersionString"]:
                 raise ValueError("旧包版本必须不同于候选")
             run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(old)])
