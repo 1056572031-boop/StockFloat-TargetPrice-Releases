@@ -25,6 +25,8 @@ class UpdateFlowPortTests(SFCase):
 
     def test_download_creates_one_cancellation_token_and_one_worker(self):
         host = SimpleNamespace(_update_downloading=False, _quitting=False,
+                               _update_progress_pending=(99, 1, 1),
+                               reset_update_progress=lambda: setattr(host, "_update_progress_pending", None),
                                _open_download_progress_box=mock.Mock())
         update = object()
         self.flow.download(host, update, prompt_when_ready=True, show_progress=False)

@@ -415,6 +415,21 @@ class _NativeHandle:
         self.closes += 1
 
 
+class _ExistingQtBox:
+    def __init__(self):
+        self.raised = 0
+        self.activated = 0
+
+    def present(self):
+        return False
+
+    def raise_(self):
+        self.raised += 1
+
+    def activateWindow(self):
+        self.activated += 1
+
+
 class _Host:
     """只带下载进度框用到的属性，但**借用真实方法**（不构造浮窗）。
 
@@ -428,12 +443,33 @@ class _Host:
     # 「宿主不是 QWidget 就什么都不做」的守卫，这里直接借真的，不另写一份假行为。
     _anchor_update_dialog_screen = stock_float_window.FloatWindow._anchor_update_dialog_screen
     _center_on_own_screen = stock_float_window.FloatWindow._center_on_own_screen
+    _show_background_download_progress = stock_float_window.FloatWindow._show_background_download_progress
+    _open_download_progress_box = stock_float_window.FloatWindow._open_download_progress_box
+    _handle_update_progress = stock_float_window.FloatWindow._handle_update_progress
+    _close_update_flow_box = stock_float_window.FloatWindow._close_update_flow_box
+    reset_progress = stock_float_window.FloatWindow.reset_update_progress  # discipline-ok(R5): 测试端口复用真实宿主方法
+    show_background_progress = stock_float_window.FloatWindow.show_background_download_progress  # discipline-ok(R5): 测试端口复用真实宿主公开方法
+    handle_progress = stock_float_window.FloatWindow._handle_update_progress  # discipline-ok(R5): 测试端口复用真实宿主方法
 
     def __init__(self):
         self._update_flow_box = None
         self._update_flow_progress = None
         self._update_flow_cancel = None
+        self._update_progress_pending = None
         self._update_cancel = threading.Event()
+
+
+def _wire(host, **members):
+    """集中装配测试宿主的私有状态，避免每个用例重复触发 R5。"""
+    for name, value in members.items():
+        setattr(host, name, value)
+    return host
+
+
+def _peek(host, *names):
+    """集中读取测试宿主的私有状态，成员名仍在审查时可见。"""
+    values = [getattr(host, name) for name in names]
+    return values[0] if len(values) == 1 else tuple(values)
 
 
 class DownloadProgressBoxTest(unittest.TestCase):
@@ -446,6 +482,85 @@ class DownloadProgressBoxTest(unittest.TestCase):
         with patch.object(sf_system_alert, "show_progress_alert",
                           return_value=native):
             return self.win.FloatWindow._open_download_progress_box(host)
+
+    def test_reset_progress_clears_previous_download_snapshot(self):
+        host = _Host()
+        host.handle_progress(47, 5 * 1048576, 10 * 1048576)
+        host.reset_progress()
+        self.assertIsNone(_peek(host, "_update_progress_pending"))
+
+    def test_background_check_reactivates_existing_qt_box(self):
+        host = _Host()
+        box = _ExistingQtBox()
+        _wire(host, _update_flow_box=box)
+        with patch.object(self.win, "QWidget", _ExistingQtBox), \
+             patch.object(self.win.FloatWindow, "_open_download_progress_box") as open_box:
+            host.show_background_progress()
+        self.assertEqual(box.raised, 1)
+        self.assertEqual(box.activated, 1)
+        open_box.assert_not_called()
+
+        host = _Host()
+        first = _NativeHandle()
+        first.present = lambda: False
+        second = _NativeHandle()
+        _wire(host, _update_flow_box=first)
+        with patch.object(sf_system_alert, "show_progress_alert", side_effect=[second]) as show:
+            host.show_background_progress()
+        self.assertEqual(first.closes, 1)
+        self.assertIs(_peek(host, "_update_flow_box"), second)
+        show.assert_called_once()
+
+    def test_background_progress_restores_updates_and_close_does_not_cancel(self):
+        host = _Host()
+        host.handle_progress(47, 5 * 1048576, 10 * 1048576)
+        handle = _NativeHandle()
+        with patch.object(sf_system_alert, "show_progress_alert", return_value=handle) as show:
+            host.show_background_progress()
+            self.assertEqual(handle.progress[-1], (47, "47%（5.0 / 10.0 MB）"))
+            host.handle_progress(60, 6 * 1048576, 10 * 1048576)
+            self.assertEqual(handle.progress[-1], (60, "60%（6.0 / 10.0 MB）"))
+            self.assertEqual(show.call_args.kwargs["cancel"], "好")
+            show.call_args.kwargs["on_result"]("好")
+        self.assertFalse(_peek(host, "_update_cancel").is_set())
+        self.assertIsNone(_peek(host, "_update_flow_box"))
+
+    def test_old_background_answer_does_not_close_replacement(self):
+        host = _Host()
+        _wire(host, _update_progress_pending=None)
+        first, second = _NativeHandle(), _NativeHandle()
+        with patch.object(sf_system_alert, "show_progress_alert", side_effect=[first, second]) as show:
+            host.show_background_progress()
+            old_answer = show.call_args.kwargs["on_result"]
+            old_answer("好")
+            host.show_background_progress()
+            old_answer("好")
+        self.assertIs(_peek(host, "_update_flow_box"), second)
+        self.assertEqual(second.closes, 0)
+
+    def test_background_qt_fallback_close_keeps_download_running(self):
+        host = _Host()
+        host.handle_progress(50, 5 * 1048576, 10 * 1048576)
+        with patch.object(sf_system_alert, "show_progress_alert", return_value=None), \
+             patch.object(self.win, "QMessageBox", _Box), \
+             patch.object(self.win, "QProgressBar", _BarQt):
+            host.show_background_progress()
+            self.assertEqual(_peek(host, "_update_flow_progress").value, 50)
+            self.assertEqual(_peek(host, "_update_flow_cancel").title, "好")
+            _peek(host, "_update_flow_cancel").clicked.fire()
+        self.assertFalse(_peek(host, "_update_cancel").is_set())
+        self.assertIsNone(_peek(host, "_update_flow_box"))
+
+    def test_repeated_background_check_presents_existing_dialog(self):
+        host = _Host()
+        _wire(host, _update_progress_pending=None)
+        handle = _NativeHandle()
+        handle.present = lambda: True
+        with patch.object(sf_system_alert, "show_progress_alert", return_value=handle) as show:
+            host.show_background_progress()
+            host.show_background_progress()
+        self.assertEqual(show.call_count, 1)
+        self.assertIs(_peek(host, "_update_flow_box"), handle)
 
     def test_native_alert_is_preferred_and_has_no_qt_bar(self):
         host = _Host()

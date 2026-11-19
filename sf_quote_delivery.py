@@ -212,55 +212,49 @@ class TargetTickBuffer:
                 self._sequence += 1
                 record = (self._sequence, price, quote)
             records = self._ordered.setdefault(code, [])
-            if len(records) >= 4096:
-                compacted: list = []
-                segment: list = []
-                previous_revision = object()
-                for item in records:
-                    revision = getattr(item[2], "target_revision", None)
-                    if segment and revision != previous_revision:
-                        if segment[-1] is not compacted[-1]:
-                            compacted.append(segment[-1])
-                        segment = []
-                    if not segment:
-                        low = high = item[1]
-                        compacted.append(item)
-                    elif item[1] < low or item[1] > high:
-                        low = min(low, item[1])
-                        high = max(high, item[1])
-                        compacted.append(item)
-                    segment = [item]
-                    previous_revision = revision
-                if segment and segment[-1] is not compacted[-1]:
-                    compacted.append(segment[-1])
-                records[:] = compacted
-            if len(records) >= 4096:
-                revision = getattr(record[2], "target_revision", None)
+            revision = getattr(record[2], "target_revision", None)
+            revision_targets = revision[2] if isinstance(revision, tuple) and len(revision) == 3 else ()
+            has_target_structure = False
+            targets = []
+            conditions = []
+            if len(records) >= 4096 and isinstance(revision_targets, tuple) and revision_targets:
                 try:
-                    if not (isinstance(revision, tuple) and len(revision) == 3 and
-                            isinstance(revision[2], tuple) and revision[2] and
-                            all(getattr(item[2], "target_revision", None) == revision for item in records)):
-                        raise ValueError("unavailable target structure")
-                    targets = [json.loads(value) for value in revision[2]]
+                    targets = [json.loads(value) for value in revision_targets]
                     conditions = [(item["direction"], float(item["target"])) for item in targets]
                     if any(direction not in ("above", "below") or not math.isfinite(target) or target <= 0
                            for direction, target in conditions):
                         raise ValueError("invalid target structure")
-                    remaining = set(range(len(conditions)))
-                    essential = []
-                    for item in records:
-                        hits = {index for index in remaining
-                                if (item[1] >= conditions[index][1] if conditions[index][0] == "above"
-                                    else item[1] <= conditions[index][1])}
-                        if hits:
-                            essential.append(item)
-                            remaining.difference_update(hits)
-                    if records and (not essential or essential[-1] is not records[-1]):
-                        essential.append(records[-1])
-                    records[:] = essential
+                    if not all(getattr(item[2], "target_revision", None) == revision for item in records):
+                        raise ValueError("unavailable target structure")
+                    has_target_structure = True
                 except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
                     from sf_logging import log_swallow
                     log_swallow("sf_quote_delivery.add_ordered.target_structure", exc)
+            if len(records) >= 4096 and has_target_structure:
+                compacted: list = []
+                low = high = records[0][1]
+                compacted.append(records[0])
+                for item in records[1:]:
+                    if item[1] < low or item[1] > high:
+                        low = min(low, item[1])
+                        high = max(high, item[1])
+                        compacted.append(item)
+                if records[-1] is not compacted[-1]:
+                    compacted.append(records[-1])
+                records[:] = compacted
+            if len(records) >= 4096 and has_target_structure:
+                remaining = set(range(len(conditions)))
+                essential = []
+                for item in records:
+                    hits = {index for index in remaining
+                            if (item[1] >= conditions[index][1] if conditions[index][0] == "above"
+                                else item[1] <= conditions[index][1])}
+                    if hits:
+                        essential.append(item)
+                        remaining.difference_update(hits)
+                if records and (not essential or essential[-1] is not records[-1]):
+                    essential.append(records[-1])
+                records[:] = essential
             if len(records) >= 4096:
                 if not self._pinned.get(code) and len(records) < _MEMORY_SPILL_MAX:
                     records.append(record)

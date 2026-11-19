@@ -37,7 +37,9 @@ from typing import Any
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+importlib.import_module("tools.gate_stamp")
 gate_stamp = importlib.import_module("tools.gate_stamp")
+git_identity = importlib.import_module("sf_git_identity")
 release_identity = importlib.import_module("tools.release_identity")
 
 ARCHIVE_DIR = "outputs/release-candidates"
@@ -527,10 +529,14 @@ def read_message(message_file: Path) -> str:
 
 def branch_and_head(repo: Path, expected_head: str | None) -> tuple[str, str]:
     """The checked-out branch and its tip; detached HEAD or a tip other than the expected one is refused."""
-    branch = git(repo, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
+    try:
+        branch = git_identity.checked_out_branch(repo)
+        git_identity.validate_reserved_head_ref(repo)
+    except git_identity.GitIdentityError as exc:
+        if "不是明确的分支" in str(exc):
+            raise WrapupError("HEAD is detached; commit on a branch") from exc
+        raise WrapupError(str(exc)) from exc
     head = git_out(repo, "rev-parse", "HEAD")
-    if not branch:
-        raise WrapupError("HEAD is detached; commit on a branch")
     if expected_head and expected_head != head:
         raise WrapupError("HEAD is %s, not the expected %s" % (head[:12], expected_head[:12]))
     return branch, head
@@ -698,11 +704,17 @@ def remote_tip(repo: Path, url: str, ref: str) -> str:
 
 def push(repo: Path, branch: str, remote: str, apply: bool) -> dict[str, Any]:
     """Fast-forward the checked-out branch to the remote and read the tip back from the push URL."""
-    current = git(repo, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
+    try:
+        current = git_identity.checked_out_branch(repo)
+        git_identity.validate_reserved_head_ref(repo)
+    except git_identity.GitIdentityError as exc:
+        if "不是明确的分支" in str(exc):
+            raise WrapupError("the checked-out branch is a detached HEAD, not %s" % branch) from exc
+        raise WrapupError(str(exc)) from exc
     if current != branch:
         raise WrapupError("the checked-out branch is %s, not %s; nothing was pushed"
                           % (current or "a detached HEAD", branch))
-    head = git_out(repo, "rev-parse", "HEAD")
+    head = git_identity.checked_out_commit(repo)
     url = git_out(repo, "remote", "get-url", "--push", remote)  # the push URL, not the fetch URL
     ref = "refs/heads/" + branch
     before = remote_tip(repo, url, ref)

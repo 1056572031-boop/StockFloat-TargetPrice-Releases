@@ -647,11 +647,19 @@ class TestReleaseChainCallsTheGate(SFCase):
         self.assertGreater(ota, 0, "找不到 OTA 发布调用，脚本结构变了，这条断言需要重新设计")
         self.assertGreater(push, ota, "推源码必须排在 OTA 之后：推失败不该让已完成的发版回滚")
         self.assertGreater(readback, push, "「已同步」必须以回读归零为准，不能只看 push 退出码")
-        # 2026-11-02 走查 F-J-08：由 2 改 3 —— 新增“detached HEAD 拒绝推送”这第三条失败路径，
-        # 同样必须把「源码未同步」写进结尾结论（行为由下面 DetachedHead 那条用例实测）。
-        self.assertEqual(s.count("源码未同步"), 3,
-                         "detached HEAD 拒绝、推失败、推错分支三条路都必须把「源码未同步」写进结尾结论，"
-                         "少一处就是一条静默吞掉的失败")
+        self.assertIn('symbolic-ref --quiet --short HEAD', s,
+                      "第 7 步必须用明确分支解析，不能回到有歧义的 rev-parse --abbrev-ref HEAD")
+        self.assertIn('show-ref --verify --quiet refs/heads/HEAD', s,
+                      "第 7 步必须拒绝保留引用 refs/heads/HEAD")
+        version_check = 'tools/publish_update_release.py --check-version'
+        self.assertEqual(s.count(version_check), 1,
+                         "线上版本检查只能在正式发布入口执行一次；本地模式不得访问线上版本")
+        formal_start = s.index('if [ "$LOCAL_ONLY" -eq 0 ]; then', s.index('step_begin "正式资格检查与发布状态切换"'))
+        formal_end = s.index('\nfi\n\n# BEGIN publish_desktop_dmg', formal_start)
+        self.assertIn(version_check, s[formal_start:formal_end],
+                      "线上版本检查必须在 LOCAL_ONLY=0 的正式发布块内")
+        self.assertLess(s.find(version_check),
+                        s.find('publish_desktop_dmg "$DMG_OUT" "$DESKTOP_DMG"'))
 
     # ---- 2026-11-02 走查 F-J-04 / F-J-08：把发版脚本里的两段抽出来当可执行夹具跑 ----
     # 与 tests/test_coverage_chain_wiring.py::run_release_gate 同一做法：整份 build_release.sh 会覆盖
@@ -722,7 +730,7 @@ class TestReleaseChainCallsTheGate(SFCase):
         import subprocess
         import tempfile
         import gate_stamp
-        block = self._release_segment('SRC_BRANCH="$(git -C "$PROJ" rev-parse --abbrev-ref HEAD)"',
+        block = self._release_segment('SRC_BRANCH=""',
                                       "# ---- 7.1)")
         with tempfile.TemporaryDirectory(prefix="sf-step7-") as directory:
             root = pathlib.Path(directory).resolve()
@@ -746,7 +754,7 @@ class TestReleaseChainCallsTheGate(SFCase):
             if detached:
                 git("checkout", "-q", "--detach", cwd=work)
             # 日志路径改道：块里写死了 /tmp/sf_push_err.log，测试不往固定路径写文件
-            script = ("set -euo pipefail\nPROJ=%s\n" % work
+            script = ("set -euo pipefail\nPROJ=%s\nSRC_BRANCH=mainline\nSYNC_NOTE=\"\"\n" % work
                       + block.replace("/tmp/sf_push_err.log", str(root / "push-err.log"))
                       + '\nprintf "sync-note=[%s]\\n" "$SYNC_NOTE"\n')
             result = subprocess.run(["/bin/bash", "-c", script], cwd=work, env=env,

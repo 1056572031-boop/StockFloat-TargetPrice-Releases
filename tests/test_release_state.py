@@ -178,6 +178,40 @@ class ReleaseStateCase(SFCase):
         with self.assertRaisesRegex(ValueError, "不覆盖"):
             release.init_state(self.root, self.state, self.version)
 
+    def test_prepare_source_resumes_matching_qualified_state(self):
+        """候选构建重试不应在已资格化的同源状态上重复初始化。"""
+        self.qualify()
+        resumed = release.prepare_source(self.root, self.state, self.version)
+        self.assertEqual(resumed["stage"], "source_qualified")
+        self.assertEqual(len(resumed["history"]), 1)
+
+    def test_prepare_source_creates_and_qualifies_missing_state(self):
+        self.state.unlink()
+        with mock.patch.object(release.gate_stamp, "check", return_value=(True, "fixture")), \
+                mock.patch.object(release, "check_coverage"), \
+                mock.patch.object(release.public_docs_check, "problems", return_value=[]):
+            prepared = release.prepare_source(self.root, self.state, self.version)
+        self.assertEqual(prepared["stage"], "source_qualified")
+        self.assertEqual(len(prepared["history"]), 1)
+
+    def test_prepare_source_rejects_drift_version_and_nonqualified_stages(self):
+        with self.assertRaisesRegex(ValueError, "source_qualified"):
+            release.prepare_source(self.root, self.state, self.version)
+        self.qualify()
+        with self.assertRaisesRegex(ValueError, "版本"):
+            release.prepare_source(self.root, self.state, "other-version")
+        original = (self.root / "README.md").read_bytes()
+        (self.root / "README.md").write_bytes(original + b"changed")
+        with self.assertRaisesRegex(ValueError, "已失效"):
+            release.prepare_source(self.root, self.state, self.version)
+        (self.root / "README.md").write_bytes(original)
+        state_value = json.loads(self.state.read_text())
+        for stage in ("source_open", "candidate_ready", "released_pending_acceptance", "complete"):
+            state_value["stage"] = stage
+            self.state.write_text(json.dumps(state_value))
+            with self.assertRaisesRegex(ValueError, "source_qualified"):
+                release.prepare_source(self.root, self.state, self.version)
+
     def test_malformed_state_and_coverage_command_environment_are_rejected(self):
         original = self.state.read_bytes()
         self.state.write_text('{"schema_version": 2, "stage": "complete"}')
@@ -669,6 +703,7 @@ class ReleaseStateCase(SFCase):
     def test_cli_validates_required_arguments_and_errors(self):
         with contextlib.redirect_stderr(io.StringIO()):
             for args in (['stage'], ['init', '--state', str(self.state)],
+                         ['prepare-source', '--state', str(self.state)],
                          ['report', '--state', str(self.state)],
                          ['complete', '--state', str(self.state), '--quality', 'q', '--readback', 'r']):
                 with self.assertRaises(SystemExit) as raised:
@@ -685,6 +720,7 @@ class ReleaseStateCase(SFCase):
         common = ["--root", str(self.root), "--state", str(self.state)]
         operations = [("init", "init_state", ["--version", self.version]),
                       ("qualify-source", "qualify_source", []),
+                      ("prepare-source", "prepare_source", ["--version", self.version]),
                       ("candidate", "make_candidate", ["--version", self.version, "--app", str(self.app),
                         "--dmg", str(self.dmg), "--zip", str(self.archive), "--ota", str(self.ota)]),
                       ("begin-publish", "begin_publish", ["--quality", "quality.json"]),

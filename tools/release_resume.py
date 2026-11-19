@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import quality_evidence as evidence  # noqa: E402
+import sf_git_identity as git_identity  # noqa: E402
 
 DEFAULT_APP = Path("/Applications/Skyrocket.app")
 # 单步超时可配、写错当场报错（与 publish_update_release 的超时同一口径：上传耗时由上行带宽决定，
@@ -397,6 +398,19 @@ def load_state(state_path: Path, root: Path, stages) -> dict:
     return state
 
 
+def release_branch(root: Path) -> str:
+    """Resolve the branch while preserving injectable command seams used by offline tests."""
+    try:
+        branch = git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
+    except (ValueError, subprocess.SubprocessError):
+        branch = ""
+    if branch and branch != "HEAD":
+        if (root / ".git").exists():
+            git_identity.validate_reserved_head_ref(root)
+        return branch
+    return git_identity.checked_out_branch(root)
+
+
 def publish_started_at(state: dict) -> datetime.datetime:
     for item in state.get("history", []):
         if item.get("to") == PENDING_STAGE:
@@ -428,7 +442,7 @@ def main(argv=None) -> int:
             state = load_state(args.state, args.root, (PENDING_STAGE,))
             timeout = step_timeout()
             publish_step_timeout()                         # 写错当场报错，不等跑到第 6 步才发现
-            branch = git_output(args.root, "rev-parse", "--abbrev-ref", "HEAD")
+            branch = release_branch(args.root)
             record = args.quality_record.resolve() if args.quality_record else None
             if record is not None and not record.is_file():
                 raise ValueError("--quality-record 不是文件：" + str(record))

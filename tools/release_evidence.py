@@ -107,6 +107,9 @@ def pick_receipt(directory: Path, command: str, fingerprint: str) -> tuple[Path,
             continue
         if value.get("exit_code") == 0 and value.get("stable") is True and value.get("source_start") == fingerprint:
             hits.append((path, value))
+    if hits:
+        highest_level = max(item[1].get("level", 0) for item in hits)
+        hits = [item for item in hits if item[1].get("level", 0) == highest_level]
     if len(hits) != 1:
         raise EvidenceError(f"命令凭据必须恰好一份: {command}（找到 {len(hits)} 份）")
     return hits[0]

@@ -227,6 +227,40 @@ class TestRoutesInProcess(RouteCase):
         self.assertRoute(VIP.check_helper_accepts_both_names(self.work),
                          "R4 应当过：两代顶层名都能解到签名校验")
 
+    def test_helper_route_rejects_non_utf8_locale(self):
+        with mock.patch.object(VIP, "user_lang", return_value="C"):
+            ok, detail = VIP.check_helper_accepts_both_names(self.work)
+        self.assertFalse(ok)
+        self.assertIn("UTF-8 locale", detail)
+
+
+        with mock.patch.object(VIP, "user_lang", return_value=None), \
+                mock.patch.object(VIP, "run_helper", side_effect=AssertionError("helper ran")):
+            with self.assertRaises(VIP.NoFixture):
+                VIP.check_helper_accepts_both_names(self.work)
+
+    def test_helper_route_skips_without_locale_before_fixture(self):
+        with mock.patch.object(VIP, "user_lang", return_value=None), \
+                mock.patch.object(VIP, "run_helper", side_effect=AssertionError("helper ran")):
+            with self.assertRaises(VIP.NoFixture):
+                VIP.check_helper_accepts_both_names(self.work)
+
+
+        image, _ = VIP.build_user_dmg(self.work, "appearance-oracle", fixture="light")
+        with mock.patch.object(VIP.AIC, "check", return_value=(False, "wrong icon")):
+            ok, detail = VIP.check_dmg_launcher_route(image.parent / "route-work",
+                                                      fixture="light")
+        self.assertFalse(ok)
+        self.assertIn("外观", detail)
+
+    def test_候选DMG安装器外观错误仍拒绝(self):
+        image, _ = VIP.build_user_dmg(self.work, "prepared-appearance", fixture="light")
+        with mock.patch.object(VIP.AIC, "check_icon", return_value=(False, "wrong icon")):
+            ok, detail = VIP.verify_prepared_dmg(image, self.work / "prepared-appearance-check",
+                                                 smoke_runner=lambda _app: (0, {}))
+        self.assertFalse(ok)
+        self.assertIn("外观", detail)
+
     def test_已准备候选DMG必须经挂载后结构外观安装与启动复验(self):
         image, _ = VIP.build_user_dmg(self.work, "prepared", fixture="light")
         observed = []
@@ -334,8 +368,13 @@ class TestRoutesInProcess(RouteCase):
                 self.assertFalse(ok, detail)
                 self.assertIn(expected, detail)
 
+    def test_light_fixture_returns_a_signed_source_for_post_install_checks(self):
+        image, source = VIP.build_user_dmg(self.work, "post-install-source", fixture="light")
+        self.assertTrue(image.is_file())
+        self.assertTrue(source.is_dir())
+
     def test_候选DMG安装后残留标签与缺日志都会拒绝(self):
-        image, _ = VIP.build_user_dmg(self.work, "prepared-post-install", fixture="light")
+        image, source = VIP.build_user_dmg(self.work, "prepared-post-install", fixture="light")
         for expected, keep_logs, quarantine in (
             ("仍有来历标签", True, (True, "Info.plist")),
             ("没有安装日志", False, (False, "")),
@@ -344,7 +383,6 @@ class TestRoutesInProcess(RouteCase):
                 work = self.work / ("post-install-" + expected)
 
                 def install_then_inject(_script, _work, target_dir, **_kwargs):
-                    source = VIP.real_app()
                     target = target_dir / VIP.CURRENT_APP_NAME
                     import shutil
                     shutil.copytree(source, target)
@@ -376,6 +414,17 @@ class TestRoutesHaveTeeth(RouteCase):
         ok, detail = VIP.check_untaggable_scope_route(self.work, script_text=blind,
                                                       fixture="light")
         self.assertFalse(ok, "把核验改成只看包根之后 R2e 还是绿的 —— 这道判据是哑门：%s" % detail)
+
+    def test_C_locale_rejection_happens_before_fixture_signing(self):
+        class SigningUnavailable:
+            def __call__(self, *_args, **_kwargs):
+                raise AssertionError("fixture signing must not run for C locale")
+
+        with mock.patch.object(VIP, "light_signed_app", SigningUnavailable()):
+            ok, detail = VIP.check_dmg_launcher_route(
+                self.work, force_lang="C", fixture="light")
+        self.assertFalse(ok)
+        self.assertIn("UTF-8 locale", detail)
 
     def test_关卡退回C_locale时_R2必须红(self):
         ok, detail = VIP.check_dmg_launcher_route(self.work, force_lang="C",

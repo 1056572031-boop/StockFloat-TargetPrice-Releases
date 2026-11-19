@@ -253,6 +253,25 @@ class PanelInputGuards(SFCase):
         target, err = panel_resolve(p, target_panel.TARGET_DIR_ABOVE, "１３．５")
         self.assertEqual(target, 13.5, err)
 
+    def test_官方涨跌停字段缺失时不静默放行目标价(self):
+        """备源没有官方边界时，必须让用户等主源恢复，而不是把保护条件当成通过。"""
+        p = self._panel(limits=lambda: (0.0, 0.0))
+        message = panel_limits(p, target_panel.TARGET_DIR_ABOVE, 999.0)
+        self.assertIn("无法确认", message)
+        self.assertIn("涨跌停", message)
+
+    def test_官方涨跌停字段缺失时跌到方向也不静默放行(self):
+        p = self._panel(limits=lambda: (None, None))
+        message = panel_limits(p, target_panel.TARGET_DIR_BELOW, 1.0)
+        self.assertIn("无法确认", message)
+        self.assertIn("涨跌停", message)
+
+    def test_当前价查询异常时不把目标价边界当作离线放行(self):
+        p = self._panel(limits=lambda: (0.0, 0.0))
+        p.current_price_fn = mock.Mock(side_effect=RuntimeError("行情读取失败"))
+        message = panel_limits(p, target_panel.TARGET_DIR_ABOVE, 999.0)
+        self.assertIn("无法获取当前价", message)
+
     def test_涨跌停查询自己炸时留一行WARNING(self):
         p = self._panel(limits=mock.Mock(side_effect=RuntimeError("行情还没到")))
         self.assertEqual(panel_limits(p, target_panel.TARGET_DIR_ABOVE, 999.0), "")

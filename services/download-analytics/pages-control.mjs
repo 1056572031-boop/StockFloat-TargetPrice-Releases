@@ -356,7 +356,7 @@ async function ship(flags) {
     tool_fingerprint: state.toolFingerprint, live_version: liveVersion, preview_deployment_id: preview?.id || null,
     preview_url: preview?.url || null, preview_check_error: previewCheckError,
     last_deploy: { state: lastDeploy.state, detail: lastDeploy.text, journal: journalPath(repoRoot) } };
-  const problems = shipProblems({ ...state, liveVersion, localVersion: await localSiteVersion(),
+  const problems = shipProblems({ ...state, liveVersion, assetVersion: liveVersion,
     previewDeploymentId: preview?.id || "", testsPassed: await siteTestsPass() });
   if (lastDeploy.blocking) problems.unshift(`the previous deploy did not finish: ${lastDeploy.text}`);
   if (!requestedPreview) problems.push(`no preview was named; after the owner has looked at it, pass --preview ${preview?.id || "<deployment-id>"}`);
@@ -406,7 +406,8 @@ async function ship(flags) {
     console.log(JSON.stringify({ ...summary, ready: true, dry_run: false, problems: [], deploying: true }));
     try {
       execFileSync(process.execPath, [resolve(root, "deploy-pages.mjs")], { cwd: root, stdio: "inherit",
-        env: { ...cleanBuildEnv(process.env), SF_DEPLOY_COMMIT_HASH: state.commit, SF_DEPLOY_COMMIT_MESSAGE: message } });
+        env: { ...cleanBuildEnv(process.env), SF_APP_VERSION: liveVersion,
+          SF_DEPLOY_COMMIT_HASH: state.commit, SF_DEPLOY_COMMIT_MESSAGE: message } });
     } catch (error) {
       const failure = `deploy-pages.mjs failed (${error.status ?? error.message}); production before this attempt was ${previousId || "unknown"}`;
       if (await recoverIfSwitched(failure)) return;

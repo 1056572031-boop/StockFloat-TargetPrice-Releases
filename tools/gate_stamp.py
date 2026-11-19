@@ -34,25 +34,28 @@ import datetime
 import hashlib
 import json
 import os
+import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
+if PROJ not in sys.path:
+    sys.path.insert(0, PROJ)
 STAMP_REL = os.path.join("build", ".gate_stamp")
 
 # 会被 PyInstaller 收进包里、或被关卡自己读进判据的文件后缀。
 BUILD_INPUT_SUFFIXES = (".py", ".sh", ".spec", ".command", ".otf", ".ttf",
                         ".yml", ".yaml", ".icns", ".swift")
-# 按后缀收不到、但确实影响构建或关卡结论的文件名。
 BUILD_INPUT_NAMES = ("requirements.txt", "requirements.lock", "NOTICE.md", "README.md",
                      "INSTALL.md", "SECURITY.md", "LICENSE", ".coveragerc",
                      "static_gate_baseline.json", "test_discipline_baseline.json",
                      "escapes_ledger.json", "signing_policy.json",
                      "coverage_gate_baseline.json", "change_coverage_base.txt")
-
 NO_GIT = "no-git"
+import sf_git_identity as git_identity
 
 
 def git_env() -> dict:
@@ -80,7 +83,12 @@ def _git(args: list[str], cwd: str) -> str:
 
 
 def git_head(cwd: str = PROJ) -> str:
-    return _git(["rev-parse", "HEAD"], cwd).strip() or NO_GIT
+    if _git(["rev-parse", "HEAD"], cwd) == NO_GIT:
+        return NO_GIT
+    try:
+        return git_identity.checked_out_commit(pathlib.Path(cwd).resolve())
+    except git_identity.GitIdentityError:
+        return _git(["rev-parse", "HEAD"], cwd).strip() or NO_GIT
 
 
 def build_input_paths(cwd: str) -> list[str]:

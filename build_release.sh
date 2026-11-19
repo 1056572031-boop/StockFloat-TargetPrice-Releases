@@ -321,8 +321,7 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
   if [ "$USE_PREPARED" -eq 1 ]; then
     "$VENV_PY" tools/release_state.py validate --state "$RELEASE_STATE" --stage candidate_ready
   else
-    "$VENV_PY" tools/release_state.py init --state "$RELEASE_STATE" --version "$VERSION"
-    "$VENV_PY" tools/release_state.py qualify-source --state "$RELEASE_STATE"
+    "$VENV_PY" tools/release_state.py prepare-source --state "$RELEASE_STATE" --version "$VERSION"
   fi
 fi
 
@@ -639,6 +638,9 @@ if [ "$LOCAL_ONLY" -eq 0 ]; then
     --limitations-file "$RELEASE_LIMITATIONS" --old-app "$RELEASE_OLD_APP" \
     --quality "$QUALITY_RECORD" --app "$PROJ/dist/$APP_BUNDLE" --zip "$UPDATE_ZIP" --state "$RELEASE_STATE" \
     || { echo "!! 候选冻结证据未绑定到发布状态，拒绝进入不可逆阶段" >&2; exit 1; }
+  "$VENV_PY" tools/publish_update_release.py --check-version \
+    --manifest "$UPDATE_JSON" \
+    || { echo "!! 候选版本低于线上版本或线上版本不可读，未安装、未覆盖桌面、未发布 OTA" >&2; exit 1; }
   "$VENV_PY" tools/release_state.py begin-publish --state "$RELEASE_STATE" --quality "$QUALITY_RECORD"
 fi
 
@@ -803,35 +805,43 @@ echo "== 6.2 对外安装说明（含最终 GitHub 资产可达性核对）=="
 # 完成的发版回滚），但失败必须大声，并写进结尾那行结论里，不许静默吞掉。
 step_begin "7 推送当前分支到远端"
 echo "== 7) 源码同步到 origin =="
-SRC_BRANCH="$(git -C "$PROJ" rev-parse --abbrev-ref HEAD)"
+SYNC_NOTE=""
+SRC_BRANCH=""
+if SRC_BRANCH="$(git -C "$PROJ" symbolic-ref --quiet --short HEAD 2>/tmp/sf_branch_err.log)"; then
+  if [ "$SRC_BRANCH" = "HEAD" ] || git -C "$PROJ" show-ref --verify --quiet refs/heads/HEAD; then
+    echo "!! 当前 Git 引用存在保留名称 HEAD，源码同步拒绝继续" >&2
+    SRC_BRANCH=""
+  fi
+else
+  echo "!! 无法确定当前 Git 分支，源码未同步" >&2
+fi
 DIRTY_COUNT="$(git -C "$PROJ" status --porcelain | wc -l | tr -d ' ')"
 if [ "$DIRTY_COUNT" != "0" ]; then
   echo "   ⚠ 工作区还有 $DIRTY_COUNT 个文件未提交：push 只同步已提交的部分，"
   echo "     对外可见的源码可能比装机版里那份少（未提交的改动同样进包）。"
 fi
-if git -C "$PROJ" rev-parse --verify --quiet "origin/$SRC_BRANCH" >/dev/null; then
-  AHEAD="$(git -C "$PROJ" rev-list --count "origin/$SRC_BRANCH..HEAD")"
-else
-  AHEAD="（远端还没有 $SRC_BRANCH 这个分支）"
-fi
-SYNC_NOTE=""
-# 2026-11-02 走查 F-J-08：detached HEAD 下 rev-parse --abbrev-ref 给出字面 HEAD，
-# 下面的 push 会成功地在远端建出一个名为 HEAD 的分支并报“已同步”。这里拒绝推送。
-if [ "$SRC_BRANCH" = "HEAD" ]; then
-  echo "!! 发布树是 detached HEAD，拒绝推送（否则会在远端建出名为 HEAD 的分支）；先检出分支再同步源码" >&2
+if [ -z "$SRC_BRANCH" ]; then
   SYNC_NOTE="源码未同步"
-elif git -C "$PROJ" push -q origin "HEAD:refs/heads/$SRC_BRANCH" 2>/tmp/sf_push_err.log; then
-  NOW="$(git -C "$PROJ" rev-list --count "origin/$SRC_BRANCH..HEAD" 2>/dev/null || echo '?')"
-  if [ "$NOW" = "0" ]; then
-    echo "   已同步：推前落后 $AHEAD 笔，现在 origin/$SRC_BRANCH 与 HEAD 一致"
+  echo "   已记录源码未同步：当前分支不可安全解析，发布后需在明确分支上补推" >&2
+else
+  if git -C "$PROJ" rev-parse --verify --quiet "origin/$SRC_BRANCH" >/dev/null; then
+    AHEAD="$(git -C "$PROJ" rev-list --count "origin/$SRC_BRANCH..HEAD")"
   else
-    echo "!! push 返回 0 却仍有 $NOW 笔没同步 —— 推上去的不是这个分支，去人工确认" >&2
+    AHEAD="（远端还没有 $SRC_BRANCH 这个分支）"
+  fi
+  if git -C "$PROJ" push -q origin "HEAD:refs/heads/$SRC_BRANCH" 2>/tmp/sf_push_err.log; then
+    NOW="$(git -C "$PROJ" rev-list --count "origin/$SRC_BRANCH..HEAD" 2>/dev/null || echo '?')"
+    if [ "$NOW" = "0" ]; then
+      echo "   已同步：推前落后 $AHEAD 笔，现在 origin/$SRC_BRANCH 与 HEAD 一致"
+    else
+      echo "!! push 返回 0 却仍有 $NOW 笔没同步 —— 推上去的不是这个分支，去人工确认" >&2
+      SYNC_NOTE="源码未同步"
+    fi
+  else
+    echo "!! 推 origin/$SRC_BRANCH 失败：这一版的源码没有对外备份，CI 也不会因此跑起来" >&2
+    tail -3 /tmp/sf_push_err.log >&2 || true
     SYNC_NOTE="源码未同步"
   fi
-else
-  echo "!! 推 origin/$SRC_BRANCH 失败：这一版的源码没有对外备份，CI 也不会因此跑起来" >&2
-  tail -3 /tmp/sf_push_err.log >&2 || true
-  SYNC_NOTE="源码未同步"
 fi
 
 # ---- 7.1) 桌面分发目录对账（2026-10-22 用户要求的永久规则，见 AGENTS.md「桌面分发目录」）----

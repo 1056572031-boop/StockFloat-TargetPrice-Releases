@@ -237,6 +237,62 @@ class RunnerExecutionContracts(SFCase):
         self.assertEqual(rc, 1, out)
         self.assertEqual(len(visits), 2)
 
+    def test_subtest_retry_runs_parent_and_keeps_changed_failure_red(self):
+        visits = []
+
+        class Sample(SFCase):
+            def runTest(self):
+                visits.append(1)
+                for number in (1, 2):
+                    with self.subTest(number=number):
+                        self.assertNotEqual(number, len(visits))
+
+        sample = Sample()
+        loader = mock.Mock()
+        loader.discover.return_value = unittest.TestSuite([unittest.TestSuite([sample])])
+        with mock.patch.dict(os.environ, {"SF_TEST_TIMEOUT": "0", "SF_RERUN_FAILED": "1", "SF_RANDOM_ORDER": "0"}), \
+                mock.patch.object(sys, "path", list(sys.path)), \
+                mock.patch.object(runner, "install_ui_dialog_guard"), \
+                mock.patch.object(runner, "_preimport_project_modules"), \
+                mock.patch.object(runner.unittest, "TestLoader", return_value=loader), \
+                mock.patch.object(runner, "_snapshot_user_data", return_value={}), \
+                mock.patch.object(runner, "_report_ui_dialog_violations", return_value=False):
+            rc, out = invoke(runner.main, [])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(len(visits), 2)
+        self.assertNotIn("subtests cannot be run directly", out)
+        self.assertNotIn("[flaky]", out)
+
+    def test_retry_setup_error_or_skip_cannot_turn_failure_green(self):
+        for mode in ("error", "skip"):
+            with self.subTest(mode=mode):
+                visits = []
+
+                class Sample(SFCase):
+                    def setUp(self):
+                        visits.append(1)
+                        if len(visits) > 1:
+                            if mode == "skip":
+                                self.skipTest("retry skipped")
+                            raise RuntimeError("retry setup failed")
+
+                    def runTest(self):
+                        self.fail("original failure")
+
+                loader = mock.Mock()
+                loader.discover.return_value = unittest.TestSuite([unittest.TestSuite([Sample()])])
+                with mock.patch.dict(os.environ, {"SF_TEST_TIMEOUT": "0", "SF_RERUN_FAILED": "1", "SF_RANDOM_ORDER": "0"}), \
+                        mock.patch.object(sys, "path", list(sys.path)), \
+                        mock.patch.object(runner, "install_ui_dialog_guard"), \
+                        mock.patch.object(runner, "_preimport_project_modules"), \
+                        mock.patch.object(runner.unittest, "TestLoader", return_value=loader), \
+                        mock.patch.object(runner, "_snapshot_user_data", return_value={}), \
+                        mock.patch.object(runner, "_report_ui_dialog_violations", return_value=False):
+                    rc, out = invoke(runner.main, [])
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(len(visits), 2)
+                self.assertNotIn("[flaky]", out)
+
     def test_failed_first_attempt_successful_retry_is_explicitly_flaky(self):
         visits = []
 

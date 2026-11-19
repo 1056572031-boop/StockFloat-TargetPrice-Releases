@@ -34,6 +34,7 @@ import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch
+from tests._base import SFCase
 
 # 首次发布时清单 GET 必然 404，urllib 造的 HTTPError 内部挂着临时文件，回收时
 # 会报 ResourceWarning。只屏蔽这一条消息：其余 ResourceWarning 照旧要看得见。
@@ -232,12 +233,13 @@ class _Handler(BaseHTTPRequestHandler):
         return self._reply(204)
 
 
-class PublishEndToEndTest(unittest.TestCase):
+class PublishEndToEndTest(SFCase):
     @classmethod
     def setUpClass(cls):
         cls.tool = _load_publish_tool()
 
     def setUp(self):
+        super().setUp()
         self.state = _State()
         handler = type("_BoundHandler", (_Handler,), {"state": self.state})
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -248,6 +250,9 @@ class PublishEndToEndTest(unittest.TestCase):
         self.state.base = base
         self.raw_root = base + "/raw"
         self.state.manifest_name = self.tool.MANIFEST_PATH
+        self.state.contents[self.tool.MANIFEST_PATH] = {
+            "sha": "live-sha", "content": json.dumps({"version": "1.4.15"}).encode()
+        }
         roots = (self.tool.API_ROOT, self.tool.UPLOAD_ROOT)
         self.addCleanup(setattr_chain, self.tool, roots)
         self.addCleanup(setattr, self.tool, "DOWNLOAD_RETRY_PAUSE", self.tool.DOWNLOAD_RETRY_PAUSE)
@@ -382,7 +387,7 @@ class PublishEndToEndTest(unittest.TestCase):
         assets, notes = self._workspace()
         text = self._publish(assets, notes)
         self.assertEqual(self.state.routes(),
-                         ["release", "upload", "release",          # 传 ZIP 并复验
+                         ["release", "contents", "upload", "release",          # 读取线上版本后传 ZIP 并复验
                           "release_body", "release",                 # 写入并读回 GitHub Release 正文
                           "contents", "contents", "contents",       # GET/PUT/读回清单指针
                           "release", "upload", "release",          # 换旧客户端清单
@@ -418,7 +423,7 @@ class PublishEndToEndTest(unittest.TestCase):
         self.state.corrupt_contents_readback = True
         with self.assertRaises(SystemExit) as got:
             self._publish(assets, notes)
-        self.assertIn("Contents 清单写入后原始字节不一致", str(got.exception))
+        self.assertIn("线上清单内容无法解码", str(got.exception))
         self.assertNotIn(("DELETE", "asset"), self.state.log)
 
     def test_archive_download_failure_stops_before_manifest_pointer(self):
@@ -440,7 +445,7 @@ class PublishEndToEndTest(unittest.TestCase):
         self.assertEqual(self.state.download_attempts, 3)
         # 与正常发版同一条路由序列：版本 ZIP 与旧客户端清单各上传一次，重读不许多出任何请求。
         self.assertEqual(self.state.routes(),
-                         ["release", "upload", "release", "release_body", "release",
+                         ["release", "contents", "upload", "release", "release_body", "release",
                           "contents", "contents", "contents",
                           "release", "upload", "release", "contents"],
                          "重读不许引发第二次上传，也不许改变发布顺序")
@@ -739,9 +744,10 @@ class PublishEndToEndTest(unittest.TestCase):
         assets, notes = self._workspace()
         with self.assertRaises(SystemExit):
             self._publish(assets, notes)
-        self.assertNotIn("contents", self.state.routes(),
+        self.assertNotIn("contents", self.state.routes()[2:],
                          "ZIP 没验证过就不该发出任何清单请求")
-        self.assertNotIn(self.tool.MANIFEST_PATH, self.state.contents)
+        self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"],  # discipline-ok(R1): verify preserved live manifest
+                         json.dumps({"version": "1.4.15"}).encode())
 
     def test_incomplete_workspace_stops_before_any_request(self):
         assets, notes = self._workspace(with_archive=False)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import io
 import json
@@ -14,6 +15,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from datetime import datetime, timezone
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -39,7 +43,8 @@ DOCS = ("README.md", "SECURITY.md", "LICENSE", "NOTICE.md", "docs/INSTALL.md",
 # docs/ 下对外公开的文件只有这三份（README 与安装说明链接得到的，加许可与贡献所需）。
 # 其余 docs/ 文件（流程、待办、审计报告）是内部材料，导出时一律丢弃；
 # 新增对外文档必须登记在这里，没登记的文件不会出现在公开快照里。
-PUBLIC_DOCS_DIR_FILES = ("docs/INSTALL.md", "docs/CONTRIBUTING.md", "docs/STABLE_CAMERA_AUTH.md")
+PUBLIC_DOCS_DIR_FILES = ("docs/INSTALL.md", "docs/CONTRIBUTING.md", "docs/STABLE_CAMERA_AUTH.md",
+                         "docs/agents/architecture_contract.json")
 CREDENTIALS = re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
                          rb"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 PERSONAL_MAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@(?:qq|foxmail|gmail|icloud|outlook|hotmail)\.com")
@@ -202,23 +207,120 @@ def audit_history(root: Path, home: str, secrets=()) -> None:
     print("Public history audit: %d reachable objects; no private history or detected secrets" % len(objects))
 
 
+def github_api_json(path: str) -> dict:
+    """读取 GitHub API JSON；只用于公开历史的只读回退，不执行写操作。"""
+    request = Request("https://api.github.com/repos/%s/%s" % (REPO, path),
+                      headers={"Accept": "application/vnd.github+json",
+                               "X-GitHub-Api-Version": "2022-11-28",
+                               "User-Agent": "skyrocket-public-audit"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            value = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code != 403:
+            raise
+        result = subprocess.run(["gh", "api", "repos/%s/%s" % (REPO, path)], capture_output=True, text=True,
+                                check=False, shell=False)
+        if result.returncode != 0:
+            raise
+        value = json.loads(result.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("GitHub API response must be an object: " + path)
+    return value
+
+
+def _github_commit_bytes(value: dict) -> bytes:
+    """把 API 提交字段规范化为可交给既有身份扫描器的 commit 形状。"""
+    def identity(key: str) -> str:
+        item = value.get(key) or {}
+        name = str(item.get("name") or "")
+        email = str(item.get("email") or "")
+        date = str(item.get("date") or "")
+        try:
+            stamp = int(datetime.fromisoformat(date.replace("Z", "+00:00")).timestamp())
+        except (TypeError, ValueError, OverflowError):
+            stamp = 0
+        return "%s <%s> %d +0000" % (name, email, stamp)
+
+    lines = ["tree " + str((value.get("tree") or {}).get("sha") or ""),
+             "author " + identity("author"), "committer " + identity("committer")]
+    lines += ["parent " + str(item.get("sha")) for item in value.get("parents", [])]
+    return ("\n".join(lines) + "\n\n" + str(value.get("message") or "")).encode("utf-8")
+
+
+def audit_public_history_api(tip: str, home: str, secrets=()) -> bool:
+    """沿公开分支父链读取 commit/tree/blob，保留完整历史审计语义。"""
+    commits: list[str] = []
+    seen: set[str] = set()
+    current = tip
+    issues: list[str] = []
+    while current:
+        if current in seen:
+            raise ValueError("Public history API parent cycle: " + current)
+        seen.add(current)
+        value = github_api_json("git/commits/" + current)
+        commits.append(current)
+        raw_commit = _github_commit_bytes(value)
+        issues.extend(object_privacy_problems(raw_commit, home, secrets, "commit"))
+        tree_sha = str((value.get("tree") or {}).get("sha") or "")
+        tree = github_api_json("git/trees/" + tree_sha + "?recursive=1")
+        if tree.get("truncated"):
+            raise ValueError("Public history API tree is truncated: " + tree_sha)
+        entries = tree.get("tree")
+        if not isinstance(entries, list):
+            raise ValueError("Public history API tree is invalid: " + tree_sha)
+        for entry in entries:
+            name = str(entry.get("path") or "")
+            if name and (excluded(name) or re.search(r"\.(dmg|log|ips)$|(^|/)config\.json$", name)):
+                issues.append("internal history entry: " + name)
+            if name:
+                issues.extend(label + ": object path " + name
+                              for label in privacy_problems(name.encode(), home, secrets))
+            if entry.get("type") != "blob" or not entry.get("sha"):
+                continue
+            blob = github_api_json("git/blobs/" + str(entry["sha"]))
+            if blob.get("encoding") != "base64":
+                raise ValueError("Public history API blob encoding is not base64: " + name)
+            try:
+                encoded = "".join(str(blob.get("content") or "").split())
+                data = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("Public history API blob is invalid: " + name) from exc
+            issues.extend(object_privacy_problems(data, home, secrets, "blob"))
+        parents = value.get("parents") or []
+        current = str(parents[0].get("sha") or "") if parents else ""
+    if issues:
+        raise ValueError("Public history audit failed:\n" + "\n".join(issues))
+    print("Public history API audit: %d reachable commits; trees and blobs scanned" % len(commits))
+    return True
 def audit_public_history(root: Path = ROOT, url: str | None = None) -> bool:
-    """Fetch/audit only; never push, export private source or move its branch."""
+    """Fetch/audit only; fall back to API history when Git Smart HTTP is unavailable."""
     url = url or "https://github.com/%s.git" % REPO
     base = root / "build"
     base.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="public_history_", dir=base) as directory:
-        checkout = Path(directory)
-        run(["git", "init", "-q", "-b", PUBLIC_BRANCH], checkout)
-        refs = run(["git", "ls-remote", "--heads", url, "refs/heads/" + PUBLIC_BRANCH], checkout)
-        if not refs.strip():
-            print("Public history not present: no previous public-source branch; not a future export audit pass")
-            return False
-        run(["git", "fetch", "-q", "--no-tags", url, "refs/heads/" + PUBLIC_BRANCH], checkout)
-        run(["git", "update-ref", "refs/heads/" + PUBLIC_BRANCH, "FETCH_HEAD"], checkout)
-        audit_history(checkout, str(Path.home()), signing_secrets(root))
-    print("Existing public-source history passed read-only preflight; no remote writes")
-    return True
+    try:
+        with tempfile.TemporaryDirectory(prefix="public_history_", dir=base) as directory:
+            checkout = Path(directory)
+            run(["git", "init", "-q", "-b", PUBLIC_BRANCH], checkout)
+            refs = run(["git", "ls-remote", "--heads", url, "refs/heads/" + PUBLIC_BRANCH], checkout)
+            if not refs.strip():
+                print("Public history not present: no previous public-source branch; not a future export audit pass")
+                return False
+            run(["git", "fetch", "-q", "--no-tags", url, "refs/heads/" + PUBLIC_BRANCH], checkout)
+            run(["git", "update-ref", "refs/heads/" + PUBLIC_BRANCH, "FETCH_HEAD"], checkout)
+            audit_history(checkout, str(Path.home()), signing_secrets(root))
+        print("Existing public-source history passed read-only preflight; no remote writes")
+        return True
+    except (OSError, subprocess.CalledProcessError) as exc:
+        ref = github_api_json("git/ref/heads/" + PUBLIC_BRANCH)
+        tip = str((ref.get("object") or {}).get("sha") or "")
+        if not tip:
+            raise ValueError("Git history unavailable and GitHub API ref has no commit SHA") from exc
+        print("Git Smart HTTP unavailable; using read-only GitHub API history audit")
+        audit_public_history_api(tip, str(Path.home()), signing_secrets(root))
+        print("Existing public-source history passed API read-only preflight; no remote writes")
+        return True
+
 
 
 def export_source(out: Path, root: Path = ROOT) -> None:

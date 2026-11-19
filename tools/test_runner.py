@@ -865,19 +865,26 @@ def _run_tests(modules=None):
     main_wall = time.monotonic() - main_began
     failures = list(result.failures) + list(result.errors)
 
-    flaky = []
+    flaky: list = []
     if failures and rerun:
         print("\n== 失败用例自动重跑一次（区分真失败与抖动）==")
-        retry_cases = [t for t, _ in failures]
-        # 逐个重跑：一条独立执行一次，避免彼此污染导致误判
-        retry_result = unittest.TextTestRunner(
-            verbosity=1,
-            resultclass=lambda *a, **kw: _Result(*a, sf_timeout=timeout, **kw)
-        ).run(unittest.TestSuite(retry_cases))
-        still = {t.id() for t, _ in retry_result.failures} | \
-                {t.id() for t, _ in retry_result.errors}
-        survivors = [(t, tb) for t, tb in failures if t.id() in still]
-        flaky = [t for t, tb in failures if t.id() not in still]
+        # A subTest is a result record, not a runnable test. Retry its parent
+        # once and accept recovery only when that whole test actually passes.
+        retry_groups: dict = {}
+        for test, traceback in failures:
+            parent = getattr(test, "test_case", test)
+            retry_groups.setdefault(parent, []).append((test, traceback))
+        survivors: list = []
+        for parent, original_failures in retry_groups.items():
+            retry_result = unittest.TextTestRunner(
+                verbosity=1,
+                resultclass=lambda *a, **kw: _Result(*a, sf_timeout=timeout, **kw)
+            ).run(unittest.TestSuite([parent]))
+            if (retry_result.testsRun == 1 and retry_result.wasSuccessful()
+                    and not retry_result.skipped):
+                flaky.extend(test for test, _ in original_failures)
+            else:
+                survivors.extend(original_failures)
         failures = survivors
         for t in flaky:
             print("  [flaky] %s —— 首次失败、重跑通过，说明用例不稳定（需单独治理）" % t.id())

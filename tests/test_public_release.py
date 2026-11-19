@@ -248,12 +248,186 @@ class PublicReleaseCase(SFCase):
                                 cwd=self.root, env=env, text=True, capture_output=True, check=True).stdout.strip()
         public.run(["git", "update-ref", "HEAD", commit], self.root)
         before = public.run(["git", "cat-file", "-p", commit], self.root, binary=True)
-        public.run(["git", "tag", "-a", "public-fixture", "-m", "safe tag"], self.root)
+        tag_env = public.git_env()
+        tag_env["GIT_COMMITTER_DATE"] = "2001-01-01T00:00:00+0000"
+        tag_env["GIT_AUTHOR_DATE"] = "2001-01-01T00:00:00+0000"
+        subprocess.run(["git", "tag", "-a", "public-fixture", "-m", "safe tag"],
+                       cwd=self.root, env=tag_env, check=True)
         public.audit_history(self.root, "/private-home")
         self.assertEqual(before, public.run(["git", "cat-file", "-p", commit], self.root, binary=True))
         public.run(["git", "commit", "--allow-empty", "-qm", "old owner " + owner], self.root)
         with self.assertRaisesRegex(ValueError, "outside GitHub namespace"):
             public.audit_history(self.root, "/private-home")
+
+    def test_api_history_fallback_walks_commits_trees_and_blobs(self):
+        commits = {
+            "new": {"sha": "new", "parents": [{"sha": "old"}],
+                    "tree": {"sha": "tree-new"}, "message": "safe new"},
+            "old": {"sha": "old", "parents": [],
+                    "tree": {"sha": "tree-old"}, "message": "safe old"},
+        }
+        trees = {
+            "tree-new": [{"path": "README.md", "type": "blob", "sha": "blob-new"}],
+            "tree-old": [{"path": "README.md", "type": "blob", "sha": "blob-old"}],
+        }
+        blobs = {"blob-new": b"safe new", "blob-old": b"safe old"}
+
+        def api(path):
+            if path.startswith("git/commits/"):
+                return commits[path.rsplit("/", 1)[1]]
+            if path.startswith("git/trees/"):
+                tree_id = path.rsplit("/", 1)[1].split("?", 1)[0]
+                return {"tree": trees[tree_id], "truncated": False}
+            if path.startswith("git/blobs/"):
+                return {"encoding": "base64", "content": __import__("base64").b64encode(
+                    blobs[path.rsplit("/", 1)[1]]).decode()}
+            raise AssertionError(path)
+
+        with patch.object(public, "github_api_json", side_effect=api):
+            self.assertTrue(public.audit_public_history_api("new", "/private-home"))
+
+    def test_api_history_fallback_accepts_wrapped_base64_blob_content(self):
+        base = {"sha": "new", "parents": [], "tree": {"sha": "tree"}, "message": "safe"}
+        payload = b"safe blob content that crosses a wrapped base64 line boundary " * 4
+        encoded = __import__("base64").b64encode(payload).decode()
+        wrapped = "\n".join(encoded[index:index + 60] for index in range(0, len(encoded), 60)) + "\n"
+
+        def api(path):
+            if path == "git/commits/new":
+                return base
+            if path.startswith("git/trees/"):
+                return {"tree": [{"path": "README.md", "type": "blob", "sha": "blob"}], "truncated": False}
+            if path == "git/blobs/blob":
+                return {"encoding": "base64", "content": wrapped}
+            raise AssertionError(path)
+
+        with patch.object(public, "github_api_json", side_effect=api):
+            self.assertTrue(public.audit_public_history_api("new", "/private-home"))
+
+    def test_api_history_fallback_rejects_sensitive_historical_blob(self):
+        def api(path):
+            if path == "git/commits/new":
+                return {"sha": "new", "parents": [], "tree": {"sha": "tree"}, "message": "safe"}
+            if path.startswith("git/trees/"):
+                return {"tree": [{"path": "README.md", "type": "blob", "sha": "blob"}], "truncated": False}
+            if path == "git/blobs/blob":
+                return {"encoding": "base64", "content": __import__("base64").b64encode(
+                    b"ghp_" + b"a" * 30).decode()}
+            raise AssertionError(path)
+
+        with patch.object(public, "github_api_json", side_effect=api), self.assertRaisesRegex(
+                ValueError, "credential"):
+            public.audit_public_history_api("new", "/private-home")
+
+    def test_github_api_json_uses_authenticated_gh_after_api_rate_limit(self):
+        from urllib.error import HTTPError
+
+        error = HTTPError("https://api.github.com/test", 403, "rate limit", {}, None)
+        with patch.object(public, "urlopen", side_effect=error), \
+                patch.object(public.subprocess, "run") as run:
+            expected = "repos/%s/test" % public.REPO
+            run.return_value = subprocess.CompletedProcess(
+                ["gh", "api", expected], 0, '{"ok": true}\n', "")
+            self.assertEqual(public.github_api_json("test"), {"ok": True})
+            self.assertEqual(run.call_args.args[0], ["gh", "api", expected])
+
+    def test_github_api_json_preserves_non_rate_limit_http_errors(self):
+        from urllib.error import HTTPError
+
+        error = HTTPError("https://api.github.com/test", 500, "server error", {}, None)
+        with patch.object(public, "urlopen", side_effect=error), \
+                patch.object(public.subprocess, "run") as run:
+            with self.assertRaises(HTTPError):
+                public.github_api_json("test")
+            run.assert_not_called()
+
+    def test_github_api_json_reports_authenticated_gh_failure(self):
+        from urllib.error import HTTPError
+
+        error = HTTPError("https://api.github.com/test", 403, "rate limit", {}, None)
+        with patch.object(public, "urlopen", side_effect=error), \
+                patch.object(public.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(
+                ["gh", "api", "test"], 1, "", "permission denied")
+            with self.assertRaises(HTTPError):
+                public.github_api_json("test")
+
+    def test_github_api_json_reads_json_and_rejects_non_object(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'{"ok": true}'
+
+        with patch.object(public, "urlopen", return_value=Response()) as open_url:
+            self.assertEqual(public.github_api_json("git/ref/heads/public-source"), {"ok": True})
+            request = open_url.call_args.args[0]
+            self.assertIn("api.github.com", request.full_url)
+            self.assertEqual(request.headers["X-github-api-version"], "2022-11-28")
+
+        class BadResponse(Response):
+            def read(self): return b'[]'
+
+        with patch.object(public, "urlopen", return_value=BadResponse()), self.assertRaisesRegex(
+                ValueError, "must be an object"):
+            public.github_api_json("git/ref/heads/public-source")
+
+    def test_api_history_fallback_rejects_truncated_tree_invalid_blob_and_bad_encoding(self):
+        base = {"sha": "new", "parents": [], "tree": {"sha": "tree"}, "message": "safe"}
+        with patch.object(public, "github_api_json", side_effect=lambda path: base if path == "git/commits/new"
+                          else {"tree": [], "truncated": True}), self.assertRaisesRegex(ValueError, "truncated"):
+            public.audit_public_history_api("new", "/private-home")
+
+        with patch.object(public, "github_api_json", side_effect=lambda path: base if path == "git/commits/new"
+                          else {"tree": "invalid", "truncated": False}), self.assertRaisesRegex(ValueError, "invalid"):
+            public.audit_public_history_api("new", "/private-home")
+
+        def bad_encoding(path):
+            if path == "git/commits/new": return base
+            if path.startswith("git/trees/"): return {"tree": [{"path": "x", "type": "blob", "sha": "blob"}], "truncated": False}
+            return {"encoding": "utf-8", "content": "not-base64"}
+
+        with patch.object(public, "github_api_json", side_effect=bad_encoding), self.assertRaisesRegex(ValueError, "encoding"):
+            public.audit_public_history_api("new", "/private-home")
+
+        def bad_blob(path):
+            if path == "git/commits/new": return base
+            if path.startswith("git/trees/"): return {"tree": [{"path": "x", "type": "blob", "sha": "blob"}], "truncated": False}
+            return {"encoding": "base64", "content": "%%%"}
+
+        with patch.object(public, "github_api_json", side_effect=bad_blob), self.assertRaisesRegex(ValueError, "invalid"):
+            public.audit_public_history_api("new", "/private-home")
+
+    def test_api_history_fallback_rejects_parent_cycle_and_skips_non_blob_entries(self):
+        cycle = {"sha": "new", "parents": [{"sha": "new"}], "tree": {"sha": "tree"}, "message": "safe"}
+        def cyclic_api(path):
+            if path == "git/commits/new": return cycle
+            return {"tree": [], "truncated": False}
+        with patch.object(public, "github_api_json", side_effect=cyclic_api), self.assertRaisesRegex(ValueError, "parent cycle"):
+            public.audit_public_history_api("new", "/private-home")
+
+        base = {"sha": "new", "parents": [], "tree": {"sha": "tree"}, "message": "safe"}
+        def entries(path):
+            if path == "git/commits/new": return base
+            if path.startswith("git/blobs/"):
+                return {"encoding": "base64", "content": __import__("base64").b64encode(b"safe").decode()}
+            return {"tree": [{"path": "AGENTS.md", "type": "blob", "sha": "blob"},
+                             {"path": "folder", "type": "tree"}, {"path": "missing", "type": "blob"}],
+                    "truncated": False}
+        with patch.object(public, "github_api_json", side_effect=entries):
+            self.assertRaisesRegex(ValueError, "internal history entry: AGENTS.md", public.audit_public_history_api,
+                                   "new", "/private-home")
+
+        with patch.object(public, "run", side_effect=subprocess.CalledProcessError(128, "git")), \
+                patch.object(public, "github_api_json", return_value={"object": {"sha": "tip"}}), \
+                patch.object(public, "audit_public_history_api", return_value=True) as audit:
+            self.assertTrue(public.audit_public_history(self.root))
+        audit.assert_called_once_with("tip", str(Path.home()), [])
+
+    def test_api_history_fallback_requires_a_tip_sha(self):
+        with patch.object(public, "run", side_effect=subprocess.CalledProcessError(128, "git")), \
+                patch.object(public, "github_api_json", return_value={"object": {}}), \
+                self.assertRaisesRegex(ValueError, "no commit SHA"):
+            public.audit_public_history(self.root)
 
     def test_history_preflight_uses_local_remote_and_does_not_push_or_move_private_head(self):
         self.init_repo()
@@ -432,6 +606,15 @@ class PublicReleaseCase(SFCase):
                 continue  # setUp 已放入真实的对外文档，不能被占位文字覆盖
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture for " + name + "\n")
+
+    def test_export_keeps_architecture_contract_required_by_public_architecture_tests(self):
+        self.write_docs_dir_files(["docs/agents/architecture_contract.json"])
+        source = ROOT / "docs/agents/architecture_contract.json"
+        (self.root / "docs/agents/architecture_contract.json").write_bytes(source.read_bytes())
+        self.init_repo()
+        out = self.root.parent / "architecture-contract"
+        public.export_source(out, self.root)
+        self.assertEqual((out / "docs/agents/architecture_contract.json").read_bytes(), source.read_bytes())
 
     def test_export_keeps_only_the_registered_docs_dir_files(self):
         internal = ("docs/TODO.md", "docs/COMMIT_WORKFLOW.md", "docs/PERFORMANCE_AUDIT_2026-10-15.md",

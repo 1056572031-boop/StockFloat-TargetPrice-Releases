@@ -97,6 +97,18 @@ class TestReleaseEvidence(SFCase):
                                  tool.expanded_scope(root, ["record.json"]))
             self.assertEqual("source", picked_value["source_start"])
 
+    def test_receipt_selection_prefers_highest_evidence_level(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sessions = Path(directory) / "sessions"
+            low_path, _ = self.receipt(sessions / "low", "delivery", "source", level=2)
+            high_path, _ = self.receipt(sessions / "high", "delivery", "source", level=3)
+
+            selected = tool.pick_receipt(sessions, "delivery", "source")
+
+            self.assertNotEqual(low_path, selected[0])
+            self.assertEqual(high_path, selected[0])
+            self.assertEqual(3, selected[1]["level"])
+
     def test_pre_record_success_and_rejections(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

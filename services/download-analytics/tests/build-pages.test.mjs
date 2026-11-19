@@ -159,6 +159,23 @@ test("the stylesheet is inlined into the built page and the landing policy allow
   }
 });
 
+test("the built landing stylesheet centers market coverage and preserves accessible hover motion", async () => {
+  const built = build({ SF_DMG_PATH: "/nonexistent/Skyrocket-V9.8.7.dmg", HOME: mkdtempSync(join(tmpdir(), "dl-home-")) });
+  try {
+    const mod = await import(pathToFileURL(join(built.out, "_worker.js")).href);
+    const page = mod.page("9.8.7", null);
+    const css = page.match(/<style>([\s\S]*?)<\/style>/)?.[1] || "";
+
+    assert.match(css, /\.market-coverage\{[^}]*text-align:center/);
+    assert.match(css, /\.market-tags\{[^}]*justify-content:center/);
+    assert.match(css, /\.market-tags span:hover\{[^}]*transform:translateY\(-1px\)/);
+    assert.match(css, /\.market-tags span:hover\{[^}]*border-color:rgba\(255,101,117,\.72\)/);
+    assert.match(css, /@media\(prefers-reduced-motion:reduce\)\{[^}]*\.market-tags span\{transition:none[^}]*\}[^}]*\.market-tags span:hover\{transform:none/);
+  } finally {
+    rmSync(built.work, { recursive: true, force: true });
+  }
+});
+
 test("a stylesheet that could break out of the inline tag fails the build", () => {
   const work = mkdtempSync(join(tmpdir(), "dl-style-test-"));
   try {

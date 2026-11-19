@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DEVELOPMENT_BRANCH, SITE_PATHSPEC, assetDrift, cleanBuildEnv, deployProvenanceArgs, dirtySiteInputs,
-  dirtyPageInputs, isSiteInput, liveAssetStamps, provenanceProblems, readbackCacheHit, shipProblems, stampOf, syncVerdict,
+  dirtyPageInputs, isSiteInput, liveAssetStamps, provenanceProblems, publishedAssetVersion, readbackCacheHit, shipProblems, stampOf, syncVerdict,
   findPreviewForPage, journalVerdict, pageFingerprint, shouldRetryReadback, sourceDigest, stampOfPage, stampOfTool, toolFingerprint,
 } from "../site-inputs.mjs";
 
@@ -205,7 +205,7 @@ test("a rejected deployment does not hide a valid one behind it", () => {
   assert.equal(findPreviewForPage([preview("x", FP, { environment: "production" }), preview("y", FP, { latest_stage: { name: "deploy", status: "failure" } }), good], FP), good);
 });
 
-const GOOD = () => ({ branch: DEVELOPMENT_BRANCH, dirty: [], localVersion: "1.4.105", liveVersion: "1.4.105", previewDeploymentId: "abc", fingerprint: FP, testsPassed: true });
+const GOOD = () => ({ branch: DEVELOPMENT_BRANCH, dirty: [], assetVersion: "1.4.105", liveVersion: "1.4.105", previewDeploymentId: "abc", fingerprint: FP, testsPassed: true });
 const only = (state, pattern, why) => {
   const problems = shipProblems(state);
   assert.equal(problems.length, 1, `${why}：应当恰好一条，实际 ${JSON.stringify(problems)}`);
@@ -249,10 +249,22 @@ test("the uncommitted list is cut after five names with a count of the rest", ()
   assert.ok(eight.includes("e.mjs") && !eight.includes("f.mjs"));
 });
 
-test("a version difference between source and live site is the only problem when versions differ", () => {
-  const message = only({ ...GOOD(), localVersion: "1.4.106" }, /site source says 1\.4\.106 but the live site serves 1\.4\.105/, "本地比线上新");
+test("a downloaded asset version different from application source does not block page deployment", () => {
+  assert.deepEqual(shipProblems({ ...GOOD(), appVersion: "1.4.117", assetVersion: "1.4.118", liveVersion: "1.4.118" }), []);
+});
+
+test("the explicitly selected published asset version is strict and otherwise falls back to the app version", () => {
+  assert.equal(publishedAssetVersion({ SF_APP_VERSION: "1.4.118" }, "1.4.117"), "1.4.118");
+  assert.equal(publishedAssetVersion({}, "1.4.117"), "1.4.117");
+  for (const bad of ["", "1.4", "v1.4.118", "1.4.118 ", "1.4.118.1"]) {
+    assert.throws(() => publishedAssetVersion({ SF_APP_VERSION: bad }, "1.4.117"), /published asset version/, JSON.stringify(bad));
+  }
+});
+
+test("a version difference between selected assets and the live site is the only problem when versions differ", () => {
+  const message = only({ ...GOOD(), assetVersion: "1.4.106" }, /download assets say 1\.4\.106 but the live site serves 1\.4\.105/, "本地资产比线上新");
   assert.match(message, /release is in flight/);
-  only({ ...GOOD(), liveVersion: "1.4.106" }, /site source says 1\.4\.105 but the live site serves 1\.4\.106/, "线上比本地新");
+  only({ ...GOOD(), liveVersion: "1.4.106" }, /download assets say 1\.4\.105 but the live site serves 1\.4\.106/, "线上比本地新");
 });
 
 test("a missing preview is the only problem and names the fingerprint", () => {

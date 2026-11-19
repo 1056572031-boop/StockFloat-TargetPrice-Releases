@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "rules": {
+    "integration": {
+      "summary": "新功能先由独立业务模块和控制器承载，再由主窗口装配。",
+      "entry_pattern": [
+        "pure_logic_module",
+        "feature_controller",
+        "window_assembly"
+      ],
+      "forbidden_shortcuts": [
+        "new_feature_reads_host_private_state",
+        "ui_writes_storage_or_network",
+        "business_rule_in_rendering"
+      ]
+    },
+    "state_ownership": {
+      "summary": "每个跨调用方状态只有一个写入者，并声明读取者、清理时机和诊断出口。",
+      "required_fields": [
+        "name",
+        "owner",
+        "write_scope",
+        "diagnostic_port",
+        "shutdown"
+      ]
+    },
+    "window_budget": {
+      "allowed": [
+        "controller_assembly",
+        "signal_connection",
+        "lifecycle_wiring"
+      ],
+      "requires_review": [
+        "new_business_state",
+        "new_private_cross_module_callback",
+        "new_diagnostic_field"
+      ],
+      "forbidden": [
+        "new_network_request_in_window",
+        "new_sqlite_write_in_window",
+        "new_business_rule_in_window"
+      ]
+    },
+    "diagnostics": {
+      "summary": "诊断采集只读取稳定的只读出口，不读取功能模块的私有全局状态。",
+      "accepted_ports": [
+        "diagnostics_method",
+        "read_only_function",
+        "snapshot_object"
+      ],
+      "private_state_access": "forbidden"
+    },
+    "increment_gate": {
+      "tool": "tools/architecture_increment_gate.py",
+      "scope": "relative_to_HEAD_added_python_lines",
+      "rules": [
+        "window.external_io",
+        "integration.host_private_state",
+        "diagnostics.side_effect"
+      ],
+      "empty_findings_is_required": true
+    }
+  },
+  "state_owners": [
+    {
+      "name": "quote_runtime_threads",
+      "owner": "sf_quote_runtime.py:QuoteRuntimeController",
+      "write_scope": "行情与分时后台线程句柄；由控制器启动、停止和回收",
+      "diagnostic_port": "sf_quote_runtime.py:diagnostics",
+      "shutdown": "窗口退出流程停止并回收行情线程"
+    },
+    {
+      "name": "quote_presentation_state",
+      "owner": "sf_quote_presentation.py:QuotePresentationController",
+      "write_scope": "主线程展示状态；按切换标的重置并接收最新行情",
+      "diagnostic_port": "sf_quote_presentation.py:diagnostics",
+      "shutdown": "窗口退出时不再接收后台投递"
+    },
+    {
+      "name": "target_alert_state",
+      "owner": "sf_target_controller.py:TargetController",
+      "write_scope": "目标价状态对象；通过目标价生命周期协调器更新",
+      "diagnostic_port": "sf_target_controller.py:diagnostics",
+      "shutdown": "退出前由目标价生命周期负责最后一次落盘"
+    },
+    {
+      "name": "update_flow_state",
+      "owner": "stock_float_window.py:FloatWindow",
+      "write_scope": "更新交互状态仍由主窗口兼容承载；新增更新状态须先收窄 host 接口",
+      "diagnostic_port": "sf_update_flow.py:update_flow_diagnostics",
+      "shutdown": "退出或更新交接时关闭交互并取消后台任务"
+    }
+  ]
+}

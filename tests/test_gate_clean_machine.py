@@ -50,6 +50,121 @@ def _verdict(cases, prefix):
 class CleanMachineStillTellsTheTruth(SFCase):
     """把"这台机器没装过程序"搬到测试里，看闸门怎么说自己。"""
 
+    def test_default_helper_route_passes_utf8_locale_to_all_packages(self):
+        seen = []
+
+        def fake_helper(_helper, _work, name, **kwargs):
+            seen.append((name, kwargs.get("locale")))
+            return ("failed", "archive_layout_invalid" if name == "WrongName.app"
+                    else "new_app_signature_invalid")
+
+        with tempfile.TemporaryDirectory(prefix="sf_r4_locale_") as tmp, \
+                patch.object(VIP, "user_lang", return_value="en_US.UTF-8"), \
+                patch.object(VIP, "run_helper", side_effect=fake_helper):
+            ok, note = VIP.check_helper_accepts_both_names(pathlib.Path(tmp))
+        self.assertTrue(ok, note)
+        self.assertGreaterEqual(len(seen), 3)
+        self.assertTrue(all(locale == "en_US.UTF-8" for _, locale in seen), seen)
+
+    def test_helper_subprocess_receives_all_utf8_locale_variables(self):
+        with tempfile.TemporaryDirectory(prefix="sf_helper_locale_") as tmp, \
+                patch.object(VIP, "make_fake_app"), patch.object(VIP, "zip_from"), \
+                patch.object(VIP, "sha256_of", return_value="digest"), \
+                patch.object(VIP, "run", return_value=(1, "no result")) as run:
+            VIP.run_helper(pathlib.Path(tmp) / "helper.sh", pathlib.Path(tmp),
+                           VIP.CURRENT_APP_NAME, locale="en_US.UTF-8")
+        self.assertEqual(run.call_args.kwargs["env"],
+                         {"LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8",
+                          "LC_CTYPE": "en_US.UTF-8"})
+
+    def test_targeted_mutations_skip_unrelated_icon_oracle(self):
+        calls = {}
+
+        def route(work, **kwargs):
+            calls[pathlib.Path(work).name] = kwargs.get("check_appearance")
+            return False, "还露在显示名里"
+
+        with tempfile.TemporaryDirectory(prefix="sf_mutation_scope_") as tmp, \
+                patch.object(VIP, "check_dmg_launcher_route", side_effect=route):
+            VIP.self_test(pathlib.Path(tmp))
+        self.assertIsNone(calls["s2"], calls)  # 默认 True
+        self.assertFalse(calls["s8"], calls)
+        self.assertFalse(calls["s9"], calls)
+
+    def test_every_install_route_skips_before_build_without_utf8_locale(self):
+        with tempfile.TemporaryDirectory(prefix="sf_no_locale_") as tmp:
+            for name in ("check_dmg_launcher_route", "check_upgrade_route",
+                         "check_running_instance_route", "check_corrupt_source_route",
+                         "check_untaggable_scope_route"):
+                with self.subTest(route=name), patch.object(VIP, "user_lang", return_value=None), \
+                        patch.object(VIP, "build_user_dmg", side_effect=AssertionError("built before locale check")):
+                    with self.assertRaises(VIP.NoFixture):
+                        getattr(VIP, name)(pathlib.Path(tmp))
+
+    def test_s6_uses_explicit_available_utf8_locale(self):
+        with tempfile.TemporaryDirectory(prefix="sf_s6_locale_") as tmp:
+            with patch.object(VIP, "user_lang", return_value="en_US.UTF-8"), \
+                    patch.object(VIP, "check_helper_accepts_both_names", return_value=(True, "ok")) as helper:
+                VIP.self_test(pathlib.Path(tmp))
+        calls = [call for call in helper.call_args_list if call.kwargs.get("locale")]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].kwargs["locale"], "en_US.UTF-8")
+
+    def test_s6_rejects_preflight_failure_for_wrong_package(self):
+        with tempfile.TemporaryDirectory(prefix="sf_s6_wrong_name_") as tmp:
+            with patch.object(VIP, "check_helper_accepts_both_names",
+                              return_value=(False, "WrongName.app → failed/archive_preflight_failed")):
+                cases = VIP.self_test(pathlib.Path(tmp))
+        got, note = _verdict(cases, "S6 中文")
+        self.assertFalse(got, note)
+
+    def test_earlier_mutations_reject_unrelated_route_failures(self):
+        with tempfile.TemporaryDirectory(prefix="sf_mutation_reason_") as tmp:
+            unrelated = (False, "unrelated fixture failure")
+            with patch.object(VIP, "check_dmg_launcher_route", return_value=unrelated), \
+                    patch.object(VIP, "check_curl_route", return_value=unrelated), \
+                    patch.object(VIP, "check_name_source", return_value=unrelated), \
+                    patch.object(VIP, "check_helper_accepts_both_names", return_value=unrelated):
+                cases = VIP.self_test(pathlib.Path(tmp))
+        for prefix in ("S1 ", "S2 ", "S3 ", "S3b ", "S4 ", "S6 中文"):
+            got, note = _verdict(cases, prefix)
+            self.assertFalse(got, "%s 把无关失败当成捕获：%s" % (prefix, note))
+
+    def test_mutation_reason_converts_missing_locale_to_skip(self):
+        with self.assertRaises(VIP.NoFixture):
+            VIP._mutation_reason((False, "本机没有 UTF-8 locale，无法验证"), ("expected",))  # discipline-ok(R5): 测量变异判据自己的三态转换
+
+    def test_default_route_reports_missing_locale_as_skip(self):
+        names = tuple(VIP.route_names())
+        patches = {name: lambda *_: (True, "ok") for name in names}
+        patches.pop("check_dmg_launcher_route")
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["verify_install_paths.py"]), \
+                patch.multiple(VIP, **patches), \
+                patch.object(VIP, "user_lang", return_value=None), \
+                contextlib.redirect_stdout(buf):
+            rc = VIP.main()
+        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertIn("跳过", buf.getvalue())
+        self.assertIn("UTF-8 locale", buf.getvalue())
+
+    def test_route_mutations_do_not_count_unrelated_failures_as_caught(self):
+        with tempfile.TemporaryDirectory(prefix="sf_mutation_verdict_") as tmp:
+            with patch.object(VIP, "check_dmg_launcher_route", return_value=(False, "安装脚本 rc=1：签名失败")), \
+                    patch.object(VIP, "check_untaggable_scope_route", return_value=(False, "安装脚本发生无关错误")):
+                cases = VIP.self_test(pathlib.Path(tmp))
+        for prefix in ("S7 ", "S8 ", "S9 清", "S9b 标签", "S10 "):
+            got, note = _verdict(cases, prefix)
+            self.assertIsNot(got, True, "%s 把无关错误当成抓到变异：%s" % (prefix, note))
+
+    def test_missing_utf8_locale_is_skipped_not_counted_as_mutation(self):
+        with tempfile.TemporaryDirectory(prefix="sf_mutation_locale_") as tmp:
+            with patch.object(VIP, "user_lang", return_value=None):
+                cases = VIP.self_test(pathlib.Path(tmp))
+        for prefix in ("S7 ", "S8 ", "S9 清", "S9b 标签"):
+            got, note = _verdict(cases, prefix)
+            self.assertIsNone(got, "%s 应报告前提缺失：%s" % (prefix, note))
+
     def test_缺真产物时自检档一条都不许落(self):
         """真跑一遍全部变异，只把"取真产物"那一步抽掉。
 
@@ -71,8 +186,8 @@ class CleanMachineStillTellsTheTruth(SFCase):
         absent = [label for label, got, _ in cases if got is None]
         self.assertEqual(absent, [],
                          "自检档里还有变异依赖真产物（轻夹具没接上）：%s" % absent)
-        missed = [label for label, got, _ in cases if got is False]
-        self.assertEqual(missed, [], "这些种错没被抓到：%s" % missed)
+        missed = [(label, note) for label, got, note in cases if got is False]
+        self.assertEqual(missed, [], "这些种错没被抓到（含原因）：%s" % missed)
         self.assertGreaterEqual(len(cases), 13,
                                 "变异数量掉到 %d 处：有判据被删掉了" % len(cases))
         for prefix in ("S1", "S2", "S6", "S7", "S8", "S9 ", "S9b", "S10"):

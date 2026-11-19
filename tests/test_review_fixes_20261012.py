@@ -183,12 +183,18 @@ class NotifyNeverAbortsWithoutBundle(SFCase):
         self.assertIn("DONE", proc.stdout, "request_authorization 在没身份时应当自己收住并返回")
 
     def test_公开入口按机器真实身份给答案且绝不崩(self):
-        code = ("import sys; sys.path.insert(0, %r); import sf_notify\n"
+        code = ("import sys; sys.path.insert(0, %r); import time; import sf_notify\n"
                 "print('IDENT', sf_notify.has_bundle_identity())\n"
-                "print('STATUS', sf_notify.authorization_status())\n") % (str(ROOT),)
+                "print('STATUS', sf_notify.authorization_status())\n"
+                "deadline = time.monotonic() + 10.0\n"
+                "while sf_notify.delivery_stats()['pending']['query_in_flight'] and time.monotonic() < deadline:\n"
+                "    time.sleep(0.05)\n"
+                "print('DONE_AFTER_QUERY', not sf_notify.delivery_stats()['pending']['query_in_flight'])\n") % (str(ROOT),)
         proc = self._child(code)
         self.assertEqual(proc.returncode, 0, (proc.stdout + proc.stderr)[-500:])
         self.assertNotIn("Terminating app", proc.stderr)
+        self.assertIn("DONE_AFTER_QUERY True", proc.stdout,
+                      "退出前查询记账必须结束；这不证明原生回调已返回")
         ident = self._flag(proc.stdout, "IDENT")
         status = self._flag(proc.stdout, "STATUS")
         if ident == "False":

@@ -49,7 +49,7 @@ class UpdateFlowController:
         pending = getattr(host, "_update_pending", None)
         if manual and pending is not None:
             if getattr(host, "_update_downloading", False):
-                host._show_update_message("更新进行中", "正在下载更新，请稍候。")
+                host.show_background_download_progress()
                 return
             host._prompt_update(pending)
             return
@@ -89,7 +89,7 @@ class UpdateFlowController:
         if host._update_downloading:
             # ③ 正在下载：更新已经在跑，说清楚在跑什么，别让人以为这次点击无效。
             if manual:
-                host._show_update_message("更新进行中", "正在下载更新，请稍候。")
+                host.show_background_download_progress()
             return
         host._update_checking = True
         host._update_transition_pending = True
@@ -239,6 +239,7 @@ class UpdateFlowController:
             return
         host._update_downloading = True
         host._update_cancel = threading.Event()
+        host.reset_update_progress()
         host._update_prompt_when_ready = bool(prompt_when_ready)
         # 检查提示已在 _prompt_update 中结束并释放后，才允许进入下载阶段。
         if show_progress:

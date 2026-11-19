@@ -639,7 +639,9 @@ def check_dmg_launcher_route(work: Path, stamp_script: bool = False,
                              inner_tag: str | None = "removable",
                              force_lang: str | None = None,
                              fixture: str = "real",
-                             check_appearance: bool = True) -> tuple[bool, str]:
+                             check_appearance: bool = True,
+                             check_icon: bool | None = None,
+                             check_extension: bool | None = None) -> tuple[bool, str]:
     """R2：带标签的 DMG 里，脚本本身不带标签（所以能双击）；跑完装出的 app 递归读回无标签。
 
     2026-10-12 起这条还看**卷里那条目长什么样**：图标必须是本轮画出来的图标，
@@ -651,33 +653,45 @@ def check_dmg_launcher_route(work: Path, stamp_script: bool = False,
       · 源包**内层文件**先贴一枚标签（`inner_tag="removable"`），装完必须递归读回为空；
       · 全程用用户那一侧的 UTF-8 locale（`force_lang` 只给变异自检用）。
     """
-    image, _ = build_user_dmg(work, "r2", stamp_script=stamp_script,
-                              with_icon=with_icon and check_appearance,
-                              hide_ext=hide_ext and check_appearance,
-                              script_text=script_text, inner_tag=inner_tag,
-                              fixture=fixture)
     lang = "C" if force_lang == "C" else user_lang()
     ok, why = locale_guard(lang or "")
     if not ok:
+        if not lang:
+            raise NoFixture(why)
         return False, why
+    if check_icon is None:
+        check_icon = check_appearance
+    if check_extension is None:
+        check_extension = check_appearance
+    image, _ = build_user_dmg(work, "r2", stamp_script=stamp_script,
+                              with_icon=with_icon and check_icon,
+                              hide_ext=hide_ext and check_extension,
+                              script_text=script_text, inner_tag=inner_tag,
+                              fixture=fixture)
     mnt = work / "r2mnt"
     try:
         mount(image, mnt)
         script, target_dir = volume_script(mnt, work, "r2apps")
-        if check_appearance:
-            look_ok, look_note = AIC.check(script)
-            if not look_ok:
-                return False, ("卷内脚本的外观不对（用户看到的仍是一页写着 COMMAND 的缩略图，"
-                               "或仍带着 .command 后缀）：" + look_note)
         if has_quarantine(script):
             return False, "卷内脚本被贴了标签 —— 双击会被 Gatekeeper 拦，这条路线不成立"
+        if check_icon:
+            icon_ok, icon_note = AIC.check_icon(script)
+            if not icon_ok:
+                return False, "卷内脚本的图标不对：" + icon_note
+        if check_extension and not AIC.extension_hidden(script):
+            return False, ("卷内脚本的显示名仍带 `.command` 后缀（卷里显示为「%s」）"
+                           % (AIC.displayed_name(script) or script.name))
+        if check_appearance and check_icon and check_extension:
+            look_ok, look_note = AIC.check(script)
+            if not look_ok:
+                return False, "卷内脚本外观核验失败：" + look_note
         # 这一条不测"旧版在跑"（R2c 才是）：本机上「应用程序」里那份与临时目录里那份
         # 在 pgrep 的名字口径下长得一样，所以这里显式声明跳过那一步。
         rc, msg, _ = run_from_volume(script, work, target_dir, lang=lang,
                                      SF_INSTALL_ALLOW_RUNNING="1")
         installed = target_dir / CURRENT_APP_NAME
         if rc != 0:
-            return False, "安装脚本 rc=%s：%s" % (rc, msg[-320:])
+            return False, "安装脚本 rc=%s：%s" % (rc, msg[-2000:])
         if not installed.is_dir():
             return False, "脚本退出 0 却没装上任何东西（假绿）\n" + msg[-320:]
         still, where = has_quarantine_anywhere(installed)
@@ -700,9 +714,11 @@ def check_upgrade_route(work: Path, fixture: str = "real") -> tuple[bool, str]:
     「有旧版 → 移废纸篓 → 装新版」这整段从没被执行过，而那一段里正藏着一枚
     UTF-8 locale 下的必现崩溃（`$DEST，`）与"校验排在破坏之后"的顺序缺陷。
     """
-    image, _ = build_user_dmg(work, "r2b", fixture=fixture)
     lang = user_lang()
-    ok, why = locale_guard(lang or "")
+    if not lang:
+        raise NoFixture("本机没有 UTF-8 locale，站在安全一侧跑这条判据没有意义")
+    image, _ = build_user_dmg(work, "r2b", fixture=fixture)
+    ok, why = locale_guard(lang)
     if not ok:
         return False, why
     mnt = work / "r2bmnt"
@@ -735,9 +751,11 @@ def check_running_instance_route(work: Path, fixture: str = "real") -> tuple[boo
     用户看到的就是"按指引装了新版，问题怎么还在"。
     只等不杀：与更新助手同一条理由，强杀会截断「退出时保存配置」。
     """
-    image, _ = build_user_dmg(work, "r2c", fixture=fixture)
     lang = user_lang()
-    ok, why = locale_guard(lang or "")
+    if not lang:
+        raise NoFixture("本机没有 UTF-8 locale，站在安全一侧跑这条判据没有意义")
+    image, _ = build_user_dmg(work, "r2c", fixture=fixture)
+    ok, why = locale_guard(lang)
     if not ok:
         return False, why
     marker = "6%s" % (abs(hash(str(work))) % 10 ** 5)
@@ -788,9 +806,11 @@ def check_corrupt_source_route(work: Path, fixture: str = "real") -> tuple[bool,
     于是坏包安装失败时，安装位置躺着那份坏的、能用的旧版在废纸篓里 ——
     用户手上没有可用程序，而这正是他最需要一个还能用的程序的时机。
     """
-    image, _ = build_user_dmg(work, "r2d", corrupt_payload=True, fixture=fixture)
     lang = user_lang()
-    ok, why = locale_guard(lang or "")
+    if not lang:
+        raise NoFixture("本机没有 UTF-8 locale，站在安全一侧跑这条判据没有意义")
+    image, _ = build_user_dmg(work, "r2d", corrupt_payload=True, fixture=fixture)
+    ok, why = locale_guard(lang)
     if not ok:
         return False, why
     mnt = work / "r2dmnt"
@@ -822,10 +842,12 @@ def check_untaggable_scope_route(work: Path, script_text: str | None = None,
     实测两件事一起成立，这个现场才做得出来：quarantine 与 uchg 都能活着穿过
     ditto 与 HFS+/UDZO 卷，所以种在造卷之前就够了。
     """
+    lang = user_lang()
+    if not lang:
+        raise NoFixture("本机没有 UTF-8 locale，站在安全一侧跑这条判据没有意义")
     image, _ = build_user_dmg(work, "r2e", inner_tag="immutable",
                               script_text=script_text, fixture=fixture)
-    lang = user_lang()
-    ok, why = locale_guard(lang or "")
+    ok, why = locale_guard(lang)
     if not ok:
         return False, why
     mnt = work / "r2emnt"
@@ -874,7 +896,7 @@ def check_drag_and_release_route(work: Path) -> tuple[bool, str]:
 
 
 def run_helper(helper: Path, work: Path, top_name: str, bundle_id: str = BUNDLE_ID,
-               version: str = APP_VERSION) -> tuple[str, str]:
+               version: str = APP_VERSION, locale: str | None = None) -> tuple[str, str]:
     """真跑一次更新助手（目标目录在临时区），返回 result.json 里的 status/message。"""
     d = work / ("h_" + top_name[:-4] + "_" + uuid.uuid4().hex[:6])
     d.mkdir(parents=True, exist_ok=True)
@@ -888,7 +910,8 @@ def run_helper(helper: Path, work: Path, top_name: str, bundle_id: str = BUNDLE_
                    "--pid", "2147483646", "--archive", str(archive),
                    "--sha256", sha256_of(archive), "--version", version,
                    "--target", str(old_dir / CURRENT_APP_NAME),
-                   "--result", str(result)])
+                   "--result", str(result)],
+                  env={"LANG": locale, "LC_ALL": locale, "LC_CTYPE": locale} if locale else None)
     payload = {}
     if result.is_file():
         try:
@@ -900,7 +923,8 @@ def run_helper(helper: Path, work: Path, top_name: str, bundle_id: str = BUNDLE_
     return str(payload.get("status", "?")), str(payload.get("message", "?"))
 
 
-def check_helper_accepts_both_names(work: Path, helper: Path | None = None) -> tuple[bool, str]:
+def check_helper_accepts_both_names(work: Path, helper: Path | None = None,
+                                    locale: str | None = None) -> tuple[bool, str]:
     """R4：助手必须认得改名前后的两种包内顶层名，而且真的能把包**解到底**。
 
     判据从 v1.4.59 起收紧了一档，因为原来的写法放过了一次真实缺陷：旧判据只要求
@@ -911,15 +935,21 @@ def check_helper_accepts_both_names(work: Path, helper: Path | None = None) -> t
     而停在它之后（rolled_back / installed）说明夹具的签名属性被改坏了，同样要红。
     """
     helper = helper or HELPER
+    locale = locale or user_lang()
+    if not locale:
+        raise NoFixture("本机没有 UTF-8 locale，更新助手路线无法验证")
+    ok, why = locale_guard(locale)
+    if not ok:
+        return False, why
     past_unpacking = "new_app_signature_invalid"
     bad = []
     for name in [CURRENT_APP_NAME] + LEGACY_APP_NAMES:
-        status, message = run_helper(helper, work, name)
+        status, message = run_helper(helper, work, name, locale=locale)
         if message != past_unpacking:
             bad.append("%s → %s/%s（应当停在 %s；停在它之前=解不了包，之后=夹具被改坏）"
                        % (name, status, message, past_unpacking))
     # 反向：顶层名对不上的包必须被拒（否则这条判据是道永远过的关）
-    status, message = run_helper(helper, work, "WrongName.app")
+    status, message = run_helper(helper, work, "WrongName.app", locale=locale)
     if message != "archive_layout_invalid":
         bad.append("反向种错没被抓到：WrongName.app → %s/%s" % (status, message))
     if bad:
@@ -963,10 +993,12 @@ def route_callable(name: str):
 
 # ---------------------------------------------------------------- 变异自检
 
-def _red(pair: tuple[bool, str], note: str) -> tuple[bool, str]:
-    """把一条路线的 (通过, 说明) 翻译成变异判据：**路线报红 = 种错被抓到**。"""
+def _mutation_reason(pair: tuple[bool, str], expected: tuple[str, ...],
+                     *, need_locale: bool = True) -> tuple[bool, str]:
     ok, detail = pair
-    return (not ok, detail or note)
+    if need_locale and "本机没有 UTF-8 locale" in detail:
+        raise NoFixture(detail)
+    return (not ok and any(marker in detail for marker in expected), detail)
 
 
 def mutate_case(label: str, fn) -> tuple[str, bool | None, str]:
@@ -1013,34 +1045,35 @@ def self_test(work: Path) -> list[tuple[str, bool | None, str]]:
                                     "for _name in "), encoding="utf-8")
     cases.append(("S1 助手退回只认旧名",
                   lambda: mutate_case("S1 助手退回只认旧名",
-                                      lambda: _red(check_helper_accepts_both_names(
-                                          work / "s1", helper=patched), "居然还是绿的"))))
+                                      lambda: _mutation_reason(check_helper_accepts_both_names(
+                                          work / "s1", helper=patched),
+                                          (CURRENT_APP_NAME + " → failed/archive_layout_invalid",)))))
 
     # S2：卷内脚本本身被贴标签（等于双击会被拦）→ R2 必须红
     cases.append(("S2 双击脚本带着标签",
                   lambda: mutate_case("S2 双击脚本带着标签",
-                                      lambda: _red(check_dmg_launcher_route(
+                                      lambda: _mutation_reason(check_dmg_launcher_route(
                                           work / "s2", stamp_script=True, fixture="light"),
-                                          "居然还是绿的（判据看不见标签）"))))
+                                          ("卷内脚本被贴了标签",)))))
 
     # S3 / S3b：标签分别贴在下载物与装好的 app 上 → R1 两条断言各必须红
     cases.append(("S3 curl 取回的包带着标签",
                   lambda: mutate_case("S3 curl 取回的包带着标签",
-                                      lambda: _red(check_curl_route(work / "s3",
+                                      lambda: _mutation_reason(check_curl_route(work / "s3",
                                                                     stamp_download=True),
-                                                   "居然还是绿的"))))
+                                                   ("curl 下载的文件竟然带了来历标签",)))))
     cases.append(("S3b 装好的 app 带着标签",
                   lambda: mutate_case("S3b 装好的 app 带着标签",
-                                      lambda: _red(check_curl_route(work / "s3b",
+                                      lambda: _mutation_reason(check_curl_route(work / "s3b",
                                                                     stamp_installed=True),
-                                                   "居然还是绿的"))))
+                                                   ("装出来的 app 带标签",)))))
 
     # S4：助手里"当前产品名"的字面量被删掉 → R0 必须红
     stripped = text.replace('"%s.app"' % APP_DISPLAY_NAME, '"Deleted.app"', 1)
     cases.append(("S4 助手不再钉当前产品名",
                   lambda: mutate_case("S4 助手不再钉当前产品名",
-                                      lambda: _red(check_name_source(helper_text=stripped),
-                                                   "名字漂移没被拦住"))))
+                                      lambda: _mutation_reason(check_name_source(helper_text=stripped),
+                                          ("updater/update_helper.sh 里没钉住 " + CURRENT_APP_NAME,)))))
 
     # S5：夹具退化检查 —— zip 少带 --keepParent 时，R4 必须以 layout_invalid 红
     def _s5():
@@ -1065,25 +1098,34 @@ def self_test(work: Path) -> list[tuple[str, bool | None, str]]:
                            "没能把 LC_ALL=C 摘干净，这条变异是空跑")))
     no_locale = work / "helper_no_lc_all.sh"
     no_locale.write_text(stripped_text, encoding="utf-8")
+
+    def _s6_locale():
+        locale = user_lang()
+        if not locale:
+            raise NoFixture("本机没有 UTF-8 locale，S6 无法验证")
+        return _mutation_reason(check_helper_accepts_both_names(
+            work / "s6", helper=no_locale, locale=locale),
+            tuple(name + " → failed/archive_preflight_failed"
+                  for name in LEGACY_APP_NAMES if not name.isascii()))
+
     cases.append(("S6 中文条目名让 awk 中止时 R4 会红",
-                  lambda: mutate_case("S6 中文条目名让 awk 中止时 R4 会红",
-                                      lambda: _red(check_helper_accepts_both_names(
-                                          work / "s6", helper=no_locale),
-                                          "R4 竟然还是绿的（判据又变成了只看包名）"))))
+                  lambda: mutate_case("S6 中文条目名让 awk 中止时 R4 会红", _s6_locale)))
 
     # S7：发版脚本忘了贴图标（夹具里直接不贴）→ R2 必须红。
     cases.append(("S7 卷内脚本没贴图标",
                   lambda: mutate_case("S7 卷内脚本没贴图标",
-                                      lambda: _red(check_dmg_launcher_route(
+                                      lambda: _mutation_reason(check_dmg_launcher_route(
                                           work / "s7", with_icon=False, fixture="light"),
-                                          "居然还是绿的（判据看不见图标）"))))
+                                          ("读回的图标与本轮画出来的不像", "系统没能把这枚图标读回来")))))
     # S8：贴了图标、忘了隐藏 `.command` 后缀 → R2 必须红。
     #     S7 与 S8 必须分开种：两步写的是**同一条元数据的同一格 flags**。
     cases.append(("S8 卷内脚本仍露着 .command 后缀",
                   lambda: mutate_case("S8 卷内脚本仍露着 .command 后缀",
-                                      lambda: _red(check_dmg_launcher_route(
-                                          work / "s8", hide_ext=False, fixture="light"),
-                                          "居然还是绿的（判据看不见显示名）"))))
+                                      lambda: _mutation_reason(check_dmg_launcher_route(
+                                          work / "s8", hide_ext=False, fixture="light",
+                                          check_appearance=False, check_icon=False,
+                                          check_extension=True),
+                                          ("显示名仍带 `.command` 后缀",)))))
 
     # ---- 下面是 2026-10-13 对着「一键安装」那四条实测缺陷补的三处种错 ----
     # S9：清除动作退回不递归（`xattr -d`）→ 包内那枚标签活下来 → R2 必须红。
@@ -1096,10 +1138,11 @@ def self_test(work: Path) -> list[tuple[str, bool | None, str]]:
                            "没能改掉清除那一步，这条变异是空跑")))
     cases.append(("S9 清标签不递归时 R2 会红",
                   lambda: mutate_case("S9 清标签不递归时 R2 会红",
-                                      lambda: _red(check_dmg_launcher_route(
+                                      lambda: _mutation_reason(check_dmg_launcher_route(
                                           work / "s9", script_text=no_recursive_clear,
-                                          fixture="light"),
-                                          "居然还是绿的（内层残留看不见）"))))
+                                          fixture="light", check_appearance=False,
+                                          check_icon=False, check_extension=False),
+                                          ("来历标签没能全部清掉", "标签没被递归清干净")))))
 
     # S9b：核验退回只看包根（`xattr -l`），配上**清不掉**的那枚内层标签（uchg）→ R2e 必须红。
     blind_verify = launcher_body.replace('/usr/bin/xattr -rl "$STAGE"',
@@ -1111,18 +1154,18 @@ def self_test(work: Path) -> list[tuple[str, bool | None, str]]:
                            "没能改掉核验那一步，这条变异是空跑")))
     cases.append(("S9b 标签清不掉而核验只看包根时 R2e 会红",
                   lambda: mutate_case("S9b 标签清不掉而核验只看包根时 R2e 会红",
-                                      lambda: _red(check_untaggable_scope_route(
+                                      lambda: _mutation_reason(check_untaggable_scope_route(
                                           work / "s9b", script_text=blind_verify,
                                           fixture="light"),
-                                          "居然还是绿的（它把清不掉的标签报成了成功）"))))
+                                          ("清不掉的标签被当成清干净了",)))))
 
     # S10：关卡自己退回"开发机那一侧"的 C locale → 这一族判据当场失效，必须红。
     cases.append(("S10 核验跑在 C locale 时 R2 会红",
                   lambda: mutate_case("S10 核验跑在 C locale 时 R2 会红",
-                                      lambda: _red(check_dmg_launcher_route(
+                                      lambda: _mutation_reason(check_dmg_launcher_route(
                                           work / "s10", force_lang="C", fixture="light",
                                           check_appearance=False),
-                                          "居然还是绿的（站在安全一侧测这一族缺陷等于没测）"))))
+                                          ("核验跑在 C 下",), need_locale=False))))
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [pool.submit(fn) for _label, fn in cases]

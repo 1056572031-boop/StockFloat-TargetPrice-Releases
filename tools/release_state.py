@@ -106,6 +106,19 @@ def qualify_source(root: Path, path: Path) -> dict[str, Any]:
     return advance(path, state, "source_qualified")
 
 
+def prepare_source(root: Path, path: Path, version: str) -> dict[str, Any]:
+    """创建候选源状态，或安全恢复同源的已资格化候选重试。"""
+    if not path.exists():
+        init_state(root, path, version)
+        return qualify_source(root, path)
+    state = validate(root, path)
+    if state["version"] != version:
+        raise ValueError("发布状态版本与当前候选版本不一致")
+    if state["stage"] != "source_qualified":
+        raise ValueError("候选重试只允许 source_qualified 状态: " + state["stage"])
+    return state
+
+
 def make_candidate(root: Path, path: Path, version: str, app: Path, dmg: Path,
                    archive: Path, ota: Path) -> dict[str, Any]:
     state = validate(root, path, "source_qualified")
@@ -491,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         if raw != ["--self-test"]:
             parser.error("--self-test 不可与发布状态操作混用")
         return self_test()
-    parser.add_argument("command", choices=("init", "qualify-source", "candidate", "begin-publish", "complete", "validate", "report"))
+    parser.add_argument("command", choices=("init", "qualify-source", "prepare-source", "candidate", "begin-publish", "complete", "validate", "report"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--state", type=Path, required=True)
     for name in ("app", "dmg", "zip", "ota", "quality", "readback", "walkthrough", "delivery", "out"):
@@ -499,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version")
     parser.add_argument("--stage", choices=STAGES)
     args = parser.parse_args(raw)
-    required = {"init": ("version",), "candidate": ("version", "app", "dmg", "zip", "ota"),
+    required = {"init": ("version",), "prepare-source": ("version",), "candidate": ("version", "app", "dmg", "zip", "ota"),
                 "begin-publish": ("quality",), "complete": ("quality", "readback", "walkthrough"), "report": ("out",)}
     if any(getattr(args, name) is None for name in required.get(args.command, ())):
         parser.error("缺少本阶段必需参数: " + ", ".join(required[args.command]))
@@ -509,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
             value = init_state(root, args.state, args.version)
         elif args.command == "qualify-source":
             value = qualify_source(root, args.state)
+        elif args.command == "prepare-source":
+            value = prepare_source(root, args.state, args.version)
         elif args.command == "candidate":
             value = make_candidate(root, args.state, args.version, args.app, args.dmg, args.zip, args.ota)
         elif args.command == "begin-publish":

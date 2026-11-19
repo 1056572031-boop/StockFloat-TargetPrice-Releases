@@ -44,6 +44,7 @@ h1 em{display:block;font-style:normal;color:var(--red)}
 .ico svg{width:22px;height:22px}
 .feat b{display:block;font-size:16px}
 .feat span{font-size:14px;color:var(--muted)}
+.market-coverage{padding:64px 0 8px;text-align:center}.market-coverage h2{margin:0 0 6px;font-size:28px;letter-spacing:-.01em}.market-coverage p{margin:0 0 16px;color:var(--muted);font-size:16px}.market-coverage strong{color:var(--ink);font-weight:650}.market-tags{display:flex;flex-wrap:wrap;justify-content:center;column-gap:9px;row-gap:7px}.market-tags span{padding:5px 11px;border:1px solid #3a434f;border-radius:6px;background:rgba(255,255,255,.025);font-size:12px;line-height:1.35;transition:transform .16s ease,border-color .16s ease,background-color .16s ease,color .16s ease}.market-tags span:hover{transform:translateY(-1px);border-color:rgba(255,101,117,.72);background:rgba(224,32,58,.14);color:#ffd4d9}.market-tags span:nth-child(1),.market-tags span:nth-child(3){border-color:rgba(255,101,117,.48);color:#ff9aa5;background:rgba(224,32,58,.08)}.market-tags span:nth-child(1):hover,.market-tags span:nth-child(3):hover{border-color:rgba(255,128,141,.88);background:rgba(224,32,58,.19);color:#fff1f3}
 .band{padding:64px 0 8px}
 #install{padding-top:48px}
 h2{margin:0 0 6px;font-size:28px;letter-spacing:-.01em}
@@ -101,8 +102,8 @@ summary:hover{color:var(--red-ink)}
 a:focus-visible,summary:focus{outline:3px solid var(--ring);outline-offset:3px}
 #goalt:focus-visible{outline-style:solid}
 .cta:focus-visible{outline-offset:4px}
-@media(max-width:980px){.hero{grid-template-columns:minmax(0,1fr);gap:36px}.stage{height:400px}.feat,.flow,.two{grid-template-columns:1fr}.nx{display:none}.wrap{padding:0 24px}h1{font-size:38px}}
-@media(prefers-reduced-motion:reduce){.cta,.cta .go{transition:none}.cta:hover,.cta:active{transform:none}.cta:hover .go{transform:none}html{scroll-behavior:auto}}
+@media(max-width:980px){.hero{grid-template-columns:minmax(0,1fr);gap:36px}.stage{height:400px}.feat,.flow,.two{grid-template-columns:1fr}.nx{display:none}.wrap{padding:0 24px}h1{font-size:38px}.market-coverage{padding-top:48px}}
+@media(prefers-reduced-motion:reduce){.cta,.cta .go,.market-tags span{transition:none}.cta:hover,.cta:active,.market-tags span:hover{transform:none}.cta:hover .go{transform:none}html{scroll-behavior:auto}}
 .mt12{margin-top:12px}
 .mb20{margin-bottom:20px}
 .sc-show{padding:72px 0 8px}

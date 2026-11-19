@@ -78,6 +78,22 @@ test("the landing page offers real download actions for the deployed version", (
   assert.doesNotMatch(body, /href="#"|#started|__[A-Z_]+__/, "不许留空链接、演示用锚点或未替换的占位符");
 });
 
+test("the landing page states its supported market coverage after the feature list", () => {
+  const body = page("1.4.104", 27_472_418);
+  const coverageStart = body.indexOf("</ul><section class=\"market-coverage\"");
+  const showcaseStart = body.indexOf('<section class="sc-show" id="showcase">');
+
+  assert.ok(coverageStart >= 0, "行情覆盖区必须紧接三项功能亮点");
+  assert.ok(showcaseStart > coverageStart, "行情覆盖区必须位于产品演示之前");
+  assert.match(body, /<section class="market-coverage" aria-label="支持的行情">/);
+  assert.match(body, /<h2>从 A 股到美股，行情一眼全收<\/h2>/);
+  assert.match(body, /<strong>股票、基金、ETF、可转债<\/strong>，都能放到桌面上看。/);
+  assert.match(body, /<div class="market-tags" aria-label="支持的行情品种">/);
+  for (const tag of ["A 股", "港股", "美股", "北交所", "B 股", "ETF", "LOF", "基金", "可转债"])
+    assert.match(body, new RegExp(`<span>${tag}<\\/span>`));
+  assert.doesNotMatch(body, /market-tags[^>]*\b(?:role|tabindex|href|onclick)=/, "行情标签是说明文字，不是可操作控件");
+});
+
 test("the displayed size is rounded from bytes and simply omitted when unknown", () => {
   assert.match(page("1.4.104", 27_472_418), /1\.4\.104 约 27 MB</);
   assert.match(page("1.4.104", 400_000), /1\.4\.104 约 1 MB</, "不足 1 MB 也不能显示成 0 MB");
@@ -545,6 +561,7 @@ test("the first screen preloads its cover image at high priority and keeps the d
   // 小图标在屏下，不随首屏一起拉。
   for (const name of ["file-pdf", "file-dmg", "file-zip", "installer-icon"]) {
     assert.match(body, new RegExp(`<img src="/assets/${name}\\.png"[^>]*loading="lazy"`), `${name} 在屏下，应延后加载`);
+    assert.match(body, new RegExp(`<img src="/assets/${name}\\.png"[^>]*width="192" height="192"`), `${name} 必须声明尺寸，避免懒加载时版面跳动`);
   }
 });
 

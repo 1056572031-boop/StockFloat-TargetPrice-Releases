@@ -20,11 +20,54 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.118
-# ---- v1.4.118：港股边界、极端行情显示与发布核验收口 ----
+version 1.4.119
+# ---- v1.4.119：更新进度提示、目标价读取与备用行情涨跌停保护 ----
+# 本版相对线上 v1.4.118（c8eff3a）新增的包内符号 show_background_download_progress（更新进度）与
+# sf_quote.target_limit_prices（目标价涨跌停边界：主源明确回负值＝“无涨跌停”的指数、可转债放行，备源缺字段、回 0 占位仍拦）、
+# sf_quote.is_no_daily_limit_market 与 _declares_no_limit（港股、美股没有每日涨跌停，不再把腾讯第 47/48 位当涨跌停价；只有负值才算无涨跌停声明）在下面 check 中核验；
+# 目标价读取公平性（stock_float_window._poll）与 target_panel 的边界提示只改既有函数体，包内没有新顶层名字，
+# 由 testref 指向的真实用例覆盖（注释与 testref 只供人审，不是机器检查）。
+check stock_float_window::show_background_download_progress
+check sf_quote::target_limit_prices
+check sf_quote::is_no_daily_limit_market
+check sf_quote::_declares_no_limit
+check sf_quote::_hong_kong_market_session
+check sf_ui_render::chart_current_price
 check sf_quote::quote_is_current
 check sf_ui_render::bottom_rows_fitting
-stale-feature 1.4.118 本轮同时改动发布链安装核验工具 tools/verify_install_paths.py，该工具不进入 .app；产品侧新增行情与界面边界由 sf_quote.quote_is_current、sf_ui_render.bottom_rows_fitting 和既有行为测试覆盖，包内新增特征只核验实际存在的入口。
+testref tests/test_v1417_progress_alert.py::DownloadProgressBoxTest::test_background_progress_restores_updates_and_close_does_not_cancel
+testref tests/test_v1459_screen_clamp.py::RestoreClampsToScreen::test_first_install_screen_prefers_pointer_screen_and_falls_back_to_primary
+testref tests/test_v154.py::TestFirstInstallDefaultHeight::test_只有完全没有当前备份和迁移配置才算首次安装
+testref tests/test_data_and_report_failure_paths.py::RealMarketBoundaryRegressions::test_hong_kong_continuous_future_source_time_is_not_current
+testref tests/test_quality_quote_delivery.py::QuoteDeliveryTests::test_compaction_keeps_every_tick_when_structure_is_invalid
+testref tests/test_release_pipeline_guards.py::GitIdentityTests::test_rejects_reserved_head_branch_instead_of_returning_empty_branch
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_current_stock_tick_is_not_starved_by_old_stock_lock_competition
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_old_stock_lock_competition_with_busy_current_reader_keeps_tick_deferred
+testref tests/test_panel_and_editor_gap_paths.py::PanelInputGuards::test_官方涨跌停字段缺失时不静默放行目标价
+testref tests/test_panel_and_editor_gap_paths.py::PanelInputGuards::test_官方涨跌停字段缺失时跌到方向也不静默放行
+testref tests/test_panel_and_editor_gap_paths.py::PanelInputGuards::test_当前价查询异常时不把目标价边界当作离线放行
+testref tests/test_v165.py::TestLimitPriceFallback::test_target_limits_treat_source_declared_no_limit_as_unrestricted
+testref tests/test_v165.py::TestLimitPriceFallback::test_target_limits_keep_fallback_quote_unknown
+testref tests/test_v165.py::TestLimitPriceFallback::test_target_limits_keep_half_declared_pair_unknown
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_panel_allows_targets_when_primary_source_declares_no_daily_limit
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_panel_blocks_targets_when_fallback_quote_has_no_limit_fields
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_panel_still_rejects_target_beyond_official_limit
+testref tests/test_v165.py::TestLimitPriceFallback::test_hk_primary_payload_does_not_expose_positions_47_48_as_limits
+testref tests/test_v165.py::TestLimitPriceFallback::test_hk_quote_shows_no_limit_badge
+testref tests/test_v165.py::TestLimitPriceFallback::test_hk_target_limits_are_unrestricted_for_primary_and_fallback_quotes
+testref tests/test_v165.py::TestLimitPriceFallback::test_hk_market_wins_over_positive_values_in_the_limit_fields
+testref tests/test_v165.py::TestLimitPriceFallback::test_target_limits_treat_zero_placeholder_as_unknown
+testref tests/test_v165.py::TestLimitPriceFallback::test_target_limits_need_both_sides_negative_to_declare_no_limit
+testref tests/test_v165.py::TestLimitPriceFallback::test_a_share_quote_keeps_the_guard_when_limit_fields_are_missing
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_panel_allows_hk_target_above_the_price
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_panel_allows_hk_target_below_the_price
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_panel_blocks_a_share_target_when_limit_fields_are_zero_placeholders
+
+# ---- v1.4.118（线上发布）：港股边界、极端行情显示与发布核验收口 ----
+# 线上 v1.4.118 的 sf_quote::quote_is_current 与 sf_ui_render::bottom_rows_fitting 已并入上面的有效清单继续核验；
+# 其当时的 stale-feature 申报只对 1.4.118 有效（可在 c8eff3a 的 release_checks.txt 查到原文），这里不再作为有效行保留。
+
+# ---- v1.4.117：公开资产地址编码与首次安装多屏定位 ----
 check stock_float_window::first_install_screen
 testref tests/test_v1459_screen_clamp.py::RestoreClampsToScreen::test_first_install_screen_prefers_pointer_screen_and_falls_back_to_primary
 testref tests/test_v1459_screen_clamp.py::RestoreClampsToScreen::test_first_install_screen_uses_qt_defaults_without_injected_queries
@@ -49,7 +92,7 @@ check stock_float_window::_evaluate_received_quote
 testref tests/test_v1295_chart.py::TestChartMetrics::test_current_quote_price_is_in_chart_range
 testref tests/test_v1295_chart.py::TestChartMetrics::test_invalid_quote_price_conversion_is_safe
 testref tests/test_diagnostics_controller.py::TestDiagnosticsExportController::test_concurrent_start_accepts_only_one_export
-testref tests/test_target_commit_retry.py::TargetCommitRetry::test_target_tick_read_blocking_ioerror_is_deferred_without_swallowed_failure
+testref tests/test_target_commit_retry.py::TargetCommitRetry::test_target_tick_read_lock_timeout_is_deferred_without_swallowed_failure
 testref tests/test_target_commit_retry.py::TargetCommitRetry::test_sustained_target_tick_read_blocking_ioerror_is_reported_as_swallowed
 testref tests/test_target_commit_retry.py::TargetCommitRetry::test_target_tick_read_blocking_ioerror_timer_resets_after_successful_consumption
 
@@ -546,9 +589,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.118 Beta**
+checkfile Contents/Resources/docs/README.md::v1.4.119 Beta**
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.118
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.119
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

@@ -41,6 +41,40 @@ UPLOAD_TIMEOUT_DEFAULT = 900.0
 API_TIMEOUT_DEFAULT = 30.0
 
 
+def compare_release_versions(left: str, right: str) -> int:
+    """Compare strict X.Y.Z release versions without a packaging dependency."""
+    try:
+        left_parts = tuple(int(part) for part in left.split("."))
+        right_parts = tuple(int(part) for part in right.split("."))
+    except (AttributeError, TypeError, ValueError):
+        raise SystemExit("版本号必须是 X.Y.Z：%r / %r" % (left, right)) from None
+    if len(left_parts) != 3 or len(right_parts) != 3:
+        raise SystemExit("版本号必须是 X.Y.Z：%r / %r" % (left, right))
+    return (left_parts > right_parts) - (left_parts < right_parts)
+
+
+def ensure_forward_version(candidate: str, live: str, *, resume: bool) -> None:
+    """Refuse to move the live pointer backwards or repeat a version unintentionally."""
+    relation = compare_release_versions(candidate, live)
+    if relation < 0:
+        raise SystemExit("候选版本 %s 低于线上版本 %s，拒绝回退发布" % (candidate, live))
+    if relation == 0 and not resume:
+        raise SystemExit("候选版本 %s 与线上版本相同；只有 --resume 才允许续做" % candidate)
+
+
+def live_manifest_version(token: str) -> str:
+    """Read the authoritative current manifest before any release write."""
+    payload = read_contents_main(token)
+    try:
+        data = json.loads(base64.b64decode(payload["content"]))
+    except (KeyError, ValueError, TypeError) as exc:
+        raise SystemExit("线上清单内容无法解码，拒绝发布") from exc
+    version = str(data.get("version") or "")
+    if not version:
+        raise SystemExit("线上清单缺少有效 version，拒绝发布")
+    return version
+
+
 def _timeout_from_env(name, default, floor):
     """读一个正数超时；写错**当场失败**，绝不静默退回默认值。
 
@@ -656,12 +690,36 @@ def self_test():
     return 0
 
 
+def check_version_main(argv: list[str]) -> int:
+    """Run the read-only version guard without requiring release notes."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check-version", action="store_true", required=True)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--notes", type=Path)
+    args = parser.parse_args(argv)
+    if args.manifest is None:
+        raise SystemExit("--check-version 必须提供 --manifest")
+    try:
+        candidate = json.loads(args.manifest.read_text(encoding="utf-8"))
+        candidate_version = str(candidate.get("version") or "")
+    except (OSError, ValueError, TypeError) as exc:
+        raise SystemExit("候选清单无法读取：%s" % exc) from exc
+    token = github_token()
+    live = live_manifest_version(token)
+    ensure_forward_version(candidate_version, live, resume=False)
+    print("版本前置检查通过：候选 %s 高于线上 %s" % (candidate_version, live))
+    return 0
+
+
 def main():
     if "--self-test" in sys.argv[1:]:
         return self_test()
+    if "--check-version" in sys.argv[1:]:
+        return check_version_main(sys.argv[1:])
     parser = argparse.ArgumentParser()
-    parser.add_argument("--assets", type=Path, required=True)
+    parser.add_argument("--assets", type=Path)
     parser.add_argument("--notes", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--resume", action="store_true",
                         help="线上已有同名版本 ZIP 且字节与本地快照一致时复用它接着做；不一致仍拒绝覆盖")
     parser.add_argument("--public-assets", type=Path,
@@ -694,6 +752,8 @@ def main():
     notes = metadata["notes"]
     token = github_token()
     release = load_release(token)
+    live_version = live_manifest_version(token)
+    ensure_forward_version(expected_version, live_version, resume=args.resume)
     asset = upload_archive(token, release, archive, archive_bytes, resume=args.resume)
     if public_assets is not None:
         release = load_release(token)

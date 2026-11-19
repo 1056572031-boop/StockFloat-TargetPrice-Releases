@@ -57,14 +57,21 @@ export function shipProblems(state) {
   if (dirty.length) {
     problems.push(`uncommitted site files: ${dirty.slice(0, 5).join(", ")}${dirty.length > 5 ? ` and ${dirty.length - 5} more` : ""}`);
   }
-  if (state.localVersion !== state.liveVersion) {
-    problems.push(`site source says ${state.localVersion} but the live site serves ${state.liveVersion}: a release is in flight or unpublished, and shipping now would advertise installers that are not online`);
+  if (state.assetVersion !== state.liveVersion) {
+    problems.push(`download assets say ${state.assetVersion} but the live site serves ${state.liveVersion}: a release is in flight or unpublished, and shipping now would advertise installers that are not online`);
   }
   if (!state.previewDeploymentId) {
     problems.push(`no successful preview of exactly this page content (page fingerprint ${state.fingerprint}); run npm run preview and have it reviewed first`);
   }
   if (!state.testsPassed) problems.push("the download-site tests are not all green");
   return problems;
+}
+
+export function publishedAssetVersion(env, appVersion) {
+  const selected = env.SF_APP_VERSION;
+  if (selected === undefined) return appVersion;
+  if (!/^\d+\.\d+\.\d+$/.test(selected)) throw new Error("published asset version must be X.Y.Z");
+  return selected;
 }
 
 // deploy-pages.mjs 给 wrangler 的出处参数。没设环境变量就保持原样（发版链第 6.1 步走这条）；

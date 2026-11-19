@@ -171,12 +171,20 @@ class ClickNeverSilentTest(SFCase):
         self.assertEqual(prompts, [_NEW])
 
     def test_click_while_downloading_says_what_is_running(self):
-        messages = []
-        host = _fake(messages=messages, _update_downloading=True)
+        shown = []
+        host = _fake(_update_downloading=True,
+                     show_background_download_progress=lambda self: shown.append("progress"))
         with patch("stock_float_window.threading.Thread") as thread:
             _check_bg(host, manual=True)
         thread.assert_not_called()
-        self.assertEqual(len(messages), 1, "下载中点击也要讲清楚，不能毫无反应")
+        self.assertEqual(shown, ["progress"], "下载中点击应显示实时进度")
+
+    def test_click_while_downloading_with_known_update_shows_progress(self):
+        shown = []
+        host = _fake(_update_pending=_NEW, _update_downloading=True,
+                     show_background_download_progress=lambda self: shown.append("progress"))
+        _check_bg(host, manual=True)
+        self.assertEqual(shown, ["progress"])
 
     def test_download_completion_shows_ready_to_restart_prompt(self):
         prompts = []

@@ -36,6 +36,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+_TENCENT_HK_PAYLOAD = (
+    'v_hk00700="100~腾讯控股~00700~372.800~376.000~374.000~21333340.0~0~0~372.800~0~0~0~0~0~0~0~0~0~372.800~0~0~0~0~0~0~0~0~0~21333340.0~2026/11/18 16:08:10~-3.200~-0.85~378.000~370.000~372.800~21333340.0~7956175438.684~0~13.62~~0~0~2.13~33897.3799~33897.3799~TENCENT~1.43~633.700~370.000~0.82~-33.31~0~0~0~0~0~12.33~2.40~0.23~100~-37.21~-8.98~GP~19.38~10.24~-7.17~-5.33~-15.27~9092644829.00~9092644829.00~12.28~5.315~372.946~-26.43~HKD~1~50";\n')
+
+
 
 def _fake_http_get(url, **kw):
     """离线行情/分时 mock，避免测试访问网络。"""
@@ -452,6 +456,74 @@ class TestLimitPriceFallback(unittest.TestCase):
         self.assertEqual(sf_quote.official_limit_prices(q), (0.0, 0.0))
         self.assertEqual(sf_quote.limit_prices(q), (110.0, 90.0),
                          "状态展示仍保留板块估算兜底")
+
+    def test_target_limits_pass_official_prices_through(self):
+        q = {"code": "sh600519", "limit_up": "111", "limit_down": "89"}
+        self.assertEqual(sf_quote.target_limit_prices(q), (111.0, 89.0))
+
+    def test_target_limits_treat_source_declared_no_limit_as_unrestricted(self):
+        """主源对指数、可转债回 -1：行情源明确答了“没有涨跌停”，目标价不能被拦成永久不可设。"""
+        q = {"code": "sh000001", "name": "上证指数", "limit_up": "-1", "limit_down": "-1"}
+        self.assertIsNone(sf_quote.target_limit_prices(q))
+
+    def test_target_limits_keep_fallback_quote_unknown(self):
+        """备源行情根本没有这两个字段：边界未知，必须由面板阻止录入。"""
+        q = {"code": "sh600519", "name": "贵州茅台", "price": "1442.66", "pre_close": "1457.70"}
+        self.assertEqual(sf_quote.target_limit_prices(q), (0.0, 0.0))
+
+    def test_target_limits_keep_empty_primary_fields_unknown(self):
+        """主源字段读空（载荷被截断）不是“声明无涨跌停”，仍按未知处理。"""
+        q = {"code": "sh600519", "limit_up": "", "limit_down": ""}
+        self.assertEqual(sf_quote.target_limit_prices(q), (0.0, 0.0))
+
+    def test_target_limits_keep_half_declared_pair_unknown(self):
+        q = {"code": "sh600519", "limit_up": "-1", "limit_down": ""}
+        self.assertEqual(sf_quote.target_limit_prices(q), (0.0, 0.0))
+
+    def test_target_limits_keep_one_sided_official_price(self):
+        q = {"code": "sh600519", "limit_up": "111", "limit_down": "-1"}
+        self.assertEqual(sf_quote.target_limit_prices(q), (111.0, 0.0))
+
+    def test_target_limits_without_quote_use_offline_semantics(self):
+        self.assertIsNone(sf_quote.target_limit_prices({}))
+        self.assertIsNone(sf_quote.target_limit_prices(None))
+
+    def test_target_limits_treat_zero_placeholder_as_unknown(self):
+        for raw in ("0", "0.00", "0.000"):
+            q = {"code": "sh600519", "limit_up": raw, "limit_down": raw}
+            self.assertEqual(sf_quote.target_limit_prices(q), (0.0, 0.0), "占位 %r 被当成了无涨跌停" % raw)
+
+    def test_target_limits_need_both_sides_negative_to_declare_no_limit(self):
+        for up, down in (("-1", "0"), ("0", "-1"), ("-1", "0.00")):
+            q = {"code": "sh600519", "limit_up": up, "limit_down": down}
+            self.assertEqual(sf_quote.target_limit_prices(q), (0.0, 0.0), "(%r,%r) 被当成了无涨跌停" % (up, down))
+
+    def test_a_share_quote_keeps_the_guard_when_limit_fields_are_missing(self):
+        q = sf_quote.QuoteData({"name": "贵州茅台", "code": "sh600519", "price": "1442.66",
+                                "pre_close": "1457.70"}, "", source_code="sh600519")
+        self.assertEqual(sf_quote.target_limit_prices(q), (0.0, 0.0))
+
+    def _parse_hk(self):
+        with patch.object(sf_quote, "http_get", return_value=_TENCENT_HK_PAYLOAD):
+            return sf_quote._fetch_quote_primary("hk00700")  # discipline-ok(R5): 单独验证主源解析层
+
+    def test_hk_primary_payload_does_not_expose_positions_47_48_as_limits(self):
+        q = self._parse_hk()
+        self.assertEqual((q["limit_up"], q["limit_down"]), ("", ""))
+
+    def test_hk_quote_shows_no_limit_badge(self):
+        self.assertIsNone(sf_quote.quote_status(self._parse_hk()))
+
+    def test_hk_target_limits_are_unrestricted_for_primary_and_fallback_quotes(self):
+        fallback = sf_quote.QuoteData({"name": "腾讯控股", "code": "hk00700", "price": "372.800",
+                                       "pre_close": "376.000"}, "", source_code="hk00700")
+        self.assertIsNone(sf_quote.target_limit_prices(self._parse_hk()))
+        self.assertIsNone(sf_quote.target_limit_prices(fallback))
+
+    def test_hk_market_wins_over_positive_values_in_the_limit_fields(self):
+        q = sf_quote.QuoteData({"name": "腾讯控股", "code": "00700", "price": "372.800",
+                               "limit_up": "1.43", "limit_down": "633.700"}, "", source_code="hk00700")
+        self.assertIsNone(sf_quote.target_limit_prices(q))
 
     def test_missing_one_limit_field_is_estimated_without_overwriting_official_one(self):
         q = {"code": "sh600519", "name": "贵州茅台", "pre_close": "100",

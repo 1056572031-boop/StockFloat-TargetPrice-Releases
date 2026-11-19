@@ -20,8 +20,11 @@
     high/low     今日最高/最低（元）   尾部字段越界/空/非法/非有限 → 空串（渲染层不显示）
     volume       成交量               仅主源有（腾讯 f36 接口原值）；工程内只做 >0 的
                                       "是否在交易"判定，不做单位换算、不做数值展示
-    limit_up/    涨停/跌停价（元）     仅主源有；字段缺失时徽标可复用板块估算，
-    limit_down                        目标价越界校验只认官方字段（见 official_limit_prices）
+    limit_up/    涨停/跌停价（元）     仅主源有、仅沪深北 A 股有：港股、美股没有每日涨跌停，腾讯同一位置
+    limit_down                        放的是别的指标，解析处置空（见 is_no_daily_limit_market）；字段缺失时
+                                      徽标可复用板块估算，目标价越界校验只认官方字段（见 official_limit_prices）；
+                                      主源对指数/可转债回负值（"-1"）= 明确无涨跌停，备源缺键、回 0 占位
+                                      = 未知（见 target_limit_prices）
 
 主源 = 腾讯（QUOTE_URL），备源 = 新浪（QUOTE_URL_FALLBACK）。主源"格式错误"（非网络类）
 连续达到 FORMAT_ERROR_ALERT_THRESHOLD 会发醒目 ERROR；"主源坏了但备源一直有数据"这件事
@@ -459,6 +462,18 @@ def _optional_quote_field(fields, index):
     return ""
 
 
+_NO_DAILY_LIMIT_PREFIXES = ("hk", "us")
+
+
+def is_no_daily_limit_market(code):
+    """该行情代码是否属于没有每日涨跌停的市场（港股 hk、美股 us）。
+
+    只认明确的前缀：拿不准的代码（空、没有前缀）一律按“有涨跌停”处理，
+    宁可多拦一次目标价，也不因为认不出市场而放松 A 股的越界保护。
+    """
+    return str(code or "").strip().lower().startswith(_NO_DAILY_LIMIT_PREFIXES)
+
+
 def _sina_list_symbol(code):
     """新浪行情列表代码映射：A 股直接用 sh/sz/bj 前缀；港股 hk00700；美股 gb_代码(小写)。
     v1.2.69 修复：旧实现把归一化代码直接拼进新浪 URL，且用 code[-6:] 截取，
@@ -664,7 +679,10 @@ def _fetch_quote_primary(code):
         "high": _optional_quote_field(fields, 33), "low": _optional_quote_field(fields, 34),
         # 1.1 v1.2.0：成交量/涨停价/跌停价（腾讯字段 36/47/48），容错读取，缺失置空串
         "volume": _optional_quote_field(fields, 36),
-        "limit_up": _optional_quote_field(fields, 47), "limit_down": _optional_quote_field(fields, 48),
+        # 港股、美股没有每日涨跌停，腾讯同一位置放的是别的指标（实测 hk00700 是 1.43 与 633.700），
+        # 读出来会让港股永远显示“涨停”、目标价被拦成“超过涨停价”，所以这些市场不读这两位。
+        "limit_up": "" if is_no_daily_limit_market(code) else _optional_quote_field(fields, 47),
+        "limit_down": "" if is_no_daily_limit_market(code) else _optional_quote_field(fields, 48),
     }, timestamp=fields[30] if len(fields) > 30 else "", source_code=code)
 
 def _beijing_now():
@@ -832,6 +850,37 @@ def official_limit_prices(q):
             return 0.0
 
     return _valid(q.get("limit_up")), _valid(q.get("limit_down"))
+
+
+def target_limit_prices(q):
+    """目标价录入用的涨跌停边界，区分“行情源明确无涨跌停”与“边界未知”。
+
+    返回 None：还没有行情（沿用面板离线录入语义）；港股、美股这类本来就没有每日涨跌停的
+    市场（主备源都一样，不看字段）；或主源两个字段都明确回了负值（腾讯对指数、可转债回 "-1"，
+    这些标的主源在线也永远给不出正价，拦住只会让它们再也设不了目标价）。
+    返回 (up, down)：非正的一侧表示该方向边界未知，由面板阻止录入。备源行情没有这两个
+    字段（缺键）、主源字段读空（载荷被截断）、回 0 占位（腾讯在非交易时段、刚开盘会这样）、
+    只回了一侧，都属于“未知”，不能当通过：0 不是“没有涨跌停”的声明，只有负值才是。
+    """
+    if not isinstance(q, dict) or not q:
+        return None
+    if is_no_daily_limit_market(getattr(q, "source_code", "") or q.get("code")):
+        return None
+    up, down = official_limit_prices(q)
+    if up > 0 and down > 0:
+        return up, down
+    if _declares_no_limit(q.get("limit_up")) and _declares_no_limit(q.get("limit_down")):
+        return None
+    return up, down
+
+
+def _declares_no_limit(value):
+    """字段是否是行情源明确的“没有涨跌停”声明：只有负值（腾讯的 -1）算，0、空、缺失都不算。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number < 0
 
 
 def limit_prices(q):

@@ -33,6 +33,7 @@ from typing import Callable
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 gate_stamp = importlib.import_module("tools.gate_stamp")
+git_identity = importlib.import_module("sf_git_identity")
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE = "feat/target-price"
@@ -219,7 +220,11 @@ def land(repo: Path, base: str, branch: str, tree: Path, reviewed: str, merge_me
          push: bool, retire: bool, evidence: Path, author: str = "", runner: Runner | None = None,
          python: str = "", out: Callable[[str], None] = say) -> str:
     runner = runner or run_logged
-    require(git(repo, "rev-parse", "--abbrev-ref", "HEAD")[1] == base, "主树当前不在 %s 上" % base)
+    try:
+        main_branch = git_identity.checked_out_branch(repo)
+    except git_identity.GitIdentityError as exc:
+        raise LandError(str(exc)) from exc
+    require(main_branch == base, "主树当前不在 %s 上" % base)
     require(git(tree, "rev-parse", "--abbrev-ref", "HEAD")[1] == branch, "任务树 %s 当前不在 %s 上" % (tree, branch))
     require(not dirty_paths(tree), "任务树还有未提交的改动：先提交（走完整关卡）并审查，再来落地")
     tip = rev(tree, "HEAD")

@@ -213,6 +213,51 @@ class QuoteDeliveryTests(SFCase):
             ticks.add_ordered("A", self._quote_with(revision, 106.0))
             self.assertEqual(len(ticks.take("A")), 4097)
 
+    def test_compaction_keeps_every_tick_when_revision_json_is_malformed(self):
+        revision = ("rev", 1, ("not-json",))
+        ticks = TargetTickBuffer()
+        records = [self._record(index, 100.0, revision) for index in range(1, 4097)]
+        self.assertTrue(ticks.restore_ordered("A", records))
+        with mock.patch("sf_quote_delivery.quote_is_current", return_value=True):
+            ticks.add_ordered("A", self._quote_with(revision, 101.0))
+        self.assertEqual(len(ticks.take("A")), 4097,
+                         "修订 JSON 解析失败时必须保留每笔行情，不能先压缩再报错")
+
+    def test_compaction_keeps_every_tick_when_revisions_differ(self):
+        valid = self._revision({"direction": "above", "target": 105.0})
+        other = self._revision({"direction": "below", "target": 95.0})
+        ticks = TargetTickBuffer()
+        records = [self._record(index, 100.0, valid if index % 2 else other)
+                   for index in range(1, 4097)]
+        self.assertTrue(ticks.restore_ordered("A", records))
+        with mock.patch("sf_quote_delivery.quote_is_current", return_value=True):
+            ticks.add_ordered("A", self._quote_with(valid, 101.0))
+        self.assertEqual(len(ticks.take("A")), 4097,
+                         "混合修订号无法证明目标结构一致时不得压缩历史行情")
+
+    def test_unversioned_full_buffer_skips_repeated_full_compaction(self):
+        class CountingRecords(list):
+            def __init__(self, values):
+                super().__init__(values)
+                self.iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        ticks = TargetTickBuffer()
+        records = CountingRecords([
+            (index, float(index), {"price": str(index)}) for index in range(1, 4097)
+        ])
+        ticks._ordered["A"] = records  # discipline-ok(R5): 必须注入满缓冲以直接测新增 tick 的扫描次数
+        with mock.patch("sf_quote_delivery.quote_is_current", return_value=True), \
+                mock.patch("sf_logging.log_line"):
+            ticks.add_ordered("A", {"price": "4097"})
+        self.assertEqual(records.iterations, 1,
+                         "无修订号时只允许为返回待消费 tick 迭代一次，不能反复扫描满队列")
+        self.assertEqual(len(ticks._ordered["A"]), 4097)  # discipline-ok(R5): 必须核对满缓冲未被异常压缩或清空
+        self.assertNotIn("A", ticks._overflow_first)  # discipline-ok(R5): 溢出登记是唯一可观测的极值保留副作用
+
     def _quote_with(self, revision, price):
         quote = sf_quote.QuoteData({"price": repr(price)}, "20261014100000")
         quote.target_revision = revision

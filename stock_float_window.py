@@ -84,7 +84,7 @@ from sf_icons import menu_icon   # v1.4.69：右键菜单行首图标（用户�
 from sf_icons import _ICON_QUEUE, _app_ready, _appkit_ready
 
 # ---- 模块化拆分 sf_quote：显式导入（含私有名） ----
-from sf_quote import (MinutePoints, fetch_minute, fetch_quote, official_limit_prices,
+from sf_quote import (MinutePoints, fetch_minute, fetch_quote, target_limit_prices,
                       load_api_urls, market_status, price_decimals)
 from sf_quote import degraded_source_streak, get_last_quote_source
 from sf_quote import get_last_minute_source   # 诊断：分时这一路最近成功走的是哪个源
@@ -2679,7 +2679,31 @@ QMenu::separator {
     def _download_update_background(self, update, prompt_when_ready=False, show_progress=True):
         return _UPDATE_FLOW.download(self, update, prompt_when_ready, show_progress)
 
-    def _open_download_progress_box(self):
+    def show_background_download_progress(self):
+        """公开更新流程端口：重新呈现正在进行的后台下载。"""
+        return self._show_background_download_progress()
+
+    def reset_update_progress(self):
+        """公开更新流程端口：开始新下载前清除上一轮进度缓存。"""
+        self._update_progress_pending = None
+
+    def _show_background_download_progress(self):
+        box = getattr(self, "_update_flow_box", None)
+        if box is not None:
+            present = getattr(box, "present", None)
+            if present is not None and present():
+                return
+            if isinstance(box, QWidget):
+                box.raise_()
+                box.activateWindow()
+                return
+            self._close_update_flow_box()
+        self._open_download_progress_box(background=True)
+        progress = self._update_progress_pending
+        if progress is not None:
+            self._handle_update_progress(*progress)
+
+    def _open_download_progress_box(self, background=False):
         """下载进度框：优先 macOS 原生弹窗 + 系统进度条，不可用时退回 Qt 自绘框。
 
         原生路径 v1.4.17 起为首选（用户要求弹窗一律用系统默认样式）；Qt 框必须
@@ -2688,12 +2712,19 @@ QMenu::separator {
         """
         import sf_system_alert
         self._anchor_update_dialog_screen()
+        opened: list[object | None] = [None]
+
+        def close_background(_button=None):
+            if opened[0] is not None and self._update_flow_box is opened[0]:
+                self._close_update_flow_box()
+
         handle = sf_system_alert.show_progress_alert(
             message="正在下载更新…", info="准备中 0%",
-            cancel="取消",
-            on_result=self._on_download_dialog_answer,
+            cancel="好" if background else "取消",
+            on_result=close_background if background else self._on_download_dialog_answer,
             icon_path=sf_system_alert.bundled_icon_path())
         if handle is not None:
+            opened[0] = handle
             self._update_flow_box = handle
             self._update_flow_progress = None
             self._update_flow_cancel = None
@@ -2707,8 +2738,9 @@ QMenu::separator {
         bar.setRange(0, 100)
         bar.setValue(0)
         box.layout().addWidget(bar, 1, 0, 1, box.layout().columnCount())
-        cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
-        cancel.clicked.connect(self._cancel_update_download)
+        cancel = box.addButton("好" if background else "取消", QMessageBox.ButtonRole.RejectRole)
+        opened[0] = box
+        cancel.clicked.connect(close_background if background else self._cancel_update_download)
         self._update_flow_box = box
         self._update_flow_progress = bar
         self._update_flow_cancel = cancel
@@ -2731,6 +2763,7 @@ QMenu::separator {
         return _UPDATE_FLOW.cancel_download(self)
 
     def _handle_update_progress(self, pct, downloaded, total):
+        self._update_progress_pending = (pct, downloaded, total)
         box = getattr(self, "_update_flow_box", None)
         if box is None:
             return
@@ -4288,12 +4321,37 @@ QMenu::separator {
                         # 生产者正忙（BlockingIOError）也走这里：log_swallow 自带限流，下一拍再试。
                         log_swallow("stock_float_window._poll.expire_unknown_revision", exc)
                 consume_old = getattr(self, "_consume_old_target_tick", None)
-                if not paused and ticks.persistent and callable(consume_old) and consume_old(ticks) is False:
-                    target_read_failed = True
-                    tick_batch = []
+                if not paused and ticks.persistent and callable(consume_old):
+                    try:
+                        old_ready = consume_old(ticks)
+                    except (BlockingIOError, TimeoutError) as exc:
+                        # 跨股票队首处理需要配置锁；旧股票抢锁失败时，不能让当前股票
+                        # 一起饿住。直接按当前股票读取，锁释放后旧队首再由下一轮处理。
+                        try:
+                            tick_batch = ticks.take(self.code)
+                        except (BlockingIOError, TimeoutError):
+                            raise exc
+                        if not tick_batch:
+                            raise exc
+                        log_line_throttled(
+                            "target.tick_read_lock_unavailable",
+                            "target tick read deferred: %r" % (exc,),
+                            "WARNING", 60)
+                        log_line_throttled(
+                            "target.tick_old_stock_deferred",
+                            "target tick old-stock cleanup deferred: %r" % (exc,),
+                            "WARNING", 60)
+                    else:
+                        if old_ready is False:
+                            target_read_failed = True
+                            tick_batch = []
+                        else:
+                            tick_batch = ticks.take(self.code, global_order=True)
                 else:
                     tick_batch = ([] if paused else ticks.take(self.code, global_order=True)
                                   if ticks.persistent and callable(consume_old) else ticks.take(self.code))
+                if target_read_failed:
+                    tick_batch = []
             except (BlockingIOError, TimeoutError) as exc:
                 # 配置锁被行情线程短暂占用是可恢复的轮询竞争（探针实测持锁毫秒级）：目标价行情
                 # 仍在持久化队列里，下一拍重试，所以短暂占用只留节流日志，不记 SWALLOWED。
@@ -6506,9 +6564,11 @@ QMenu::separator {
                                 # 保留只会留下一个语义错误的诱饵，故整体移除。
                                 # 注：_is_trading_time 在本文件其余调用处（轮询频率、
                                 # 分时抓取、休市提示、nap 策略）语义均正确，未改动。
-                                # 输入限制只使用行情源明确给出的涨跌停价。无官方字段时
-                                # 仍可设置目标价，避免新股等特殊规则被本地估算误拦截。
-                                limits_fn=lambda: official_limit_prices(self.quote),
+                                # 输入限制只使用行情源明确给出的涨跌停价。备源行情缺这两个字段时
+                                # 必须阻止录入，避免备源期间静默放行；主源明确回“没有涨跌停”
+                                # （指数、可转债）与尚未拿到任何行情时则不拦，细则见
+                                # sf_quote.target_limit_prices。
+                                limits_fn=lambda: target_limit_prices(self.quote),
                                 initial_alerts=disk_targets_snapshot,
                                 on_apply_empty=lambda original, decimals: (
                                     getattr(self, "_targets_revision", 0) == targets_revision

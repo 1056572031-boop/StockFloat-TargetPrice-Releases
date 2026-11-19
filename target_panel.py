@@ -896,6 +896,13 @@ class TargetPanel(GlassMixin, QWidget):
         """
         if self._limits_fn is None:
             return ""
+        if self.current_price_fn is not None:
+            try:
+                current_price = self.current_price_fn()
+            except Exception:
+                return "无法获取当前价，请等待行情恢复"
+            if not _valid_price(current_price):
+                return ""
         try:
             lim = self._limits_fn()
         except Exception as exc:
@@ -906,9 +913,13 @@ class TargetPanel(GlassMixin, QWidget):
         if not isinstance(lim, (tuple, list)) or len(lim) < 2:
             return ""
         up, dn = lim[0], lim[1]
-        if direction == TARGET_DIR_ABOVE and _valid_price(up) and target > float(up):
+        if direction == TARGET_DIR_ABOVE and not _valid_price(up):
+            return "当前无法确认涨跌停边界，请等待主源行情恢复（涨停价未知）"
+        if direction == TARGET_DIR_BELOW and not _valid_price(dn):
+            return "当前无法确认涨跌停边界，请等待主源行情恢复（跌停价未知）"
+        if direction == TARGET_DIR_ABOVE and target > float(up):
             return ("「涨到」价不可超过涨停价 %%.%df" % self._price_decimals) % float(up)
-        if direction == TARGET_DIR_BELOW and _valid_price(dn) and target < float(dn):
+        if direction == TARGET_DIR_BELOW and target < float(dn):
             return ("「跌到」价不可低于跌停价 %%.%df" % self._price_decimals) % float(dn)
         return ""
 

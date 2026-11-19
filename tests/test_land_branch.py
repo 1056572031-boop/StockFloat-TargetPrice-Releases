@@ -329,6 +329,10 @@ class RefusalTests(LandCase):
         sh(self.repo, "checkout", "-q", "-b", "elsewhere")
         self.refused("主树当前不在")
 
+    def test_the_main_tree_refuses_a_reserved_head_reference(self):
+        sh(self.repo, "update-ref", "refs/heads/HEAD", "HEAD")
+        self.refused("保留引用 refs/heads/HEAD")
+
     def test_the_task_tree_must_be_on_the_named_branch(self):
         self.refused("任务树 .* 当前不在", branch="task/y")
 

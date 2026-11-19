@@ -3114,6 +3114,99 @@ class TargetCommitRetry(_Host):
                 self.win._poll()  # discipline-ok(R5): 新的一次占锁，不能沿用旧的起点而立刻升级。
         swallowed.assert_not_called()
 
+    def test_current_stock_tick_is_not_starved_by_old_stock_lock_competition(self):
+        import sf_quote
+        from sf_quote_delivery import TargetTickBuffer
+        now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        current_alert = targets.make_alert(targets.TARGET_DIR_ABOVE, 100.0, now=now)
+        self._open_saved_panel([current_alert])
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-fairness.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.win.running = True
+        current = sf_quote.QuoteData({"code": self.win.code, "price": "101", "name": "测试股票"},
+                                     "20261015100000")
+        current.received_at = now
+        current.target_revision = sf_config.alerts_revision(self.win.code)
+        with mock.patch("sf_quote_delivery.quote_is_current", return_value=True):
+            ticks.add_ordered(self.win.code, current)
+        with mock.patch.object(self.win, "_consume_old_target_tick",
+                               side_effect=TimeoutError("configuration lock timed out")), \
+                mock.patch.object(self.win, "_apply_quote"), \
+                mock.patch("sf_quote_delivery.quote_is_current", return_value=True):
+            self.win._poll()  # discipline-ok(R5): 旧股票队首抢锁失败，当前股票仍应独立处理。
+        self.assertFalse(ticks.has_pending(self.win.code),
+                         "旧股票的锁竞争不应把当前股票的 tick 一起饿住")
+        self.assertEqual(len(sf_config.load_target_notification_outbox()), 1,
+                         "当前股票有可信修订号时应完成目标价判断")
+
+    def test_old_stock_lock_competition_with_busy_current_reader_keeps_tick_deferred(self):
+        from sf_quote_delivery import TargetTickBuffer
+        ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-double-busy.sqlite"))
+        self.win._target_ticks = ticks  # discipline-ok(R5): 隔离目标行情队列。
+        self.win.running = True
+        with mock.patch.object(self.win, "_consume_old_target_tick",
+                               side_effect=TimeoutError("configuration lock timed out")), \
+                mock.patch.object(ticks, "take",
+                                  side_effect=BlockingIOError("target tick producer is busy")), \
+                mock.patch.object(window, "log_swallow") as swallowed, \
+                mock.patch.object(window, "log_line_throttled") as throttled:
+            self.win._poll()  # discipline-ok(R5): 旧股票与当前股票读取均竞争，必须保留延后语义。
+        swallowed.assert_not_called()
+        self.assertTrue(any(call.args[0] == "target.tick_read_lock_unavailable"
+                            for call in throttled.call_args_list),
+                        "当前股票定向读取仍忙时必须保留原有延后日志")
+
+    def _panel_limit_message(self, quote_fields, direction, target, source_code=""):
+        """按真实主窗接线打开面板，返回面板对这一个目标价给出的涨跌停提示。"""
+        import sf_quote
+        panel = self._open_saved_panel([])
+        quote = sf_quote.QuoteData(dict({"name": "测试", "code": self.win.code,
+                                         "price": "10.00", "pre_close": "10.00"}, **quote_fields),
+                                   "20261015100000", source_code=source_code)
+        self.win.quote = quote  # discipline-ok(R5): 面板的涨跌停回调读主窗当前行情。
+        return panel._check_limits(direction, target)  # discipline-ok(R5): 面板录入前的唯一涨跌停判定入口。
+
+    def test_panel_allows_targets_when_primary_source_declares_no_daily_limit(self):
+        import target_panel
+        message = self._panel_limit_message({"limit_up": "-1", "limit_down": "-1"},
+                                            target_panel.TARGET_DIR_ABOVE, 12.0)
+        self.assertEqual(message, "", "指数/可转债等没有涨跌停的标的，主源在线时不应被拦")
+
+    def test_panel_blocks_targets_when_fallback_quote_has_no_limit_fields(self):
+        import target_panel
+        message = self._panel_limit_message({}, target_panel.TARGET_DIR_ABOVE, 12.0)
+        self.assertIn("无法确认涨跌停边界", message)
+
+    def test_panel_still_rejects_target_beyond_official_limit(self):
+        import target_panel
+        message = self._panel_limit_message({"limit_up": "11.00", "limit_down": "9.00"},
+                                            target_panel.TARGET_DIR_ABOVE, 12.0)
+        self.assertIn("涨停价", message)
+
+    # 腾讯控股 hk00700 的真实形态：现价 372.8，报文 47/48 位是 1.43 与 633.700（不是涨跌停价）。
+    _HK_FIELDS = {"price": "372.800", "pre_close": "376.000", "limit_up": "1.43", "limit_down": "633.700"}
+
+    def test_panel_allows_hk_target_above_the_price(self):
+        """港股没有每日涨跌停：涨到 391.44 不能被拦成“不可超过涨停价 1.430”。"""
+        import target_panel
+        message = self._panel_limit_message(self._HK_FIELDS, target_panel.TARGET_DIR_ABOVE, 391.44,
+                                            source_code="hk00700")
+        self.assertEqual(message, "")
+
+    def test_panel_allows_hk_target_below_the_price(self):
+        """港股没有每日涨跌停：跌到 354.16 不能被拦成“不可低于跌停价 633.700”。"""
+        import target_panel
+        message = self._panel_limit_message(self._HK_FIELDS, target_panel.TARGET_DIR_BELOW, 354.16,
+                                            source_code="hk00700")
+        self.assertEqual(message, "")
+
+    def test_panel_blocks_a_share_target_when_limit_fields_are_zero_placeholders(self):
+        """腾讯非交易时段/刚开盘把涨跌停回成 0 占位：边界未知，面板必须阻止录入，不能当成“没有涨跌停”放行。"""
+        import target_panel
+        message = self._panel_limit_message({"limit_up": "0", "limit_down": "0"},
+                                            target_panel.TARGET_DIR_ABOVE, 12.0, source_code="sh600519")
+        self.assertIn("无法确认涨跌停边界", message)
+
     def test_target_tick_read_blocking_ioerror_is_deferred_without_swallowed_failure(self):
         from sf_quote_delivery import TargetTickBuffer
         ticks = TargetTickBuffer(persistent_path=os.path.join(self.tmp_path, "poll-lock-blocking-ioerror.sqlite"))

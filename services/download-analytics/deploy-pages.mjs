@@ -8,7 +8,7 @@ import { readCloudflareToken } from "../feedback-worker/cloudflare-auth.mjs";
 import { mapLimit } from "./fetch-pool.mjs";
 import { readSiteGitState } from "./pages-control.mjs";
 import { acquireDeployLock, cleanupCachePath, readbackCachePath, releaseDeployLock, releaseDeployLockSync } from "./deploy-journal.mjs";
-import { deployProvenanceArgs, provenanceProblems, readbackCacheHit, shouldRetryReadback, sourceDigest, stampOfPage, stampOfTool } from "./site-inputs.mjs";
+import { deployProvenanceArgs, provenanceProblems, publishedAssetVersion, readbackCacheHit, shouldRetryReadback, sourceDigest, stampOfPage, stampOfTool } from "./site-inputs.mjs";
 
 // 读回要取回页面登记的全部素材（35 份，含几份 1 到 2 MB 的视频）再做视频分段对拍。
 // 2026-10-29 实测：46 个请求一次性并发，本机链路只有约 300 到 500 KB/s，带宽被摊薄，排在后面的请求撑不到 10 秒上限，
@@ -98,8 +98,9 @@ const checkToken = execFileSync("/usr/bin/security",
   ["find-generic-password", "-s", "SkyrocketDownloadCheck", "-w"], { encoding: "utf8" }).trim();
 if (!/^[a-f0-9]{64}$/.test(checkToken)) throw new Error("Download check token is unavailable or malformed");
 const constants = await fs.readFile(resolve(root, "../../sf_constants.py"), "utf8");
-const version = constants.match(/^APP_VERSION\s*=\s*'([0-9]+\.[0-9]+\.[0-9]+)'/m)?.[1];
-if (!version) throw new Error("APP_VERSION is unavailable");
+const appVersion = constants.match(/^APP_VERSION\s*=\s*'([0-9]+\.[0-9]+\.[0-9]+)'/m)?.[1];
+if (!appVersion) throw new Error("APP_VERSION is unavailable");
+const version = publishedAssetVersion(process.env, appVersion);
 
 async function currentCanonical() {
   const projectInfo = await cloudflare(`/pages/projects/${project}`);
