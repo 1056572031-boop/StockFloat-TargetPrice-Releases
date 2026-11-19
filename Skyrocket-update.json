@@ -2,18 +2,18 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.118",
-  "published_at": "2026-11-15T07:20:23Z",
+  "version": "1.4.119",
+  "published_at": "2026-11-19T03:33:05Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 修复港股在周末、节假日或非本地时区下被误判为有新行情的问题。\n2. 修复极端行情数据下分时图、价格和高低价显示不完整的问题。\n3. 修复安装与发布检查在异常输出、超时或并行状态下无法明确收尾的问题。",
+  "notes": "1. 更新下载中再点检查更新，会显示下载进度，关闭提示不会取消下载。\n2. 切换股票后，旧股票的待处理记录暂时清理不了，不再耽误当前股票的目标价提醒。\n3. 无法确认涨跌停价时（如用了备用数据），会提示稍后再设目标价，不再直接放行。\n4. 目标价设置信息异常时，积压的行情记录会完整保留，不被提前丢弃。\n5. 港股设置目标价不再被误拦，也不再一直显示“涨停”。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.118-macos.zip",
-    "size": 27261039,
-    "sha256": "5f0438dbdb15f393538f483697cc03fead355482824bce72f5a3f5cb75299094"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.119-macos.zip",
+    "size": 27263775,
+    "sha256": "777e62b74ef60041e5e591c2f02aad6333510337c02f48d439ef535a74c0ee19"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "67/vP5sAMoQvWK23DTfH3fnOQDNihCIi48h5xp/iBcRs9lZCcMjkLUBDpsZlIuZljBhKN4SkNYw3J61A3bTJBQ=="
+    "value": "AmAXVWrEJ7nFI0ljOzhA1qw0EfCOKwhLDqdhxzj8jWyJlkprwtsE5Rqtu4SC8PYSD2SuI+uKVnqtF7GtRvO8CQ=="
   }
 }
