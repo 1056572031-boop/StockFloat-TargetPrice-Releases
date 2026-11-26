@@ -10,6 +10,14 @@ from tests._base import SFCase
 
 
 class FrozenSmokeLifecycleTests(SFCase):
+    def test_smoke_redirects_home_and_icon_even_with_inherited_override(self):
+        with tempfile.TemporaryDirectory(prefix="sf_smoke_env_") as directory:
+            home = pathlib.Path(directory)
+            with mock.patch.dict("os.environ", {"SF_ICON_PATH": "/unsafe/icon.png"}):
+                env = smoke.isolation_env(home, home)
+            self.assertEqual(env["HOME"], str(home))
+            self.assertEqual(env["SF_ICON_PATH"], str(home / "icon.png"))
+
     def _probe(self, mode):
         child = pathlib.Path(__file__).with_name("_smoke_lifecycle_child.py")
         spawn = subprocess.Popen

@@ -89,6 +89,8 @@ def isolation_env(app: pathlib.Path, home: pathlib.Path) -> dict:
     """构造与用户数据完全隔离的运行环境。"""
     env = dict(os.environ)
     env.update({
+        "HOME": str(home),
+        "SF_ICON_PATH": str(home / "icon.png"),
         "QT_QPA_PLATFORM": env.get("QT_QPA_PLATFORM") or "offscreen",
         "SF_CONFIG_PATH": str(home / "config.json"),
         "SF_UNIVERSE_PATH": str(home / "securities.json"),
