@@ -2,18 +2,19 @@
   "schema": 1,
   "channel": "stable",
   "stage": "beta",
-  "version": "1.4.119",
-  "published_at": "2026-11-19T03:33:05Z",
+  "version": "1.4.120",
+  "release_sequence": 1,
+  "published_at": "2026-11-26T01:27:46Z",
   "bundle_id": "com.skyrocket.app",
   "app_name": "Skyrocket.app",
-  "notes": "1. 更新下载中再点检查更新，会显示下载进度，关闭提示不会取消下载。\n2. 切换股票后，旧股票的待处理记录暂时清理不了，不再耽误当前股票的目标价提醒。\n3. 无法确认涨跌停价时（如用了备用数据），会提示稍后再设目标价，不再直接放行。\n4. 目标价设置信息异常时，积压的行情记录会完整保留，不被提前丢弃。\n5. 港股设置目标价不再被误拦，也不再一直显示“涨停”。",
+  "notes": "1. 更新过程中重新检查更新，不会再让旧提示误操作当前下载。\n2. 分时图的实时价格与最后一个分钟点保持连接，行情变化时走势显示更连贯。\n3. 自动隐藏功能遇到摄像头暂时无法停止或重启时，会先完成上一轮收口，减少重复占用。\n4. 本机撤回尚未确认送达的反馈资料时，中断后可以继续重试；已经发送的资料不会因此从线上删除。",
   "archive": {
-    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.119-macos.zip",
-    "size": 27263775,
-    "sha256": "777e62b74ef60041e5e591c2f02aad6333510337c02f48d439ef535a74c0ee19"
+    "url": "https://github.com/1056572031-boop/StockFloat-TargetPrice-Releases/releases/download/版本更新/Skyrocket-1.4.120-macos.zip",
+    "size": 27299143,
+    "sha256": "8695f7c2aa9db8beca60a3c876b7226984fde3ac09029769328a02cd596ccb6b"
   },
   "signature": {
     "algorithm": "ed25519",
-    "value": "AmAXVWrEJ7nFI0ljOzhA1qw0EfCOKwhLDqdhxzj8jWyJlkprwtsE5Rqtu4SC8PYSD2SuI+uKVnqtF7GtRvO8CQ=="
+    "value": "DEnsP2U7Of7OITx/GKJFnWVfWOJ9lXw9vwxECt/d1oVmDCaxm49Q+xW6zpRsKuGeoMqzj+3X1nP6B8vK9N9IAQ=="
   }
 }
