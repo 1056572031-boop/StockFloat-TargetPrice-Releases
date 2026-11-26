@@ -165,6 +165,12 @@ class CleanMachineStillTellsTheTruth(SFCase):
             got, note = _verdict(cases, prefix)
             self.assertIsNone(got, "%s 应报告前提缺失：%s" % (prefix, note))
 
+    def test_missing_fixture_failure_reports_reason(self):
+        with patch.object(VIP, "real_app", side_effect=VIP.NoFixture("no real app")), \
+                patch.object(VIP, "self_test", return_value=[("S8 fixture", None, "identity unavailable")]):
+            with self.assertRaisesRegex(AssertionError, "identity unavailable"):
+                self.test_缺真产物时自检档一条都不许落()
+
     def test_缺真产物时自检档一条都不许落(self):
         """真跑一遍全部变异，只把"取真产物"那一步抽掉。
 
@@ -183,7 +189,7 @@ class CleanMachineStillTellsTheTruth(SFCase):
         with patch.object(VIP, "real_app",
                           side_effect=VIP.NoFixture("测试注入：本机没有真产物")):
             cases = VIP.self_test(work / "st")
-        absent = [label for label, got, _ in cases if got is None]
+        absent = [(label, note) for label, got, note in cases if got is None]
         self.assertEqual(absent, [],
                          "自检档里还有变异依赖真产物（轻夹具没接上）：%s" % absent)
         missed = [(label, note) for label, got, note in cases if got is False]
