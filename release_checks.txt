@@ -20,9 +20,54 @@
 #                  为什么开这条而不是让人用 --allow-stale-feature：申报要留在受版本控制的
 #                  文件里才能被 review，命令行开关只活在一次日志里。
 
-version 1.4.119
-# ---- v1.4.119：更新进度提示、目标价读取与备用行情涨跌停保护 ----
-# 本版相对线上 v1.4.118（c8eff3a）新增的包内符号 show_background_download_progress（更新进度）与
+version 1.4.120
+# ---- v1.4.120：更新会话隔离、实时分时衔接、摄像头收口与反馈撤回重试 ----
+check sf_update_policy::evaluate
+check sf_update_cache::UpdateCache
+check sf_update_cache::UpdateCacheBusyError
+check sf_update_cache::UpdateCacheError
+check sf_update_cache::UpdateCacheSpaceError
+check sf_update_cache::_file_matches
+check sf_update_cache::_inside_root
+check sf_update_policy::PolicyDecision
+check sf_update_policy::PolicyInput
+check sf_update_policy::PolicyState
+check sf_update_flow::_safe_error
+check stock_float_window::_UpdateWindowControls
+check stock_float_window::make_update_flow_port
+check sf_update_flow::_ForcedUpdateFlowController
+check sf_update_flow::_LegacyUpdateFlowController
+check sf_update_flow::UpdateFlowPort
+check stock_float_window::_call_with_optional_token
+check stock_float_window::_UpdateFlowPort
+check stock_float_window::_WindowFaceGuardPort
+check sf_face_guard_controller::FaceGuardPort
+check sf_ui_render::chart_current_price
+check sf_face_guard_controller::FaceGuardController
+checkfile Contents/Resources/updater/update_helper.sh::--sequence
+testref tests/test_update_policy.py::TestUpdatePolicy::test_positive_gap_eight_and_nine_are_forced
+testref tests/test_force_update_flow.py::ForcedUpdateFlowMatrixTest::test_start_failure_allows_retry_and_rejects_stale_terminal
+testref tests/test_force_update_flow.py::ForcedUpdateFlowMatrixTest::test_prompt_failure_can_be_retried_without_duplicate_success
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_start_failure_cleans_owned_window_and_cancels_owned_task
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_terminal_window_cleanup_failure_does_not_leave_flow_active
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_stopped_controller_does_not_leave_download_active
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_legacy_start_internal_typeerror_is_not_retried_and_releases_state
+testref tests/test_force_update_flow.py::ForcedUpdateFlowMatrixTest::test_automatic_force_start_prompt_failure_preserves_start_error
+testref tests/test_force_update_flow.py::ForcedUpdateFlowMatrixTest::test_force_manual_start_failure_restores_prompt
+testref tests/test_force_update_flow.py::ForcedUpdateFlowMatrixTest::test_force_terminal_prompt_failure_still_records_download_failure
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_update_controls_do_not_retry_internal_typeerror
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_update_port_does_not_retry_internal_typeerror
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_legacy_internal_typeerror_is_not_retried
+testref tests/test_window_responsibility_split.py::UpdateFlowPortTests::test_replaced_force_prompt_discards_queued_exit
+testref tests/test_chart_extremes.py::TestRealWindowChart::test_quote_only_updates_keep_line_and_dot_connected
+testref tests/test_chart_extremes.py::TestRealWindowChart::test_single_minute_point_and_stale_chart_keep_live_endpoint
+testref tests/test_face_guard_pending_stop_gate.py::FaceGuardPendingStopGateTests::test_pending_stop_blocks_new_monitor_until_old_stop_finishes
+testref tests/test_face_guard_pending_stop_gate.py::FaceGuardPendingStopGateTests::test_drain_keeps_later_monitors_after_first_stop_exhausts_budget
+testref tests/test_feedback_outbox_leases.py::OutboxLeaseTests::test_interrupted_cancel_with_archive_already_deleted_converges_to_cancelled
+testref tests/test_feedback_outbox_leases.py::OutboxLeaseTests::test_cancel_pending_recovery_never_restores_uploadable_state_when_archive_remains
+
+# 以下为 v1.4.119 的历史特征与关联判据（保留兼容性核验）。
+# v1.4.119 相对线上 v1.4.118（c8eff3a）新增的包内符号 show_background_download_progress（更新进度）与
 # sf_quote.target_limit_prices（目标价涨跌停边界：主源明确回负值＝“无涨跌停”的指数、可转债放行，备源缺字段、回 0 占位仍拦）、
 # sf_quote.is_no_daily_limit_market 与 _declares_no_limit（港股、美股没有每日涨跌停，不再把腾讯第 47/48 位当涨跌停价；只有负值才算无涨跌停声明）在下面 check 中核验；
 # 目标价读取公平性（stock_float_window._poll）与 target_panel 的边界提示只改既有函数体，包内没有新顶层名字，
@@ -35,6 +80,15 @@ check sf_quote::_hong_kong_market_session
 check sf_ui_render::chart_current_price
 check sf_quote::quote_is_current
 check sf_ui_render::bottom_rows_fitting
+# 待发布的强制更新助手校验，供未来版本准备，不表示 1.4.119 已包含该功能。
+checkfile Contents/Resources/updater/update_helper.sh::--sequence
+checkfile Contents/Resources/updater/update_helper.sh::--size
+checkfile Contents/Resources/updater/update_helper.sh::SkyrocketReleaseSequence
+checkfile Contents/Resources/updater/update_helper.sh::bundle_sequence_invalid
+checkfile Contents/Resources/updater/update_helper.sh::archive_size_mismatch
+testref tests/test_update_helper.py::TestHelperRejectsBadArchive::test_sequence_mismatch_is_rejected_before_replacement
+testref tests/test_update_helper.py::TestHelperRejectsBadArchive::test_archive_size_mismatch_is_rejected_before_replacement
+testref tests/test_update_handoff.py::UpdateHandoffTests::test_modern_update_handoff_forwards_sequence_and_archive_size
 testref tests/test_v1417_progress_alert.py::DownloadProgressBoxTest::test_background_progress_restores_updates_and_close_does_not_cancel
 testref tests/test_v1459_screen_clamp.py::RestoreClampsToScreen::test_first_install_screen_prefers_pointer_screen_and_falls_back_to_primary
 testref tests/test_v154.py::TestFirstInstallDefaultHeight::test_只有完全没有当前备份和迁移配置才算首次安装
@@ -589,9 +643,9 @@ check sf_face_guard_controller::FaceGuardController
 check sf_window_geometry::keep_on_screen_position
 check sf_window_lifecycle::WindowLifecycleController
 check sf_window_state::UpdateFlowState
-checkfile Contents/Resources/docs/README.md::v1.4.119 Beta**
+checkfile Contents/Resources/docs/README.md::v1.4.120 Beta**
 checkfile Contents/Resources/docs/README.md::未签名、未公证
-checkfile Contents/Resources/docs/INSTALL.md::v1.4.119
+checkfile Contents/Resources/docs/INSTALL.md::v1.4.120
 checkfile Contents/Resources/docs/SECURITY.md::私下报告漏洞
 checkfile Contents/Resources/licenses/LICENSE::GNU GENERAL PUBLIC LICENSE
 check sf_editor::verify_bare_code

@@ -421,6 +421,18 @@ class RefusalTests(LandCase):
 
 
 class HelperTests(LandCase):
+    def test_task_branch_check_with_reserved_head_ref(self):
+        sh(self.repo, "update-ref", "refs/heads/HEAD", self.base_sha)
+        # 主树的身份守卫有意拒绝保留引用；隔离它以单独验证任务树的分支识别。
+        with mock.patch.object(land.git_identity, "checked_out_branch", return_value=BASE):
+            _, lines = self.run_land(apply=False)
+        self.assertTrue(any("预演" in line for line in lines), lines)
+
+    def test_fast_forward_with_reserved_head_ref(self):
+        sh(self.repo, "update-ref", "refs/heads/HEAD", self.base_sha)
+        land.fast_forward(self.repo, BASE, self.base_sha, self.tip)
+        self.assertEqual(self.head(), self.tip)
+
     def test_git_failures_are_refusals_not_tracebacks(self):
         with self.assertRaisesRegex(land.LandError, "git rev-parse"):
             land.git(self.top, "rev-parse", "HEAD")

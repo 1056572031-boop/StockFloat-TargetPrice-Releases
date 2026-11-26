@@ -4,14 +4,610 @@ The host port supplies update state and UI commands. All methods execute on the
 UI thread; blocking transport remains in UpdateController.
 """
 
+import inspect
 import os
+import re
 import threading
 import time
-from sf_constants import UPDATE_CHECK_STALE_SEC
+from urllib.parse import urlparse
+
+import sf_update_policy
+from sf_update_cache import UpdateCacheBusyError
+from sf_constants import RELEASE_SEQUENCE, UPDATE_CHECK_STALE_SEC
+from sf_update_policy import PolicyInput, PolicyState
+
+
+class UpdateFlowPort:
+    """最小宿主边界：流程只通过这些公开操作读状态、发动作。"""
+
+    def get_local_version(self) -> str:
+        raise NotImplementedError
+
+    def get_local_sequence(self) -> int:
+        raise NotImplementedError
+
+    def start_download(self, update, *, prompt_when_ready: bool, show_progress: bool,
+                       token=None) -> None:
+        raise NotImplementedError
+
+    def cancel_download(self, update=None, *, token=None) -> None:
+        raise NotImplementedError
+
+    def prompt_update(self, update, *, kind: str, generation=None, identity=None) -> None:
+        raise NotImplementedError
+
+    def show_download_progress(self) -> None:
+        raise NotImplementedError
+
+    def show_update_message(self, title: str, body: str) -> None:
+        raise NotImplementedError
+
+    def install_update(self, update, archive: str) -> None:
+        raise NotImplementedError
+
+    def request_check(self, manual: bool, token=None) -> None:
+        raise NotImplementedError
+
+
+class _ForcedUpdateFlowController:
+    """Owns forced-update session state and leaves transport/UI to public ports."""
+
+    def __init__(self, backend=None, log=None, swallow=None, *, port=None, cache=None):
+        self._backend = backend
+        self._port = port
+        self._cache = cache
+        self.log = log or (lambda *args: None)
+        self.swallow = swallow or (lambda *args: None)
+        self._update = None
+        self._archive = None
+        self._decision = None
+        self._manifest_verified = False
+        self._prompted = set()
+        self._download_active = False
+        self._download_show_progress = False
+        self._generation = 0
+        self._download_token = None
+        self._download_update = None
+        self._cancelled_token = None
+        self._pending_manifest = None
+        self._install_started = False
+        self._error_counts = {}
+        self._last_error = None
+
+    def _record_error(self, category, error):
+        self._error_counts[category] = self._error_counts.get(category, 0) + 1
+        self._last_error = {
+            "category": str(category),
+            "type": type(error).__name__,
+            "reason": _safe_error(error),
+        }
+
+    @staticmethod
+    def _identity(update):
+        if update is None:
+            return None
+        if hasattr(update, "release_sequence") and update.release_sequence is not None:
+            return (update.version, update.release_sequence, update.archive_sha256)
+        return (update.version, None, update.archive_sha256)
+
+    def _port_value(self, name, fallback):
+        value = getattr(self._port, name, None)
+        return value() if callable(value) else fallback
+
+    def _evaluate(self, *, package_ready=False):
+        if self._update is None or not self._manifest_verified:
+            return None
+        decision = sf_update_policy.evaluate(PolicyInput(
+            local_version=str(self._port_value("get_local_version", "0.0.0")),
+            local_sequence=int(self._port_value("get_local_sequence", RELEASE_SEQUENCE)),
+            live_version=self._update.version,
+            live_sequence=self._update.release_sequence,
+            package_ready=bool(package_ready),
+            manifest_verified_this_session=True,
+        ))
+        self._decision = decision
+        return decision
+
+    def clear_verified_session(self):
+        if self._download_active and self._download_update is not None:
+            self._port.cancel_download(self._download_update, token=self._download_token)
+        self._generation += 1
+        self._update = None
+        self._archive = None
+        self._decision = None
+        self._manifest_verified = False
+        self._prompted.clear()
+        self._download_active = False
+        self._download_token = None
+        self._download_update = None
+        self._pending_manifest = None
+
+    def is_current(self, *, identity=None, generation=None):
+        return (self._update is not None and
+                (identity is None or identity == self._identity(self._update)) and
+                (generation is None or generation == self._generation))
+
+    def is_current_download(self, update, token=None):
+        return (self._download_active and token is not None and
+                self.is_current(identity=self._identity(update)) and
+                token is self._download_token)
+
+    def accepts_download_terminal(self, update, token=None):
+        return (self.is_current_download(update, token) or
+                (token is not None and token is self._cancelled_token))
+
+    @property
+    def has_pending_manifest(self):
+        return self._pending_manifest is not None
+
+    @property
+    def generation(self):
+        return self._generation
+
+    @property
+    def download_token(self):
+        return self._download_token
+
+    def on_check_result(self, update, error, *, automatic=False):
+        if error is not None:
+            return self.on_check_failed(error, automatic=automatic)
+        if update is None:
+            self.clear_verified_session()
+            return None
+        return self.on_manifest_verified(update, automatic=automatic)
+
+    def _prompt_once(self, kind):
+        identity = self._identity(self._update)
+        key = (identity, kind)
+        if identity is None or key in self._prompted:
+            return False
+        self._prompted.add(key)
+        generation = self._generation
+        try:
+            self._port.prompt_update(self._update, kind=kind,
+                                     generation=generation, identity=identity)
+        except Exception:
+            if self.is_current(identity=identity, generation=generation):
+                self._prompted.discard(key)
+            raise
+        return True
+
+    def on_manifest_verified(self, update, *, automatic=False):
+        """Consume one already-verified manifest and apply the gap policy."""
+        if (self._pending_manifest is not None and
+                (not isinstance(update.published_at, str) or
+                 update.published_at < self._pending_manifest[0].published_at)):
+            self._record_error("manifest_replay", ValueError("更新清单已过期"))
+            if not automatic:
+                self._port.show_update_message("检查更新失败", "暂时无法检查更新。")
+            return None
+        if (self._pending_manifest is not None and
+                update.published_at == self._pending_manifest[0].published_at and
+                (self._identity(update) != self._identity(self._pending_manifest[0]) or
+                 getattr(update, "manifest_digest", None) !=
+                 getattr(self._pending_manifest[0], "manifest_digest", None))):
+            self._record_error("manifest_replay", ValueError("更新时间相同但身份不同"))
+            if not automatic:
+                self._port.show_update_message("检查更新失败", "暂时无法检查更新。")
+            return None
+        if update.release_sequence is not None and self._cache is None:
+            self.clear_verified_session()
+            self._record_error("manifest_replay", RuntimeError("更新缓存不可用"))
+            if not automatic:
+                self._port.show_update_message("检查更新失败", "暂时无法检查更新。")
+            return None
+        if update.release_sequence is not None:
+            try:
+                with self._cache.write_lock():
+                    accepted = self._cache.accept_manifest_identity(update)
+                if not accepted:
+                    raise ValueError("更新清单已过期")
+            except UpdateCacheBusyError as exc:
+                if (self._download_active and self._download_update is not None and
+                        self._identity(update) == self._identity(self._download_update) and
+                        update.published_at == self._download_update.published_at and
+                        getattr(update, "manifest_digest", None) != getattr(self._download_update, "manifest_digest", None)):
+                    self.clear_verified_session()
+                    self._record_error("manifest_replay", ValueError("同时间清单内容不同"))
+                    if not automatic:
+                        self._port.show_update_message("检查更新失败", "暂时无法检查更新。")
+                    return None
+                if (self._download_active and self._download_update is not None and
+                        self._identity(update) == self._identity(self._download_update) and
+                        update.published_at > self._download_update.published_at and
+                        self._pending_manifest is None):
+                    self._pending_manifest = (update, automatic)
+                    self._generation += 1
+                    self._port.cancel_download(self._download_update, token=self._download_token)
+                    return None
+                if (self._download_active and self._download_update is not None and
+                        self._identity(update) == self._identity(self._download_update) and
+                        self._pending_manifest is None):
+                    if not automatic:
+                        self._download_show_progress = True
+                        self._port.show_download_progress()
+                    return None
+                if self._pending_manifest is not None:
+                    old_update, old_automatic = self._pending_manifest
+                    if update.published_at > old_update.published_at:
+                        self._pending_manifest = (update, automatic and old_automatic)
+                        self._generation += 1
+                    elif not automatic and old_automatic:
+                        self._pending_manifest = (old_update, False)
+                    self._record_error("manifest_busy", exc)
+                    schedule = getattr(self._port, "schedule_manifest_retry", None)
+                    if callable(schedule):
+                        schedule()
+                    return None
+                if (self._download_active and self._download_update is not None and
+                        self._identity(update) != self._identity(self._download_update)):
+                    self._pending_manifest = (update, automatic)
+                    self._generation += 1
+                    self._port.cancel_download(self._download_update, token=self._download_token)
+                    return None
+                self._record_error("manifest_busy", exc)
+                if not automatic:
+                    self._port.show_update_message("检查更新失败", "暂时无法检查更新。")
+                return None
+            except Exception as exc:
+                # 严格更旧的回放不能撤销已验签的较新会话；同时间冲突或未知错误则失效。
+                current_time = getattr(self._update, "published_at", None)
+                same_download = (self._download_active and self._download_update is not None and
+                                 self._identity(update) == self._identity(self._download_update) and
+                                 update.published_at == self._download_update.published_at and
+                                 getattr(update, "manifest_digest", None) ==
+                                 getattr(self._download_update, "manifest_digest", None))
+                if not (same_download or (isinstance(current_time, str) and
+                        isinstance(update.published_at, str) and update.published_at < current_time)):
+                    self.clear_verified_session()
+                self._record_error("manifest_replay", exc)
+                self.swallow("sf_update_flow.accept_manifest_timestamp", exc)
+                if not automatic:
+                    self._port.show_update_message("检查更新失败", "暂时无法检查更新。")
+                return None
+        if self._pending_manifest is not None:
+            pending = self._pending_manifest
+            if (self._identity(update) == self._identity(pending[0]) or
+                    update.published_at >= pending[0].published_at):
+                automatic = automatic and pending[1]
+                self._pending_manifest = None
+        if not automatic:
+            identity = self._identity(update)
+            self._prompted = {key for key in self._prompted if key[0] != identity}
+        identity = self._identity(update)
+        if self._update is not None and identity != self._identity(self._update):
+            self._generation += 1
+            if self._download_active:
+                self._port.cancel_download(self._download_update, token=self._download_token)
+                self._download_active = False
+                self._download_update = None
+            self._archive = None
+            self._download_token = None
+        elif self._update is None:
+            self._generation += 1
+        self._update = update
+        self._manifest_verified = True
+        self._archive = self._validated_archive(update)
+        decision = self._evaluate(package_ready=self._archive is not None)
+        if decision is None:
+            return None
+        if decision.state is PolicyState.UP_TO_DATE:
+            if not automatic:
+                self._port.show_update_message("检查更新", "当前已是最新版本。")
+        elif decision.state is PolicyState.OFFER:
+            self._prompt_once("offer")
+        elif decision.state is PolicyState.PREPARE:
+            if automatic and decision.should_download and not self._download_active:
+                self._download_active = True
+                self._start_download(update, prompt_when_ready=True, show_progress=False)
+            elif not automatic:
+                self._prompt_once("offer")
+        elif decision.state is PolicyState.FORCE_PENDING:
+            if automatic and decision.should_download and not self._download_active:
+                self._download_active = True
+                identity_before = self._identity(self._update)
+                generation_before = self._generation
+                try:
+                    self._start_download(update, prompt_when_ready=False, show_progress=False)
+                except Exception:
+                    if (self.is_current(identity=identity_before, generation=generation_before)
+                            and self.state is PolicyState.FORCE_PENDING):
+                        self._prompted.discard((identity_before, "force_pending"))
+                        try:
+                            self._prompt_once("force_pending")
+                        except Exception as exc:
+                            self.swallow("sf_update_flow.force_prompt_after_auto_start", exc)
+                    raise
+            self._prompt_once("force_pending")
+        elif decision.state is PolicyState.FORCE_READY:
+            self._prompt_once("force_ready")
+        elif decision.state is PolicyState.ROLLBACK_OFFER:
+            self._prompt_once("rollback")
+        elif decision.state is PolicyState.REPLACE_OFFER:
+            self._prompt_once("offer")
+        return decision
+
+    def _validated_archive(self, update):
+        if self._cache is None:
+            return None
+        try:
+            return self._cache.validate_cached_archive(update)
+        except Exception as exc:
+            self._record_error("cache_validation", exc)
+            self.swallow("sf_update_flow.validate_cached_archive", exc)
+            return None
+
+    def on_first_frame_ready(self):
+        """Recheck only the latest verified identity; offline startup remains neutral."""
+        if self._update is None or not self._manifest_verified:
+            return None
+        self._archive = self._validated_archive(self._update)
+        decision = self._evaluate(package_ready=self._archive is not None)
+        if decision is not None and decision.state is PolicyState.FORCE_READY:
+            self._prompt_once("force_ready")
+        elif decision is not None and decision.state is PolicyState.OFFER:
+            self._prompt_once("offer")
+        return decision
+
+    def on_download_ready(self, update, archive):
+        if self._update is None or self._identity(update) != self._identity(self._update):
+            return None
+        verified = self._validated_archive(update)
+        if verified is None or archive is None or os.fspath(verified) != os.fspath(archive):
+            return None
+        self._download_active = False
+        self._archive = verified
+        decision = self._evaluate(package_ready=True)
+        if decision is not None:
+            if decision.state is PolicyState.FORCE_READY:
+                self._prompt_once("force_ready")
+            elif decision.state is PolicyState.PREPARE:
+                self._prompt_once("ready")
+            elif decision.state in (PolicyState.OFFER, PolicyState.REPLACE_OFFER, PolicyState.ROLLBACK_OFFER):
+                self._prompted.discard((self._identity(update), "offer"))
+                self._prompt_once("ready")
+        return decision
+
+    def on_check_failed(self, error, *, automatic=False):
+        """Record a failed recheck after invalidating the verified session."""
+        self.clear_verified_session()
+        self._record_error("check", error)
+        self.log("update check failed: %r" % (error,), "WARNING")
+        if not automatic:
+            self._port.show_update_message("检查更新失败", "暂时无法检查更新。")
+        return False
+
+    def on_download_finished(self, update, archive, error, token=None):
+        """Classify one terminal result without retrying or installing implicitly."""
+        if token is not None and token is self._cancelled_token:
+            self._cancelled_token = None
+            if self._download_active:
+                return False
+            if self._pending_manifest is not None:
+                pending_update, pending_automatic = self._pending_manifest
+                self.on_manifest_verified(pending_update, automatic=pending_automatic)
+            elif self.state is PolicyState.FORCE_PENDING:
+                self._prompted.discard((self._identity(self._update), "force_pending"))
+                self._prompt_once("force_pending")
+            return False
+        if not self.is_current_download(update, token):
+            return False
+        self._download_active = False
+        self._download_token = None
+        self._download_update = None
+        if self._pending_manifest is not None:
+            pending_update, pending_automatic = self._pending_manifest
+            self.on_manifest_verified(pending_update, automatic=pending_automatic)
+            return False
+        if error is None:
+            if self.on_download_ready(update, archive) is not None:
+                return True
+            error = RuntimeError("更新包复核失败")
+        if self.state is PolicyState.FORCE_PENDING:
+            self._prompted.discard((self._identity(self._update), "force_pending"))
+            try:
+                self._prompt_once("force_pending")
+            except Exception as exc:
+                self.swallow("sf_update_flow.force_prompt_after_download", exc)
+        try:
+            import sf_update
+            cancelled = isinstance(error, sf_update.UpdateCancelled)
+            fatal = isinstance(error, sf_update.UpdateFatal)
+        except Exception as exc:
+            self._record_error("download_classification", exc)
+            self.swallow("sf_update_flow.classify_download", exc)
+            cancelled = fatal = False
+        if cancelled:
+            return False
+        if fatal:
+            self._record_error("download_fatal", error)
+            self.log("update download fatal: %r" % (error,), "ERROR")
+            if self._download_show_progress:
+                self._port.show_update_message("更新未完成", "下载或校验失败。")
+            return False
+        self._record_error("download", error)
+        self.log("update download failed: %r" % (error,), "WARNING")
+        self._port.show_update_message("更新未完成", "下载或校验失败。")
+        return False
+
+
+    def _start_download(self, update, *, prompt_when_ready, show_progress):
+        self._download_show_progress = bool(show_progress)
+        self._download_token = object()
+        self._download_update = update
+        token = self._download_token
+        try:
+            self._port.start_download(update, prompt_when_ready=prompt_when_ready,
+                                      show_progress=show_progress, token=token)
+        except Exception:
+            if self._download_token is token:
+                self._download_active = False
+                self._download_token = None
+                self._download_update = None
+                self._download_show_progress = False
+            raise
+
+    def progress_revealed(self):
+        if self._download_active:
+            self._download_show_progress = True
+
+    def start_download(self, *, prompt_when_ready: bool, show_progress: bool):
+        if self._update is None or self._download_active:
+            return False
+        self._download_active = True
+        self._start_download(self._update, prompt_when_ready=prompt_when_ready,
+                             show_progress=show_progress)
+        return True
+
+
+    def handle_force_action(self, action, *, identity=None, generation=None):
+        if (self._update is None or self._decision is None or
+                (identity is not None and identity != self._identity(self._update)) or
+                (generation is not None and generation != self._generation)):
+            return False
+        if action == "开始下载" and self._decision.state is PolicyState.FORCE_PENDING:
+            if not self._download_active:
+                self._download_active = True
+                identity_before = self._identity(self._update)
+                generation_before = self._generation
+                try:
+                    self._start_download(self._update, prompt_when_ready=False, show_progress=True)
+                except Exception:
+                    if (self.is_current(identity=identity_before, generation=generation_before)
+                            and self.state is PolicyState.FORCE_PENDING):
+                        self._prompted.discard((identity_before, "force_pending"))
+                        try:
+                            self._prompt_once("force_pending")
+                        except Exception as exc:
+                            self.swallow("sf_update_flow.force_prompt_after_start", exc)
+                    raise
+            else:
+                self._download_show_progress = True
+                self._port.show_download_progress()
+            return True
+        if action == "继续使用" and self._decision.state is PolicyState.FORCE_PENDING:
+            return True
+        return False
+
+    def cancel_download(self):
+        if self._download_active and self._download_update is not None:
+            self._port.cancel_download(self._download_update, token=self._download_token)
+            self._cancelled_token = self._download_token
+            self._download_token = None
+            self._download_active = False
+
+    def retry_pending_manifest(self):
+        if self._pending_manifest is None or self._download_active:
+            return None
+        update, automatic = self._pending_manifest
+        return self.on_manifest_verified(update, automatic=automatic)
+
+    def manual_check(self):
+        self._port.request_check(True)
+
+    def install_ready(self):
+        if self._install_started or self._update is None or self._archive is None:
+            return False
+        archive = self._validated_archive(self._update)
+        if not archive:
+            self._archive = None
+            self._record_error("ready_archive", RuntimeError("更新包不存在或校验失败"))
+            self._port.show_update_message("更新未完成", "更新包不存在或校验失败，请重新下载。")
+            decision = self._evaluate(package_ready=False)
+            kind = "force_pending" if decision and decision.state is PolicyState.FORCE_PENDING else "offer"
+            self._prompted.discard((self._identity(self._update), kind))
+            self._prompt_once(kind)
+            return False
+        self._archive = archive
+        self._install_started = True
+        try:
+            result = self._port.install_update(self._update, archive)
+        except Exception:
+            self._install_started = False
+            raise
+        if result is False:
+            self._install_started = False
+            if self.state is PolicyState.FORCE_READY:
+                self._prompted.discard((self._identity(self._update), "force_ready"))
+                self._prompt_once("force_ready")
+            return False
+        return True
+
+    @property
+    def state(self):
+        return self._decision.state if self._decision is not None else None
+
+    def diagnostics(self):
+        decision = self._decision
+        update = self._update
+        archive_url = getattr(update, "archive_url", "") if update is not None else ""
+        parsed = urlparse(archive_url)
+        return {
+            "schema": "update_flow.v2",
+            "state": decision.state.value if decision is not None else None,
+            "gap": decision.gap if decision is not None else None,
+            "identity": self._identity(self._update),
+            "manifest_verified_this_session": self._manifest_verified,
+            "download_active": self._download_active,
+            "archive_ready": self._archive is not None,
+            "update": ({
+                "version": update.version,
+                "release_sequence": update.release_sequence,
+                "stage": update.stage,
+            } if update is not None else None),
+            "package": ({
+                "size": update.archive_size,
+                "sha256": update.archive_sha256,
+            } if update is not None else None),
+            "manifest": {"host": parsed.hostname, "verified": self._manifest_verified},
+            "policy": ({
+                "state": decision.state.value,
+                "gap": decision.gap,
+                "force": bool(decision.force),
+                "should_download": bool(decision.should_download),
+                "should_prompt": bool(decision.should_prompt),
+            } if decision is not None else None),
+            "download": {
+                "active": self._download_active,
+                "ready": self._archive is not None,
+                "progress": None,
+            },
+            "errors": {
+                "counts": dict(self._error_counts),
+                "last": dict(self._last_error) if self._last_error else None,
+            },
+            "install": {"status": None, "rollback_reason": None},
+        }
+
+def _safe_error(error):
+    """Keep error evidence useful without exporting paths, URLs, or credentials."""
+    text = str(error or "")[:200]
+    text = re.sub(r"https?://[^\s]+", "<url>", text)
+    text = re.sub(r"(?:/Users/|/private/|/var/|/tmp/)[^\s]+", "<path>", text)
+    return text
+
+
+class UpdateFlowController:
+    """Compatibility facade for the new ported flow and the legacy host flow."""
+
+    def __init__(self, *args, **kwargs):
+        self._impl: _ForcedUpdateFlowController | _LegacyUpdateFlowController
+        if "port" in kwargs or "cache" in kwargs:
+            self._impl = _ForcedUpdateFlowController(*args, **kwargs)
+        else:
+            self._impl = _LegacyUpdateFlowController(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._impl, name)
 
 
 def update_flow_diagnostics(host, field, install_result):
     """Read the existing update snapshot on the UI thread, one field at a time."""
+    port = getattr(host, "_update_port", None)
+    flow = getattr(port, "_flow", None)
+    cache = getattr(port, "_cache", None)
+    controller = getattr(host, "_update_controller", None)
+    controller_diag = getattr(controller, "diagnostics", None)
     return {
         "downloading": field("update.downloading", lambda: bool(host._update_downloading), None),
         "transition_pending": field("update.transition",
@@ -20,14 +616,16 @@ def update_flow_diagnostics(host, field, install_result):
         "last_check_at": field("update.last_check_at", lambda: float(host._update_last_check_at), None),
         "stale_resets": field("update.stale_resets", lambda: int(host._update_stale_resets), None),
         "last_result": field("update.last_result", lambda: host._update_last_result, None),
-        # 最近一次下载是怎么收场的（成功 / 用户取消 / 失败，失败再分确定性与否）。
-        # 此前下载失败只写 debug.log，日志轮转后"更新总不成功"就查不到原因了。
         "last_download": field("update.last_download", lambda: host._update_last_download, None),
         "install_result": field("update.install_result", lambda: install_result(), None),
+        "flow": field("update.flow", flow.diagnostics, None) if flow is not None else None,
+        "cache": field("update.cache", cache.diagnostics, None) if cache is not None else None,
+        "controller": field("update.controller", controller_diag, None)
+        if callable(controller_diag) else None,
     }
 
 
-class UpdateFlowController:
+class _LegacyUpdateFlowController:
     def __init__(self, backend, log, swallow):
         self._backend = backend
         self.log = log
@@ -43,15 +641,11 @@ class UpdateFlowController:
         都不给；5 秒后那次检查又按静默处理什么都不弹。用户看到的就是「点了没反应」，
         而日志里一行都不留。
         """
-        # ① 已知有新版本：手动检查直接弹确认框，不看任何在飞状态。自动检查发现的
-        #    新版则会在回包后自动下载，下载完成再提示用户，避免让用户先确认一次、
-        #    下载结束又确认一次。
+        # 已知旧提示不能代替重新检查：线上清单可能已经撤回或升级为新协议。
+        # 下载正在进行时仍先展示进度，避免重复下载；否则手动检查重新联网。
         pending = getattr(host, "_update_pending", None)
-        if manual and pending is not None:
-            if getattr(host, "_update_downloading", False):
-                host.show_background_download_progress()
-                return
-            host._prompt_update(pending)
+        if manual and pending is not None and getattr(host, "_update_downloading", False):
+            host.show_background_download_progress()
             return
         if getattr(host, "_threads_stopped", False):
             return
@@ -77,7 +671,6 @@ class UpdateFlowController:
             #    检查的回包按「用户主动要求」兑现（见 _handle_update_check）。
             if manual:
                 host._update_manual_wait = True
-                # A new explicit click renews the request, even after cancelling its wait box.
                 host._update_check_aborted = False
                 # 与下面发起新检查的分支同理：等待框只是提示，它出错不能让这次点击没有回音。
                 try:
@@ -110,7 +703,11 @@ class UpdateFlowController:
             except Exception as exc:
                 self.swallow("sf_update_flow.show_checking_dialog", exc)
 
-        self._backend(host).check(manual)
+        port = getattr(host, "_update_port", None)
+        if port is not None:
+            port.request_check(manual)
+        else:
+            self._backend(host).check(manual)
 
     def check_stale(self, host):
         """这一次在飞检查是不是已经过期（起算时刻 + UPDATE_CHECK_STALE_SEC）。
@@ -120,22 +717,12 @@ class UpdateFlowController:
         started = getattr(host, "_update_last_check_at", 0.0) or 0.0
         return (time.time() - started) > UPDATE_CHECK_STALE_SEC
 
-    def checked(self, host, manual, update, error):
-        host._update_checking = False
-        host._update_transition_pending = False
-        # v1.4.43：点击撞上在飞检查时记的账，由这里兑现 —— 结果按「用户主动要求」
-        # 汇报（该弹确认框/该说「已是最新」/该说失败都照常弹）。销账放在最前面：
-        # 一次点击只兑一次，不许隔几个小时后再莫名弹出一个框。
-        manual = bool(manual) or bool(getattr(host, "_update_manual_wait", False))
-        host._update_manual_wait = False
-        # v1.4.44：用户在这一次结束前按了「取消」→ 状态、日志、退避照常走，
-        # 但界面不再弹任何东西（销账在这里，不留到下一次检查）。
-        if getattr(host, "_update_check_aborted", False):
-            host._update_check_aborted = False
-            manual = False
-        # v1.4.43：每一次检查都留一行结果。此前**只有失败**才写日志，成功与
-        # 「点击被复用」全是空白 —— 于是「今天到底查了几次、查没查到」无法回答，
-        # 本轮这个 bug 就是这么被藏住的。
+    def prepare_checked(self, host, manual):
+        """收口一次检查的宿主状态，再把结果交给具体策略。"""
+        return host.finish_update_check(manual)
+
+    def record_checked(self, host, manual, update, error):
+        """记录检查结果，并统一处理失败计数和成功后的退避收口。"""
         started = getattr(host, "_update_last_check_at", 0.0) or 0.0
         self.log("update check done: asked=%s result=%s elapsed=%.1fs"
                  % ("manual" if manual else "auto",
@@ -162,10 +749,8 @@ class UpdateFlowController:
             # 记账失败不影响更新回包，但必须留痕（AGENTS §6 第 9 条）
             self.swallow("stock_float_window._update_last_result", _rec_exc)
         if getattr(host, "_quitting", False):
-            host._close_update_flow_box()
             return
         if error is not None:
-            host._close_update_flow_box()
             host._update_failure_count = getattr(host, "_update_failure_count", 0) + 1
             self.log("update check failed: %r" % (error,), "WARNING")
             host._schedule_update_retry()
@@ -173,11 +758,16 @@ class UpdateFlowController:
                 host._show_update_message("检查更新失败",
                                           "暂时无法检查更新。", "当前版本不受影响。")
             return
-        host._close_update_flow_box()
         host._update_failure_count = 0
         timer = getattr(host, "_update_retry_timer", None)
         if timer is not None:
             timer.stop()
+
+    def checked(self, host, manual, update, error):
+        manual = self.prepare_checked(host, manual)
+        self.record_checked(host, manual, update, error)
+        if getattr(host, "_quitting", False) or error is not None:
+            return
         if update is None:
             # 2026-11-02 走查 F-H-07：线上清单被撤回或回滚后，检查结果会变回「已是最新」，
             # 但常驻会话里还记着之前发现的版本：手动「检查更新」会跳过联网、直接弹出
@@ -238,14 +828,37 @@ class UpdateFlowController:
         if host._update_downloading or getattr(host, "_quitting", False):
             return
         host._update_downloading = True
-        host._update_cancel = threading.Event()
-        host.reset_update_progress()
-        host._update_prompt_when_ready = bool(prompt_when_ready)
-        # 检查提示已在 _prompt_update 中结束并释放后，才允许进入下载阶段。
-        if show_progress:
-            host._open_download_progress_box()
-
-        self._backend(host).download(update, host._update_cancel)
+        cancel_event = threading.Event()
+        download_token = object()
+        try:
+            host.begin_legacy_update_download(cancel_event, download_token)
+            host.reset_update_progress()
+            host.set_legacy_update_prompt_when_ready(bool(prompt_when_ready))
+            if show_progress:
+                host.open_update_download_progress()
+            method = self._backend(host).download
+            arguments: tuple = (update, cancel_event, download_token)
+            try:
+                signature = inspect.signature(method)
+            except (TypeError, ValueError) as exc:
+                self.swallow("sf_update_flow.inspect_signature", exc)
+            else:
+                try:
+                    signature.bind(update, cancel_event, download_token)
+                    arguments = (update, cancel_event, download_token)
+                except TypeError:
+                    signature.bind(update, cancel_event)
+                    arguments = (update, cancel_event)
+            if method(*arguments) is False:
+                raise RuntimeError("更新下载未能启动")
+        except Exception as exc:
+            cancel_event.set()
+            if getattr(host, "_update_download_token", None) is download_token:
+                try:
+                    self.downloaded(host, update, None, exc)
+                except Exception as cleanup_exc:
+                    self.swallow("sf_update_flow.legacy_start_cleanup", cleanup_exc)
+            raise
 
     def cancel_download(self, host):
         cancel = getattr(host, "_update_cancel", None)
@@ -295,8 +908,15 @@ class UpdateFlowController:
         host._update_prompt_when_ready = False
         host._update_downloading = False
         host._update_cancel = None
+        clear_token = getattr(host, "clear_legacy_update_token", None)
+        if callable(clear_token):
+            clear_token()
         self._record_download(host, update, error, prompt_when_ready)
-        host._close_update_flow_box()
+        close_progress = getattr(host, "close_update_progress", None)
+        if callable(close_progress):
+            close_progress()
+        else:
+            host.close_update_flow()
         if getattr(host, "_quitting", False):
             return
         if error is not None and self._is_cancel(error):

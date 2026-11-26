@@ -89,6 +89,28 @@
       "write_scope": "更新交互状态仍由主窗口兼容承载；新增更新状态须先收窄 host 接口",
       "diagnostic_port": "sf_update_flow.py:update_flow_diagnostics",
       "shutdown": "退出或更新交接时关闭交互并取消后台任务"
+    },
+    {
+      "name": "update_policy_state",
+      "owner": "sf_update_flow.py:_ForcedUpdateFlowController",
+      "write_scope": "强制更新的已验签版本、策略决策、下载就绪与错误类别；仅由流程控制器写入",
+      "diagnostic_port": "sf_update_flow.py:diagnostics",
+      "shutdown": "更新交接或窗口退出时取消下载并释放本次流程状态"
+    },
+    {
+      "name": "update_controller_identity_state",
+      "owner": "sf_update_controller.py:UpdateController",
+      "write_scope": "active 更新身份与 pending 更新身份切换；控制器负责取消旧任务并交接最新任务",
+      "diagnostic_port": "sf_update_controller.py:diagnostics",
+      "shutdown": "stop 后取消 active/pending 任务并阻止新任务，由 worker 收尾释放状态",
+      "boundary": "诊断只读 active/pending 是否存在与生命周期计数；停机不触碰窗口状态"
+    },
+    {
+      "name": "update_cache_state",
+      "owner": "sf_update_cache.py:UpdateCache",
+      "write_scope": "更新暂存身份、清单时间戳、断点和启动复核元数据；仅由缓存服务写入",
+      "diagnostic_port": "sf_update_cache.py:diagnostics",
+      "shutdown": "下载锁退出时释放文件锁，诊断读取不创建或修改缓存文件"
     }
   ]
 }

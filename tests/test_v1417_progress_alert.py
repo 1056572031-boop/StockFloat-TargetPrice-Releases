@@ -253,6 +253,24 @@ class ProgressAlertBridgeTest(unittest.TestCase):
         self.assertEqual(alert.layouts, after_first, "跳过时不得再排一次版")
         self.assertGreater(alert.layouts, layouts_before)
 
+    def test_failed_display_allows_same_progress_to_retry(self):
+        handle = self._open()
+        alert = _Alert.instances[-1]
+        with patch.object(alert.accessory, "display", side_effect=[RuntimeError("display failed"), None]):
+            self.assertFalse(handle.set_progress(40, "40%"))
+            self.assertTrue(handle.set_progress(40, "40%"))
+        self.assertEqual(alert.info, "40%")
+        self.assertFalse(handle.set_progress(40, "40%"))
+
+    def test_failed_display_records_exception(self):
+        handle = self._open()
+        bar = _Alert.instances[-1].accessory
+        error = RuntimeError("display failed")
+        with patch.object(bar, "display", side_effect=error), \
+             patch.object(sf_system_alert, "_swallow") as swallow:
+            self.assertFalse(handle.set_progress(40, "40%"))
+        swallow.assert_called_once_with("sf_system_alert.NativeAlert.set_progress", error)
+
     def test_progress_value_is_clamped_into_the_bar_range(self):
         handle = self._open()
         bar = _Alert.instances[-1].accessory
@@ -446,6 +464,7 @@ class _Host:
     _show_background_download_progress = stock_float_window.FloatWindow._show_background_download_progress
     _open_download_progress_box = stock_float_window.FloatWindow._open_download_progress_box
     _handle_update_progress = stock_float_window.FloatWindow._handle_update_progress
+    close_update_progress = stock_float_window.FloatWindow.close_update_progress
     _close_update_flow_box = stock_float_window.FloatWindow._close_update_flow_box
     reset_progress = stock_float_window.FloatWindow.reset_update_progress  # discipline-ok(R5): 测试端口复用真实宿主方法
     show_background_progress = stock_float_window.FloatWindow.show_background_download_progress  # discipline-ok(R5): 测试端口复用真实宿主公开方法

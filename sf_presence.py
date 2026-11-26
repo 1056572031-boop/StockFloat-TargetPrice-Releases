@@ -861,6 +861,10 @@ class FacePresenceMonitor:
             return self.state
         return STATE_STARTING
 
+    def has_pending_resources(self) -> bool:
+        """非阻塞告知菜单是否仍持有尚未确认释放的原生会话资源。"""
+        return self._session is not None or self._output is not None or self._delegate is not None
+
     def is_starting(self) -> bool:
         return bool(self._starting)
 
@@ -881,6 +885,11 @@ class FacePresenceMonitor:
                      % (gen, self._session_gen))
             self.state = STATE_OFF
             return self.state
+        if (self._session is not None or self._output is not None or self._delegate is not None):
+            if not self._teardown():
+                self.state = STATE_FAILED
+                self.last_error = "上一次摄像头会话尚未停止，等待重试"
+                return self.state
         cls, why = _load_frameworks()
         if cls is None:
             self.state = STATE_UNSUPPORTED
@@ -1019,7 +1028,8 @@ class FacePresenceMonitor:
                 self._stop_event.set()
 
     def _stop_locked(self) -> bool:
-        self._teardown()
+        if not self._teardown():
+            return False
         self.state = STATE_OFF
         self.last_error = ""
         # 停表即清零：计数器只描述"当前这一段会话"，停着的时候不该还能读到上一段
@@ -1584,7 +1594,7 @@ class FacePresenceMonitor:
                            level="WARNING", every=30)
         return True
 
-    def _teardown(self):
+    def _teardown(self) -> bool:
         """停会话。三步顺序是**硬要求**，别调换（复核 F4）：
 
           ① 先把委托从输出通道上摘下来；
@@ -1600,6 +1610,9 @@ class FacePresenceMonitor:
         "摄像头停不下来、绿灯常灭不掉"，比崩溃风险更贴近用户。但**不能**丢委托引用：
         把它挂进模块级 `_PARKED_SINKS` 暂存，绝不让一个可能还在被投递帧的对象被回收。
         这条兜底路径正常情况一次都不会走到，所以不担心它涨内存。
+
+        原生 `stopRunning()` 失败时返回 False，并保留全部会话句柄，供上层稍后重试；
+        只有确认 stopRunning 成功后才执行后续释放。
         """
         output = self._output
         detached = True
@@ -1615,6 +1628,7 @@ class FacePresenceMonitor:
                 session.stopRunning()
             except Exception as exc:
                 log_swallow("sf_presence._teardown", exc)
+                return False
         self._restore_zoom()
         self._session = None
         self._input = None
@@ -1649,3 +1663,4 @@ class FacePresenceMonitor:
         self._prev_count = None
         self.near_w_min = FACE_GUARD_NEAR_FACE_W
         self.running_since = 0.0
+        return True

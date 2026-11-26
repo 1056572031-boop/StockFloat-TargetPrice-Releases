@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import sf_update
+import sf_update_cache
 from sf_constants import APP_VERSION
 from tests._base import SFCase
 
@@ -22,9 +23,10 @@ FRESH = "https://release-assets.githubusercontent.com/a.zip?token=second"
 BODY = bytes(range(160))
 
 
-def info(digest=None, url=ORIGIN):
-    return sf_update.UpdateInfo(APP_VERSION, "", url, len(BODY),
-                                digest or hashlib.sha256(BODY).hexdigest())
+def info(digest=None, url=ORIGIN, sequence=None, published_at=None, version=APP_VERSION):
+    return sf_update.UpdateInfo(version, "", url, len(BODY),
+                                digest or hashlib.sha256(BODY).hexdigest(),
+                                "stable", sequence, published_at)
 
 
 class Response:
@@ -65,6 +67,21 @@ class TestDownloadReuse(SFCase):
         start, end = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
         return Response(request.full_url, BODY[start:end + 1],
                         {"Content-Range": "bytes %d-%d/%d" % (start, end, len(BODY))}, 206)
+
+    def test_legacy_published_at_never_blocks_or_records_new_protocol_timestamp(self):
+        legacy_invalid = info(published_at="not-a-time")
+        self.assertEqual(Path(sf_update.download_update(legacy_invalid)).read_bytes(), BODY)
+        cache = sf_update_cache.UpdateCache(self.root)
+        self.assertIsNone(cache.diagnostics()["latest_published_at"])
+
+        legacy_historical = info(published_at="2999-01-01T00:00:00Z", version="1.4.120")
+        self.assertEqual(Path(sf_update.download_update(legacy_historical)).read_bytes(), BODY)
+        self.assertIsNone(cache.diagnostics()["latest_published_at"])
+
+        current = info(sequence=11, published_at="2026-11-19T00:00:00Z")
+        self.assertEqual(Path(sf_update.download_update(current)).read_bytes(), BODY)
+        self.assertEqual(cache.diagnostics()["latest_published_at"],
+                         "2026-11-19T00:00:00Z")
 
     def test_verified_archive_uses_one_resolution_and_direct_ranges(self):
         archive = sf_update.download_update(info())
@@ -109,6 +126,106 @@ class TestDownloadReuse(SFCase):
         self.track_patch(mock.patch.object(sf_update.concurrent.futures, "ThreadPoolExecutor", Pool))
         self.track_patch(mock.patch.object(sf_update.concurrent.futures, "as_completed", lambda futures: iter(futures)))
         return submitted, rounds
+
+    def test_cache_constructor_failure_is_a_controlled_fatal_error(self):
+        with mock.patch.object(sf_update, "UpdateCache", side_effect=sf_update_cache.UpdateCacheError("unsafe")):
+            with self.assertRaises(sf_update.UpdateFatal):
+                sf_update.download_update(info())
+
+    def test_resume_wrapper_saves_and_reads_matching_cache_identity(self):
+        update = info()
+        cache = sf_update_cache.UpdateCache(self.root)
+        path = cache.resume_path(update)
+        sf_update._save_resume_state(path, update, {0, 2})  # discipline-ok(R5): legacy wrapper persistence is the behavior under test
+        self.assertEqual(sf_update._load_resume_state(path, update), {0, 2})  # discipline-ok(R5): verify wrapper through persisted readback
+
+    def test_resume_wrappers_reject_paths_not_owned_by_cache_identity(self):
+        wrong = self.root / "wrong.resume.json"
+        with self.assertRaises(sf_update_cache.UpdateCacheError):
+            sf_update._load_resume_state(wrong, info())  # discipline-ok(R5): exercise legacy wrapper path safety
+        with self.assertRaises(sf_update_cache.UpdateCacheError):
+            sf_update._save_resume_state(wrong, info(), {0})  # discipline-ok(R5): exercise legacy wrapper path safety
+
+    def test_cancelled_download_cleans_partial_state_when_cancelled_before_network(self):
+        cancel = threading.Event()
+        cancel.set()
+        with mock.patch.object(sf_update, "safe_urlopen") as opened:
+            with self.assertRaises(sf_update.UpdateCancelled):
+                sf_update.download_update(info(), cancel_event=cancel)
+        opened.assert_not_called()
+        self.assertEqual(list(self.root.glob("*.part")), [])
+        self.assertEqual(list(self.root.glob("*.resume.json")), [])
+
+    def test_adaptive_download_stops_when_cancelled_before_worker_ladder(self):
+        cancel = threading.Event()
+        cancel.set()
+        cache = sf_update_cache.UpdateCache(self.root)
+        with self.assertRaises(sf_update.UpdateCancelled):
+            sf_update._download_adaptive(info(), cache.part_path(info()),  # discipline-ok(R5): exercise adaptive cancellation boundary
+                                         cache.resume_path(info()), cancel, 5)
+
+    def test_download_cancels_after_adaptive_return_before_delivery(self):
+        cancel = threading.Event()
+        def adaptive(*args, **kwargs):
+            cancel.set()
+        with mock.patch.object(sf_update, "_download_adaptive", side_effect=adaptive), \
+                self.assertRaises(sf_update.UpdateCancelled):
+            sf_update.download_update(info(), cancel_event=cancel)
+
+    def test_download_cancels_after_archive_verification_before_replace(self):
+        cancel = threading.Event()
+        def matches(*args):
+            cancel.set()
+            return True
+        with mock.patch.object(sf_update, "_download_adaptive"), \
+                mock.patch.object(sf_update, "_file_matches", side_effect=matches), \
+                self.assertRaises(sf_update.UpdateCancelled):
+            sf_update.download_update(info(), cancel_event=cancel)
+
+    def test_download_rejects_expired_manifest_before_network(self):
+        cache = sf_update_cache.UpdateCache(self.root)
+        cache.accept_manifest_timestamp("2026-11-20T00:00:00Z")
+        with mock.patch.object(sf_update, "safe_urlopen") as opened:
+            with self.assertRaisesRegex(sf_update.UpdateError, "过期"):
+                sf_update.download_update(info(sequence=11, published_at="2026-11-19T00:00:00Z"))
+        opened.assert_not_called()
+
+    def test_download_rejects_equal_time_different_identity_before_network(self):
+        from dataclasses import replace
+        accepted = info(sequence=11, published_at="2026-11-20T00:00:00Z")
+        conflicting = replace(accepted, archive_sha256="f" * 64)
+        cache = sf_update_cache.UpdateCache(self.root)
+        with cache.write_lock():
+            self.assertTrue(cache.accept_manifest_identity(accepted))
+        with mock.patch.object(sf_update, "_download_adaptive") as download:
+            with self.assertRaises(sf_update.UpdateError):
+                sf_update.download_update(conflicting)
+        download.assert_not_called()
+
+    def test_cached_archive_reports_complete_progress_without_network(self):
+        archive = sf_update_cache.UpdateCache(self.root).archive_path(info(sequence=11, published_at="2026-11-20T00:00:00Z"))
+        archive.write_bytes(BODY)
+        seen = []
+        result = sf_update.download_update(info(sequence=11, published_at="2026-11-20T00:00:00Z"),
+                                           progress_callback=lambda done, total: seen.append((done, total)))
+        self.assertEqual(Path(result).read_bytes(), BODY)
+        self.assertEqual(seen[-1], (len(BODY), len(BODY)))
+
+    def test_cache_busy_space_and_layout_errors_map_to_update_errors(self):
+        with mock.patch.object(sf_update_cache.UpdateCache, "write_lock",
+                               side_effect=sf_update_cache.UpdateCacheBusyError("busy")):
+            with self.assertRaises(sf_update.UpdateError):
+                sf_update.download_update(info())
+        with mock.patch.object(sf_update_cache.UpdateCache, "write_lock"), \
+                mock.patch.object(sf_update_cache.UpdateCache, "require_space",
+                                   side_effect=sf_update_cache.UpdateCacheSpaceError("space")):
+            with self.assertRaises(sf_update.UpdateFatal):
+                sf_update.download_update(info())
+        with mock.patch.object(sf_update_cache.UpdateCache, "write_lock"), \
+                mock.patch.object(sf_update_cache.UpdateCache, "invalidate_stale",
+                                   side_effect=sf_update_cache.UpdateCacheError("unsafe")):
+            with self.assertRaises(sf_update.UpdateFatal):
+                sf_update.download_update(info())
 
     def test_failed_first_future_does_not_discard_other_successes(self):
         submitted, rounds = self._mixed_pool()

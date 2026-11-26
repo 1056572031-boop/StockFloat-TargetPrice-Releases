@@ -322,7 +322,12 @@ def light_signed_app(work: Path, tag: str) -> tuple[Path, str]:
                                   bundle_id=BUNDLE_ID)
         if app is None:
             raise NoFixture("这台机器不能 ad-hoc 签名，轻夹具造不出来（这条变异跑不了）")
-        StableSigning.sign(app, policy, state)
+        try:
+            StableSigning.sign(app, policy, state)
+        except ValueError as exc:
+            if "no identity found" in str(exc).lower():
+                raise NoFixture("公开运行器没有临时签名 identity，轻量夹具未运行") from exc
+            raise
         return app, policy["certificate_sha1"]
     finally:
         keychain = state / "identity.keychain-db"

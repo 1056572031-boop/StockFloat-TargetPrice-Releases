@@ -41,7 +41,30 @@ import sys
 
 # `*args: <不含逗号与括号的类型>, /)` → `/, *args: <同一类型>)`
 _PATTERN = re.compile(r"(\*args: [^,()]+?),\s*/\)")
+_SEMANTIC_FIXES = ()
 _MSG = "/ must be ahead of *"
+
+
+def _apply_semantic_fixes(text: str) -> tuple[str, int]:
+    lines = text.splitlines(keepends=True)
+    current_class = None
+    changed = 0
+    for index, line in enumerate(lines):
+        if line.startswith("class "):
+            current_class = line[6:].split("(", 1)[0].split(":", 1)[0].strip()
+        if current_class == "pyqtSignal" and "arguments: collections.abc.Sequence[str]" in line \
+                and "arguments: collections.abc.Sequence[str] = ..." not in line:
+            lines[index] = line.replace(
+                "arguments: collections.abc.Sequence[str]",
+                "arguments: collections.abc.Sequence[str] = ...",
+                1,
+            )
+            changed += 1
+        elif current_class == "QObject" and "def __init__" in line \
+                and "parent: typing.Self" in line:
+            lines[index] = line.replace("parent: typing.Self", "parent: QObject | None", 1)
+            changed += 1
+    return "".join(lines), changed
 
 
 def pyqt6_stub_dir() -> pathlib.Path:
@@ -56,18 +79,23 @@ def repair_file(path: pathlib.Path, *, write: bool) -> int:
     text = path.read_text(encoding="utf-8")
     try:
         ast.parse(text)
-        return 0
     except SyntaxError as exc:
         if _MSG not in str(exc.msg):
             print("  跳过 %s：语法错误与 PEP 570 无关（%s，line %s）"
                   % (path.name, exc.msg, exc.lineno))
             return 0
+        patched = _PATTERN.sub(r"/, \1)", text)
+        n = len(_PATTERN.findall(text))
+        if not n:
+            print("  !! %s：报 `%s` 却匹配不到可改写模式，需人工看" % (path.name, _MSG))
+            return -1
+    else:
+        patched, n = text, 0
 
-    patched, n = _PATTERN.sub(r"/, \1)", text), 0
-    n = len(_PATTERN.findall(text))
-    if not n:
-        print("  !! %s：报 `%s` 却匹配不到可改写模式，需人工看" % (path.name, _MSG))
-        return -1
+    patched, semantic_n = _apply_semantic_fixes(patched)
+    n += semantic_n
+    if patched == text:
+        return 0
     try:
         ast.parse(patched)
     except SyntaxError as exc:
@@ -76,7 +104,7 @@ def repair_file(path: pathlib.Path, *, write: bool) -> int:
         return -1
     if write:
         path.write_text(patched, encoding="utf-8")
-        print("  已修 %s：%d 处 `%s` → 合法" % (path.name, n, "*args: T, /)"))
+        print("  已修 %s：%d 处" % (path.name, n))
     else:
         print("  待修 %s：%d 处（--check 模式未写盘）" % (path.name, n))
     return n

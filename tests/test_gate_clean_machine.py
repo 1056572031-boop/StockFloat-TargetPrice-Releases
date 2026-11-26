@@ -328,6 +328,30 @@ class UnknownArgumentRefusesToAct(SFCase):
 
 
 class LightSignedFixtureCleanup(SFCase):
+    def test_codesign_identity_missing_is_reported_as_no_fixture(self):
+        """公开 runner 没有临时 identity 时，S8 必须记为前提缺失而不是判据漏抓。"""
+        work = pathlib.Path(tempfile.mkdtemp(prefix="sf_light_fixture_identity_"))
+        self.addCleanup(shutil.rmtree, str(work), True)
+        error = ValueError("codesign failed (1): ABCDEF: no identity found")
+        with patch.object(VIP.StableSigning, "initialize", return_value={"certificate_sha1": "A" * 40}),                 patch.object(VIP, "make_launchable_app", return_value=object()),                 patch.object(VIP.StableSigning, "sign", side_effect=error),                 patch.object(VIP.StableSigning, "run") as run:
+            with self.assertRaises(VIP.NoFixture) as ctx:
+                VIP.light_signed_app(work, "identity")
+        self.assertIn("临时签名 identity", str(ctx.exception))
+        run.assert_not_called()
+
+    def test_other_signing_failure_remains_a_real_error(self):
+        """非 identity 前提错误仍必须原样报红，不能被宽泛转成 NoFixture。"""
+        work = pathlib.Path(tempfile.mkdtemp(prefix="sf_light_fixture_sign_error_"))
+        self.addCleanup(shutil.rmtree, str(work), True)
+        error = ValueError("codesign failed (1): malformed requirements")
+        with patch.object(VIP.StableSigning, "initialize", return_value={"certificate_sha1": "A" * 40}), \
+                patch.object(VIP, "make_launchable_app", return_value=object()), \
+                patch.object(VIP.StableSigning, "sign", side_effect=error), \
+                patch.object(VIP.StableSigning, "run") as run:
+            with self.assertRaisesRegex(ValueError, "malformed requirements"):
+                VIP.light_signed_app(work, "sign-error")
+        run.assert_not_called()
+
     def test_ad_hoc_signing_unavailable_is_reported_and_keychain_cleanup_failure_is_ignored(self):
         work = pathlib.Path(tempfile.mkdtemp(prefix="sf_light_fixture_"))
         self.addCleanup(shutil.rmtree, str(work), True)

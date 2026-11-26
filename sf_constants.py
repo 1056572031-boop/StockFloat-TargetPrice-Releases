@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 from PyQt6.QtGui import QColor
+from sf_update_policy_defaults import FORCE_GAP, PREFETCH_GAP  # noqa: F401
 
 # ---------------------------------------------------------------- 测试隔离
 # v1.3.52：检测到 unittest 时，自动重定向配置、行情快照、证券字典、日志和单实例 socket 的测试落盘路径。
@@ -43,7 +44,10 @@ MINUTE_URL = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?c
 SEARCH_URL = 'https://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all'
 EASTMONEY_SEARCH_URL = 'https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=%s&count=%s'
 EASTMONEY_TOKEN_DEFAULT = 'D43BF722C8E33BDC906FB84D85E326E8'
-APP_VERSION = '1.4.119'
+APP_VERSION = '1.4.120'
+# 强制更新协议的发布序号；由 tools/release_sequence.py 分配并由发布链核对账本。
+RELEASE_SEQUENCE = 1
+# PREFETCH_GAP / FORCE_GAP 从无副作用模块再导出，供产品常量兼容访问。
 # v1.3.52：测试隔离改为**自动生效**（不再只靠 run_tests.sh 设环境变量）
 #   实测：工程师直接敲 `python -m unittest tests.test_xxx` 会绕过 run_tests.sh 的
 #   隔离，一次单测又把用户真实配置的 bg 写成 translucent（毛玻璃消失）。
@@ -551,6 +555,8 @@ UPDATE_SIGNING_TEAM_ID = ''
 UPDATE_SIGNING_CERT_SHA1 = ''
 UPDATE_MANIFEST_MAX_BYTES = 65536
 UPDATE_ARCHIVE_MAX_BYTES = 536870912
+# 下载写入 .part 后仍须原子交付完整包；给文件系统元数据与同时保留的旧包留 300 MiB。
+UPDATE_STAGING_FREE_MARGIN_BYTES = 300 * 1024 * 1024
 UPDATE_STAGING_DIR = os.path.join(APP_SUPPORT_DIR, 'updates')
 # v1.3.50：支持 SF_CONFIG_PATH 覆盖 —— 跑测试时必须重定向到临时目录。
 # 不重定向的话，回归测试会往**用户真实配置**里写东西：本次实测一次全量回归就把

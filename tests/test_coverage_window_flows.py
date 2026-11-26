@@ -125,6 +125,8 @@ class TestOpenEditor(WindowCase):
         cb = old.on_closed
         cb()
         self.assertIs(self.win._editor, new, "旧弹窗的清理回调把新弹窗引用抹掉了")
+        old.deleteLater()
+        self.win._editor = None
 
     def test_a_dangling_reference_is_replaced_not_fatal(self):
         """C++ 对象已被删（悬空引用）时 isVisible() 抛 RuntimeError，必须照旧开新窗。"""
@@ -212,12 +214,13 @@ class TestUpdateDownload(WindowCase):
             for _ in range(60):
                 cb(51, 100)
             cb(100, 100)                    # 收尾（100%）恒放行，不能被合流吃掉
-            self.assertIn(("update_progress", (50, 50, 100)), self.queued)
-            self.assertIn(("update_progress", (51, 51, 100)), self.queued)
+            token = self.win._update_download_token  # discipline-ok(R5): verify emitted task identity
+            self.assertIn(("update_progress", (50, 50, 100, token)), self.queued)
+            self.assertIn(("update_progress", (51, 51, 100, token)), self.queued)
         progress = [q[1] for q in self.queued if q[0] == "update_progress"]
         self.assertEqual(len(progress), 3,
                          "两个百分比 + 一次收尾 = 3 条，实测 %d 条" % len(progress))
-        self.assertEqual(progress[-1], (100, 100, 100), "最后一条必须是 100%")
+        self.assertEqual(progress[-1], (100, 100, 100, token), "最后一条必须是 100%")
         self.assertIn("update_download", [q[0] for q in self.queued])
 
     def test_zero_total_does_not_divide_by_zero(self):
@@ -233,8 +236,9 @@ class TestUpdateDownload(WindowCase):
             captured["cb"](0, 0)
         kinds = [q[0] for q in self.queued]
         self.assertIn("update_progress", kinds)
+        token = self.win._update_download_token  # discipline-ok(R5): verify emitted task identity
         self.assertEqual([q for q in self.queued if q[0] == "update_progress"][0][1],
-                         (0, 0, 0))
+                         (0, 0, 0, token))
 
     def test_a_download_failure_is_queued_for_the_ui_instead_of_lost(self):
         boom = sf_update.UpdateError("无法连接更新服务")
@@ -258,7 +262,7 @@ class TestHandleUpdateDownload(WindowCase):
         self.quits = []
         patch.object(self.win, "_show_update_message",
                      side_effect=lambda *a: self.messages.append(a)).start()
-        patch.object(self.win, "_close_update_flow_box").start()
+        patch.object(self.win, "close_update_progress").start()
         patch.object(self.win, "quit",
                      side_effect=lambda *a, **k: self.quits.append(1)).start()
         self.update = sf_update.UpdateInfo(
@@ -271,7 +275,7 @@ class TestHandleUpdateDownload(WindowCase):
                                          sf_update.UpdateError("x"))
         self.assertFalse(self.win._update_downloading)
         self.assertIsNone(self.win._update_cancel)
-        self.win._close_update_flow_box.assert_called_once()
+        self.win.close_update_progress.assert_called_once()
 
     def test_a_failed_download_says_what_failed_and_keeps_the_current_version(self):
         self.win._handle_update_download(self.update, None, OSError("net down"))

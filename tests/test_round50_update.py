@@ -143,6 +143,7 @@ class _Host:
     def __init__(self):
         self.calls = []
         self._update_pending = None
+        self._update_port = None
         self._update_downloading = False
         self._update_checking = False
         self._update_transition_pending = False
@@ -168,6 +169,13 @@ class _Host:
                 self.calls.append((name, args, kwargs))
             return record
         raise AttributeError(name)
+
+    def close_update_flow(self):
+        return self._close_update_flow_box()
+
+    def finish_update_check(self, manual):
+        from stock_float_window import FloatWindow
+        return FloatWindow.finish_update_check(self, manual)
 
     def called(self, name):
         return [c for c in self.calls if c[0] == name]
@@ -402,6 +410,18 @@ class CancelIsNotAFailureTransport(_StagedCase):
         with self.assertRaises(sf_update.UpdateCancelled):
             sf_update.download_update(self.info, cancel_event=cancel)
 
+    def test_cancel_after_budget_check_stops_before_starting_workers(self):
+        cancel = threading.Event()
+        cancel.set()
+        cache = sf_update.UpdateCache(self.staging)
+        part = cache.part_path(self.info)
+        state = cache.resume_path(self.info)
+        with mock.patch.object(sf_update, "_update_remaining", return_value=1.0), \
+                mock.patch.object(sf_update, "_DownloadSource") as source:
+            with self.assertRaises(sf_update.UpdateCancelled):
+                sf_update._download_adaptive(self.info, part, state, cancel, 5)  # discipline-ok(R5): exercise cancellation race boundary
+        source.assert_not_called()
+
     def test_cancel_noticed_after_verification_raises_UpdateCancelled(self):
         cancel = threading.Event()
         cancel.set()
@@ -437,6 +457,16 @@ class WithdrawnManifestClearsPending(SFCase):
         flow.check(host, manual=True)
         self.assertEqual(host.called("_prompt_update"), [], "不能再弹已撤回的 9.9.9")
         self.assertEqual(flow._backend(host).checks, [True], "手动检查要真的发起新检查")  # discipline-ok(R5): 检查后端请求。
+
+    def test_manual_check_refreshes_a_previously_pending_legacy_offer(self):
+        flow, _logs = _flow()
+        host = _Host()
+        flow.checked(host, False, self.UPDATE, None)
+        host.calls.clear()
+        flow.check(host, manual=True)
+        self.assertEqual(flow._backend(host).checks, [True],  # discipline-ok(R5): inspect backend request
+                         "旧提示不能代替重新联网检查")
+        self.assertEqual(host.called("_prompt_update"), [])
 
     def test_a_failed_check_keeps_the_pending_update(self):
         """检查失败（断网等）不说明清单被撤回，已知的新版不能因此被忘掉。"""
@@ -496,7 +526,8 @@ class LocalWriteFailureIsNotRetried(_StagedCase):
                 self.assertTrue(source.stop.is_set())
 
     def test_resume_state_with_invalid_json_is_empty(self):
-        state = self.staging / "bad.resume.json"
+        cache = sf_update.UpdateCache(self.staging)
+        state = cache.resume_path(self.info)
         state.write_text("{", encoding="utf-8")
         self.assertEqual(sf_update._load_resume_state(state, self.info), set())  # discipline-ok(R5): 续传状态解析的失败边界。
 
@@ -680,7 +711,8 @@ class TypeHygiene(SFCase):
     def test_a_resume_file_that_is_not_an_object_reads_as_no_progress(self):
         info = UpdateInfo("9.9.9", "1. x", URL, SIZE, SHA)
         with tempfile.TemporaryDirectory(prefix="sf_round50_resume_") as tmp:
-            state = Path(tmp) / "x.zip.resume.json"
+            cache = sf_update.UpdateCache(Path(tmp))
+            state = cache.resume_path(info)
             for text in ("[]", "null", "5", '"text"', "[1, 2]"):
                 with self.subTest(content=text):
                     state.write_text(text, encoding="utf-8")

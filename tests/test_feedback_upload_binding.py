@@ -4,6 +4,7 @@ import tempfile
 import sqlite3
 import zipfile
 from contextlib import closing
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -30,6 +31,26 @@ class UploadBindingTests(SFCase):
                       capture_started_at=state["capture_started_at"], capture_completed_at=state["capture_completed_at"])
         self.envelope = make_envelope(archive_path=self.path, app_version="1.4.96",
                                       outbox_id="a" * 32, consent_policy_version=CONSENT_VERSION)
+
+    def test_auto_retention_receipt_and_capability_header(self):
+        receipt = GitHubInbox(MemoryGitHub()).accept(self.envelope, self.path.read_bytes())
+        received = datetime.fromisoformat(receipt["received_at"].replace("Z", "+00:00"))
+        auto = {**receipt, "retention_policy": "auto_delete",
+                "retention_until": (received + timedelta(days=30)).isoformat()}
+        self.assertEqual(validate_upload_receipt(auto, self.envelope), auto)
+        response = Mock(status=200)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = json.dumps(auto).encode()
+        opener = Mock()
+        opener.open.return_value = response
+        with patch("sf_feedback_transport.build_opener", return_value=opener):
+            self.assertEqual(submit_https("https://synthetic.invalid/v1/feedback", self.envelope, self.path), auto)
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.get_header("X-skyrocket-retention"), "auto-delete-v1")
+        for expiry in (None, "bad", "2000-01-01T00:00:00Z", "2099-01-01T00:00:00"):
+            with self.subTest(expiry=expiry), self.assertRaises(FeedbackProtocolError):
+                validate_upload_receipt({**auto, "retention_until": expiry}, self.envelope)
 
     def test_unapproved_attachment_never_reaches_the_network(self):
         path = self.root / "extra.zip"
@@ -156,6 +177,56 @@ class UploadBindingTests(SFCase):
         api.bodies[asset["id"]] = json.dumps({**receipt, "asset_id": 999999}).encode()
         with self.assertRaises(FeedbackProtocolError):
             inbox.accept(self.envelope, self.path.read_bytes())
+
+    def test_auto_delete_receipt_rejects_deadlines_other_than_30_days(self):
+        receipt = GitHubInbox(MemoryGitHub()).accept(self.envelope, self.path.read_bytes())
+        for deadline in ("2026-11-16T00:00:00Z", "2026-11-17T00:00:01Z",
+                         "2099-01-01T00:00:00Z"):
+            with self.subTest(deadline=deadline), self.assertRaises(FeedbackProtocolError):
+                validate_upload_receipt({**receipt, "received_at": "2026-10-18T00:00:00Z",
+                                         "retention_policy": "auto_delete",
+                                         "retention_until": deadline}, self.envelope)
+
+    def test_auto_delete_receipt_accepts_a_future_iso_deadline(self):
+        receipt = GitHubInbox(MemoryGitHub()).accept(self.envelope, self.path.read_bytes())
+        automatic = {**receipt, "received_at": "2026-10-18T00:00:00Z",
+                     "retention_policy": "auto_delete", "retention_until": "2026-11-17T00:00:00Z"}
+        self.assertEqual(validate_upload_receipt(automatic, self.envelope)["retention_policy"], "auto_delete")
+
+    def test_retention_deadline_compares_instants_and_preserves_legacy(self):
+        receipt = GitHubInbox(MemoryGitHub()).accept(self.envelope, self.path.read_bytes())
+        legacy = {**receipt, "retention_policy": "manual_deletion", "retention_until": None}
+        self.assertEqual(validate_upload_receipt(legacy, self.envelope), legacy)
+        automatic = {**receipt, "received_at": "2026-10-18T08:00:00+08:00",
+                     "retention_policy": "auto_delete", "retention_until": "2026-11-17T00:00:00Z"}
+        self.assertEqual(validate_upload_receipt(automatic, self.envelope), automatic)
+
+    def test_auto_delete_receipt_rejects_a_non_string_deadline(self):
+        receipt = GitHubInbox(MemoryGitHub()).accept(self.envelope, self.path.read_bytes())
+        with self.assertRaises(FeedbackProtocolError):
+            validate_upload_receipt({**receipt, "retention_policy": "auto_delete",
+                                     "retention_until": None}, self.envelope)
+
+        receipt = GitHubInbox(MemoryGitHub()).accept(self.envelope, self.path.read_bytes())
+        cases = (
+            None,
+            "not-a-date",
+            "2026-10-19T00:00:00",
+            "2026-10-18T00:00:00Z",
+        )
+        for deadline in cases:
+            with self.subTest(deadline=deadline), self.assertRaises(FeedbackProtocolError):
+                validate_upload_receipt({**receipt, "retention_policy": "auto_delete",
+                                         "retention_until": deadline}, self.envelope)
+
+    def test_auto_delete_receipt_rejects_utc_conversion_overflow(self):
+        receipt = GitHubInbox(MemoryGitHub()).accept(self.envelope, self.path.read_bytes())
+        for field in ("received_at", "retention_until"):
+            for value in ("0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"):
+                automatic = {**receipt, "retention_policy": "auto_delete",
+                             "retention_until": "2026-11-18T00:00:00Z", field: value}
+                with self.subTest(field=field, value=value), self.assertRaises(FeedbackProtocolError):
+                    validate_upload_receipt(automatic, self.envelope)
 
     def test_standalone_row_hash_and_receipt_metadata_cannot_fake_success(self):
         outbox = FeedbackOutbox(self.root / "hash.sqlite3", self.root / "hash-objects")

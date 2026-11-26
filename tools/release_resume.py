@@ -118,7 +118,8 @@ def closing_line(version: str, sync_note: str = "") -> str:
 
 
 def clean_env() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if key not in SCRUBBED_ENV}
+    return {key: value for key, value in os.environ.items()
+            if key not in SCRUBBED_ENV and not key.startswith("GIT_")}
 
 
 def step_rc(directory: Path, name: str) -> int | None:
@@ -247,9 +248,46 @@ def execute(runner, argv: list[str], cwd: Path, timeout: float) -> tuple[int, st
     return done.returncode, done.stdout.decode("utf-8", "replace")
 
 
+def binding_context(root: Path, state_path: Path, state: dict) -> dict:
+    """Stable release identity, excluding mutable stage and post-release history."""
+    observations = state.get("observations")
+    if not isinstance(observations, dict):
+        raise ValueError("发布状态缺少质量绑定")
+    quality = observations.get("publish_quality")
+    manifest = observations.get("publish_manifest")
+    if not isinstance(quality, dict) or not isinstance(manifest, dict) or not isinstance(quality.get("path"), str):
+        raise ValueError("发布状态缺少质量绑定")
+    from release_state import reference
+    record = Path(quality["path"])
+    if quality != reference(record) or manifest != reference(record.with_suffix(".manifest.json")):
+        raise ValueError("质量记录及清单未绑定本轮发布状态或已发生变化")
+    return {"root": str(root.resolve()), "state": str(state_path.resolve()), "version": state["version"],
+            "source": state["source"], "started": publish_started_at(state).isoformat(),
+            "quality": quality, "manifest": manifest}
+
+
+def binding_data(directory: Path, name: str, argv: list[str], context: dict) -> dict:
+    paths = [directory / ("rest-%s.rc" % name), directory / ("rest-%s.log" % name)]
+    if name == "7-push":
+        paths.append(directory / AHEAD_FILE)
+    return {"context": context, "name": name, "argv": argv,
+            "files": {path.name: sha256_of(path) if path.is_file() else None for path in paths}}
+
+
+def binding_matches(directory: Path, name: str, argv: list[str], context: dict) -> bool:
+    try:
+        path = directory / ("rest-%s.binding.json" % name)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        current = binding_data(directory, name, argv, context)
+        return all(current["files"]["rest-%s.%s" % (name, suffix)] is not None
+                   for suffix in ("rc", "log")) and saved == current
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def run_steps(root: Path, directory: Path, steps, branch: str, *, apply: bool, redo=(),
               runner=run_group, out=print, timeout: float = STEP_TIMEOUT_DEFAULT,
-              since: datetime.datetime | None = None) -> int:
+              since: datetime.datetime | None = None, verify_source=None, binding=None) -> int:
     known = [name for name, _, _ in steps]
     unknown = [name for name in redo if name not in known]
     if unknown:
@@ -257,7 +295,9 @@ def run_steps(root: Path, directory: Path, steps, branch: str, *, apply: bool, r
         raise ValueError("--redo 点名了计划里没有的步骤：%s；可选：%s" % ("、".join(unknown), "、".join(known)))
     for name, hard, argv in steps:
         if (step_rc(directory, name) == 0 and name not in redo
-                and step_evidence_fresh(directory, name, since)):
+                and not (directory / ("rest-%s.inflight" % name)).exists()
+                and step_evidence_fresh(directory, name, since)
+                and (binding is None or binding_matches(directory, name, argv, binding))):
             out("跳过 %s：上次已成功（退出码 0）" % name)
             continue
         if step_rc(directory, name) == 0 and name not in redo and since is not None:
@@ -265,16 +305,30 @@ def run_steps(root: Path, directory: Path, steps, branch: str, *, apply: bool, r
         out("%s %s：%s" % ("执行" if apply else "预演", name, " ".join(argv)))
         if not apply:
             continue
+        if verify_source is not None:
+            verify_source()
         directory.mkdir(parents=True, exist_ok=True)       # 预演不创建任何文件或目录
         # 先作废旧退出码再执行：重做途中被打断时，旧的 0 不能继续替这一步作证。
+        marker = directory / ("rest-%s.inflight" % name)
+        marker.write_text("执行中；只有记录退出码后才解除\n", encoding="utf-8")
         (directory / ("rest-%s.rc" % name)).unlink(missing_ok=True)
+        (directory / ("rest-%s.binding.json" % name)).unlink(missing_ok=True)
+        if name == "7-push":
+            (directory / AHEAD_FILE).unlink(missing_ok=True)
         rc, text = execute(runner, argv, root, timeout_for_step(name, timeout))
         (directory / ("rest-%s.log" % name)).write_text(text, encoding="utf-8")
         (directory / ("rest-%s.rc" % name)).write_text("%d\n" % rc, encoding="utf-8")
         out("   退出码 %d" % rc)
         if name == "7-push":
-            _, ahead = execute(runner, ["git", "rev-list", "--count", "origin/%s..HEAD" % branch], root, timeout)
-            (directory / AHEAD_FILE).write_text(ahead, encoding="utf-8")
+            ahead_rc, ahead = execute(runner, ["git", "rev-list", "--count", "origin/%s..HEAD" % branch], root, timeout)
+            (directory / AHEAD_FILE).write_text(ahead if ahead_rc == 0 else "", encoding="utf-8")
+        if binding is not None:
+            if verify_source is not None:
+                verify_source()
+            (directory / ("rest-%s.binding.json" % name)).write_text(
+                json.dumps(binding_data(directory, name, argv, binding), ensure_ascii=False, sort_keys=True),
+                encoding="utf-8")
+        marker.unlink()
         if rc != 0 and hard:
             out("!! %s 失败，按脚本口径停在这里；修好原因后再运行本命令，已成功的步骤会被跳过" % name)
             return rc
@@ -307,14 +361,24 @@ def stale_evidence(directory: Path, publish_logs: list[Path], names, since: date
 
 
 def compose(root: Path, directory: Path, publish_logs: list[Path], app: Path, out_path: Path,
-            since: datetime.datetime) -> tuple[bool, list[str]]:
+            since: datetime.datetime, *, binding=None, bound_steps=None) -> tuple[bool, list[str]]:
     version = app_version(root)
     steps = [(name, hard) for name, hard, _ in plan("python", version, "branch", app, Path("record"))
-             if name != PUBLISH_STEP or (directory / ("rest-%s.rc" % name)).exists()]
+             if name != PUBLISH_STEP or any(
+                 (directory / ("rest-%s.%s" % (name, suffix))).exists()
+                 for suffix in ("rc", "log", "inflight"))]
     results = {name: step_rc(directory, name) for name, _ in steps}
     problems = []
+    if binding is not None:
+        commands = {name: argv for name, _, argv in bound_steps}
+        for name, _ in steps:
+            if name not in commands or not binding_matches(directory, name, commands[name], binding):
+                problems.append("步骤 %s 的证据缺少有效的本轮绑定" % name)
     for name, hard in steps:
         code = results[name]
+        if (directory / ("rest-%s.inflight" % name)).exists():
+            problems.append("步骤 %s 曾启动但没有完成收口" % name)
+            continue
         if not hard:
             continue
         if code != 0:
@@ -374,13 +438,81 @@ def compose(root: Path, directory: Path, publish_logs: list[Path], app: Path, ou
     return True, []
 
 
+def verify_guide_render(root: Path) -> None:
+    """离线比较发布树自身渲染结果，不改写冻结的安装说明。"""
+    script = root / "tools/render_install_guide.py"
+    result = subprocess.run([str(root / ".venv/bin/python3"), str(script), "--print"], cwd=root,
+                            env=clean_env(), capture_output=True, timeout=30, check=False)
+    if result.returncode:
+        raise ValueError("安装说明渲染预检失败：" + result.stderr.decode("utf-8", "replace"))
+    # --print adds one newline to render(), which itself already ends in a newline.
+    rendered = result.stdout[:-1] if result.stdout.endswith(b"\n") else result.stdout
+    if rendered != (root / "docs/INSTALL.md").read_bytes():
+        raise ValueError("安装说明与冻结内容不一致，拒绝执行发布步骤")
+
+
 def git_output(root: Path, *args: str) -> str:
     done = subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True, timeout=30,
                           env=evidence.gate_stamp.git_env())
     return done.stdout.strip()
 
 
-def load_state(state_path: Path, root: Path, stages) -> dict:
+def verify_index(root: Path) -> None:
+    # Old state files have no index identity; fail closed against frozen HEAD.
+    index = subprocess.run(["git", "diff", "--cached", "--quiet", "--no-ext-diff", "HEAD", "--"],
+                           cwd=root, env=evidence.gate_stamp.git_env(), capture_output=True, check=False)
+    if index.returncode != 0:
+        raise ValueError("发布状态已失效：Git 索引与冻结 HEAD 不一致或无法核验，拒绝继续")
+
+
+def verify_snapshot(root: Path, state: dict) -> None:
+    from release_state import source_snapshot
+    from release_sequence import source_identity
+
+    saved = state.get("source")
+    verify_index(root)
+    current = source_snapshot(root)
+    if saved == current:
+        return
+    try:
+        version, sequence = source_identity(root / "sf_constants.py")
+    except (OSError, ValueError):
+        raise ValueError("发布状态已失效：源码或文档已变化，拒绝继续") from None
+    ledger = "tools/release_sequence_ledger.json"
+    if version != state.get("version") or not evidence.published_ledger_transition(root, version, sequence):
+        raise ValueError("发布状态已失效：源码或文档已变化，拒绝继续")
+    result = subprocess.run(["git", "show", "HEAD:" + ledger], cwd=root,
+                            env=evidence.gate_stamp.git_env(), capture_output=True, check=False)
+    if result.returncode:
+        raise ValueError("发布状态已失效：源码或文档已变化，拒绝继续")
+    original_bytes = result.stdout
+    original = original_bytes.decode("utf-8")
+    expected = json.loads(original)
+    if original_bytes != (json.dumps(expected, ensure_ascii=False, indent=2) + "\n").encode("utf-8"):
+        raise ValueError("发布状态已失效：源码或文档已变化，拒绝继续")
+    for item in expected["releases"]:
+        if item.get("version") == version and item.get("sequence") == sequence:
+            item["status"] = "published"
+    path = root / ledger
+    if path.read_bytes() != (json.dumps(expected, ensure_ascii=False, indent=2) + "\n").encode("utf-8"):
+        raise ValueError("发布状态已失效：源码或文档已变化，拒绝继续")
+    # Reconstruct the exact saved workspace token using the committed ledger bytes;
+    # no other tracked file or build input is exempted.
+    digest = hashlib.sha256()
+    for name in sorted(filter(None, evidence._git(root, "ls-files", "-z").split("\0"))):
+        digest.update(name.encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+        token = evidence.gate_stamp.file_token(str(root / name))
+        if name == ledger:
+            token = token.split(":", 1)[0] + ":" + hashlib.sha256(original.encode("utf-8")).hexdigest()
+        digest.update(token.encode())
+    digest.update(current["gate_fingerprint"].encode())
+    current["workspace_token"] = digest.hexdigest()
+    if saved != current:
+        raise ValueError("发布状态已失效：源码或文档已变化，拒绝继续")
+
+
+def load_state(state_path: Path, root: Path, stages, *, require_snapshot: bool = False) -> dict:
     """读发布状态，并要求它描述的就是 --root 这棵树：版本和提交都对得上才往下走。
 
     不核对就可能拿着 A 版本的状态去操作 B 棵树——续跑里有公开发布和推送，那是推错源码。"""
@@ -395,6 +527,8 @@ def load_state(state_path: Path, root: Path, stages) -> dict:
     if expected != actual:
         raise ValueError("状态文件记的提交是 %s，--root 这棵树的 HEAD 是 %s：不是同一次发布，拒绝继续"
                          % (expected, actual))
+    if require_snapshot:
+        verify_snapshot(root, state)
     return state
 
 
@@ -439,19 +573,48 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "run":
-            state = load_state(args.state, args.root, (PENDING_STAGE,))
+            state = load_state(args.state, args.root, (PENDING_STAGE,), require_snapshot=True)
+            verify_guide_render(args.root)
             timeout = step_timeout()
             publish_step_timeout()                         # 写错当场报错，不等跑到第 6 步才发现
             branch = release_branch(args.root)
             record = args.quality_record.resolve() if args.quality_record else None
             if record is not None and not record.is_file():
                 raise ValueError("--quality-record 不是文件：" + str(record))
+            if args.apply:
+                from release_state import reference
+                observations = state.get("observations", {})
+                if not isinstance(observations, dict):
+                    raise ValueError("发布状态缺少质量绑定")
+                quality_ref = observations.get("publish_quality")
+                manifest_ref = observations.get("publish_manifest")
+                bound_record = record
+                if bound_record is None and isinstance(quality_ref, dict):
+                    record_path = quality_ref.get("path")
+                    bound_record = Path(record_path) if isinstance(record_path, str) else None
+                if (bound_record is None or quality_ref != reference(bound_record) or
+                        manifest_ref != reference(bound_record.with_suffix(".manifest.json"))):
+                    raise ValueError("质量记录及清单未绑定本轮发布状态或已发生变化")
+                record = bound_record
             steps = plan(str(args.root / ".venv/bin/python3"), app_version(args.root), branch, args.app, record)
+            def verify_source():
+                verify_snapshot(args.root, state)
+                if args.apply:
+                    from release_state import reference
+                    if (record is None or quality_ref != reference(record) or
+                            manifest_ref != reference(record.with_suffix(".manifest.json"))):
+                        raise ValueError("质量记录及清单已发生变化，拒绝继续")
+            binding = binding_context(args.root, args.state, state) if args.apply else {}
             return run_steps(args.root, args.evidence, steps, branch, apply=args.apply, redo=args.redo,
-                             timeout=timeout, since=publish_started_at(state))
-        state = load_state(args.state, args.root, (PENDING_STAGE, COMPLETE_STAGE))
+                             timeout=timeout, since=publish_started_at(state), verify_source=verify_source,
+                             binding=binding)
+        state = load_state(args.state, args.root, (PENDING_STAGE, COMPLETE_STAGE), require_snapshot=True)
+        binding = binding_context(args.root, args.state, state)
+        branch = release_branch(args.root)
+        record = Path(binding["quality"]["path"])
+        bound_steps = plan(str(args.root / ".venv/bin/python3"), app_version(args.root), branch, args.app, record)
         ok, problems = compose(args.root, args.evidence, args.publish_log, args.app, args.out,
-                               publish_started_at(state))
+                               publish_started_at(state), binding=binding, bound_steps=bound_steps)
     except ProcessGroupInterrupted as exc:
         signum = exc.args[0] if exc.args else signal.SIGTERM
         print("release_resume: 被信号 %s 终止，整个进程组已清理；已完成的步骤证据保留，被打断的那一步没有退出码，"

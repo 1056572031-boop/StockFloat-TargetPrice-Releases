@@ -22,7 +22,7 @@ import struct
 import tempfile
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -222,8 +222,8 @@ class FeedbackReceiver:
                     "received_at": received_at,
                     "storage_status": "stored",
                     "validation_status": "validated",
-                    "retention_until": (datetime.now(timezone.utc) + timedelta(days=30))
-                    .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    "retention_until": None,
+                    "retention_policy": "manual_deletion",
                 }
                 try:
                     db.execute("""INSERT INTO cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",

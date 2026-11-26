@@ -14,11 +14,11 @@
 PyQt6==6.12.0
 PyQt6-Qt6==6.12.0
 PyQt6-sip==13.13.0
-pyobjc-core==13.0
-pyobjc-framework-Cocoa==13.0
-pyobjc-framework-Quartz==13.0
-pyobjc-framework-UserNotifications==13.0
-pyobjc-framework-Security==13.0
+pyobjc-core==13.1
+pyobjc-framework-Cocoa==13.1
+pyobjc-framework-Quartz==13.1
+pyobjc-framework-UserNotifications==13.1
+pyobjc-framework-Security==13.1
 # v1.4.40 人脸在场守卫需要 AVFoundation 的**方法元数据**：
 # requestAccessForMediaType:completionHandler: 的第三个参数是 ObjC block，只有
 # pyobjc-core 时 PyObjC 直接报 "Argument 3 is a block, but no signature available"，
@@ -27,15 +27,15 @@ pyobjc-framework-Security==13.0
 # CoreMedia / CoreAudio 是 AVFoundation 桥接的依赖，一并锁版本保证可复现。
 # 体积代价（本机实测）：site-packages 下 944K + 388K + 328K ≈ 1.6MB 源码，
 # 无模型、无二进制框架新增（系统框架本来就在 /System 里）。
-pyobjc-framework-AVFoundation==13.0
-pyobjc-framework-CoreMedia==13.0
-pyobjc-framework-CoreAudio==13.0
+pyobjc-framework-AVFoundation==13.1
+pyobjc-framework-CoreMedia==13.1
+pyobjc-framework-CoreAudio==13.1
 # 测试覆盖率门禁（本地与 CI 共用）
-coverage==7.17.0
+coverage==7.17.5
 # 第一道防线：静态检查闸门 tools/static_gate.py（本地钩子与 CI 共用，需精确锁定；
 # 版本一升，mypy 的推断结论可能变化并让 B 级基线整体漂移 —— 升版本时同步跑
 # `python tools/static_gate.py --update` 复核差值，不要盲目提交新基线）
-ruff==0.17.3
+ruff==0.17.6
 mypy==2.4.0
 # 打包仅需（构建机）
 pyinstaller==6.22.3

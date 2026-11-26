@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-18",
+  "updated": "2026-11-25",
   "notes": {
     "口径": "台账只登记【已进入已发布产物】的缺陷。发版前人工复核与关卡当场抓到、没上线的问题不在这里，它们留在 DELIVERY_CHECKLIST.md 的版本记录里 —— 有意不留分母，避免把两类数字混成一个比率。",
     "channel": "online_user=线上用户实机反馈 / second_machine=双机(外机)验收 / installed_field=装机现场复现 / shipped_unnoticed=已上线但用户看不见或没人报 / gate_liar=关卡与度量自己说假话",
@@ -4941,6 +4941,34 @@
       "found_by": "user_report",
       "rootcause_origin": "now",
       "missed_shape": "real_environment"
+    },
+    {
+      "id": "N36",
+      "symptom": "分时圆点跟随实时行情、折线仍停在分钟末价，出现可见断口",
+      "component": "chart",
+      "channel": "online_user",
+      "introduced_version": null,
+      "introduced_note": "用户截图未注明版本；本机安装版1.4.119，仅作环境信息。首次看到的准确时刻未知；此刻为登记时刻，不用于声称定位耗时。最小离屏复现出现20px及27px断口。",
+      "found_version": "未知（用户截图未注明）",
+      "fixed_version": null,
+      "failed_lines": [
+        "verify"
+      ],
+      "why_missed": "圆点采用实时价但折线路径只采用分钟末价；既有用例只验证圆点实时价与纵轴范围，没有比较真实折线端点和圆心，缓存也未包含实时价。",
+      "defense_added": "真实绘制回归比较折线及填充末点与圆心，连续行情变化覆盖固定区间缓存失效，并验证历史分钟数据不被改写。",
+      "observed_at": null,
+      "observed_origin": "unknown",
+      "rootcause_at": null,
+      "locate_unknown_reason": "用户首次看到现象的准确时刻不可追溯；原登记与根因盖戳是记账时刻，不是定位时长。",
+      "timestamp_audit": {
+        "observed_at": "2026-11-23 10:52:41+08:00",
+        "rootcause_at": "2026-11-23 10:53:02+08:00",
+        "reason": "保留原记账戳；根因在开条前已定位，不纳入平均定位时长。"
+      },
+      "source": "用户本会话截图 a0c887e5-e46e-4b44-8fda-53363dbd3b93.png",
+      "evidence": "verified",
+      "rootcause_origin": "now",
+      "missed_shape": "time_sequence"
     }
   ],
   "rounds": [
@@ -5810,6 +5838,16 @@
         "发布候选可恢复：release_state.prepare-source 仅恢复同源同版本 source_qualified 状态，拒绝源码漂移、版本不符和已冻结阶段；build_release.sh 候选重试改走该入口，测试锁定状态闸门先于 DMG 与不可逆动作。"
       ],
       "zero_reason": "本轮来自维护者对 2026-11-18 用户反馈报告（v1.4.118，案件 d974b44c，用户描述为空、样本未核实）的复核，以及线上 v1.4.118 公开 CI 离屏任务失败后的加固与并线收口，没有新登记的线上逃逸。目标价涨跌停保护对指数、可转债的误拦在发布前被发现并在同一版内修正，从未发布。港股涨跌停字段被误读（港股一直显示“涨停”、目标价被拦成超过涨停价）在线上 v1.4.118 中已存在（更早版本未逐一核对），由维护者在本版复核中实测发现并修正，没有用户报回；腾讯回 0 占位时目标价被放行的行为同样自线上 v1.4.118 起存在，本版收紧为按未知拦下。旧股票清理抢锁失败时连带阻塞当前股票的缺陷在线上 v1.4.118 中已存在，本版修正其中已证实的跨股票饿住面，不是根治；目标价读取在数小时内累计 480 次配置锁竞争的真实持锁来源尚未取得，备用行情期间漏提醒也没有被证实。0 只表示没有新登记的线上逃逸，不表示长时锁竞争根因已消除，也不表示最终装机版、OTA 更新或真实盘中场景已验收；美股代码形式在当前解析器下取不到行情，美股相关规则未经实测。"
+    },
+    {
+      "version": "1.4.120",
+      "date": "2026-11-25",
+      "reviewed": true,
+      "escapes_this_round": 0,
+      "defense_added": [
+        "更新兼容接口在调用前检查参数：tests/test_window_responsibility_split.py 覆盖内部 TypeError 不重复执行；发行输入和产物仍需同源完整关卡验证"
+      ],
+      "zero_reason": "按本台账版本归属统计，尚无发现版本或修复版本登记为 1.4.120 的线上逃逸；N36 为用户报告的分时图断口，发现版本未知且修复版本尚未登记，不能当作本轮没有用户报告或已经线上修复。反馈留存风险由另一对话处理；安装、OTA 和真实用户场景尚未验收。"
     }
   ],
   "comparison_policy": {

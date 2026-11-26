@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { ZipReader, ZipWriter, Uint8ArrayWriter, Uint8ArrayReader } from '@zip.js/zip.js';
-import worker, { CASE_PRUNE_AT, CLIENT_DAILY_LIMIT, createTimer, FULL_POLICY, FULL_V3_POLICY, GitHubStore, INBOX_TAG, LEASE_MS, POLICY, PUBLISH_DEADLINE_MS, REFUND_DAILY_LIMIT, REPOSITORY, digest, retryAfter, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
+import worker, { CASE_PRUNE_AT, CLIENT_DAILY_LIMIT, createRetentionIntent, createTimer, FULL_POLICY, FULL_V3_POLICY, GitHubStore, INBOX_TAG, LEASE_MS, POLICY, PUBLISH_DEADLINE_MS, REFUND_DAILY_LIMIT, REPOSITORY, digest, pruneExpiredCases, reconcileRetentionIntents, retryAfter, strictJson, unpackRequest, validateArchive, validateState } from '../src/index.mjs';
 import { appJwt, manifest } from '../setup-github-app.mjs';
 
 const encoder = new TextEncoder();
@@ -156,19 +156,29 @@ function wire({ envelope, archive }) {
   return bytes;
 }
 
-function database() {
+function database(schema = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')) {
   const db = new DatabaseSync(':memory:');
-  db.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  db.exec(schema);
   return { native: db, prepare(sql) { return { bind(...params) { return {
     async first() { return db.prepare(sql).get(...params) ?? null; },
-    async run() { db.prepare(sql).run(...params); return { success: true }; },
-  }; } }; } };
+    async all() { return { results: db.prepare(sql).all(...params) }; },
+    async run() { const result = db.prepare(sql).run(...params); return { success: true, meta: { changes: result.changes } }; },
+  }; } }; }, async batch(statements) {
+    // D1 enables foreign keys by default; run the local test with the same constraint.
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('BEGIN');
+    try { const results = []; for (const statement of statements) results.push(await statement.run()); db.exec('COMMIT'); return results; }
+    catch (error) { db.exec('ROLLBACK'); throw error; }
+  } };
 }
 
 class FakeGitHub {
   assets = new Map();
   uploadCount = 0;
   private = true;
+  fullName = REPOSITORY;
+  releaseTag = INBOX_TAG;
+  releaseIdentity = 1;
   loseUpload = false;
   redirect = false;
   mintCount = 0;
@@ -177,6 +187,12 @@ class FakeGitHub {
   authFailures = 0;
   authFailureStatus = 401;
   authFailureAfterUploads = null;
+  deleteResponseLost = false;
+  deleteNoop = false;
+  loseBeforeDelete = false;
+  deleteCalls = [];
+  assetReadFailure = null;
+  beforeDelete = null;
   fetch = async (input, options = {}) => {
     const url = new URL(input);
     const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
@@ -207,9 +223,9 @@ class FakeGitHub {
       this.authFailures--;
       return json({ error: 'expired token' }, this.authFailureStatus);
     }
-    if (url.pathname === '/repos/' + REPOSITORY) return json({ private: this.private, full_name: REPOSITORY,
+    if (url.pathname === '/repos/' + REPOSITORY) return json({ private: this.private, full_name: this.fullName,
       ...Object.fromEntries(Array.from({ length: 70 }, (_, n) => ['metadata_' + n, null])) });
-    if (url.pathname.endsWith('/releases/1')) return json({ id: 1, tag_name: INBOX_TAG, draft: true });
+    if (url.pathname.endsWith('/releases/1')) return json({ id: this.releaseIdentity, tag_name: this.releaseTag, draft: true });
     if (url.pathname.endsWith('/releases/1/assets')) {
       if (options.method === 'POST') {
         this.uploadCount++;
@@ -229,9 +245,26 @@ class FakeGitHub {
     }
     const match = /\/releases\/assets\/(\d+)$/.exec(url.pathname);
     if (match) {
+      const id = Number(match[1]);
+      if (options.method === 'DELETE') {
+        this.deleteCalls.push(id);
+        if (this.beforeDelete) await this.beforeDelete(id);
+        if (this.loseBeforeDelete) throw new Error('lost delete response before object removed');
+        if (this.deleteNoop) return new Response(null, { status: 204 });
+        if (!this.assets.delete(id)) return json({ error: 'missing' }, 404);
+        if (this.deleteResponseLost) { this.deleteResponseLost = false; throw new Error('lost delete response after object removed'); }
+        return new Response(null, { status: 204 });
+      }
+      if (this.assetReadFailure) {
+        const failure = this.assetReadFailure;
+        this.assetReadFailure = null;
+        return failure();
+      }
       if (this.redirect) return new Response(null, { status: 302, headers: { Location: 'https://release-assets.githubusercontent.com/' + match[1] } });
-      const asset = this.assets.get(Number(match[1]));
-      return asset ? new Response(asset.bytes) : json({ error: 'missing' }, 404);
+      const asset = this.assets.get(id);
+      return asset ? (options.headers?.Accept === 'application/vnd.github+json'
+        ? json({ id: asset.id, name: asset.name, size: asset.size })
+        : new Response(asset.bytes)) : json({ error: 'missing' }, 404);
     }
     throw new Error('Unexpected GitHub route');
   };
@@ -287,20 +320,960 @@ test('plaintext description credentials are rejected before GitHub or case creat
   }
 });
 
-function environment() {
+function environment(extra = {}) {
   return { ENABLED: 'true', DB: database(), GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: String(++installationSequence),
-    GITHUB_PRIVATE_KEY_PKCS8: pem, GITHUB_RELEASE_ID: '1' };
+    GITHUB_PRIVATE_KEY_PKCS8: pem, GITHUB_RELEASE_ID: '1', ...extra };
 }
-function request(packet, path = '/v1/feedback') {
+function deleteRequest(key, token) {
+  return new Request('https://receiver.example/v1/admin/feedback/' + key, {
+    method: 'DELETE', headers: token ? { Authorization: 'Bearer ' + token } : {},
+  });
+}
+function request(packet, path = '/v1/feedback', capability = null) {
   const body = wire(packet);
+  const extraHeaders = typeof capability === 'string' ? { 'X-Skyrocket-Retention': capability } : (capability || {});
   return new Request('https://receiver.example' + path, { method: 'POST', body,
-    headers: { 'Content-Type': 'application/vnd.skyrocket.feedback-v1', 'Content-Length': String(body.length) } });
+    headers: { 'Content-Type': 'application/vnd.skyrocket.feedback-v1', 'Content-Length': String(body.length), ...extraHeaders } });
 }
 async function withGitHub(remote, action) {
   const original = globalThis.fetch;
   globalThis.fetch = remote.fetch;
   try { return await action(); } finally { globalThis.fetch = original; }
 }
+
+// Regression: A stale scan must not overwrite newer cursor progress.
+test('concurrent reconciliation cannot overwrite newer cursor progress', async () => {
+  for (const wrapped of [false, true]) {
+    const env = environment();
+    try {
+      const now = Date.now();
+      const packet = await archiveFor();
+      for (let i = 0; i < 51; i++) {
+        const envelope = { ...packet.envelope, idempotency_key: i.toString(16).padStart(32, '0') };
+        const intent = await createRetentionIntent(env, envelope, true, now - PUBLISH_DEADLINE_MS - 100 + i);
+        env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'unknown', ?, 'busy', NULL)")
+          .run(intent.idempotency_key, intent.archive_sha256, now + LEASE_MS);
+      }
+      if (wrapped) env.DB.native.prepare('INSERT INTO retention_queue_cursor(name,created_at,idempotency_key) VALUES (?, ?, ?)')
+        .run('reconcile', now - PUBLISH_DEADLINE_MS - 100 + 49, (49).toString(16).padStart(32, '0'));
+      let release, arrived;
+      const gate = new Promise(resolve => { release = resolve; });
+      const waiting = new Promise(resolve => { arrived = resolve; });
+      const prepare = env.DB.prepare;
+      let paused = false;
+      env.DB.prepare = sql => {
+        const statement = prepare(sql);
+        if (!sql.includes('INSERT INTO retention_queue_cursor')) return statement;
+        return { bind(...args) {
+          const bound = statement.bind(...args);
+          return { ...bound, async run() {
+            if (!paused) { paused = true; arrived(); await gate; }
+            return bound.run();
+          } };
+        } };
+      };
+      const store = new GitHubStore('test-installation-token', '1', new FakeGitHub().fetch);
+      const older = reconcileRetentionIntents(env, store, now);
+      await waiting;
+      await reconcileRetentionIntents(env, store, now);
+      await reconcileRetentionIntents(env, store, now);
+      const expected = env.DB.native.prepare('SELECT * FROM retention_queue_cursor WHERE name=?').get('reconcile');
+      release();
+      await older;
+      assert.deepEqual(env.DB.native.prepare('SELECT * FROM retention_queue_cursor WHERE name=?').get('reconcile'), expected, `wrapped=${wrapped}`);
+    } finally { env.DB.native.close(); }
+  }
+});
+
+// Regression: cursor coordinates can return to their old value while its version advances (ABA).
+test('concurrent reconciliation rejects stale cursor write after ABA', async () => {
+  const env = environment();
+  try {
+    const now = Date.now();
+    const packet = await archiveFor();
+    const created = now - PUBLISH_DEADLINE_MS - 100;
+    const key = i => i.toString(16).padStart(32, '0');
+    for (let i = 0; i < 51; i++) {
+      const intent = await createRetentionIntent(env, { ...packet.envelope, idempotency_key: key(i) }, true, created + i);
+      env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'unknown', ?, 'busy', NULL)")
+        .run(intent.idempotency_key, intent.archive_sha256, now + LEASE_MS);
+    }
+    env.DB.native.prepare('INSERT INTO retention_queue_cursor(name,created_at,idempotency_key,version) VALUES (?, ?, ?, ?)')
+      .run('reconcile', created + 24, key(24), 1);
+    const cursor = () => ({ ...env.DB.native.prepare('SELECT created_at,idempotency_key,version FROM retention_queue_cursor WHERE name=?').get('reconcile') });
+    const initial = cursor();
+    let release, arrived;
+    const gate = new Promise(resolve => { release = resolve; });
+    const waiting = new Promise(resolve => { arrived = resolve; });
+    const prepare = env.DB.prepare;
+    let paused = false;
+    env.DB.prepare = sql => {
+      const statement = prepare(sql);
+      if (!sql.includes('INSERT INTO retention_queue_cursor')) return statement;
+      return { bind(...args) {
+        const bound = statement.bind(...args);
+        return { ...bound, async run() {
+          if (!paused) { paused = true; arrived(); await gate; }
+          return bound.run();
+        } };
+      } };
+    };
+    const store = new GitHubStore('test-installation-token', '1', new FakeGitHub().fetch);
+    const older = reconcileRetentionIntents(env, store, now);
+    await waiting;
+    try {
+      await reconcileRetentionIntents(env, store, now);
+      assert.equal(cursor().idempotency_key, key(49));
+      await reconcileRetentionIntents(env, store, now);
+      assert.equal(cursor().idempotency_key, key(50));
+      await reconcileRetentionIntents(env, store, now);
+      const returned = cursor();
+      assert.equal(returned.created_at, initial.created_at);
+      assert.equal(returned.idempotency_key, initial.idempotency_key);
+      assert.equal(returned.version, initial.version + 3);
+      release();
+      await older;
+      assert.deepEqual(cursor(), returned, 'stale write must not replace the returned cursor');
+    } finally {
+      release();
+      await older;
+    }
+  } finally { env.DB.native.close(); }
+});
+
+// Regression: Restarting every scan at the first page starves an eligible case behind 25 busy leases.
+test('reconciliation rotates past busy queue heads', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    const now = Date.now();
+    const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+    for (let i = 0; i < 26; i++) {
+      const envelope = { ...packet.envelope, idempotency_key: i.toString(16).padStart(32, '0') };
+      const intent = await createRetentionIntent(env, envelope, true, now - PUBLISH_DEADLINE_MS - 100 + i);
+      env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'unknown', ?, ?, NULL)")
+        .run(intent.idempotency_key, intent.archive_sha256, i < 25 ? now + LEASE_MS : 0, i < 25 ? 'other' : '');
+      if (i === 25) {
+        const published = await store.publish(envelope, packet.archive, true);
+        env.DB.native.prepare('UPDATE retention_intents SET zip_asset_id=?, receipt_asset_id=?, retention_until=?, state=\'pending\' WHERE idempotency_key=?')
+          .run(published.asset_id, published._receipt_asset_id, Date.parse(published.retention_until), intent.idempotency_key);
+      }
+    }
+    await reconcileRetentionIntents(env, store, now);
+    await reconcileRetentionIntents(env, store, now);
+    assert.equal(env.DB.native.prepare("SELECT state FROM retention_intents WHERE idempotency_key=?").get((25).toString(16).padStart(32, '0')).state, 'bound');
+    assert.equal(env.DB.native.prepare("SELECT lease_token FROM cases WHERE idempotency_key=?").get('0'.repeat(32)).lease_token, 'other');
+  } finally { env.DB.native.close(); }
+});
+
+// Regression: Restarting every scan at the first page starves a bindable case behind 25 retryable entries.
+test('reconciliation rotates past retryable queue heads', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    const now = Date.now();
+    const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+    for (let i = 0; i < 26; i++) {
+      const envelope = { ...packet.envelope, idempotency_key: i.toString(16).padStart(32, '0') };
+      const intent = await createRetentionIntent(env, envelope, true, now - PUBLISH_DEADLINE_MS - 100 + i);
+      env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'unknown', 0, '', NULL)").run(intent.idempotency_key, intent.archive_sha256);
+      if (i === 25) await store.publish(envelope, packet.archive, true);
+    }
+    assert.equal((await reconcileRetentionIntents(env, store, now)).retryable, 25);
+    assert.equal((await reconcileRetentionIntents(env, store, now)).bound, 1);
+  } finally { env.DB.native.close(); }
+});
+
+// Regression: Dropping orphan retries, inventing a retention receipt, or allowing replay after cleanup breaks this contract.
+test('orphan cleanup retries verified ZIP removal without fabricating a receipt', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    const now = Date.now();
+    const intent = await createRetentionIntent(env, packet.envelope, true, now - PUBLISH_DEADLINE_MS);
+    remote.assets.set(1, { id: 1, name: intent.zip_name, size: packet.archive.length, bytes: packet.archive });
+    const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+    assert.equal((await reconcileRetentionIntents(env, store, now)).orphanCleanup, 1);
+    remote.loseBeforeDelete = true;
+    await reconcileRetentionIntents(env, store, Date.now());
+    assert.equal(remote.assets.size, 1);
+    remote.loseBeforeDelete = false;
+    await reconcileRetentionIntents(env, store, Date.now());
+    assert.equal(remote.assets.size, 0, 'subsequent scan must consume the verified orphan');
+    assert.ok(remote.deleteCalls.includes(1));
+    assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+    assert.equal(env.DB.native.prepare('SELECT state FROM retention_intents').get().state, 'manual_review');
+    await withGitHub(remote, async () => assert.equal((await worker.fetch(request(packet), env)).status, 409));
+  } finally { env.DB.native.close(); }
+});
+
+// Regression: Removing ZIP hash, duplicate/receipt identity, or private repository checks can delete an unverified asset or allow replay.
+test('orphan cleanup fails closed when ZIP identity or bytes change and blocks replay', async () => {
+  for (const fault of ['hash', 'duplicate', 'receipt', 'repository']) {
+    const packet = await archiveFor();
+    const env = environment();
+    const remote = new FakeGitHub();
+    try {
+      const now = Date.now();
+      const intent = await createRetentionIntent(env, packet.envelope, true, now - PUBLISH_DEADLINE_MS);
+      remote.assets.set(1, { id: 1, name: intent.zip_name, size: packet.archive.length, bytes: packet.archive });
+      const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+      assert.equal((await reconcileRetentionIntents(env, store, now)).orphanCleanup, 1);
+      if (fault === 'hash') remote.assets.get(1).bytes = new Uint8Array(packet.archive.length);
+      if (fault === 'duplicate') remote.assets.set(2, { ...remote.assets.get(1), id: 2 });
+      if (fault === 'receipt') remote.assets.set(2, { id: 2, name: intent.receipt_name, size: 2, bytes: encoder.encode('{}') });
+      if (fault === 'repository') remote.private = false;
+      await reconcileRetentionIntents(env, store, Date.now());
+      assert.equal(remote.deleteCalls.length, 0, fault);
+      const row = env.DB.native.prepare('SELECT state,last_error FROM retention_intents').get();
+      assert.equal(row.state, 'orphan_cleanup', fault);
+      assert.ok(row.last_error, fault);
+      await withGitHub(remote, async () => {
+        assert.equal((await worker.fetch(request(packet), env)).status, 409, fault);
+      });
+      assert.equal(remote.uploadCount, 0, fault);
+    } finally { env.DB.native.close(); }
+  }
+});
+
+// A completed prune cannot exclude a late POST; the tombstone must require manual review.
+// This does not assert that an automatic scan discovers or removes the late receipt.
+test('late receipt POST after completed cleanup requires manual review', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  let late;
+  try {
+    await withGitHub(remote, async () => {
+      assert.equal((await worker.fetch(request(packet, '/v1/feedback', { 'X-Skyrocket-Retention': 'auto-delete-v1' }), env)).status, 200);
+      remote.assets.delete(2);
+      const fetch = remote.fetch;
+      remote.fetch = async (input, options = {}) => {
+        const url = new URL(input);
+        if (options.method === 'POST' && url.searchParams.get('name')?.endsWith('.receipt.json')) {
+          late = { id: 2, name: url.searchParams.get('name'), bytes: new Uint8Array(options.body) };
+          late.size = late.bytes.length;
+          throw new DOMException('timed out', 'TimeoutError');
+        }
+        return fetch(input, options);
+      };
+      globalThis.fetch = remote.fetch;
+      assert.equal((await worker.fetch(request(packet), env)).status, 503);
+      assert.ok(late);
+      const key = packet.envelope.idempotency_key;
+      const result = await pruneExpiredCases(env, new GitHubStore('test-installation-token', '1', remote.fetch), Date.now() + 31 * 86400000);
+      assert.deepEqual(result, { deletedCaseIds: [key], failed: 0, busy: 0, backlog: 0 });
+      assert.ok(env.DB.native.prepare('SELECT deleted_at FROM deleted_cases WHERE idempotency_key=?').get(key)?.deleted_at);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention WHERE idempotency_key=?').get(key).n, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases WHERE idempotency_key=?').get(key).n, 0);
+      assert.equal(remote.assets.size, 0);
+      assert.ok(remote.deleteCalls.includes(1));
+      const intent = env.DB.native.prepare('SELECT state,last_error FROM retention_intents WHERE idempotency_key=?').get(key);
+      assert.deepEqual({ ...intent }, { state: 'manual_review', last_error: 'cleanup_late_post_unproven' });
+      remote.assets.set(late.id, late);
+      assert.equal(remote.assets.size, 1);
+      assert.equal(remote.assets.get(late.id), late);
+      const secret = 'm'.repeat(32);
+      const deletion = await worker.fetch(deleteRequest(key, secret), { ...env, FEEDBACK_ADMIN_DELETE_TOKEN: secret });
+      assert.equal(deletion.status, 503);
+      assert.equal((await deletion.json()).error, 'retention_manual_review_required');
+      assert.equal(remote.assets.get(late.id), late);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+// Regression: Treating metadata authorization errors or timeouts as 404 can falsely finalize deletion.
+test('GET 403 or timeout is not treated as a confirmed missing asset', async () => {
+  for (const failure of [
+    () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }),
+    () => { throw new TypeError('upstream timeout'); },
+  ]) {
+    const packet = await archiveFor();
+    const env = environment();
+    const remote = new FakeGitHub();
+    remote.deleteNoop = true;
+    try {
+      await withGitHub(remote, async () => {
+        assert.equal((await worker.fetch(request(packet, '/v1/feedback', { 'X-Skyrocket-Retention': 'auto-delete-v1' }), env)).status, 200);
+        const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+        // Independently verify the 404 classification: later list readback is a
+        // second defense and would otherwise mask a misclassified GET failure.
+        remote.assetReadFailure = failure;
+        await assert.rejects(() => store.readAssetMetadata(1));
+        // Fail the *post-delete* GET, not the identity preflight. The first read
+        // must succeed so this probes confirmation rather than an earlier guard.
+        remote.beforeDelete = () => { remote.assetReadFailure = failure; };
+        const result = await pruneExpiredCases(env, store, Date.now() + 31 * 86400000);
+        assert.deepEqual(result.deletedCaseIds, []);
+        assert.equal(remote.deleteCalls.length, 1);
+        assert.equal(remote.assets.size, 2);
+        const row = env.DB.native.prepare('SELECT zip_deleted, receipt_deleted FROM retention').get();
+        assert.equal(row.zip_deleted, 0);
+        assert.equal(row.receipt_deleted, 0);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 0);
+      });
+    } finally { env.DB.native.close(); }
+  }
+});
+
+// Regression: Marking a lost DELETE response as success without readback falsely deletes retained state.
+test('delete response loss while asset remains does not mark the asset deleted', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  remote.loseBeforeDelete = true;
+  try {
+    await withGitHub(remote, async () => {
+      assert.equal((await worker.fetch(request(packet, '/v1/feedback', { 'X-Skyrocket-Retention': 'auto-delete-v1' }), env)).status, 200);
+      const result = await pruneExpiredCases(env, new GitHubStore('test-installation-token', '1', remote.fetch), Date.now() + 31 * 86400000);
+      assert.deepEqual(result.deletedCaseIds, []);
+      const row = env.DB.native.prepare('SELECT zip_deleted, receipt_deleted, cleanup_error FROM retention').get();
+      assert.equal(row.zip_deleted, 0);
+      assert.equal(row.receipt_deleted, 0);
+      assert.equal(row.cleanup_error, 'asset_delete_unconfirmed');
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 0);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+// Regression: treating a genuine pre-intent automatic receipt as safe to delete can lose the late-POST fence.
+test('historical pre-intent schema and receipt require review after migration', async () => {
+  // Verbatim schema and receipt shape from mainline 26c98d5216e7146ae56c5dd2fa46b0a4d0455e60:
+  // its publish path stored receiptForClient (without _receipt_asset_id) and inserted the four retention fields.
+  const historicalSchema = `CREATE TABLE IF NOT EXISTS budget (
+  day TEXT PRIMARY KEY,
+  requests INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS cases (
+  idempotency_key TEXT PRIMARY KEY,
+  archive_sha256 TEXT NOT NULL,
+  state TEXT NOT NULL,
+  lease_until INTEGER NOT NULL,
+  lease_token TEXT NOT NULL,
+  receipt TEXT
+);
+CREATE TABLE IF NOT EXISTS retention (
+  idempotency_key TEXT PRIMARY KEY,
+  retention_until INTEGER NOT NULL,
+  zip_asset_id INTEGER NOT NULL,
+  receipt_asset_id INTEGER NOT NULL,
+  zip_deleted INTEGER NOT NULL DEFAULT 0,
+  receipt_deleted INTEGER NOT NULL DEFAULT 0,
+  cleanup_error TEXT,
+  cleanup_lease_until INTEGER NOT NULL DEFAULT 0,
+  cleanup_lease_token TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY (idempotency_key) REFERENCES cases(idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS deleted_cases (
+  idempotency_key TEXT PRIMARY KEY,
+  deleted_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS retention_due ON retention(retention_until);`;
+  const packet = await archiveFor();
+  const env = environment();
+  env.DB.native.close();
+  env.DB = database(historicalSchema);
+  const remote = new FakeGitHub();
+  const k = packet.envelope.idempotency_key;
+  const receipt = { case_id: `feedback-${k}`, archive_sha256: packet.envelope.archive_sha256, size_bytes: packet.archive.length,
+    received_at: '2026-01-01T00:00:00.000Z', storage_status: 'stored', validation_status: 'validated',
+    retention_until: '2026-01-31T00:00:00.000Z', retention_policy: 'auto_delete', repository: REPOSITORY,
+    asset_id: 1, consent_policy_version: POLICY };
+  const receiptBytes = encoder.encode(JSON.stringify(receipt));
+  try {
+    env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'received', 0, ?, ?)")
+      .run(k, packet.envelope.archive_sha256, 'historical-lease', JSON.stringify(receipt));
+    env.DB.native.prepare('INSERT INTO retention(idempotency_key, retention_until, zip_asset_id, receipt_asset_id) VALUES (?, ?, ?, ?)')
+      .run(k, Date.parse(receipt.retention_until), 1, 2);
+    remote.assets.set(1, { id: 1, name: `${receipt.case_id}.zip`, size: packet.archive.length, bytes: packet.archive });
+    remote.assets.set(2, { id: 2, name: `${receipt.case_id}.receipt.json`, size: receiptBytes.length, bytes: receiptBytes });
+    assert.equal(env.DB.native.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='retention_intents'").get().n, 0);
+    for (const migration of ['0003_retention_intents.sql', '0004_retention_queue_cursor.sql', '0005_retention_cursor_version.sql']) {
+      env.DB.native.exec(readFileSync(new URL(`../migrations/${migration}`, import.meta.url), 'utf8'));
+    }
+    const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+    const result = await pruneExpiredCases(env, store, Date.parse('2026-02-01T00:00:00.000Z'));
+    assert.deepEqual(result.deletedCaseIds, []);
+    assert.equal(result.failed, 1);
+    assert.equal(remote.deleteCalls.length, 0);
+    assert.equal(remote.assets.size, 2);
+    assert.equal(env.DB.native.prepare('SELECT receipt FROM cases WHERE idempotency_key=?').get(k).receipt, JSON.stringify(receipt));
+    assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 0);
+    const intent = env.DB.native.prepare('SELECT state, last_error FROM retention_intents WHERE idempotency_key=?').get(k);
+    assert.deepEqual({ ...intent }, { state: 'manual_review', last_error: 'legacy_retention_review' });
+    await withGitHub(remote, async () => assert.equal((await worker.fetch(request(packet), env)).status, 409));
+    assert.equal(remote.uploadCount, 0);
+  } finally { env.DB.native.close(); }
+});
+
+test('legacy clients receive manual deletion and negotiated clients receive automatic retention', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  const legacy = await archiveFor();
+  const modern = await archiveFor();
+  try {
+    await withGitHub(remote, async () => {
+      const firstResponse = await worker.fetch(request(legacy), env);
+      assert.equal(firstResponse.status, 200);
+      const first = await firstResponse.json();
+      assert.equal(first.retention_policy, 'manual_deletion');
+      assert.equal(first.retention_until, null);
+
+      const legacyRetry = await worker.fetch(request(legacy, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.deepEqual(await legacyRetry.json(), first);
+
+      const automaticResponse = await worker.fetch(request(modern, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(automaticResponse.status, 200);
+      const automatic = await automaticResponse.json();
+      assert.equal(automatic.retention_policy, 'auto_delete');
+      assert.equal(Date.parse(automatic.retention_until) - Date.parse(automatic.received_at), 30 * 86400000);
+      const reverseRetry = await worker.fetch(request(modern), env);
+      assert.equal(reverseRetry.status, 200);
+      assert.deepEqual(await reverseRetry.json(), automatic);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 1);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention WHERE idempotency_key=?').get(legacy.envelope.idempotency_key).n, 0);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('a pre-existing manual receipt stays manual when retry now advertises capability', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+  const original = await store.publish(packet.envelope, packet.archive);
+  const receipt = { ...original };
+  delete receipt._receipt_asset_id;
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(request(packet, '/v1/feedback', { 'X-Skyrocket-Retention': 'auto-delete-v1' }), env);
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.deepEqual(await response.json(), receipt);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('legacy cleanup fences intent before any remote delete even when the response is lost', async () => {
+  for (const admin of [false, true]) {
+    const packet = await archiveFor();
+    const env = environment({ FEEDBACK_ADMIN_DELETE_TOKEN: 'a'.repeat(32) });
+    const remote = new FakeGitHub();
+    try {
+      await withGitHub(remote, async () => {
+        const accepted = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+        const receipt = await accepted.json();
+        env.DB.native.prepare('DELETE FROM retention_intents WHERE idempotency_key=?').run(packet.envelope.idempotency_key);
+        remote.deleteResponseLost = true;
+        remote.beforeDelete = () => {
+          const intent = env.DB.native.prepare('SELECT state FROM retention_intents WHERE idempotency_key=?').get(packet.envelope.idempotency_key);
+          assert.ok(intent && ['manual_review', 'cleanup_watch'].includes(intent.state), 'durable fence must precede DELETE');
+        };
+        const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+        if (admin) await worker.fetch(deleteRequest(packet.envelope.idempotency_key, 'a'.repeat(32)), env);
+        else await pruneExpiredCases(env, store, Date.parse(receipt.retention_until) + 1);
+        const intent = env.DB.native.prepare('SELECT state FROM retention_intents WHERE idempotency_key=?').get(packet.envelope.idempotency_key);
+        const retained = env.DB.native.prepare('SELECT cleanup_error FROM retention WHERE idempotency_key=?').get(packet.envelope.idempotency_key);
+        assert.ok(intent && ['manual_review', 'cleanup_watch'].includes(intent.state) || remote.deleteCalls.length === 0 && retained?.cleanup_error, 'legacy must be fenced or visibly fail closed');
+      });
+    } finally { env.DB.native.close(); }
+  }
+});
+
+test('legacy receipt conflict remains visible without rewriting the local receipt', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(request(packet), env);
+      const original = await response.json();
+      env.DB.native.prepare('DELETE FROM retention_intents').run();
+      const before = env.DB.native.prepare('SELECT receipt FROM cases').get().receipt;
+      const asset = [...remote.assets.values()].find(item => item.name.endsWith('.receipt.json'));
+      asset.bytes = encoder.encode(JSON.stringify({ ...original, retention_policy: 'auto_delete', retention_until: new Date(Date.parse(original.received_at) + 30 * 86400000).toISOString() }));
+      const conflict = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(conflict.status, 409);
+      assert.equal((await conflict.json()).error, 'retention_receipt_conflict');
+      assert.equal(env.DB.native.prepare('SELECT receipt FROM cases').get().receipt, before);
+      const intent = env.DB.native.prepare('SELECT state, last_error FROM retention_intents').get();
+      assert.equal(intent.state, 'manual_review');
+      assert.equal(intent.last_error, 'retention_receipt_conflict');
+      const retry = await worker.fetch(request(packet), env);
+      assert.notEqual(retry.status, 200);
+      assert.equal(env.DB.native.prepare('SELECT last_error FROM retention_intents').get().last_error, 'retention_receipt_conflict');
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('legacy admin deletion preserves deletion flags and requires manual review on retry', async () => {
+  const packet = await archiveFor();
+  const env = environment({ FEEDBACK_ADMIN_DELETE_TOKEN: 'a'.repeat(32) });
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const accepted = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(accepted.status, 200);
+      env.DB.native.prepare('DELETE FROM retention_intents').run();
+      env.DB.native.prepare('UPDATE retention SET zip_deleted=1').run();
+      for (let i = 0; i < 2; i++) {
+        const response = await worker.fetch(deleteRequest(packet.envelope.idempotency_key, 'a'.repeat(32)), env);
+        assert.deepEqual(await response.json(), { error: 'retention_manual_review_required' });
+      }
+      assert.equal(remote.deleteCalls.length, 0);
+      assert.equal(env.DB.native.prepare('SELECT zip_deleted FROM retention').get().zip_deleted, 1);
+      assert.equal(env.DB.native.prepare('SELECT state FROM retention_intents').get().state, 'manual_review');
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('legacy received retention without an intent requires manual review', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const accepted = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(accepted.status, 200, await accepted.clone().text());
+      const receipt = await accepted.json();
+      env.DB.native.prepare('DELETE FROM retention_intents WHERE idempotency_key=?').run(packet.envelope.idempotency_key);
+      const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+      const result = await pruneExpiredCases(env, store, Date.parse(receipt.retention_until) + 1);
+      assert.deepEqual(result.deletedCaseIds, []);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 1);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 0);
+      assert.equal(env.DB.native.prepare('SELECT state FROM retention_intents').get().state, 'manual_review');
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('a finalized retention row keeps its asset identity and cleanup flags during intent binding', async () => {
+  const { bindRetentionIntent } = await import('../src/index.mjs');
+  const packet = await archiveFor({ diagnostics: await fullDiagnostics() });
+  const env = environment();
+  const now = Date.now() - 1000;
+  const lease = 'binding-lease';
+  const caseId = 'feedback-' + packet.envelope.idempotency_key;
+  const zipName = caseId + '.zip';
+  const receiptName = caseId + '.receipt.json';
+  const retentionUntil = new Date(now + 30 * 86400000).toISOString();
+  const intent = { ...packet.envelope, state: 'pending', case_id: caseId, archive_size: packet.archive.length,
+    zip_name: zipName, receipt_name: receiptName, policy: 'auto_delete', created_at: now,
+    publish_deadline: now - 1, reconcile_lease_until: now + 120000, reconcile_lease_token: 'reconcile-lease' };
+  const receipt = { case_id: caseId, archive_sha256: packet.envelope.archive_sha256, size_bytes: packet.archive.length,
+    received_at: new Date(now).toISOString(), retention_until: retentionUntil, retention_policy: 'auto_delete', repository: REPOSITORY,
+    storage_status: 'stored', validation_status: 'validated', asset_id: 101,
+    consent_policy_version: FULL_POLICY, validation_scope: 'container_sha256_and_member_catalog', _receipt_asset_id: 202 };
+  env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'received', 0, '', NULL)").run(packet.envelope.idempotency_key, packet.envelope.archive_sha256);
+  env.DB.native.prepare("INSERT INTO retention VALUES (?, ?, ?, ?, 1, 1, NULL, 0, '')")
+    .run(packet.envelope.idempotency_key, Date.parse(retentionUntil), 101, 202);
+  env.DB.native.prepare(`INSERT INTO retention_intents
+    (idempotency_key, case_id, archive_sha256, archive_size, consent_policy_version, diagnostic_payload_version, zip_name, receipt_name, policy, created_at, publish_deadline, state, reconcile_lease_until, reconcile_lease_token)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
+    .run(packet.envelope.idempotency_key, caseId, packet.envelope.archive_sha256, packet.archive.length, FULL_POLICY, 2,
+      zipName, receiptName, 'auto_delete', now, now - 1, now + 120000, 'reconcile-lease');
+  await bindRetentionIntent(env, intent, receipt, now);
+  const retained = env.DB.native.prepare('SELECT retention_until, zip_asset_id, receipt_asset_id, zip_deleted, receipt_deleted FROM retention').get();
+  assert.deepEqual({ ...retained }, { retention_until: Date.parse(retentionUntil), zip_asset_id: 101, receipt_asset_id: 202, zip_deleted: 1, receipt_deleted: 1 });
+  env.DB.native.close();
+});
+
+test('the retention worker reconciles pending intent before pruning expired retention', async () => {
+  const { default: retentionWorker } = await import('../src/retention-worker.mjs');
+  const packet = await archiveFor({ diagnostics: await fullDiagnostics() });
+  const env = environment();
+  const remote = new FakeGitHub();
+  const now = Date.now();
+  const caseId = 'feedback-' + packet.envelope.idempotency_key;
+  const zipName = caseId + '.zip';
+  const receiptName = caseId + '.receipt.json';
+  const receivedAt = new Date(now - 31 * 86400000).toISOString();
+  const receipt = { case_id: caseId, archive_sha256: packet.envelope.archive_sha256, size_bytes: packet.archive.length,
+    received_at: receivedAt, retention_until: new Date(now - 86400000).toISOString(), retention_policy: 'auto_delete',
+    repository: REPOSITORY, storage_status: 'stored', validation_status: 'validated', asset_id: 1,
+    consent_policy_version: FULL_POLICY, validation_scope: 'container_sha256_and_member_catalog' };
+  remote.assets.set(1, { id: 1, name: zipName, size: packet.archive.length, bytes: packet.archive });
+  remote.assets.set(2, { id: 2, name: receiptName, size: encoder.encode(JSON.stringify(receipt)).length, bytes: encoder.encode(JSON.stringify(receipt)) });
+  const events = [];
+  const originalFetch = remote.fetch;
+  remote.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    events.push((options.method || 'GET') + ' ' + url.pathname);
+    return originalFetch(input, options);
+  };
+  env.DB.native.prepare("INSERT INTO cases VALUES (?, ?, 'new', 0, '', NULL)").run(packet.envelope.idempotency_key, packet.envelope.archive_sha256);
+  env.DB.native.prepare(`INSERT INTO retention_intents
+    (idempotency_key, case_id, archive_sha256, archive_size, consent_policy_version, diagnostic_payload_version, zip_name, receipt_name, policy, created_at, publish_deadline, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'auto_delete', ?, 0, 'pending')`)
+    .run(packet.envelope.idempotency_key, caseId, packet.envelope.archive_sha256, packet.archive.length, FULL_POLICY, 2,
+      zipName, receiptName, now - 31 * 86400000);
+  try {
+    await withGitHub(remote, async () => {
+      let pending;
+      const ctx = { waitUntil(value) { pending = value; } };
+      await retentionWorker.scheduled({}, env, ctx);
+      await pending;
+    });
+    const firstDelete = events.findIndex(event => event.startsWith('DELETE '));
+    const firstReceiptRead = events.findIndex(event => event.includes('/releases/assets/2'));
+    assert.ok(firstReceiptRead >= 0 && firstDelete > firstReceiptRead, JSON.stringify(events));
+    assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 1);
+  } finally { env.DB.native.close(); }
+});
+test('an orphaned remote receipt retains its policy when the retry changes capability', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  env.DB.native.exec("CREATE TRIGGER reject_case_receipt BEFORE UPDATE OF receipt ON cases WHEN NEW.receipt IS NOT NULL BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END");
+  try {
+    await withGitHub(remote, async () => {
+      const failed = await worker.fetch(request(packet), env);
+      assert.equal(failed.status, 503);
+      assert.equal(remote.assets.size, 2);
+      const original = JSON.parse(new TextDecoder().decode([...remote.assets.values()].find(asset => asset.name.endsWith('.receipt.json')).bytes));
+      assert.equal(original.retention_policy, 'manual_deletion');
+      env.DB.native.exec('DROP TRIGGER reject_case_receipt');
+      const retry = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(retry.status, 200, await retry.clone().text());
+      assert.deepEqual(await retry.json(), original);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+      assert.equal(remote.uploadCount, 2);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('a recovered stored case fences a conflicting remote policy', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(request(packet), env);
+      assert.equal(response.status, 200);
+      const first = await response.json();
+      const asset = [...remote.assets.values()].find(item => item.name.endsWith('.receipt.json'));
+      asset.bytes = encoder.encode(JSON.stringify({ ...first, retention_policy: 'auto_delete',
+        retention_until: new Date(Date.parse(first.received_at) + 30 * 86400000).toISOString() }));
+      const retry = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(retry.status, 409);
+      assert.equal((await retry.json()).error, 'retention_receipt_conflict');
+      assert.deepEqual(JSON.parse(env.DB.native.prepare('SELECT receipt FROM cases').get().receipt).retention_policy, first.retention_policy);
+      const intent = env.DB.native.prepare('SELECT state, last_error FROM retention_intents').get();
+      assert.equal(intent.state, 'manual_review');
+      assert.equal(intent.last_error, 'retention_receipt_conflict');
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('retention registration is rejected after its case lease is superseded', async t => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const original = remote.fetch;
+  remote.fetch = async (url, options) => {
+    if (new URL(url).pathname === '/repos/' + REPOSITORY) { entered(); await held; }
+    return original(url, options);
+  };
+  t.after(() => { release(); env.DB.native.close(); });
+  await withGitHub(remote, async () => {
+    const pending = worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+    await waiting;
+    env.DB.native.prepare("UPDATE cases SET lease_token='replacement', lease_until=?").run(Date.now() + LEASE_MS);
+    release();
+    const result = await pending;
+    assert.equal(result.status, 409);
+    assert.equal((await result.json()).error, 'lease_superseded');
+    assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+    assert.equal(env.DB.native.prepare('SELECT receipt FROM cases').get().receipt, null);
+  });
+});
+
+test('failed retention registration rolls back receipt and retries the original remote receipt', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  const packet = await archiveFor();
+  env.DB.native.exec("CREATE TRIGGER reject_retention BEFORE INSERT ON retention BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END");
+  try {
+    await withGitHub(remote, async () => {
+      const failed = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(failed.status, 503);
+      const row = env.DB.native.prepare('SELECT state, receipt FROM cases').get();
+      assert.notEqual(row.state, 'received');
+      assert.equal(row.receipt, null);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+      assert.equal(remote.assets.size, 2);
+      const original = JSON.parse(new TextDecoder().decode([...remote.assets.values()].find(asset => asset.name.endsWith('.receipt.json')).bytes));
+      env.DB.native.exec('DROP TRIGGER reject_retention');
+      const retried = await worker.fetch(request(packet), env);
+      assert.equal(retried.status, 200, await retried.clone().text());
+      assert.deepEqual(await retried.json(), original);
+      assert.equal(remote.uploadCount, 2);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 1);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('zero-row retention insert rolls back the receipt and retry does not claim success', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  const packet = await archiveFor();
+  env.DB.native.exec("CREATE TRIGGER ignore_retention BEFORE INSERT ON retention BEGIN SELECT RAISE(IGNORE); END");
+  try {
+    await withGitHub(remote, async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+        assert.notEqual(response.status, 200);
+        assert.equal(env.DB.native.prepare('SELECT receipt FROM cases').get().receipt, null);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+      }
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('zero-row cleanup delete rolls back tombstone and retry does not claim deletion', async () => {
+  const env = environment({ FEEDBACK_ADMIN_DELETE_TOKEN: 'a'.repeat(32) });
+  const remote = new FakeGitHub();
+  const packet = await archiveFor();
+  try {
+    await withGitHub(remote, async () => {
+      assert.equal((await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env)).status, 200);
+      env.DB.native.exec("CREATE TRIGGER ignore_retention_delete BEFORE DELETE ON retention BEGIN SELECT RAISE(IGNORE); END");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await worker.fetch(deleteRequest(packet.envelope.idempotency_key, 'a'.repeat(32)), env);
+        assert.notEqual(response.status, 200);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 0);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 1);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 1);
+        env.DB.native.prepare('UPDATE retention SET cleanup_lease_until=0').run();
+      }
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('zero-row case delete rolls back retention deletion and tombstone', async () => {
+  const env = environment({ FEEDBACK_ADMIN_DELETE_TOKEN: 'a'.repeat(32) });
+  const remote = new FakeGitHub();
+  const packet = await archiveFor();
+  try {
+    await withGitHub(remote, async () => {
+      assert.equal((await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env)).status, 200);
+      env.DB.native.exec("CREATE TRIGGER ignore_case_delete BEFORE DELETE ON cases BEGIN SELECT RAISE(IGNORE); END");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await worker.fetch(deleteRequest(packet.envelope.idempotency_key, 'a'.repeat(32)), env);
+        assert.notEqual(response.status, 200);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 0);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 1);
+        assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 1);
+        env.DB.native.prepare('UPDATE retention SET cleanup_lease_until=0').run();
+      }
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('prune reports a failed deletion and leaves it retryable', async () => {
+  const env = environment();
+  const remote = new FakeGitHub();
+  const packet = await archiveFor();
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      const receipt = await response.json();
+      const store = { async deleteAndConfirmAsset() { throw new Error('synthetic delete failure'); } };
+      const result = await pruneExpiredCases(env, store, Date.parse(receipt.retention_until) + 1);
+      assert.equal(result.failed, 1);
+      assert.equal(result.deletedCaseIds.length, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 1);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('expired retention deletes both remote assets before deleting the D1 case', async () => {
+  const packet = await archiveFor({ payload: 2, diagnostics: await fullDiagnostics() });
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(response.status, 200);
+      const receipt = await response.json();
+      const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+      const retained = env.DB.native.prepare('SELECT retention_until FROM retention WHERE idempotency_key=?').get(packet.envelope.idempotency_key);
+      assert.equal(retained.retention_until, Date.parse(receipt.retention_until));
+      const result = await pruneExpiredCases(env, store, Date.parse(receipt.retention_until) + 1);
+      assert.deepEqual(result.deletedCaseIds, [packet.envelope.idempotency_key]);
+      assert.equal(remote.assets.size, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 1);
+      const replay = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(replay.status, 409);
+      assert.equal(remote.assets.size, 0);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('admin deletion needs its secret and removes the retained case only after both assets', async () => {
+  const packet = await archiveFor();
+  const secret = 'a'.repeat(32);
+  const env = environment({ FEEDBACK_ADMIN_DELETE_TOKEN: secret });
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const unknown = await worker.fetch(deleteRequest('b'.repeat(32), secret), env);
+      assert.equal(unknown.status, 404);
+      assert.deepEqual(await unknown.json(), { error: 'retention_case_not_found' });
+      assert.equal((await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env)).status, 200);
+      const denied = await worker.fetch(deleteRequest(packet.envelope.idempotency_key, 'wrong'), env);
+      assert.equal(denied.status, 401);
+      assert.equal(remote.assets.size, 2);
+      const deleted = await worker.fetch(deleteRequest(packet.envelope.idempotency_key, secret), env);
+      assert.equal(deleted.status, 503);
+      assert.deepEqual(await deleted.json(), { error: 'retention_manual_review_required' });
+      const repeated = await worker.fetch(deleteRequest(packet.envelope.idempotency_key, secret), env);
+      assert.equal(repeated.status, 503);
+      assert.deepEqual(await repeated.json(), { error: 'retention_manual_review_required' });
+      assert.equal(remote.assets.size, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 1);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+
+test('cleanup does not race a live upload or allow an upload during cleanup', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const response = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(response.status, 200);
+      const receipt = await response.json();
+      const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+      const due = Date.parse(receipt.retention_until) + 1;
+      env.DB.native.prepare('UPDATE cases SET lease_until=?').run(Date.now() + LEASE_MS);
+      const result = await pruneExpiredCases(env, store, due);
+      assert.equal(result.busy, 1);
+      assert.equal(result.deletedCaseIds.length, 0);
+      assert.equal(remote.assets.size, 2);
+      env.DB.native.prepare('UPDATE cases SET lease_until=0').run();
+      env.DB.native.prepare("UPDATE retention SET cleanup_lease_until=?, cleanup_lease_token='other'").run(Date.now() + LEASE_MS);
+      const retry = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(retry.status, 409);
+      assert.equal(remote.assets.size, 2);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('a lost delete response is retried through a 404 and still records both markers', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const accepted = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(accepted.status, 200);
+      const receipt = await accepted.json();
+      const originalFetch = remote.fetch;
+      let lost = true;
+      const unreliable = async (input, options = {}) => {
+        if (options.method === 'DELETE' && lost) { lost = false; throw new Error('response lost'); }
+        return originalFetch(input, options);
+      };
+      const store = new GitHubStore('test-installation-token', '1', unreliable);
+      const due = Date.parse(receipt.retention_until) + 1;
+      const result = await pruneExpiredCases(env, store, due);
+      assert.deepEqual(result.deletedCaseIds, []);
+      assert.equal(env.DB.native.prepare('SELECT zip_deleted FROM retention').get().zip_deleted, 0);
+      env.DB.native.prepare('UPDATE retention SET cleanup_lease_until=0').run();
+      assert.deepEqual((await pruneExpiredCases(env, store, due)).deletedCaseIds, [packet.envelope.idempotency_key]);
+      assert.equal(remote.assets.size, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 1);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('cleanup retry preserves deletion markers and atomically removes rows with tombstone', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      const accepted = await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env);
+      assert.equal(accepted.status, 200, await accepted.clone().text());
+      const receipt = await accepted.json();
+      const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+      env.DB.native.exec("CREATE TRIGGER reject_tombstone BEFORE INSERT ON deleted_cases BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END");
+      const due = Date.parse(receipt.retention_until) + 1;
+      const first = await pruneExpiredCases(env, store, due);
+      assert.deepEqual(first.deletedCaseIds, []);
+      const retained = env.DB.native.prepare('SELECT zip_deleted, receipt_deleted FROM retention').get();
+      assert.equal(retained.zip_deleted, 1);
+      assert.equal(retained.receipt_deleted, 1);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 1);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 0);
+      env.DB.native.exec('DROP TRIGGER reject_tombstone');
+      env.DB.native.prepare('UPDATE retention SET cleanup_lease_until=0').run();
+      assert.deepEqual((await pruneExpiredCases(env, store, due)).deletedCaseIds, [packet.envelope.idempotency_key]);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM cases').get().n, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 0);
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM deleted_cases').get().n, 1);
+    });
+  } finally { env.DB.native.close(); }
+});
+
+test('cleanup stops when its fenced update loses the lease', async () => {
+  const packet = await archiveFor();
+  const env = environment();
+  const remote = new FakeGitHub();
+  try {
+    await withGitHub(remote, async () => {
+      assert.equal((await worker.fetch(request(packet, '/v1/feedback', 'auto-delete-v1'), env)).status, 200);
+      const original = env.DB.prepare;
+      let fencedUpdate = false;
+      let cleanupErrorSql = '';
+      let cleanupErrorParams = null;
+      env.DB.prepare = sql => {
+        const statement = original(sql);
+        if (sql.includes('UPDATE retention SET cleanup_error')) {
+          cleanupErrorSql = sql;
+          return {
+            bind(...params) {
+              cleanupErrorParams = params;
+              return statement.bind(...params);
+            },
+          };
+        }
+        if (sql.includes('zip_deleted=1')) {
+          fencedUpdate = true;
+          return {
+            bind(...params) {
+              const bound = statement.bind(...params);
+              return { async run() { return { success: true, meta: { changes: 0 } }; } };
+            },
+          };
+        }
+        return statement;
+      };
+      const store = new GitHubStore('test-installation-token', '1', remote.fetch);
+      const result = await pruneExpiredCases(env, store, Date.now() + 31 * 86400000);
+      assert.deepEqual(result.deletedCaseIds, []);
+      assert.equal(fencedUpdate, true);
+      assert.equal(cleanupErrorSql, '');
+      assert.equal(cleanupErrorParams, null);
+      assert.equal(remote.assets.size, 1, 'receipt asset must remain when lease ownership is lost');
+      assert.equal(env.DB.native.prepare('SELECT COUNT(*) AS n FROM retention').get().n, 1);
+    });
+  } finally { env.DB.native.close(); }
+});
 
 test('strict JSON refuses duplicate keys, comments, excessive depth and unsafe numbers', () => {
   for (const value of ['{"x":1,"x":2}', '{/*comment*/"x":1}', '{"x":NaN}', '{"x":9007199254740993}', '['.repeat(10) + '0' + ']'.repeat(10)]) {
@@ -487,7 +1460,7 @@ test('failed GitHub response releases only its own lease and can retry', async (
 
 test('daily byte protection refuses before GitHub and does not leak a reservation', async t => {
   const RealDate = globalThis.Date;
-  const fixed = '2026-01-02T12:00:00Z';
+  const fixed = new RealDate().toISOString();
   globalThis.Date = class extends RealDate {
     constructor(...args) { super(...(args.length ? args : [fixed])); }
     static now() { return RealDate.parse(fixed); }
@@ -505,6 +1478,7 @@ test('daily byte protection refuses before GitHub and does not leak a reservatio
     await sleep(60);
     assert.equal(remote.mintCount, 0);
     env.DB.native.prepare('UPDATE budget SET requests=0 WHERE day=?').run(day);
+    env.DB.native.prepare('UPDATE cases SET lease_until=0, lease_token=\'\'').run();
     assert.equal((await worker.fetch(request(packet), env)).status, 200);
   });
   env.DB.native.close();
@@ -950,7 +1924,7 @@ const INNER = ['gh_token_mint', 'gh_preflight', 'gh_read_repo', 'gh_read_release
 
 // 虚拟时钟：只在“数据库操作”和“GitHub 的几个慢路由”上前进固定毫秒数，其余步骤不动。
 // 这样每个阶段的耗时是确定的，名字记错、漏记、重复计入都会让精确数字对不上。
-function virtualClock(start = 5000000) {
+function virtualClock(start = Date.now()) {
   const real = Date.now;
   const clock = { now: start, tick(ms) { clock.now += ms; },
     install() { Date.now = () => clock.now; }, restore() { Date.now = real; } };
@@ -958,7 +1932,7 @@ function virtualClock(start = 5000000) {
 }
 function slowDatabase(env, clock, perOperation = 3) {
   const inner = env.DB;
-  env.DB = { native: inner.native, prepare(sql) { const prepared = inner.prepare(sql); return { bind(...params) {
+  env.DB = { native: inner.native, async batch(statements) { clock.tick(perOperation); return inner.batch(statements); }, prepare(sql) { const prepared = inner.prepare(sql); return { bind(...params) {
     const bound = prepared.bind(...params);
     return { async first() { clock.tick(perOperation); return bound.first(); },
       async run() { clock.tick(perOperation); return bound.run(); } };
@@ -1049,13 +2023,13 @@ test('a successful upload reports every sequential phase, and each phase is char
       assert.equal(spent.gh_zip_readback, 80);
       assert.equal(spent.gh_receipt_upload, 120);
       assert.equal(spent.gh_receipt_readback, 40);
-      assert.equal(spent.lease, 3);
-      assert.equal(spent.receipt_commit, 3);
+      assert.equal(spent.lease, 9);
+      assert.equal(spent.receipt_commit, 21);
       // 数据库操作数（每次 3 毫秒）按处理流程逐步数出来：budget 4 次（来源额度、全局额度、当天清扫标记，
       // 全新库里这是当天第一个请求所以还会执行一次清扫删除）；byte_budget 1 次；case 3 次（数案件、插入、读回）。
       assert.equal(spent.budget, 12);
       assert.equal(spent.byte_budget, 3);
-      assert.equal(spent.case, 9);
+      assert.equal(spent.case, 12);
       assert.equal(spent.body + spent.unpack + spent.archive, 0, '纯计算和读请求体不推进虚拟时钟');
       const total = SEQUENCE.reduce((sum, name) => sum + spent[name], 0);
       assert.equal(spent.total, total, '总数必须等于各顺序阶段之和，不能有悄悄消失的时间');
@@ -1250,7 +2224,7 @@ test('a failed in-flight token request is cleared before the next request retrie
 // ---- 换令牌与写租约同时进行：令牌不依赖租约的结果，没必要排在它后面 ----
 function delayLeaseWrite(env, ms) {
   const inner = env.DB;
-  env.DB = { native: inner.native, prepare(sql) { const prepared = inner.prepare(sql); return { bind(...params) {
+  env.DB = { native: inner.native, async batch(statements) { return inner.batch(statements); }, prepare(sql) { const prepared = inner.prepare(sql); return { bind(...params) {
     const bound = prepared.bind(...params);
     const lag = sql.startsWith('UPDATE cases SET state=CASE') ? ms : 0;
     return { async first() { if (lag) await sleep(lag); return bound.first(); }, async run() { return bound.run(); } };

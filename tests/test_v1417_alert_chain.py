@@ -21,6 +21,8 @@ import tempfile
 import threading
 import unittest
 
+from tests._base import SFCase
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CHILD = ROOT / "tests" / "_alert_child.py"
 TIMEOUT_SECONDS = 90
@@ -59,6 +61,50 @@ def _spawn(mode, *extra):
         if sep:
             markers[key.strip()] = value.strip()
     return proc, markers
+
+
+class ForceProbeVerdictTest(SFCase):
+    def test_child_rejects_initially_hidden_window_even_if_close_makes_it_visible(self):
+        from unittest.mock import patch
+        from tests import _alert_child as child
+
+        class Window:
+            visible = False
+
+            def isVisible(self):
+                return self.visible
+
+            def performClose_(self, _sender):
+                self.visible = True
+
+        class Button:
+            def __init__(self, name, window, result):
+                self.name, self.window, self.result = name, window, result
+
+            def title(self):
+                return self.name
+
+            def keyEquivalent(self):
+                return ""
+
+            def performClick_(self, _sender):
+                self.result(self.name)
+                self.window.visible = False
+
+        window = Window()
+
+        def show_alert(**kwargs):
+            buttons = [Button(name, window, kwargs["on_result"])
+                       for name in kwargs["buttons"]]
+            handle = type("Handle", (), {})()
+            handle._window = window  # discipline-ok(R5): native handle fixture
+            handle._alert = type("Alert", (), {"buttons": lambda self: buttons})()  # discipline-ok(R5): native handle fixture
+            handle._dismissible = False  # discipline-ok(R5): native handle fixture
+            return handle
+
+        with patch.object(child.s, "show_alert", side_effect=show_alert), \
+                patch.object(child, "_offscreen"):
+            self.assertEqual(child.run_force(), 1)
 
 
 class AlertChainTest(unittest.TestCase):
@@ -133,6 +179,19 @@ class AlertChainTest(unittest.TestCase):
         self.assertEqual(m.get("visible_after_close"), "False",
                          "重复 close() 必须安全且窗口已消失")
         self.assertEqual(m.get("live_after"), "0", "主动收口同样要退出注册表")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_forced_alert_only_allows_update_or_exit_and_rejects_close(self):
+        proc, m = self._run("force")
+        self.assertEqual(m.get("titles"), "更新并重启应用,退出程序")
+        self.assertEqual(m.get("dismissible"), "False")
+        self.assertEqual(m.get("esc_key"), "0,0")
+        self.assertEqual(m.get("visible_before_close_attempt"), "True",
+                         "关闭尝试前弹窗必须已经显示")
+        self.assertEqual(m.get("window_should_close"), "False")
+        self.assertEqual(m.get("visible_after_close_attempt"), "True")
+        self.assertEqual(m.get("result"), "退出程序")
+        self.assertEqual(m.get("visible_after_exit"), "False")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_broken_button_bridge_does_not_escape(self):

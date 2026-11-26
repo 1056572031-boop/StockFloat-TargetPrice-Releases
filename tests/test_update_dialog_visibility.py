@@ -10,29 +10,31 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 import sf_glass
 import sf_system_alert as alerts
-import stock_float_window as window
+import stock_float_window as window_module
 from tests._base import SFCase
 from tests.test_v1443_update_feedback import _fake, _NEW
 from tests.test_v148_nativealert import _FakeAppKit, _FakeTarget, _Window
 from tests.test_v1417_alert_chain import _spawn
 
 # These are the handlers under test; a minimal QWidget avoids real quote/config workers.
-_check = window.FloatWindow._check_updates_background  # discipline-ok(R5): direct handler under test
-_result = window.FloatWindow._handle_update_check  # discipline-ok(R5): direct handler under test
-_cancel = window.FloatWindow._handle_update_check_cancel  # discipline-ok(R5): direct handler under test
-_close_flow = window.FloatWindow._close_update_flow_box  # discipline-ok(R5): direct lifecycle boundary under test
+_check = window_module.FloatWindow._check_updates_background  # discipline-ok(R5): direct handler under test
+_result = window_module.FloatWindow._handle_update_check  # discipline-ok(R5): direct handler under test
+_cancel = window_module.FloatWindow._handle_update_check_cancel  # discipline-ok(R5): direct handler under test
+_close_flow = window_module.FloatWindow._close_update_flow_box  # discipline-ok(R5): direct lifecycle boundary under test
 _retry_space = alerts.NativeAlert._retry_active_space  # discipline-ok(R5): deterministic timer delivery
 
 
 class _MenuHost(QWidget):
-    contextMenuEvent: Any = window.FloatWindow.contextMenuEvent
-    _on_ctx_menu_closed: Any = window.FloatWindow._on_ctx_menu_closed
-    _queue_feedback_open: Any = window.FloatWindow._queue_feedback_open
-    _open_feedback: Any = window.FloatWindow._open_feedback
+    contextMenuEvent: Any = window_module.FloatWindow.contextMenuEvent
+    _on_ctx_menu_closed: Any = window_module.FloatWindow._on_ctx_menu_closed
+    _queue_feedback_open: Any = window_module.FloatWindow._queue_feedback_open
+    _open_feedback: Any = window_module.FloatWindow._open_feedback
     _check_updates_background: Any = _check
-    _show_checking_dialog: Any = window.FloatWindow._show_checking_dialog
-    _dispose_update_dialog: Any = window.FloatWindow._dispose_update_dialog
-    _update_check_stale: Any = window.FloatWindow._update_check_stale
+    _show_checking_dialog: Any = window_module.FloatWindow._show_checking_dialog
+    _dispose_update_dialog: Any = window_module.FloatWindow._dispose_update_dialog
+    _close_update_flow_box: Any = window_module.FloatWindow._close_update_flow_box  # discipline-ok(R5): real lifecycle fixture
+    close_update_progress: Any = window_module.FloatWindow.close_update_progress
+    _update_check_stale: Any = window_module.FloatWindow._update_check_stale
 
     def __init__(self):
         super().__init__()
@@ -69,10 +71,10 @@ class MenuClickVisibility(SFCase):
     def setUp(self):
         super().setUp()
         self.host = self.track_widget(_MenuHost())
-        self.track_patch(patch.object(window, "feature_enabled", return_value=False))
+        self.track_patch(patch.object(window_module, "feature_enabled", return_value=False))
         self.worker = Mock()
         self.shown = Mock()
-        self.track_patch(patch.object(window.threading, "Thread", self.worker))
+        self.track_patch(patch.object(window_module.threading, "Thread", self.worker))
         self.track_patch(patch.object(alerts, "show_alert", self.shown))
         self.track_patch(patch.object(alerts, "bundled_icon_path", return_value=None))
 
@@ -84,6 +86,59 @@ class MenuClickVisibility(SFCase):
         action = next(a for a in menu.actions() if a.text() == "检查更新")
         QTest.mouseClick(menu, Qt.MouseButton.LeftButton,
                          pos=menu.actionGeometry(action).center())
+
+    def test_update_menu_maps_forced_states_to_explicit_actions(self):
+        from types import SimpleNamespace
+        from PyQt6.QtWidgets import QMenu
+        from sf_update_policy import PolicyState
+
+        for state, expected in ((PolicyState.FORCE_PENDING, "开始下载"),
+                                (PolicyState.FORCE_READY, "更新并重启应用"),
+                                (None, "检查更新")):
+            with self.subTest(state=state):
+                vars(self.host)["_update_port"] = SimpleNamespace(
+                    _flow=SimpleNamespace(state=state))
+                self.host.contextMenuEvent(QContextMenuEvent(
+                    QContextMenuEvent.Reason.Mouse, QPoint(20, 20), QPoint(140, 140)))
+                menu = next(child for child in self.host.findChildren(QMenu) if child.isVisible())
+                self.assertIn(expected, [action.text() for action in menu.actions()])
+                menu.close()
+
+
+    def test_background_progress_dismiss_does_not_close_force_prompt(self):
+        import sf_system_alert
+        captured = {}
+        handle = Mock()
+        def show(**kwargs):
+            captured.update(kwargs)
+            return handle
+        prompt = Mock()
+        vars(self.host).update(_update_prompt_dialog=prompt, _update_flow_box=None,
+                               _on_download_dialog_answer=Mock())
+        with patch.object(sf_system_alert, "show_progress_alert", side_effect=show), \
+                patch.object(sf_system_alert, "bundled_icon_path", return_value=None):
+            window_module.FloatWindow._open_download_progress_box(self.host, background=True)  # discipline-ok(R5): test real UI boundary
+            captured["on_result"]("好")
+        prompt.close.assert_not_called()
+
+    def test_old_progress_cancel_cannot_cancel_replacement_download(self):
+        captured = []
+        first, second = Mock(), Mock()
+        cancel = Mock()
+        vars(self.host).update(_update_download_token=object(),
+                               _on_download_dialog_answer=cancel)
+        def show(**kwargs):
+            captured.append(kwargs["on_result"])
+            return first if len(captured) == 1 else second
+        open_progress = window_module.FloatWindow._open_download_progress_box  # discipline-ok(R5): exercise real UI adapter with isolated host
+        with patch.object(alerts, "show_progress_alert", side_effect=show):
+            open_progress(self.host)
+            vars(self.host)["_update_download_token"] = object()
+            open_progress(self.host)
+            captured[0]("取消")
+            cancel.assert_not_called()
+            captured[1]("取消")
+            cancel.assert_called_once_with("取消")
 
     def test_first_real_menu_click_shows_feedback_before_worker_start(self):
         order = []
@@ -184,6 +239,30 @@ class NativePresentation(SFCase):
         native.calls.clear()
         self.assertFalse(dialog.present())
         self.assertEqual(native.calls, [])
+
+    def test_force_alert_attaches_its_real_window_delegate_and_exposes_close_policy(self):
+        calls = []
+        with patch.object(_Window, "setDelegate_", lambda native, delegate: calls.append(delegate), create=True):
+            dialog = alerts.NativeAlert("必须更新", "", ("更新", "退出"), "更新", None,
+                                        None, None, dismissible=False)
+        self.addCleanup(dialog.close)
+        self.assertFalse(dialog.dismissible)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(calls[0].windowShouldClose_(None))
+
+    def test_force_alert_has_only_update_and_exit_actions(self):
+        dialog = alerts.NativeAlert(
+            "必须更新", "", ("更新并重启应用", "退出程序"),
+            "更新并重启应用", None, None, None, dismissible=False)
+        self.addCleanup(dialog.close)
+        self.assertFalse(dialog._dismissible)  # discipline-ok(R5): verify forced native alert state
+        self.assertEqual([button.title() for button in dialog._alert.buttons()],  # discipline-ok(R5): verify native button boundary
+                         ["更新并重启应用", "退出程序"])
+        self.assertTrue(all(button.key in (None, "") for button in dialog._alert.buttons()))  # discipline-ok(R5): verify native key equivalents
+
+    def test_normal_alert_remains_dismissible(self):
+        dialog = self.make_dialog()
+        self.assertTrue(dialog._dismissible)  # discipline-ok(R5): verify normal native alert state
 
     def test_late_space_attachment_retries_then_stops(self):
         active = [False]

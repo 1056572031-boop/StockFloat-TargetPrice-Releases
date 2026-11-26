@@ -171,6 +171,31 @@ class PresenceFailurePaths(SFCase):
                 monitor.stop()
                 self.events.clear()
 
+    def test_pending_resources_reports_each_native_handle(self):
+        monitor = presence.FacePresenceMonitor()
+        self.assertFalse(monitor.has_pending_resources())
+        for name in ("_session", "_output", "_delegate"):
+            with self.subTest(handle=name):
+                setattr(monitor, name, object())
+                self.assertTrue(monitor.has_pending_resources())
+                setattr(monitor, name, None)
+        self.assertFalse(monitor.has_pending_resources())
+
+    def test_failed_start_with_failed_stop_keeps_old_session_before_retry(self):
+        monitor, old_session, _output, table = self.monitor(session_fail="add-input")
+        old_session.stopRunning = mock.Mock(side_effect=RuntimeError("stop failed"))
+        self.assertEqual(monitor.start(), presence.STATE_FAILED)
+        self.assertIs(vars(monitor)["_session"], old_session)  # discipline-ok(R5): retained native ownership
+        replacement = Session(self.events)
+        table["AVCaptureSession"] = factory(replacement)
+        self.assertEqual(monitor.start(), presence.STATE_FAILED)
+        self.assertIs(vars(monitor)["_session"], old_session)  # discipline-ok(R5): cannot overwrite held session
+        self.assertFalse(replacement.running)
+        old_session.stopRunning.side_effect = None
+        old_session.stopRunning.return_value = None
+        self.assertEqual(monitor.start(), presence.STATE_RUNNING)
+        self.assertIs(vars(monitor)["_session"], replacement)  # discipline-ok(R5): replacement starts after stop
+
     def test_missing_session_input_and_output_are_reported_as_failures(self):
         for option in ("no_session", "no_input", "no_output"):
             with self.subTest(option=option):
@@ -220,10 +245,32 @@ class PresenceFailurePaths(SFCase):
         self.assertIs(self.parked[-1], sink)
         self.assertIsNone(vars(sink).get("_owner"))
 
-    def test_stop_failure_is_logged_but_other_references_are_released(self):
-        monitor, _session, _output, _table = self.monitor()
+    def test_stop_failure_preserves_running_session_for_retry(self):
+        monitor, session, _output, _table = self.monitor()
         self.assertEqual(monitor.start(), presence.STATE_RUNNING)
-        vars(monitor)["_session"].fail = "stop"
+        session.fail = "stop"
+        try:
+            self.assertFalse(monitor.stop(wait=True),
+                             "a failed native stop must not be reported as complete")
+            self.assertTrue(session.running)
+            # The native handle is needed for a real retry, not merely a log entry.
+            self.assertIs(vars(monitor)["_session"], session)  # discipline-ok(R5): verify ownership for retry
+            session.fail = None
+            self.assertTrue(monitor.stop(wait=True))
+            self.assertFalse(session.running)
+            self.assert_released(monitor)
+        finally:
+            session.fail = None
+
+    def test_stop_failure_is_logged_but_other_references_are_released(self):
+        monitor, session, _output, _table = self.monitor()
+        self.assertEqual(monitor.start(), presence.STATE_RUNNING)
+        session.fail = "stop"
+        self.assertFalse(monitor.stop(),
+                         "a failed native stop must not be reported as complete")
+        self.assertTrue(session.running)
+        self.assertIs(vars(monitor)["_session"], session)  # discipline-ok(R5): retry ownership
+        session.fail = None
         self.assertTrue(monitor.stop())
         self.assertEqual(monitor.state, presence.STATE_OFF)
         self.assert_released(monitor)

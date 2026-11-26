@@ -58,6 +58,7 @@ FACTORIES = {
     "sf_logging._ReopenForwardDelegate": "reopen_delegate",
     "sf_notify._NotifyDelegate": "notify_delegate",
     "sf_system_alert._AlertTarget": "alert_target",
+    "sf_system_alert._AlertWindowDelegate": "alert_window_delegate",
 }
 
 # --self-test 的种样例：就是本轮 iMac 崩掉的那一个 selector，故意**不钉签名**建类。
@@ -204,10 +205,16 @@ def _build_alert_target():
     return sf_system_alert._AlertTarget
 
 
+def _build_alert_window_delegate():
+    import sf_system_alert
+    return sf_system_alert._AlertWindowDelegate
+
+
 BUILDERS = {
     "reopen_delegate": _build_reopen_delegate,
     "notify_delegate": _build_notify_delegate,
     "alert_target": _build_alert_target,
+    "alert_window_delegate": _build_alert_window_delegate,
 }
 
 

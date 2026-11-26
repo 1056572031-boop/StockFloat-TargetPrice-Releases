@@ -7,7 +7,7 @@ import json
 import hashlib
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -283,7 +283,7 @@ def validate_upload_receipt(receipt, envelope, *, allow_legacy_v2=False):
         received = datetime.fromisoformat(checked["received_at"].replace("Z", "+00:00"))
     except ValueError as exc:
         raise PrivacyRejected("回执时间格式不正确") from exc
-    if received.tzinfo is None:
+    if received.utcoffset() is None:
         raise PrivacyRejected("回执时间缺少时区")
     required = {"case_id", "archive_sha256", "size_bytes", "received_at", "storage_status", "validation_status",
                 "retention_until", "retention_policy", "repository", "asset_id", "consent_policy_version"}
@@ -294,13 +294,30 @@ def validate_upload_receipt(receipt, envelope, *, allow_legacy_v2=False):
             required.add("validation_scope")
             if checked.get("validation_scope") != "container_sha256_and_member_catalog":
                 raise PrivacyRejected("完整诊断回执未说明容器校验范围")
+    retention_policy = checked.get("retention_policy")
+    retention_until = checked.get("retention_until")
+    if retention_policy == "auto_delete":
+        if not isinstance(retention_until, str): raise PrivacyRejected("自动删除回执缺少到期时间")
+        try:
+            expiry = datetime.fromisoformat(retention_until.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise PrivacyRejected("自动删除回执到期时间格式不正确") from exc
+        try:
+            invalid_expiry = (expiry.utcoffset() is None
+                              or expiry.astimezone(timezone.utc) - received.astimezone(timezone.utc) != timedelta(days=30))
+        except OverflowError as exc:
+            raise PrivacyRejected("自动删除回执到期时间无效") from exc
+        if invalid_expiry:
+            raise PrivacyRejected("自动删除回执到期时间无效")
+    elif retention_policy == "manual_deletion" and retention_until is None:
+        pass
+    else:
+        raise PrivacyRejected("回执保留策略不符合协议")
     if (set(checked) != required or checked["case_id"] != "feedback-" + envelope["idempotency_key"]
             or checked["repository"] != FEEDBACK_REPOSITORY
             or type(checked["asset_id"]) is not int or not 0 < checked["asset_id"] <= 2 ** 53 - 1
             or checked["consent_policy_version"] != envelope["consent_policy_version"]
             or checked["consent_policy_version"] not in (CONSENT_VERSION, FULL_CONSENT_VERSION, FULL_V3_CONSENT_VERSION)
-            or checked["retention_policy"] != "manual_deletion"
-            or checked["retention_until"] is not None
             or checked["storage_status"] != "stored" or checked["validation_status"] != "validated"):
         raise PrivacyRejected("回执不属于当前批准的 GitHub 反馈")
     return checked

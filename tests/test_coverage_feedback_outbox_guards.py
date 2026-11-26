@@ -157,6 +157,26 @@ class OutboxGuardTests(SFCase):
         self.assertEqual(current["status"], "submitting", "晚到的回执不能替新工人做决定")
         self.assertNotIn("receipt", current)
 
+    def test_cancel_recovery_claim_refuses_a_resolved_row(self):
+        with self.store._db() as db:  # discipline-ok(R5): seed the terminal cancellation state; no public seeding API exists.
+            db.execute("UPDATE outbox SET status='cancelled' WHERE outbox_id=?", (self.row["outbox_id"],))
+        with self.assertRaises(OutboxBusy):
+            self.store._claim_cancel_recovery(self.row["outbox_id"], now=ZONED)  # discipline-ok(R5): direct claim guard is the behavior under test.
+
+    def test_cancel_recovery_claim_decodes_a_persisted_receipt(self):
+        with self.store._db() as db:  # discipline-ok(R5): seed the interrupted row and receipt state for recovery.
+            db.execute("UPDATE outbox SET status='cancel_pending', receipt_json=? WHERE outbox_id=?",
+                       ('{"case_id":"fixture-case"}', self.row["outbox_id"]))
+        claimed = self.store._claim_cancel_recovery(self.row["outbox_id"], now=ZONED)  # discipline-ok(R5): direct recovery claim is the seam under test.
+        self.assertEqual(claimed["receipt"], {"case_id": "fixture-case"})
+
+    def test_cancel_recovery_ignores_a_worker_that_lost_the_row(self):
+        with self.store._db() as db:  # discipline-ok(R5): seed cancel_pending for the recovery loop.
+            db.execute("UPDATE outbox SET status='cancel_pending' WHERE outbox_id=?", (self.row["outbox_id"],))
+        with mock.patch.object(self.store, "_claim_cancel_recovery", side_effect=OutboxBusy("resolved")):
+            self.assertEqual(self.store.recover_interrupted(now=ZONED), 0)
+        self.assertEqual(self.store.get(self.row["outbox_id"])["status"], "cancel_pending")
+
     def test_history_limit_is_a_real_bound_not_a_default(self):
         for bad in (0, -1, 1001, "10", True):
             with self.subTest(limit=bad):
@@ -375,6 +395,35 @@ class HistoryDialogDegradationTests(SFCase):
         dialog.refresh = mock.Mock()
         dialog._cleanup(row["outbox_id"])  # discipline-ok(R5): 清理槽函数本身没有公开调用入口
         outbox.cleanup_local.assert_called_once_with(row["outbox_id"])
+        dialog.refresh.assert_called_once()
+
+    def test_cancel_busy_is_quiet_and_refreshes_history(self):
+        row = {"outbox_id": "b" * 32, "case_id": None, "received_at": None,
+               "updated_at": "later", "app_version": "fixture", "status": "locally_verified",
+               "last_error": None, "archive_size": 1, "archive_sha256_short": "b" * 12}
+        outbox = mock.Mock()
+        outbox.history.return_value = [row]
+        outbox.cancel_local.side_effect = OutboxBusy("busy")
+        dialog = self.dialog(outbox)
+        dialog.refresh()
+        dialog.refresh = mock.Mock()
+        with self.assertNoLogs("sf_feedback_ui", level="WARNING"):
+            dialog._cancel_local(row["outbox_id"])  # discipline-ok(R5): exercise the private slot; no public signal exists in the fake dialog.
+        outbox.cancel_local.assert_called_once_with(row["outbox_id"])
+        dialog.refresh.assert_called_once()
+
+    def test_cancel_failure_is_logged_and_history_refreshes(self):
+        row = {"outbox_id": "c" * 32, "case_id": None, "received_at": None,
+               "updated_at": "later", "app_version": "fixture", "status": "locally_verified",
+               "last_error": None, "archive_size": 1, "archive_sha256_short": "c" * 12}
+        outbox = mock.Mock()
+        outbox.history.return_value = [row]
+        outbox.cancel_local.side_effect = OSError("permission denied")
+        dialog = self.dialog(outbox)
+        dialog.refresh()
+        dialog.refresh = mock.Mock()
+        with self.assertLogs("sf_feedback_ui", level="WARNING"):
+            dialog._cancel_local(row["outbox_id"])  # discipline-ok(R5): exercise the private error slot; no public signal exists in the fake dialog.
         dialog.refresh.assert_called_once()
 
     def test_the_history_entry_stays_quiet_without_a_local_store(self):

@@ -87,6 +87,9 @@ def _fake(prompts=None, messages=None, feedback=None, downloads=None, **override
         "_download_update_background": lambda self, value, **kwargs: (
             downloads.append((value, kwargs)) if downloads is not None else None),
         "_close_update_flow_box": lambda self: None,
+        "_dispose_update_dialog": lambda self, dialog: None,
+        "close_update_flow": lambda self: self._close_update_flow_box(),
+        "finish_update_check": FloatWindow.finish_update_check,
         "_schedule_update_retry": lambda self: None,
     }
     base.update(overrides)
@@ -162,13 +165,16 @@ class ClickNeverSilentTest(SFCase):
         self.assertEqual(feedback, [])
 
     def test_cached_offer_wins_over_inflight_guard(self):
-        """已缓存新版时点击立刻弹确认，哪怕此刻正有检查在飞。"""
-        prompts = []
-        host = _fake(prompts=prompts, _update_pending=_NEW, **_IN_FLIGHT)
+        """已有旧提示且检查在飞时，点击必须等待当前回包并立即显示检查反馈。"""
+        prompts, feedback = [], []
+        host = _fake(prompts=prompts, feedback=feedback, _update_pending=_NEW, **_IN_FLIGHT)
         with patch("stock_float_window.threading.Thread") as thread:
             _check_bg(host, manual=True)
         thread.assert_not_called()
-        self.assertEqual(prompts, [_NEW])
+        self.assertEqual(prompts, [], "未复核的旧清单不能直接展示")
+        self.assertEqual(feedback, ["checking"])
+        _handle_result(host, False, None, None)
+        self.assertEqual(prompts, [])
 
     def test_click_while_downloading_says_what_is_running(self):
         shown = []

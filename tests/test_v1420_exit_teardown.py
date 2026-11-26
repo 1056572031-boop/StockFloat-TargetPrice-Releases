@@ -103,6 +103,11 @@ class ExitTeardownCocoaTest(unittest.TestCase):
 class _Host:
     """够 _close_update_flow_box 读写的属性面，不建真窗口。"""
 
+    def close_update_progress(self):
+        from stock_float_window import FloatWindow
+        return FloatWindow.close_update_progress(self)
+
+
     def __init__(self):
         self._update_check_dialog = None
         self._update_message_dialog = None

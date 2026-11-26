@@ -95,8 +95,14 @@ class WindowMessageRouter:
                 elif kind == "update_prompt_answer":
                     batch.update_prompt_answers.append(data)
                 elif kind == "update_progress":
-                    # 进度只保留本批最后一条，避免落后进度覆盖最新进度。
-                    batch.update_progresses[:] = [data]
+                    # Only coalesce within one task; stale messages cannot erase
+                    # the current task before the UI validates their tokens.
+                    token = data[3] if isinstance(data, (tuple, list)) and len(data) == 4 else None
+                    batch.update_progresses[:] = [
+                        item for item in batch.update_progresses
+                        if not (isinstance(item, (tuple, list)) and
+                                (item[3] if len(item) == 4 else None) is token)]
+                    batch.update_progresses.append(data)
                 elif kind == "update_download":
                     batch.update_downloads.append(data)
         except queue.Empty:

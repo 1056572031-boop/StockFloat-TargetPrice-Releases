@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1838,6 +1838,37 @@ class TestWindowWiring(_WindowWiringSupport, SFCase):
             self._enable()
         self.assertEqual(opened, [1], "被拒之后点「自动隐藏窗口」必须打开系统摄像头设置页")
 
+    def test_failed_monitor_still_holding_camera_can_be_disabled_from_menu(self):
+        self._enable()
+        self.stub.state = sf_presence.STATE_FAILED
+        self.stub.start_state = sf_presence.STATE_FAILED
+        self.stub.stop_defers = True
+        self.stub.has_pending_resources = lambda: True
+        self._menu_action_texts()
+        action = next(a for a in self._menu_actions() if a.data() == "face_guard")
+        action.trigger()
+        self.assertFalse(self._state()["enabled_by_user"],
+                         "仍占用摄像头的失败会话必须能通过菜单关闭")
+        self.assertIn(False, self.stub.stop_waits)
+
+    def test_failed_held_camera_menu_explains_close_and_refreshes(self):
+        self._enable()
+        action = self._menu_guard_item()
+        self.assertTrue(action.isChecked())
+        self.stub.state = sf_presence.STATE_FAILED
+        self.stub.has_pending_resources = lambda: True
+        self.win._refresh_face_guard_menu_check()  # discipline-ok(R5): timer callback, no wait for interval
+        self.assertFalse(action.isChecked(), "失败时不能暗示保护成功")
+        self.assertEqual(action.text(), "自动隐藏窗口（启动失败，点此关闭）")
+        self._menu_action_texts()  # 重新打开菜单也必须显示相同动作
+        action = next(a for a in self._menu_actions() if a.data() == "face_guard")
+        self.assertEqual(action.text(), "自动隐藏窗口（启动失败，点此关闭）")
+        action.trigger()
+        self.assertFalse(self._state()["enabled_by_user"])
+        self.assertIn(False, self.stub.stop_waits)
+        action = self._menu_guard_item()
+        self.assertFalse(action.isChecked())
+
     def test_not_determined_click_does_not_open_settings(self):
         """还没答的走系统弹框，不许顺手打开系统设置（那是另一条路）。"""
         opened = []
@@ -1859,6 +1890,120 @@ class TestWindowWiring(_WindowWiringSupport, SFCase):
         with patch.object(m, "save_config", lambda *a, **k: True):
             self.win._persist_on_exit()                    # discipline-ok(R5): 退出收尾的公开路径是 close()，offscreen 下不保证同步派发 closeEvent
         self.assertIn(True, self.stub.stop_waits, "退出必须真把会话停掉")
+
+    def test_menu_enable_does_not_start_replacement_while_old_stop_pending(self):
+        old_monitor = self.stub
+        old_monitor.stop_defers = True
+        self._enable()
+        self.win.minimize_to_dock()
+        self.assertEqual(self._state()["pending_stops"], 1)
+        old_monitor.stop_defers = True
+        replacement = self._StubMonitor()
+        replacement.state = "off"
+        with patch.object(sf_presence, "FacePresenceMonitor", return_value=replacement):
+            self.win.show()
+            self.win._on_face_guard_toggled(True)  # discipline-ok(R5): 菜单切换的实际槽函数
+        self.assertEqual(self._state()["pending_stops"], 1)
+        self.assertTrue(self._state()["camera_held"])
+        self.assertEqual(replacement.started, 0, "旧会话未停完前不得启动替换会话")
+
+    def test_window_port_reuses_controller_arbiter_and_drains_pending(self):
+        controller = self.win._face_guard_controller  # discipline-ok(R5): verify actual window/controller ownership
+        self.assertIsNone(controller.arbiter)
+        port = self.win._make_face_guard_port()  # discipline-ok(R5): test the real adapter wiring
+        arbiter = port.ensure_arbiter()
+        self.assertIs(port.ensure_arbiter(), arbiter)
+        self.assertIs(controller.arbiter, arbiter)
+        monitor = Mock(stop=Mock(return_value=True))
+        controller.pending_stop.append(monitor)
+        self.win._drain_pending_guard_stops("quit")  # discipline-ok(R5): exercise real lifecycle boundary
+        monitor.stop.assert_called_once_with(wait=True)
+        self.assertEqual(self._state()["pending_stops"], 0)
+
+    def test_disabled_guard_retries_pending_stop_without_starting_camera(self):
+        self._enable()
+        old_monitor = self.stub
+        old_monitor.stop_defers = True
+        self._trigger_guard_item()
+        self.assertFalse(self._state()["enabled_by_user"])
+        self.assertEqual(self._state()["pending_stops"], 1)
+        self.assertTrue(self.win._guard_timer.isActive(),  # discipline-ok(R5): retry driver has no public accessor
+                        "关闭后仍有未完成停止时应继续重试")
+        starts = old_monitor.started
+        old_monitor.stop_defers = False
+        self._poll(1)
+        self.assertEqual(self._state()["pending_stops"], 0)
+        self.assertEqual(old_monitor.started, starts, "关闭状态重试不得重启摄像头")
+        self.assertFalse(self.win._guard_timer.isActive())  # discipline-ok(R5): retry timer must stop after cleanup
+
+    def test_exit_keeps_unfinished_camera_stop_visible_in_diagnostics_and_log(self):
+        self._enable()
+        self.stub.stop = Mock(return_value=False)
+        with patch.object(m, "save_config", return_value=True), \
+                patch("sf_face_guard_controller.log_line") as logged:
+            self.win._persist_on_exit()  # discipline-ok(R5): synchronous exit boundary in offscreen test
+        self.assertTrue(self._state()["camera_held"])
+        self.assertEqual(self._state()["pending_stops"], 1)
+        self.assertTrue(any("未停完" in str(call) for call in logged.call_args_list),
+                        "退出未兑现必须明确留痕")
+
+    def test_screen_off_retries_pending_stop_without_rearming_camera(self):
+        self._enable()
+        self.stub.stop_defers = True
+        with patch.object(sf_presence, "screen_unavailable", return_value=True):
+            self.win._face_guard_screen_probe_at = 0.0  # discipline-ok(R5): reset probe throttle
+            self._poll(1)
+            self.assertEqual(self._state()["pending_stops"], 1)
+            self.stub.stop_waits.clear()
+            self._poll(1)
+            self.assertEqual(self.stub.stop_waits, [False])
+            self.stub.stop_defers = False
+            self._poll(1)
+            self.assertEqual(self._state()["pending_stops"], 0)
+            self.assertFalse(self._state()["camera_held"])
+            self.assertTrue(self.win._guard_timer.isActive())  # discipline-ok(R5): wakeup driver
+
+    def test_hidden_pending_stop_retries_without_blocking_ui(self):
+        self._enable()
+        old_monitor = self.stub
+        old_monitor.stop_defers = True
+        self.win.minimize_to_dock()
+        self.assertEqual(self._state()["pending_stops"], 1)
+        old_monitor.stop_waits.clear()
+        self._poll(1)
+        self.assertEqual(old_monitor.stop_waits, [False], "隐藏后补停必须非阻塞")
+        old_monitor.stop_defers = False
+        self._poll(1)
+        self.assertEqual(self._state()["pending_stops"], 0)
+
+    def test_disabled_pending_stop_retry_is_nonblocking(self):
+        self._enable()
+        old_monitor = self.stub
+        old_monitor.stop_defers = True
+        self._trigger_guard_item()
+        old_monitor.stop_waits.clear()
+        self._poll(1)
+        self.assertEqual(old_monitor.stop_waits, [False], "关闭后补停不得在主线程等待")
+
+    def test_late_guard_tick_after_exit_does_not_restart_timer_or_camera(self):
+        self._enable()
+        self.stub.stop = Mock(return_value=False)
+        with patch.object(m, "save_config", return_value=True):
+            self.win._persist_on_exit()  # discipline-ok(R5): synchronous exit boundary
+        self.assertFalse(self.win._guard_timer.isActive())  # discipline-ok(R5): timer lifecycle
+        self.win._face_guard_pref = False  # discipline-ok(R5): model late callback after user disables guard
+        starts = self.stub.started
+        self._poll(1)
+        self.assertFalse(self.win._guard_timer.isActive(), "退出后的晚到回调不能重新启动定时器")  # discipline-ok(R5): timer lifecycle
+        self.assertEqual(self.stub.started, starts)
+
+    def test_exit_pending_stop_never_restarts_timer(self):
+        self._enable()
+        self.stub.stop = Mock(return_value=False)
+        with patch.object(m, "save_config", return_value=True):
+            self.win._persist_on_exit()  # discipline-ok(R5): synchronous exit boundary
+        self.assertEqual(self._state()["pending_stops"], 1)
+        self.assertFalse(self.win._guard_timer.isActive())  # discipline-ok(R5): actual timer lifecycle
 
     def test_unfinished_stop_is_replayed_at_exit(self):
         """S1 第二处：`stop(wait=False)` 返回 False 是"**还没停**"，不许就地丢弃。

@@ -204,7 +204,7 @@ def stage_merge(repo: Path, merge_tree: Path, merge_branch: str, base_sha: str, 
 
 
 def fast_forward(repo: Path, base: str, base_sha: str, merge_sha: str) -> None:
-    require(git(repo, "rev-parse", "--abbrev-ref", "HEAD")[1] == base,
+    require(git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", ok=(0, 1))[1] == base,
             "主树当前已切到别的分支：不快进，回去核对现场")
     require(rev(repo, base) == base_sha, "主线 %s 在合并期间前进了：不快进，回去重新集成、审查、过关卡" % base)
     changed = set(filter(None, subprocess.run(
@@ -225,7 +225,7 @@ def land(repo: Path, base: str, branch: str, tree: Path, reviewed: str, merge_me
     except git_identity.GitIdentityError as exc:
         raise LandError(str(exc)) from exc
     require(main_branch == base, "主树当前不在 %s 上" % base)
-    require(git(tree, "rev-parse", "--abbrev-ref", "HEAD")[1] == branch, "任务树 %s 当前不在 %s 上" % (tree, branch))
+    require(git(tree, "symbolic-ref", "--quiet", "--short", "HEAD", ok=(0, 1))[1] == branch, "任务树 %s 当前不在 %s 上" % (tree, branch))
     require(not dirty_paths(tree), "任务树还有未提交的改动：先提交（走完整关卡）并审查，再来落地")
     tip = rev(tree, "HEAD")
     require(len(reviewed) >= MIN_SHA and tip.startswith(reviewed),

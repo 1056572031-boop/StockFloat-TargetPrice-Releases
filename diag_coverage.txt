@@ -27,10 +27,23 @@
 
 # "这个模块坏了用户会说什么" 的答案必须落到具体通路；纯函数/维护端模块才可申报 skip。
 
+# 待发布的强制更新诊断由 sf_update_flow 的公开快照、sf_update_cache 的只读缓存快照和
+# sf_update_controller 的生命周期计数统一经 runtime.json.update 导出；不新增独立诊断文件。
 # 本版更新进度提示、目标价读取与目标价输入保护只在既有函数体内增加分支和提示文字，不新增常驻运行态；
 # 下载与更新状态仍由 runtime.json 的 update 分组输出，目标价读取延后与队列积压仍由 targets.json 的 tick_queue 与既有节流日志输出。
 # stock_float_window、target_panel、sf_quote_delivery 的运行态已由主窗诊断快照自动带出，闸门判它们"已在包里"，所以不写 skip。
 # sf_quote 本版只新增纯函数 target_limit_prices、is_no_daily_limit_market、_declares_no_limit（目标价涨跌停边界与市场判定）并在解析处不再读港股第 47/48 位，无模块级可变状态；主备源状态仍由既有 quote_source 等诊断通路输出，已在诊断闭包内，所以不写 skip。
+version 1.4.120
+# 本版更新链、分时图、摄像头守卫和本机反馈撤回改动均由现有运行态诊断通路覆盖：更新状态经 runtime.json.update，分时与目标价状态经主窗/targets.json，摄像头状态经 face_guard 运行态，反馈队列与失败状态经 feedback.json 和 feedback_ui.json；服务端 retention Worker 不由客户端诊断包加载，线上部署另行验收。
+skip sf_feedback_capture 主动反馈采集与上传前校验是请求级处理，无独立常驻状态；失败由 feedback.json 的队列状态、feedback_ui.json 的阶段信息和 debug.log 留痕。
+skip sf_feedback_transport HTTPS 发送与回执校验无独立常驻状态；成功/失败、错误类别和队列结果由 feedback.json 的 queue 与 last_errors 输出，不导出地址、正文或凭据。
+skip sf_feedback_receiver 本机 Unix socket 收件器只供维护端或隔离测试使用，不由装机客户端启动；收件结果由其本地回执和维护端报告记录，不属于客户端诊断包。
+skip sf_system_alert 弹窗是一次性同步动作，无独立常驻状态；原生桥接失败由 debug.log 与 last_failures.json 留痕，更新状态仍由 runtime.json.update 输出。
+skip sf_update_cache 更新缓存只保存下载身份、分段和校验状态；这些状态由 runtime.json.update 的缓存摘要输出，不新增独立诊断文件。
+skip sf_update_policy 更新策略是无副作用纯规则；最终策略状态由 runtime.json.update 输出，不持有独立运行态。
+skip sf_update_policy_defaults 仅保存更新阈值常量，无运行时可变状态；阈值生效后的策略由 runtime.json.update 输出。
+skip sf_window_message_router 无持久运行态，仅按代码过滤并合并当前队列消息；最终更新、滞后和分时状态由 runtime.json.update、runtime.json.minute 与 debug.log 输出。
+
 version 1.4.119
 skip sf_git_identity 发布工具只读取当前 Git 分支与提交用于发布前身份核验，不由客户端加载，也不持有用户运行态。
 

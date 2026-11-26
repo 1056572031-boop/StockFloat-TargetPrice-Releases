@@ -1381,13 +1381,16 @@ class TestFeedbackWorkerAllowlistParity(SFCase):
         from sf_feedback_ui import _failure_kind
         rejections = self._worker_rejections()
         self.assertGreaterEqual(len(rejections), 60, "解析失效：读到的拒绝码太少，对账不能算通过")
-        waiting = {"submission_in_progress", "lease_superseded"}
+        waiting = {"submission_in_progress", "lease_superseded", "retention_cleanup_in_progress",
+                   "retention_cleanup_lease_lost"}
         # 这些是“服务端自己或上游出了问题”的 503，或请求太忙：客户端应当允许重试。
         for code, status in sorted(rejections.items()):
             kind = _failure_kind({"server_code": code, "http_status": status})
             if code in ("case_budget", "inbox_asset_capacity", "inbox_capacity"):
                 self.assertEqual(kind, "full", code)
-            elif code in ("identity_conflict", "remote_binding", "request_headers") or status in (413, 422):
+            elif code in ("identity_conflict", "remote_binding", "request_headers", "case_deleted",
+                          "retention_case_not_found", "retention_intent_conflict", "retention_case_deleted",
+                          "retention_receipt_conflict") or status in (413, 422):
                 self.assertEqual(kind, "rejected", "%s(%s) 内容永远过不了，却被归成可重试" % (code, status))
             elif code in waiting or status in (400, 429, 503):
                 self.assertEqual(kind, "retry", "%s(%s) 是暂时的，却被归成永久失败" % (code, status))

@@ -19,10 +19,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from nacl.signing import SigningKey
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_identity import MANIFEST_PATH, REPO, TAG  # noqa: E402
+from release_sequence import (load_ledger, mark_published,
+                              verify as verify_release_sequence,
+                              verify_rollback as verify_rollback_sequence)  # noqa: E402
 # v1.4.55 改名后走新清单；旧清单 `StockFloatTargetPrice-update.json` 留在仓库里
 # 冻结在 1.4.54 —— 已装旧版的客户端仍指它，删掉只会让旧版报错，留着不动最安全。
 API_ROOT = "https://api.github.com/repos/" + REPO
@@ -41,6 +47,43 @@ UPLOAD_TIMEOUT_DEFAULT = 900.0
 API_TIMEOUT_DEFAULT = 30.0
 
 
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def newer_utc_now(live_published_at):
+    candidate = datetime.now(timezone.utc).replace(microsecond=0)
+    live = _utc_timestamp(live_published_at)
+    if candidate <= live:
+        candidate = live + timedelta(seconds=1)
+    return candidate.isoformat().replace("+00:00", "Z")
+
+
+def canonical(manifest):
+    payload = dict(manifest)
+    payload.pop("signature", None)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+
+
+def resign_manifest(manifest, signing_key, published_at):
+    stamped = dict(manifest)
+    stamped["published_at"] = published_at
+    stamped.pop("signature", None)
+    stamped["signature"] = {
+        "algorithm": "ed25519",
+        "value": base64.b64encode(signing_key.sign(canonical(stamped)).signature).decode("ascii"),
+    }
+    return stamped
+
+
+def ensure_published_at_forward(candidate, live):
+    candidate_at = _utc_timestamp(candidate.get("published_at"))
+    live_at = _utc_timestamp(live.get("published_at"))
+    if candidate_at <= live_at:
+        raise SystemExit("候选 published_at 必须晚于线上清单")
+
+
 def compare_release_versions(left: str, right: str) -> int:
     """Compare strict X.Y.Z release versions without a packaging dependency."""
     try:
@@ -53,26 +96,159 @@ def compare_release_versions(left: str, right: str) -> int:
     return (left_parts > right_parts) - (left_parts < right_parts)
 
 
-def ensure_forward_version(candidate: str, live: str, *, resume: bool) -> None:
+def ensure_forward_version(candidate: str, live: str, *, resume: bool,
+                           allow_same_version: bool = False) -> None:
     """Refuse to move the live pointer backwards or repeat a version unintentionally."""
     relation = compare_release_versions(candidate, live)
     if relation < 0:
         raise SystemExit("候选版本 %s 低于线上版本 %s，拒绝回退发布" % (candidate, live))
-    if relation == 0 and not resume:
+    if relation == 0 and not (resume or allow_same_version):
         raise SystemExit("候选版本 %s 与线上版本相同；只有 --resume 才允许续做" % candidate)
 
 
-def live_manifest_version(token: str) -> str:
-    """Read the authoritative current manifest before any release write."""
+def rollback_ledger_path(value, source_root):
+    default = Path(source_root) / "tools" / "release_sequence_ledger.json"
+    if value is not None:
+        raise SystemExit("回滚必须使用默认账本，不允许替换默认账本")
+    return default
+
+
+def ensure_release_sequence(candidate, live, *, resume: bool):
+    """Reject a release sequence regression before any network write."""
+    if not isinstance(candidate, dict) or not isinstance(live, dict):
+        raise SystemExit("候选与线上清单必须是对象")
+    candidate_sequence = candidate.get("release_sequence")
+    live_sequence = live.get("release_sequence")
+    if type(candidate_sequence) is not int or candidate_sequence < 1:
+        raise SystemExit("候选清单缺少有效 release_sequence")
+    if live_sequence is None:
+        return
+    if type(live_sequence) is not int or live_sequence < 1:
+        raise SystemExit("线上清单缺少有效 release_sequence")
+    if candidate_sequence < live_sequence:
+        raise SystemExit("候选序号 %d 低于线上序号 %d，拒绝回退发布" %
+                         (candidate_sequence, live_sequence))
+    if candidate_sequence == live_sequence:
+        same_version_promotion = (candidate.get("version") == live.get("version")
+                                  and candidate.get("stage") == "stable"
+                                  and live.get("stage") == "beta")
+        candidate_digest = ((candidate.get("archive") or {}).get("sha256"))
+        live_digest = ((live.get("archive") or {}).get("sha256"))
+        if candidate.get("version") != live.get("version"):
+            raise SystemExit("同序号候选版本必须与线上版本一致，拒绝覆盖")
+        if candidate_digest != live_digest:
+            raise SystemExit("同序号候选摘要不同，现有发布流程拒绝覆盖")
+        if not (resume or same_version_promotion):
+            raise SystemExit("候选序号 %d 与线上相同；只有同版本 Beta→Stable 或 --resume 才允许" %
+                             candidate_sequence)
+
+
+def _utc_timestamp(value):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise SystemExit("published_at 必须是 UTC Z 时间戳")
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SystemExit("published_at 不是有效时间戳") from exc
+
+
+def prepare_rollback(candidate, live, ledger, rollback_to, reason, *, now):
+    if not isinstance(reason, str) or not reason.strip():
+        raise SystemExit("--rollback-to 必须提供非空 --reason")
+    if candidate.get("version") != rollback_to:
+        raise SystemExit("候选版本必须与 --rollback-to 完全一致")
+    records = ledger.get("releases") if isinstance(ledger, dict) else None
+    exact = [record for record in records or []
+             if isinstance(record, dict)
+             and record.get("version") == candidate.get("version")
+             and record.get("sequence") == candidate.get("release_sequence")]
+    if len(exact) != 1:
+        raise SystemExit("回滚候选必须有账本完全匹配记录")
+    if _utc_timestamp(now) <= _utc_timestamp(live.get("published_at")):
+        raise SystemExit("回滚 published_at 必须晚于线上清单")
+    stamped = dict(candidate)
+    stamped["published_at"] = now
+    stamped["rollback_reason"] = reason.strip()
+    return stamped
+
+
+def verify_manifest_signature(candidate):
+    """Verify the final manifest against the public key shipped to clients."""
+    from nacl.signing import VerifyKey
+    from sf_constants import UPDATE_PUBLIC_KEY_B64
+    try:
+        signature = candidate["signature"]
+        if not isinstance(signature, dict) or signature.get("algorithm") != "ed25519":
+            raise ValueError("unsupported signature")
+        VerifyKey(base64.b64decode(UPDATE_PUBLIC_KEY_B64, validate=True)).verify(
+            canonical(candidate), base64.b64decode(signature["value"], validate=True))
+    except Exception as exc:
+        raise SystemExit("更新清单签名无效") from exc
+
+
+def validate_rollback_publication(candidate, live, ledger, rollback_to, reason):
+    """Validate the final quality-bound rollback manifest without changing bytes."""
+    expected = prepare_rollback(candidate, live, ledger, rollback_to, reason,
+                                now=candidate.get("published_at"))
+    if expected != candidate:
+        raise SystemExit("回滚清单须先写入回滚原因、重新签名并绑定质量证据")
+    from nacl.signing import VerifyKey
+    from sf_constants import UPDATE_PUBLIC_KEY_B64
+    try:
+        signature = candidate["signature"]
+        if signature.get("algorithm") != "ed25519":
+            raise ValueError("unsupported signature")
+        VerifyKey(base64.b64decode(UPDATE_PUBLIC_KEY_B64, validate=True)).verify(
+            canonical(candidate), base64.b64decode(signature["value"], validate=True))
+    except Exception as exc:
+        raise SystemExit("回滚清单签名无效") from exc
+
+
+def live_manifest_snapshot(token: str):
+    """Read metadata and the checked Contents SHA in one response."""
     payload = read_contents_main(token)
     try:
-        data = json.loads(base64.b64decode(payload["content"]))
+        content = base64.b64decode(payload["content"])
+        data = json.loads(content)
     except (KeyError, ValueError, TypeError) as exc:
         raise SystemExit("线上清单内容无法解码，拒绝发布") from exc
+    if not isinstance(data, dict):
+        raise SystemExit("线上清单必须是对象，拒绝发布")
+    sha = payload.get("sha")
+    if not isinstance(sha, str) or not sha:
+        raise SystemExit("线上清单 SHA 无效，拒绝发布")
+    return data, sha, content
+
+
+def live_manifest_metadata(token: str) -> dict:
+    """Read the authoritative current manifest before any release write."""
+    return live_manifest_snapshot(token)[0]
+
+
+def live_manifest_version(token: str) -> str:
+    """Read the authoritative current manifest version before any release write."""
+    data = live_manifest_metadata(token)
     version = str(data.get("version") or "")
     if not version:
         raise SystemExit("线上清单缺少有效 version，拒绝发布")
     return version
+
+
+def verify_candidate_sequence(archive, manifest, metadata, *, ledger_path=None, source_root=None):
+    """Verify source, frozen app, signed manifest, and ZIP before credentials."""
+    try:
+        source_root = Path(source_root or SOURCE_ROOT)
+        ledger_path = Path(ledger_path or source_root / "tools" / "release_sequence_ledger.json")
+        app = source_root / "dist" / "Skyrocket.app"
+        if not app.is_dir():
+            raise ValueError("dist/ 中没有冻结 Skyrocket.app，无法四处核验")
+        result = verify_release_sequence(ledger_path, source_root / "sf_constants.py", app, manifest, archive)
+        if result["version"] != metadata.get("version") or result["release_sequence"] != metadata.get("release_sequence"):
+            raise ValueError("签名清单与四处核验结果不一致")
+        return result
+    except ValueError as exc:
+        raise SystemExit("发布前序号核验失败：%s" % exc) from exc
 
 
 def _timeout_from_env(name, default, floor):
@@ -178,6 +354,7 @@ def quality_module():
     return module
 
 
+
 def publication_snapshot(archive, manifest, notes):
     """凭据及网络之前核验；返回之后发布所需的不可变字节。"""
     try:
@@ -193,11 +370,24 @@ def publication_snapshot(archive, manifest, notes):
         quality = quality_module()
         record = quality.load(record_path)
         evidence_manifest = record_path.with_suffix(".manifest.json")
+        published_identity: tuple[str, int] | None = None
+        if (("--resume" in sys.argv[1:] or metadata.get("stage") == "stable")
+                and isinstance(metadata.get("version"), str)
+                and type(metadata.get("release_sequence")) is int
+                and metadata["release_sequence"] > 0):
+            published_identity = (metadata["version"], metadata["release_sequence"])
         errors = quality.verify_release_candidate(
-            SOURCE_ROOT, record, record_path.parent, evidence_manifest)
+            SOURCE_ROOT, record, record_path.parent, evidence_manifest,
+            published_identity=published_identity)
         if errors:
             raise ValueError("正式发布资格未通过：" + "; ".join(errors))
         stored = quality.load(evidence_manifest)
+        manifest_role = stored["release_artifacts"]["roles"]["ota_manifest"]
+        if quality.resolve_reference(record_path.parent, manifest_role["path"]) != manifest.resolve():
+            raise ValueError("更新清单路径未绑定到质量证据")
+        if (manifest_role.get("kind") != "file" or
+                manifest_role.get("content_sha256") != hashlib.sha256(manifest_bytes).hexdigest()):
+            raise ValueError("更新清单字节与质量绑定不一致")
         matches = [item for item in stored["artifacts"]
                    if quality.resolve_reference(record_path.parent, item["path"]) == archive.resolve()]
         if len(matches) != 1:
@@ -396,9 +586,9 @@ def reuse_uploaded_archive(token, release, archive, archive_bytes):
     return existing[0]
 
 
-def upload_archive(token, release, archive, archive_bytes, resume=False):
+def upload_archive(token, release, archive, archive_bytes, resume=False, reuse_existing=False):
     if any(asset.get("name") == archive.name for asset in release.get("assets", [])):
-        if not resume:
+        if not (resume or reuse_existing):
             raise SystemExit("固定 Release 已有同名版本 ZIP，拒绝覆盖")
         return reuse_uploaded_archive(token, release, archive, archive_bytes)
     request(upload_url(release["id"], archive.name), token, method="POST",
@@ -438,17 +628,13 @@ def manifest_commit_payload(manifest_bytes, existing_sha):
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def publish_manifest_pointer(token, manifest_bytes):
-    """通过 Contents API 单次提交固定清单，提交前的 ZIP 已可下载并经验证。"""
+def publish_manifest_pointer(token, manifest_bytes, *, expected_sha):
+    """Use the SHA checked with the publication decision, never a newer unchecked SHA."""
     url = contents_url()
-    try:
-        existing_sha = read_contents_main(token).get("sha")
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            raise
-        existing_sha = None
+    if expected_sha is not None and (not isinstance(expected_sha, str) or not expected_sha):
+        raise SystemExit("前置清单 SHA 无效，拒绝写入")
     request(url, token, method="PUT",
-            data=manifest_commit_payload(manifest_bytes, existing_sha))
+            data=manifest_commit_payload(manifest_bytes, expected_sha))
     payload = read_contents_main(token)
     try:
         read_back = base64.b64decode(payload["content"])
@@ -478,18 +664,11 @@ def publish_legacy_manifest(token, release, manifest_bytes):
 RAW_MANIFEST_URL = ("https://raw.githubusercontent.com/" + REPO + "/main/" + MANIFEST_PATH)
 
 
-def readback_verdict(repo_manifest, expected_version, raw_manifest=None):
-    """发布后读回的判定（纯函数，可离线自检）：仓库里的清单必须是本版。
+def readback_verdict(repo_manifest, expected_version, raw_manifest=None, expected=None):
+    """Require repository readback to match version and supplied manifest fields.
 
-    为什么需要这一步（2026-10-09 实测）：发布器原先只 `print("published_...")` 就算完，
-    而**用户侧那条 URL 是 raw.githubusercontent，有 CDN 缓存**。v1.4.47 发完我直读 raw
-    仍是 1.4.46，连着读了三次都一样，一度判成"报了成功其实没生效"；绕开 CDN 用 API 看仓库，
-    里面早就已经是 1.4.47。也就是说：没有权威读回时，**成功与失败看起来一模一样**，
-    复核的人只能靠猜 —— 这正是本仓反复在防的那类"关卡自己说不清话"。
-    所以这里分两件事说：仓库侧决定发没发成（必须等于本版）；raw 滞后只影响"用户几秒/几分钟
-    后才看得见"，如实报出来但不算失败。
-
-    返回 (是否成功, 要打印的行)。
+    The raw endpoint may legitimately lag behind Contents because of CDN caching; it is
+    reported but does not override the authoritative repository result.
     """
     lines, ok = [], True
     repo_ver = (repo_manifest or {}).get("version")
@@ -499,6 +678,23 @@ def readback_verdict(repo_manifest, expected_version, raw_manifest=None):
                      % (repo_ver, expected_version))
     else:
         lines.append("   读回通过：仓库清单 version=%s（与本轮一致）" % repo_ver)
+    if expected is not None:
+        for key in ("release_sequence", "published_at"):
+            if repo_manifest.get(key) != expected.get(key):
+                ok = False
+                lines.append("!! 仓库里的清单 %s=%r，期望 %r" %
+                             (key, repo_manifest.get(key), expected.get(key)))
+        expected_archive = expected.get("archive")
+        repo_archive = repo_manifest.get("archive")
+        if not isinstance(expected_archive, dict) or not isinstance(repo_archive, dict):
+            ok = False
+            lines.append("!! 仓库里的清单 archive 不完整")
+        else:
+            for key in ("sha256", "size"):
+                if repo_archive.get(key) != expected_archive.get(key):
+                    ok = False
+                    lines.append("!! 仓库里的清单 archive.%s=%r，期望 %r" %
+                                 (key, repo_archive.get(key), expected_archive.get(key)))
     if ok and raw_manifest is not None and raw_manifest.get("version") != expected_version:
         lines.append("   注：raw 侧暂时还是 %r —— 是 CDN 缓存滞后，通常几分钟内自愈；"
                      "客户端下一次检查更新就会拿到新版，不需要重发"
@@ -540,7 +736,8 @@ def verify_live_manifest(token, expected_version, expected_bytes=None):
     raw = json.loads(raw_bytes.decode("utf-8")) if raw_bytes is not None else None
     if expected_bytes is not None and repo_bytes != expected_bytes:
         raise SystemExit("发布读回未通过：Contents 清单原始字节不一致，不宣布发版成功")
-    ok, lines = readback_verdict(repo, expected_version, raw)
+    expected = json.loads(expected_bytes.decode("utf-8")) if expected_bytes is not None else None
+    ok, lines = readback_verdict(repo, expected_version, raw, expected)
     for line in lines:
         print(line)
     if not ok:
@@ -702,16 +899,60 @@ def check_version_main(argv: list[str]) -> int:
     try:
         candidate = json.loads(args.manifest.read_text(encoding="utf-8"))
         candidate_version = str(candidate.get("version") or "")
+        candidate_sequence = candidate.get("release_sequence")
+        if type(candidate_sequence) is not int or candidate_sequence < 1:
+            raise SystemExit("候选清单缺少有效 release_sequence")
     except (OSError, ValueError, TypeError) as exc:
         raise SystemExit("候选清单无法读取：%s" % exc) from exc
     token = github_token()
-    live = live_manifest_version(token)
-    ensure_forward_version(candidate_version, live, resume=False)
+    live_metadata = live_manifest_metadata(token)
+    live = str(live_metadata.get("version") or "")
+    if not live:
+        raise SystemExit("线上清单缺少有效 version，拒绝发布")
+    ensure_forward_version(candidate_version, live, resume=False,
+                           allow_same_version=(candidate_version == live
+                                               and candidate.get("stage") == "stable"
+                                               and live_metadata.get("stage") == "beta"))
+    ensure_release_sequence(candidate, live_metadata, resume=False)
+    ensure_published_at_forward(candidate, live_metadata)
     print("版本前置检查通过：候选 %s 高于线上 %s" % (candidate_version, live))
     return 0
 
 
+def prepare_rollback_main(argv):
+    """Create final rollback bytes locally before quality evidence is bound."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prepare-rollback", action="store_true", required=True)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--rollback-to", required=True)
+    parser.add_argument("--reason", required=True)
+    parser.add_argument("--published-at", required=True)
+    args = parser.parse_args(argv)
+    ledger_path = SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+    verify_rollback_sequence(ledger_path, args.manifest, args.archive)
+    candidate = json.loads(args.manifest.read_bytes())
+    if candidate.get("version") != args.rollback_to or not args.reason.strip():
+        raise SystemExit("回滚版本或原因无效")
+    _utc_timestamp(args.published_at)
+    key_path = SOURCE_ROOT / ".private_tools" / "update_signing_key.txt"
+    key = SigningKey(base64.b64decode(key_path.read_text(encoding="ascii").strip(), validate=True))
+    from sf_constants import UPDATE_PUBLIC_KEY_B64
+    if bytes(key.verify_key) != base64.b64decode(UPDATE_PUBLIC_KEY_B64, validate=True):
+        raise SystemExit("回滚签名密钥与客户端公钥不一致")
+    candidate["rollback_reason"] = args.reason.strip()
+    signed = resign_manifest(candidate, key, args.published_at)
+    with args.output.open("x", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(json.dumps(signed, ensure_ascii=False, indent=2) + "\n")
+    print("回滚清单已本地准备；发布前必须用质量工具绑定该最终文件")
+    return 0
+
+
 def main():
+    if "--prepare-rollback" in sys.argv[1:]:
+        return prepare_rollback_main(sys.argv[1:])
     if "--self-test" in sys.argv[1:]:
         return self_test()
     if "--check-version" in sys.argv[1:]:
@@ -722,9 +963,18 @@ def main():
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--resume", action="store_true",
                         help="线上已有同名版本 ZIP 且字节与本地快照一致时复用它接着做；不一致仍拒绝覆盖")
+    parser.add_argument("--rollback-to",
+                        help="显式回滚到已分配的版本；必须同时提供 --reason")
+    parser.add_argument("--reason", help="显式回滚原因")
+    parser.add_argument("--ledger", type=Path,
+                        help="发布序号账本路径（默认使用源码树 tools/release_sequence_ledger.json）")
     parser.add_argument("--public-assets", type=Path,
                         help="已上传公开资产的本地快照目录；用于 OTA 指针切换前的四资产读回")
     args = parser.parse_args()
+    if args.rollback_to and not args.reason:
+        raise SystemExit("--rollback-to 必须同时提供 --reason")
+    if args.reason and not args.rollback_to:
+        raise SystemExit("--reason 只能与 --rollback-to 一起使用")
     up, api = resolve_timeouts()
     print("   超时：版本 ZIP 上传 %.0f 秒（%s，默认 %.0f）/ 元数据与读回 %.0f 秒（%s）"
           % (up, UPLOAD_TIMEOUT_ENV, UPLOAD_TIMEOUT_DEFAULT, api, API_TIMEOUT_ENV))
@@ -746,22 +996,90 @@ def main():
         public_assets = public_asset_snapshot(args.public_assets, expected_version, archives[0].name)
     archive = archives[0]
     archive_bytes, manifest_bytes, expected_version = publication_snapshot(archive, manifest, args.notes)
+    metadata = json.loads(manifest_bytes)
+    verify_manifest_signature(metadata)
+    if type(metadata.get("release_sequence")) is not int or metadata["release_sequence"] < 1:
+        raise SystemExit("候选清单缺少有效 release_sequence")
+    if args.rollback_to:
+        try:
+            verify_rollback_sequence(rollback_ledger_path(args.ledger, SOURCE_ROOT), manifest, archive)
+        except ValueError as exc:
+            raise SystemExit("回滚前身份核验失败：%s" % exc) from exc
+    else:
+        verify_candidate_sequence(archive, manifest, metadata, ledger_path=args.ledger,
+                                  source_root=SOURCE_ROOT)
     if public_assets is not None and archive_bytes != public_assets[archive.name]:
         raise SystemExit("公开资产快照与版本 ZIP 核验字节不一致")
-    metadata = json.loads(manifest_bytes)
+    default_ledger = SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+    if args.ledger is not None:
+        raise SystemExit("发布必须使用默认账本，不允许替换默认账本")
+    identity_records = [item for item in load_ledger(default_ledger)["releases"]
+                        if item["version"] == expected_version and
+                        item["sequence"] == metadata["release_sequence"]]
+    if len(identity_records) != 1 or identity_records[0].get("status") not in ("allocated", "published"):
+        raise SystemExit("发布账本身份不存在或已撤回")
+    published_identity = identity_records[0].get("status") == "published"
     notes = metadata["notes"]
     token = github_token()
     release = load_release(token)
-    live_version = live_manifest_version(token)
-    ensure_forward_version(expected_version, live_version, resume=args.resume)
-    asset = upload_archive(token, release, archive, archive_bytes, resume=args.resume)
+    live_metadata, checked_live_sha, live_bytes = live_manifest_snapshot(token)
+    live_version = str(live_metadata.get("version") or "")
+    if not live_version:
+        raise SystemExit("线上清单缺少有效 version，拒绝发布")
+    if args.rollback_to:
+        ledger_path = rollback_ledger_path(args.ledger, SOURCE_ROOT)
+        validate_rollback_publication(metadata, live_metadata, load_ledger(ledger_path),
+                                      args.rollback_to, args.reason)
+    else:
+        ensure_forward_version(expected_version, live_version, resume=args.resume,
+                               allow_same_version=(
+                                   metadata.get("version") == live_metadata.get("version")
+                                   and metadata.get("stage") == "stable"
+                                   and live_metadata.get("stage") == "beta"))
+        if "release_sequence" in metadata:
+            ensure_release_sequence(metadata, live_metadata, resume=args.resume)
+            if not (args.resume and metadata == live_metadata):
+                ensure_published_at_forward(metadata, live_metadata)
+    reuse_existing = bool(args.rollback_to or (
+        metadata.get("version") == live_metadata.get("version")
+        and metadata.get("stage") == "stable"
+        and live_metadata.get("stage") == "beta"))
+    if published_identity:
+        if reuse_existing and not args.rollback_to:
+            immutable_candidate = {key: value for key, value in metadata.items()
+                                   if key not in ("stage", "published_at", "signature")}
+            immutable_live = {key: value for key, value in live_metadata.items()
+                              if key not in ("stage", "published_at", "signature")}
+            if immutable_candidate != immutable_live:
+                raise SystemExit("Beta 转稳定只允许改变阶段、发布时间和签名")
+        if not (args.resume or reuse_existing):
+            raise SystemExit("已发布身份只允许续做或 Beta 转稳定")
+        if (metadata.get("version") != live_metadata.get("version") or
+                metadata.get("release_sequence") != live_metadata.get("release_sequence") or
+                (metadata.get("archive") or {}).get("sha256") !=
+                (live_metadata.get("archive") or {}).get("sha256")) and not args.rollback_to:
+            raise SystemExit("已发布身份与线上清单不一致")
+        if not any(item.get("name") == archive.name for item in release.get("assets", [])):
+            raise SystemExit("已发布身份的 ZIP 缺失，拒绝重传")
+    if (args.resume and not args.rollback_to and not reuse_existing and
+            metadata.get("version") == live_metadata.get("version") and
+            metadata.get("release_sequence") == live_metadata.get("release_sequence") and
+            manifest_bytes != live_bytes):
+        raise SystemExit("已发布续做的清单必须与线上清单完全一致")
+    current_records = [item for item in load_ledger(default_ledger)["releases"]
+                       if item["version"] == expected_version and
+                       item["sequence"] == metadata["release_sequence"]]
+    if len(current_records) != 1 or current_records[0].get("status") not in ("allocated", "published"):
+        raise SystemExit("发布账本身份在写入前已变化，拒绝发布")
+    asset = upload_archive(token, release, archive, archive_bytes,
+                           resume=args.resume, reuse_existing=reuse_existing)
     if public_assets is not None:
         release = load_release(token)
         verify_public_release_assets(release, expected_version, public_assets, token)
     # Bind the public release page before exposing the new manifest to clients.
     release = update_release_body(token, release, notes)
     # 新客户端的 raw 清单先切换：一旦它可见，ZIP 与公开说明已存在且已验证。
-    publish_manifest_pointer(token, manifest_bytes)
+    publish_manifest_pointer(token, manifest_bytes, expected_sha=checked_live_sha)
     # 旧客户端仍从固定 Release 取清单；最后才替换这一枚小清单，不触碰历史 ZIP。
     publish_legacy_manifest(token, load_release(token), manifest_bytes)
     print("published_archive=%s" % asset["name"])
@@ -769,6 +1087,8 @@ def main():
     print("published_legacy_manifest=%s" % MANIFEST_PATH)
     # 打印不等于生效：必须绕开 CDN 读回仓库里的那一份，版本对不上就中止发版。
     verify_live_manifest(token, expected_version, manifest_bytes)
+    mark_published(SOURCE_ROOT / "tools" / "release_sequence_ledger.json",
+                   expected_version, metadata["release_sequence"])
     print("   线上清单读回一致，发版可以宣布成功")
 
 

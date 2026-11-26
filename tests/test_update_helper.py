@@ -21,6 +21,7 @@ import json
 import hashlib
 import os
 import pathlib
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,13 @@ def _dead_pid() -> str:
 
 # 助手在每一站的"停站理由"（result.json 的 message）。测试断言的是站名，不是行号。
 STATION_OK_UNTIL_SIGNATURE = "new_app_signature_invalid"
+
+
+def _add_release_sequence(app: pathlib.Path, sequence: int) -> None:
+    plist_path = app / "Contents" / "Info.plist"
+    payload = plistlib.loads(plist_path.read_bytes())
+    payload["SkyrocketReleaseSequence"] = sequence
+    plist_path.write_bytes(plistlib.dumps(payload))
 
 
 def _make_app(parent: pathlib.Path, name: str = APP_NAME, version: str = "9.9.9") -> pathlib.Path:
@@ -113,7 +121,7 @@ class _HelperCase(SFCase):
             mutate(app)
         return _zip(app, self.work / "ota.zip")
 
-    def run_helper(self, archive, target=None):
+    def run_helper(self, archive, target=None, sequence=None, size=None):
         """跑**真助手**，返回它停在的那一站（result.json 的 message）。
 
         --pid 用一个必然不存在的号，助手立刻认为主程序已退出，不等 20 秒。
@@ -121,11 +129,15 @@ class _HelperCase(SFCase):
         target = target or self.old
         result = self.work / "result.json"
         sha = _sha256(archive)
-        proc = subprocess.run(["/bin/sh", str(HELPER),
-                               "--pid", _dead_pid(), "--archive", str(archive),
-                               "--sha256", sha, "--version", "9.9.9",
-                               "--target", str(target), "--result", str(result)],
-                              capture_output=True, text=True, errors="replace",
+        args = ["/bin/sh", str(HELPER),
+                "--pid", _dead_pid(), "--archive", str(archive),
+                "--sha256", sha, "--version", "9.9.9",
+                "--target", str(target), "--result", str(result)]
+        if sequence is not None:
+            args.extend(["--sequence", str(sequence)])
+        if size is not None:
+            args.extend(["--size", str(size)])
+        proc = subprocess.run(args, capture_output=True, text=True,
                               timeout=120)
         if not result.is_file():
             raise AssertionError("助手没写 result.json（rc=%s）：%s" % (
@@ -133,8 +145,19 @@ class _HelperCase(SFCase):
         payload = json.loads(result.read_text(encoding="utf-8"))
         return str(payload.get("message", "")), payload
 
-    def station(self, archive, target=None):
-        return self.run_helper(archive, target)[0]
+    def station(self, archive, target=None, sequence=None, size=None):
+        return self.run_helper(archive, target, sequence, size)[0]
+
+    def run_helper_with_raw_args(self, archive, extra=(), target=None):
+        target = target or self.old
+        result = self.work / "raw-result.json"
+        args = ["/bin/sh", str(HELPER), "--pid", _dead_pid(),
+                "--archive", str(archive), "--sha256", _sha256(archive),
+                "--version", "9.9.9", "--target", str(target),
+                "--result", str(result)] + list(extra)
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=120)
+        payload = json.loads(result.read_text(encoding="utf-8")) if result.is_file() else {}
+        return proc, payload
 
 
 class TestHelperAcceptsGoodArchive(_HelperCase):
@@ -173,6 +196,68 @@ class TestHelperRejectsBadArchive(_HelperCase):
 
     def _old_untouched(self):
         return (self.old / "Contents" / "MacOS" / "Skyrocket").read_bytes() == b"\0\0\0\0"
+
+    def test_sequence_mismatch_is_rejected_before_replacement(self):
+        archive = self.build_archive(lambda app: _add_release_sequence(app, 17))
+        before = (self.old / "Contents" / "Info.plist").read_bytes()
+        got = self.station(archive, sequence=18, size=archive.stat().st_size)
+        self.assertEqual(got, "bundle_sequence_invalid")
+        self.assertEqual((self.old / "Contents" / "Info.plist").read_bytes(), before)
+        self.assertEqual(list(self.applications.glob(".*.rollback-*")), [])
+
+    def test_archive_size_mismatch_is_rejected_before_replacement(self):
+        archive = self.build_archive(lambda app: _add_release_sequence(app, 17))
+        before = (self.old / "Contents" / "Info.plist").read_bytes()
+        got = self.station(archive, sequence=17, size=archive.stat().st_size + 1)
+        self.assertEqual(got, "archive_size_mismatch")
+        self.assertEqual((self.old / "Contents" / "Info.plist").read_bytes(), before)
+        self.assertEqual(list(self.applications.glob(".*.rollback-*")), [])
+
+    def test_sequence_and_size_are_omitted_for_legacy_invocation(self):
+        archive = self.build_archive(lambda app: _add_release_sequence(app, 17))
+        got = self.station(archive)
+        self.assertEqual(got, STATION_OK_UNTIL_SIGNATURE)
+
+    def test_matching_sequence_and_size_reach_signature_check(self):
+        archive = self.build_archive(lambda app: _add_release_sequence(app, 17))
+        got = self.station(archive, sequence=17, size=archive.stat().st_size)
+        self.assertEqual(got, STATION_OK_UNTIL_SIGNATURE)
+
+    def test_legacy_invocation_keeps_old_protocol(self):
+        archive = self.build_archive()
+        got = self.station(archive)
+        self.assertEqual(got, STATION_OK_UNTIL_SIGNATURE)
+
+    def test_partial_modern_arguments_are_usage_error(self):
+        archive = self.build_archive(lambda app: _add_release_sequence(app, 17))
+        before = (self.old / "Contents" / "Info.plist").read_bytes()
+        proc, payload = self.run_helper_with_raw_args(archive, extra=("--size", str(archive.stat().st_size)))
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(payload.get("message"), "invalid_arguments")
+        self.assertEqual((self.old / "Contents" / "Info.plist").read_bytes(), before)
+
+    def test_failed_restart_rolls_back_and_does_not_retry_install(self):
+        archive = self.build_archive(lambda app: _add_release_sequence(app, 17))
+        helper = self.work / "helper-fail-restart.sh"
+        text = HELPER.read_text(encoding="utf-8")
+        text = text.replace("/usr/bin/codesign", "/usr/bin/true")
+        text = text.replace("/usr/bin/pgrep", "/usr/bin/false")
+        text = text.replace("set -eu", "set -eu\nsleep() { :; }")
+        helper.write_text(text, encoding="utf-8")
+        result = self.work / "rollback-result.json"
+        args = ["/bin/sh", str(helper), "--pid", _dead_pid(),
+                "--archive", str(archive), "--sha256", _sha256(archive),
+                "--version", "9.9.9", "--sequence", "17",
+                "--size", str(archive.stat().st_size), "--target", str(self.old),
+                "--result", str(result)]
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=120)
+        payload = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(payload.get("status"), "rolled_back")
+        self.assertEqual(payload.get("message"), "restart_new_app_failed")
+        self.assertEqual(list(self.applications.glob(".*.rollback-*")), [])
+        self.assertEqual((self.old / "Contents" / "Info.plist").read_text(encoding="utf-8").count("1.0.0"), 1)  # discipline-ok(R1): fixed shell bundle fixture
+
 
     def test_symlink_escaping_the_bundle_is_rejected(self):
         def escape(app):

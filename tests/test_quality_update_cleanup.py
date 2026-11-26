@@ -64,6 +64,25 @@ class UpdateCleanupQualityTests(SFCase):
         for name in ("update-result.json", "update_helper-test.sh", "notes.txt"):
             self.assertIsNone(sf_update.residue_reason(name, 3601, "current"))
 
+    def test_prune_preserves_sequenced_cached_package_and_resume_parts(self):
+        with tempfile.TemporaryDirectory() as root:
+            staging = Path(root) / "updates"
+            destination = Path(root) / "recovery"
+            staging.mkdir()
+            names = ("Skyrocket-9.9.9-s12-abcdef12.zip",
+                     "Skyrocket-9.9.9-s12-abcdef12.zip.part",
+                     "Skyrocket-9.9.9-s12-abcdef12.zip.resume.json")
+            for name in names:
+                path = staging / name
+                path.write_bytes(b"cache")
+                old = time.time() - 7200
+                os.utime(path, (old, old))
+            with mock.patch.object(sf_update, "UPDATE_STAGING_DIR", str(staging)):
+                sf_update.prune_staging_residue(installed_version="1.0.0", grace_sec=3600,
+                                                dest_root=str(destination))
+            for name in names:
+                self.assertTrue((staging / name).exists(), name)
+
     def test_prune_reports_current_package_and_move_errors(self):
         with tempfile.TemporaryDirectory() as root:
             staging = Path(root) / "updates"

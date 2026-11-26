@@ -6,6 +6,8 @@ PID=""
 ARCHIVE=""
 EXPECTED_SHA256=""
 EXPECTED_VERSION=""
+EXPECTED_SEQUENCE=""
+EXPECTED_SIZE=""
 TARGET=""
 RESULT=""
 HANDOFF=""
@@ -22,13 +24,15 @@ EXTRACT_TIMEOUT=90
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --pid|--archive|--sha256|--version|--target|--result|--handoff|--team-id|--cert-sha1)
+    --pid|--archive|--sha256|--version|--target|--result|--handoff|--team-id|--cert-sha1|--sequence|--size)
       [ "$#" -ge 2 ] || exit 64
       case "$1" in
         --pid) PID="$2" ;;
         --archive) ARCHIVE="$2" ;;
         --sha256) EXPECTED_SHA256="$2" ;;
         --version) EXPECTED_VERSION="$2" ;;
+        --sequence) EXPECTED_SEQUENCE="$2" ;;
+        --size) EXPECTED_SIZE="$2" ;;
         --target) TARGET="$2" ;;
         --result) RESULT="$2" ;;
         --handoff) HANDOFF="$2" ;;
@@ -177,6 +181,11 @@ rollback_or_fail() {
 }
 
 [ -n "$PID" ] && [ -n "$ARCHIVE" ] && [ -n "$EXPECTED_SHA256" ] && [ -n "$EXPECTED_VERSION" ] && [ -n "$TARGET" ] && [ -n "$RESULT" ] || fail "invalid_arguments"
+case "$EXPECTED_SEQUENCE:$EXPECTED_SIZE" in
+  :) ;;
+  *:|:*|*[!0-9:]*|0:*|*:0) fail "invalid_arguments" ;;
+  *) ;;
+esac
 case "$PID" in
   0|*[!0-9]*) fail "invalid_arguments" ;;
 esac
@@ -206,6 +215,10 @@ done
 
 actual_sha256="$(/usr/bin/shasum -a 256 "$ARCHIVE" | /usr/bin/awk '{print $1}')"
 [ "$actual_sha256" = "$EXPECTED_SHA256" ] || fail "archive_hash_mismatch"
+if [ -n "$EXPECTED_SEQUENCE" ]; then
+  actual_archive_size="$(/usr/bin/stat -f %z "$ARCHIVE" 2>/dev/null || true)"
+  [ "$actual_archive_size" = "$EXPECTED_SIZE" ] || fail "archive_size_mismatch"
+fi
 
 # 在解压前检查 ZIP 条目。拒绝危险软链接、绝对/穿越路径与膨胀包；
 # PyInstaller 自带的包内相对软链接在解压后还会再验证绝不逃出候选 app。
@@ -343,6 +356,12 @@ fi
 
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist" 2>/dev/null || true)"
 candidate_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$candidate/Contents/Info.plist" 2>/dev/null || true)"
+# Modern manifests bind the signed release sequence to the bundle itself. Legacy callers omit
+# both modern arguments and retain the historical version/signature-only protocol.
+if [ -n "$EXPECTED_SEQUENCE" ]; then
+  candidate_sequence="$(/usr/libexec/PlistBuddy -c 'Print :SkyrocketReleaseSequence' "$candidate/Contents/Info.plist" 2>/dev/null || true)"
+  [ "$candidate_sequence" = "$EXPECTED_SEQUENCE" ] || fail "bundle_sequence_invalid"
+fi
 # v1.4.55 起本程序改名，bundle id 一并换成 com.skyrocket.app；旧值继续接受，
 # 因为「已装旧版 + 新下载的包」这种组合在过渡期里会真实出现（回滚路径也一样）。
 case "$bundle_id" in

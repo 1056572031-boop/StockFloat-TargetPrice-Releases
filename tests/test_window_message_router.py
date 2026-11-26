@@ -41,6 +41,15 @@ class TestWindowMessageRouter(SFCase):
 
         self.assertEqual(batch.update_progresses, [(80, 8, 10)])
 
+    def test_stale_task_progress_does_not_erase_current_task_progress(self):
+        q = queue.Queue()
+        current, stale = object(), object()
+        q.put(("update_progress", (10, 1, 10, current)))
+        q.put(("update_progress", (80, 8, 10, current)))
+        q.put(("update_progress", (20, 2, 10, stale)))
+        batch = WindowMessageRouter.drain(q, "sh600519")
+        self.assertEqual(batch.update_progresses, [(80, 8, 10, current), (20, 2, 10, stale)])
+
     def test_wrong_code_is_discarded_only_for_code_bound_messages(self):
         q = queue.Queue()
         q.put(("quote", ("sh000001", {"price": 1})))

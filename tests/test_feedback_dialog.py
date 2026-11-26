@@ -129,6 +129,83 @@ class DialogTests(_FeedbackCase):
             self.assertIs(self.dialog._history_dialog, history_dialog)  # discipline-ok(R5): reuse is the no-duplicate-window behavior.
             self.assertEqual(history.call_count, 2)
 
+    def test_feedback_history_local_cancel_removes_unreceived_archive(self):
+        source = Path(self.temporary.name) / "pending-source.zip"
+        build_archive(source, {"state.json": "fixture"}, app_version="fixture",
+                      bundle_id="com.skyrocket.app", run_id="fixture")
+        row = self.dialog.outbox.enqueue(source, app_version="fixture", consent_policy_version=CONSENT_VERSION)
+        archive = Path(row["archive_path"])
+        self.dialog.history_button.click()
+        QApplication.processEvents()
+        history_dialog = self.dialog._history_dialog  # discipline-ok(R5): verify the real cancel button targets the opened history dialog.
+        self.track_widget(history_dialog)
+        cancel = history_dialog.findChild(QToolButton)
+        self.assertIsNotNone(cancel)
+        self.assertEqual(cancel.text(), "撤回并删除本机资料")
+        self.assertIn("不删除已发送内容", cancel.toolTip())
+        self.assertTrue(archive.exists())
+        cancel.click()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QApplication.processEvents()
+
+        self.assertFalse(archive.exists())
+        self.assertEqual(self.dialog.outbox.get(row["outbox_id"])["status"], "cancelled")
+        self.assertNotIn(row["outbox_id"][:8], "\n".join(label.text() for label in history_dialog.findChildren(QLabel)))
+
+    def test_feedback_history_retries_failed_local_cancel_in_same_window(self):
+        source = Path(self.temporary.name) / "retry-source.zip"
+        build_archive(source, {"state.json": "fixture"}, app_version="fixture",
+                      bundle_id="com.skyrocket.app", run_id="fixture")
+        row = self.dialog.outbox.enqueue(source, app_version="fixture", consent_policy_version=CONSENT_VERSION)
+        archive = Path(row["archive_path"])
+        self.dialog.history_button.click()
+        QApplication.processEvents()
+        history_dialog = self.dialog._history_dialog  # discipline-ok(R5): verify the same visible window handles recovery.
+        self.track_widget(history_dialog)
+        with patch.object(Path, "unlink", side_effect=PermissionError("synthetic")):
+            history_dialog.findChild(QToolButton).click()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QApplication.processEvents()
+        self.assertEqual(self.dialog.outbox.get(row["outbox_id"])["status"], "cancel_pending")
+        self.assertTrue(archive.exists())
+        retry = history_dialog.findChild(QToolButton)
+        self.assertIsNotNone(retry)
+        self.assertEqual(retry.text(), "重试删除本机资料")
+        self.assertIn("不删除已发送内容", retry.toolTip())
+        retry.click()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QApplication.processEvents()
+        self.assertIs(self.dialog._history_dialog, history_dialog)  # discipline-ok(R5): window reuse is the behavior under test.
+        self.assertFalse(archive.exists())
+        self.assertEqual(self.dialog.outbox.get(row["outbox_id"])["status"], "cancelled")
+
+    def test_feedback_history_response_unknown_entry_shows_local_withdrawal(self):
+        source = Path(self.temporary.name) / "uncertain-source.zip"
+        build_archive(source, {"state.json": "fixture"}, app_version="fixture",
+                      bundle_id="com.skyrocket.app", run_id="fixture")
+        row = self.dialog.outbox.enqueue(source, app_version="fixture", consent_policy_version=CONSENT_VERSION)
+        self.dialog.outbox.transition(row["outbox_id"], "submitting")
+        self.dialog.outbox.transition(row["outbox_id"], "response_unknown")
+        self.dialog.history_button.click()
+        QApplication.processEvents()
+        history_dialog = self.dialog._history_dialog  # discipline-ok(R5): inspect the real history action for the uncertain state.
+        self.track_widget(history_dialog)
+        actions = history_dialog.findChildren(QToolButton)
+        self.assertEqual([button.text() for button in actions], ["撤回并删除本机资料"])
+        self.assertIn("不删除已发送内容", actions[0].toolTip())
+
+    def test_feedback_history_received_entry_keeps_cleanup_semantics(self):
+        self.dialog.upload_button.click()
+        self.finish()
+        self.dialog.history_button.click()
+        QApplication.processEvents()
+        history_dialog = self.dialog._history_dialog  # discipline-ok(R5): inspect the real received-history action.
+        self.track_widget(history_dialog)
+        clean = history_dialog.findChild(QToolButton)
+        self.assertIsNotNone(clean)
+        self.assertEqual(clean.text(), "清理")
+        self.assertIn("不会删除已收件的远端反馈", clean.toolTip())
+
     def test_feedback_history_cleanup_removes_archive_but_keeps_remote_receipt(self):
         self.dialog.upload_button.click()
         self.finish()

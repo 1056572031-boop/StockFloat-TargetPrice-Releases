@@ -102,7 +102,7 @@ test("every asset reference carries the content hash of the file it points to, a
     const refs = [...worker.matchAll(/\/assets\/([A-Za-z0-9._-]+)\?v=([0-9a-f]{10})/g)];
     const names = new Set(refs.map(match => match[1]));
     // landing.css 已内联进页面，页面不再引用它的地址（文件仍随产物发布，旧页面缓存里的引用不会 404）。
-    for (const name of ["landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-switch.webp", "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm",
+    for (const name of ["landing.js", "atmo.svg", "app-icon.png", "installer-icon.png", "hero-replay-poster.webp", "hero-replay-60fps.webm", "hero-replay-60fps-hevc.mov", "scene-1-motion-poster.webp", "scene-1-motion-1470.mp4", "scene-1-motion-1470.webm", "scene-4-hide.webp", "scene-4-hide-poster.webp", "scene-4-hide.mp4", "scene-4-hide.webm",
       "scene-2-alert.webp", "scene-2-alert-poster.webp", "scene-2-alert.mp4", "scene-2-alert.webm", "scene-2-alert-1470.mp4", "scene-2-alert-1470.webm", "file-dmg.png"]) {
       assert.ok(names.has(name), `页面里对 ${name} 的引用必须带指纹`);
     }
@@ -204,7 +204,7 @@ test("a reference to a file that is not in public/ fails the build instead of sh
     mkdirSync(copy, { recursive: true });
     cpSync(serviceDir, copy, { recursive: true, filter: source => !/node_modules|dist|__pycache__/.test(source) });
     const landing = join(copy, "src", "landing.mjs");
-    writeFileSync(landing, readFileSync(landing, "utf8").replace("/assets/scene-1-switch.webp", "/assets/scene-missing.webp"));
+    writeFileSync(landing, readFileSync(landing, "utf8").replace("/assets/scene-1-motion-poster.webp", "/assets/scene-missing.webp"));
     writeFileSync(join(work, "sf_constants.py"), "APP_VERSION = '9.8.7'\n");
     const python = join(work, "fake-python.sh");
     writeFileSync(python, `#!/bin/sh\necho '{"light":"${Buffer.alloc(900, 7).toString("base64")}","size":128}'\n`);

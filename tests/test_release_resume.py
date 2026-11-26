@@ -69,6 +69,15 @@ class _TempCase(SFCase):
         self.evidence = Path(temp.name) / "evidence"
         self.root.mkdir()
         (self.root / "sf_constants.py").write_text('APP_VERSION = "%s"\n' % VERSION, encoding="utf-8")
+        snapshot = mock.patch("release_state.source_snapshot", return_value={"head": HEAD})
+        self.addCleanup(snapshot.stop)
+        snapshot.start()
+        index = mock.patch.object(resume, "verify_index")
+        self.addCleanup(index.stop)
+        index.start()
+        guide = mock.patch.object(resume, "verify_guide_render")
+        self.addCleanup(guide.stop)
+        guide.start()
         self.steps = resume.plan("py", VERSION, "feat/x", APP)
 
     def write_results(self, rcs=None, ahead="0\n", smoke=True):
@@ -92,10 +101,12 @@ class _TempCase(SFCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def write_state(self, stage=resume.PENDING_STAGE, version=VERSION, head=HEAD, history=True):
+    def write_state(self, stage=resume.PENDING_STAGE, version=VERSION, head=HEAD, history=True,
+                    source=None):
         path = self.root / "state.json"
         entries = [{"from": "candidate_ready", "to": resume.PENDING_STAGE, "at": STARTED.isoformat()}]
-        path.write_text(json.dumps({"stage": stage, "version": version, "source": {"head": head},
+        source = source or {"head": head}
+        path.write_text(json.dumps({"stage": stage, "version": version, "source": source,
                                     "history": entries if history else []}), encoding="utf-8")
         return path
 
@@ -221,6 +232,16 @@ class RunStepsTests(_TempCase):
             self.assertEqual(kwargs["env"].get("KEEP_ME"), "yes")
             self.assertEqual(kwargs["cwd"], self.root)
 
+    def test_source_change_between_steps_stops_before_next_command(self):
+        runner = FakeRunner()
+        checks = mock.Mock(side_effect=(None, ValueError("源码或文档已变化")))
+        with self.assertRaisesRegex(ValueError, "源码或文档"):
+            resume.run_steps(self.root, self.evidence, self.steps, "feat/x", apply=True,
+                             runner=runner, out=lambda _line: None, verify_source=checks)
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(resume.step_rc(self.evidence, self.steps[0][0]), 0)
+        self.assertIsNone(resume.step_rc(self.evidence, self.steps[1][0]))
+
     def test_a_failing_hard_step_stops_the_run_and_later_steps_do_not_start(self):
         runner = FakeRunner(rcs={"--check": 3})
         code, out = self.run_it(runner, apply=True)
@@ -305,10 +326,59 @@ class RunStepsTests(_TempCase):
         self.assertIn("8-final-smoke", " ".join(problems))
         self.assertFalse((self.root / "never.log").exists())
 
+    def test_interrupted_ota_redo_cannot_be_omitted_from_composed_log(self):
+        self.write_results()
+        ota_rc = self.evidence / ("rest-%s.rc" % resume.PUBLISH_STEP)
+        ota_log = self.evidence / ("rest-%s.log" % resume.PUBLISH_STEP)
+        ota_rc.write_text("0\n", encoding="utf-8")
+        ota_log.write_text("原来的成功日志\n", encoding="utf-8")
+        steps = resume.plan("py", VERSION, "feat/x", APP, Path("record"))
+        runner = FakeRunner(raises={"publish_update_release.py": KeyboardInterrupt()})
+        with self.assertRaises(KeyboardInterrupt):
+            resume.run_steps(self.root, self.evidence, steps, "feat/x", apply=True,
+                             redo=(resume.PUBLISH_STEP,), runner=runner)
+        self.assertFalse(ota_rc.exists())
+        out = self.root / "interrupted-ota.log"
+        ok, problems = resume.compose(self.root, self.evidence, [self.write_publish_log()], APP, out, STARTED)
+        self.assertFalse(ok, "被中断的 OTA 重做不能被合成日志忽略")
+        self.assertIn(resume.PUBLISH_STEP, " ".join(problems))
+        self.assertFalse(out.exists())
+
+    def test_inflight_marker_overrides_old_success_and_forces_retry(self):
+        self.write_results()
+        marker = self.evidence / "rest-8-final-smoke.inflight"
+        marker.write_text("started", encoding="utf-8")
+        runner = FakeRunner()
+        code, _ = self.run_it(runner, apply=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(runner.calls), 1)
+        self.assertIn("smoke_frozen_app", runner.commands()[0])
+        self.assertFalse(marker.exists())
+
+    def test_interrupted_push_readback_cannot_reuse_old_ahead_result(self):
+        self.write_results(ahead="0\n")
+        runner = FakeRunner(raises={"git rev-list": KeyboardInterrupt()})
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_it(runner, apply=True, redo=("7-push",))
+        out = self.root / "interrupted-push.log"
+        ok, problems = resume.compose(self.root, self.evidence, [self.write_publish_log()], APP, out, STARTED)
+        self.assertFalse(ok, "推送后的读回中断时不能复用旧的同步结果")
+        self.assertIn("7-push", " ".join(problems))
+        self.assertFalse(out.exists())
+
     def test_a_dry_run_does_not_withdraw_any_exit_code(self):
         self.write_results()
         self.run_it(FakeRunner(), apply=False, redo=("8-final-smoke",))
         self.assertEqual(resume.step_rc(self.evidence, "8-final-smoke"), 0)
+
+    def test_release_step_environment_removes_inherited_git_routing(self):
+        with mock.patch.dict(os.environ, {"GIT_DIR": "/wrong/repo", "GIT_WORK_TREE": "/wrong/tree",
+                                         "GIT_INDEX_FILE": "/wrong/index", "KEEP_ME": "yes"}):
+            runner = FakeRunner()
+            resume.execute(runner, ["git", "push"], self.root, 10)
+        env = runner.calls[0][1]["env"]
+        self.assertFalse(any(key.startswith("GIT_") for key in env))
+        self.assertEqual(env["KEEP_ME"], "yes")
 
     def test_the_default_runner_really_runs_a_command_and_captures_its_output(self):
         steps = [("echo", True, ["/bin/sh", "-c", "echo hello-from-step"])]
@@ -832,6 +902,20 @@ class StateTests(_TempCase):
     def test_a_state_that_matches_the_tree_is_accepted(self):
         self.assertEqual(self.load()["version"], VERSION)
 
+    def test_same_head_with_changed_source_identity_is_refused(self):
+        source = {"head": HEAD, "gate_fingerprint": "original", "gate_input_count": 12,
+                  "workspace_token": "original-workspace", "docs": {"README.md": "original-doc"}}
+        for field, changed in (("gate_fingerprint", "changed"), ("gate_input_count", 13),
+                               ("workspace_token", "changed-workspace"),
+                               ("docs", {"README.md": "changed-doc"})):
+            with self.subTest(field=field):
+                current = dict(source, **{field: changed})
+                path = self.write_state(source=source)
+                with mock.patch.object(resume, "git_output", return_value=HEAD), \
+                        mock.patch("release_state.source_snapshot", return_value=current):
+                    with self.assertRaisesRegex(ValueError, "源码或文档"):
+                        resume.load_state(path, self.root, (resume.PENDING_STAGE,), require_snapshot=True)
+
     def test_another_version_is_refused(self):
         with self.assertRaisesRegex(ValueError, "不是同一次发布"):
             self.load(version=".".join(("1", "0", "0")))
@@ -861,6 +945,321 @@ class StateTests(_TempCase):
                                   capture_output=True, text=True, timeout=30).stdout.strip()
         with mock.patch.dict(os.environ, {"GIT_DIR": str(self.root / "nowhere")}):
             self.assertEqual(resume.git_output(repo, "rev-parse", "HEAD"), expected)
+
+
+class BindingContextTests(SFCase):
+    def test_missing_or_changed_binding_refuses_before_compose(self):
+        from release_state import reference
+
+        for case in ("observations", "quality", "manifest", "quality_changed", "manifest_changed"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="sf_resume_binding_") as temp:
+                root = Path(temp)
+                record = root / "quality.json"
+                manifest = record.with_suffix(".manifest.json")
+                record.write_text("original quality", encoding="utf-8")
+                manifest.write_text("original manifest", encoding="utf-8")
+                state = {"version": VERSION, "source": {"head": HEAD},
+                         "history": [{"to": resume.PENDING_STAGE, "at": STARTED.isoformat()}],
+                         "observations": {"publish_quality": reference(record),
+                                          "publish_manifest": reference(manifest)}}
+                if case == "observations":
+                    del state["observations"]
+                elif case in ("quality", "manifest"):
+                    del state["observations"]["publish_" + case]
+                elif case == "quality_changed":
+                    record.write_text("changed quality", encoding="utf-8")
+                else:
+                    manifest.write_text("changed manifest", encoding="utf-8")
+                state_path = root / "state.json"
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                message = "缺少质量绑定" if case in ("observations", "quality", "manifest") else "未绑定本轮发布状态或已发生变化"
+                with self.assertRaisesRegex(ValueError, message):
+                    resume.binding_context(root, state_path, state)
+                output = root / "combined.log"
+                argv = ["compose", "--root", str(root), "--state", str(state_path),
+                        "--evidence", str(root / "evidence"), "--publish-log", str(root / "publish.log"),
+                        "--out", str(output)]
+                with mock.patch.object(resume, "load_state", return_value=state), \
+                        mock.patch.object(resume, "compose") as compose, \
+                        contextlib.redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(resume.main(argv), 2)
+                self.assertIn(message, errors.getvalue())
+                compose.assert_not_called()
+                self.assertFalse(output.exists())
+                self.assertFalse((root / "evidence").exists())
+
+
+class GuideRenderPreflightTests(SFCase):
+    def test_matching_render_is_read_only_and_mismatch_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="sf_resume_guide_") as temp:
+            root = Path(temp)
+            (root / "docs").mkdir()
+            guide = root / "docs/INSTALL.md"
+            guide.write_bytes(b"frozen guide\n")
+            result = SimpleNamespace(returncode=0, stdout=b"frozen guide\n\n", stderr=b"")
+            with mock.patch.object(resume.subprocess, "run", return_value=result) as run:
+                resume.verify_guide_render(root)
+            self.assertEqual(guide.read_bytes(), b"frozen guide\n")
+            self.assertEqual(run.call_args.args[0][-1], "--print")
+            result.stdout = b"different guide\n\n"
+            with mock.patch.object(resume.subprocess, "run", return_value=result):
+                with self.assertRaisesRegex(ValueError, "安装说明"):
+                    resume.verify_guide_render(root)
+            self.assertEqual(guide.read_bytes(), b"frozen guide\n")
+
+    def test_render_failure_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="sf_resume_guide_") as temp:
+            result = SimpleNamespace(returncode=1, stdout=b"", stderr=b"failed")
+            with mock.patch.object(resume.subprocess, "run", return_value=result):
+                with self.assertRaisesRegex(ValueError, "渲染预检失败"):
+                    resume.verify_guide_render(Path(temp))
+
+
+class RealSourceIdentityTests(SFCase):
+    def test_noncanonical_frozen_ledger_rejects_published_reformatting(self):
+        self._exercise_ledger_transition(noncanonical=True)
+
+    def test_published_ledger_transition_allows_run_and_compose_but_not_tampering(self):
+        self._exercise_ledger_transition(noncanonical=False)
+
+    def _exercise_ledger_transition(self, *, noncanonical):
+        import release_state
+        from release_sequence import mark_published
+
+        with tempfile.TemporaryDirectory(prefix="sf_resume_ledger_") as temp:
+            root = Path(temp).resolve()
+            env = evidence.gate_stamp.git_env()
+            env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.test",
+                       GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.test")
+            def git(*args):
+                subprocess.run(["git", "-C", str(root), *args], env=env, check=True,
+                               capture_output=True, text=True)
+            git("init", "-q")
+            for name in release_state.DOCS:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture", encoding="utf-8")
+            (root / "sf_constants.py").write_text(
+                'APP_VERSION = "%s"\nRELEASE_SEQUENCE = 2\n' % VERSION, encoding="utf-8")
+            (root / "fixture.py").write_text("value = 1\n", encoding="utf-8")
+            (root / ".gitignore").write_text("build/\n*.lock\n", encoding="utf-8")
+            ledger = root / "tools/release_sequence_ledger.json"
+            ledger.parent.mkdir()
+            original = {"schema": 1, "releases": [
+                {"version": "7.8.8", "sequence": 1, "status": "published"},
+                {"version": VERSION, "sequence": 2, "status": "allocated"}]}
+            ledger.write_text(json.dumps(original, indent=None if noncanonical else 2) + "\n", encoding="utf-8")
+            ledger.chmod(0o644)
+            git("add", "--", ".")
+            git("commit", "-qm", "fixture")
+            state_path = root / "build/state.json"
+            state = release_state.init_state(root, state_path, VERSION)
+            head_patch = mock.patch.object(resume, "git_output", side_effect=lambda _root, *args:
+                                          state["source"]["head"] if args == ("rev-parse", "HEAD") else "fixture")
+            head_patch.start()
+            self.addCleanup(head_patch.stop)
+            record = root / "build/quality.json"
+            record.write_text("{}", encoding="utf-8")
+            record.with_suffix(".manifest.json").write_text("{}", encoding="utf-8")
+            state.update(stage=resume.PENDING_STAGE,
+                         history=[{"to": resume.PENDING_STAGE, "at": STARTED.isoformat()}],
+                         observations={"publish_quality": release_state.reference(record),
+                                       "publish_manifest": release_state.reference(record.with_suffix(".manifest.json"))})
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            common = ["--root", str(root), "--state", str(state_path), "--evidence", str(root / "build/evidence")]
+            def offline(_runner, command, _cwd, _timeout):
+                if "tools/publish_update_release.py" in command:
+                    mark_published(ledger, VERSION, 2)
+                if command[:2] == ["git", "rev-list"]:
+                    return 0, "0\n"
+                if "tools/smoke_frozen_app.py" in command:
+                    return 0, resume.SMOKE_VERDICT + "\n"
+                return 0, "offline\n"
+            if noncanonical:
+                mark_published(ledger, VERSION, 2)
+                self.assertNotEqual(ledger.read_bytes(), (json.dumps(original) + "\n").encode())
+                with self.assertRaisesRegex(ValueError, "源码或文档"):
+                    resume.load_state(state_path, root, (resume.PENDING_STAGE,), require_snapshot=True)
+                return
+            with mock.patch.object(resume, "verify_guide_render"), \
+                    mock.patch.object(resume, "execute", side_effect=offline), \
+                    contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(resume.main(["run", *common, "--apply"]), 0, errors.getvalue())
+                self.assertEqual(resume.main(["run", *common, "--apply"]), 0, errors.getvalue())
+            published = ledger.read_bytes()
+            log = root / "build/log"
+            log.write_text(PUBLISH_LOG, encoding="utf-8")
+            with contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(resume.main(["compose", *common, "--publish-log", str(log),
+                                              "--out", str(root / "build/out")]), 0, errors.getvalue())
+            self.assertIn(resume.closing_line(VERSION), (root / "build/out").read_text(encoding="utf-8"))
+            # The transition check reads the committed ledger as text first; fail only the
+            # subsequent binary read, after proving the same snapshot is otherwise valid.
+            self.assertNotEqual(state["source"], release_state.source_snapshot(root))
+            self.assertTrue(resume.evidence.published_ledger_transition(root, VERSION, 2))
+            resume.verify_snapshot(root, state)
+            real_run = subprocess.run
+            failed_shows = []
+
+            def fail_binary_ledger_show(argv, **kwargs):
+                if (argv == ["git", "show", "HEAD:tools/release_sequence_ledger.json"]
+                        and not kwargs.get("text", False)):
+                    failed_shows.append(argv)
+                    return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"injected failure")
+                return real_run(argv, **kwargs)
+
+            blocked_out = root / "build/blocked-out"
+            with mock.patch.object(resume.subprocess, "run", side_effect=fail_binary_ledger_show), \
+                    mock.patch.object(resume, "verify_guide_render") as guide, \
+                    mock.patch.object(resume, "run_steps") as run_steps, \
+                    mock.patch.object(resume, "compose") as compose:
+                with self.assertRaisesRegex(ValueError, "源码或文档"):
+                    resume.verify_snapshot(root, state)
+                for command in ("run", "compose"):
+                    argv = [command, *common]
+                    if command == "run":
+                        argv.append("--apply")
+                    else:
+                        argv += ["--publish-log", str(log), "--out", str(blocked_out)]
+                    with contextlib.redirect_stderr(io.StringIO()) as errors:
+                        self.assertEqual(resume.main(argv), 2, errors.getvalue())
+                    self.assertIn("源码或文档", errors.getvalue())
+                guide.assert_not_called()
+                run_steps.assert_not_called()
+                compose.assert_not_called()
+            self.assertEqual(len(failed_shows), 3)
+            self.assertFalse(blocked_out.exists())
+            # The legitimate working-tree ledger transition must not exempt other staged files.
+            (root / "fixture.py").write_text("staged change\n", encoding="utf-8")
+            git("add", "--", "fixture.py")
+            (root / "fixture.py").write_text("value = 1\n", encoding="utf-8")
+            for command in ("run", "compose"):
+                argv = [command, *common]
+                if command == "compose":
+                    argv += ["--publish-log", str(log), "--out", str(root / "build/out")]
+                with contextlib.redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(resume.main(argv), 2)
+                    self.assertIn("索引", errors.getvalue())
+            git("add", "--", "fixture.py")
+            for tamper in ("other_record", "sequence", "version", "source", "format", "mode"):
+                with self.subTest(tamper=tamper):
+                    data = json.loads(published)
+                    if tamper == "other_record":
+                        data["releases"][0]["status"] = "allocated"
+                    elif tamper == "sequence":
+                        data["releases"][1]["sequence"] = 3
+                    elif tamper == "version":
+                        data["releases"][1]["version"] = "7.8.10"
+                    elif tamper == "source":
+                        (root / "fixture.py").write_text("changed\n", encoding="utf-8")
+                    elif tamper == "mode":
+                        ledger.chmod(0o600)
+                    else:
+                        ledger.write_bytes(published + b" ")
+                    if tamper in ("other_record", "sequence", "version"):
+                        ledger.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                    for command in ("run", "compose"):
+                        argv = [command, *common]
+                        if command == "compose":
+                            argv += ["--publish-log", str(root / "build/log"), "--out", str(root / "build/out")]
+                        with contextlib.redirect_stderr(io.StringIO()) as errors:
+                            self.assertEqual(resume.main(argv), 2, (tamper, command, errors.getvalue()))
+                            self.assertIn("源码或文档", errors.getvalue())
+                    ledger.write_bytes(published)
+                    ledger.chmod(0o644)
+                    (root / "fixture.py").write_text("value = 1\n", encoding="utf-8")
+            self.assertEqual(resume.load_state(state_path, root, (resume.PENDING_STAGE,),
+                                               require_snapshot=True)["version"], VERSION)
+
+    def test_run_and_compose_reject_index_drift(self):
+        import release_state
+
+        with tempfile.TemporaryDirectory(prefix="sf_resume_index_") as temp:
+            root = Path(temp).resolve()
+            env = evidence.gate_stamp.git_env()
+            env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.test",
+                       GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.test")
+            def git(*args, input=None):
+                return subprocess.run(["git", "-C", str(root), *args], env=env, check=True,
+                                      capture_output=True, text=True, input=input).stdout.strip()
+            git("init", "-q")
+            for name in release_state.DOCS:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture", encoding="utf-8")
+            (root / "sf_constants.py").write_text('APP_VERSION = "%s"\n' % VERSION, encoding="utf-8")
+            target = root / "fixture.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+            git("add", "--", ".")
+            git("commit", "-qm", "fixture")
+            state_path = root / "build/state.json"
+            state = release_state.init_state(root, state_path, VERSION)
+            state["stage"] = resume.PENDING_STAGE
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            blob = git("hash-object", "-w", "--stdin", input="value = 2\n")
+            original_blob = git("rev-parse", "HEAD:fixture.py")
+            common = ["--root", str(root), "--state", str(state_path),
+                      "--evidence", str(root / "build/evidence")]
+            for drift in ("blob", "mode", "unmerged"):
+                with self.subTest(drift=drift):
+                    if drift == "blob":
+                        git("update-index", "--cacheinfo", "100644", blob, "fixture.py")
+                    elif drift == "mode":
+                        git("update-index", "--cacheinfo", "100755", original_blob, "fixture.py")
+                    else:
+                        git("update-index", "--index-info", input=(
+                            "0 " + "0" * len(original_blob) + "\tfixture.py\n"
+                            "100644 " + original_blob + " 1\tfixture.py\n"
+                            "100644 " + blob + " 2\tfixture.py\n"))
+                    for command in ("run", "compose"):
+                        argv = [command, *common]
+                        if command == "compose":
+                            argv += ["--publish-log", str(root / "build/log"), "--out", str(root / "build/out")]
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+                            self.assertEqual(resume.main(argv), 2, (drift, command, errors.getvalue()))
+                            self.assertIn("索引", errors.getvalue())
+                    git("update-index", "--cacheinfo", "100644", original_blob, "fixture.py")
+
+    def test_run_rejects_dirty_source_docs_and_new_build_inputs(self):
+        import release_state
+
+        with tempfile.TemporaryDirectory(prefix="sf_resume_identity_") as temp:
+            root = Path(temp).resolve()
+            env = evidence.gate_stamp.git_env()
+            env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.test",
+                       GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.test")
+            def git(*args):
+                return subprocess.run(["git", "-C", str(root), *args], env=env, check=True,
+                                      capture_output=True, text=True)
+            git("init", "-q")
+            for name in release_state.DOCS:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture", encoding="utf-8")
+            (root / "sf_constants.py").write_text('APP_VERSION = "%s"\n' % VERSION, encoding="utf-8")
+            (root / "fixture.py").write_text("value = 1\n", encoding="utf-8")
+            (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+            git("add", "--", ".")
+            git("commit", "-qm", "fixture")
+            state_path = root / "build" / "state.json"
+            release_state.init_state(root, state_path, VERSION)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["stage"] = resume.PENDING_STAGE
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            self.assertEqual(resume.load_state(state_path, root, (resume.PENDING_STAGE,),
+                                               require_snapshot=True)["version"], VERSION)
+            for name in ("fixture.py", "README.md", "new_input.py"):
+                path = root / name
+                original = path.read_bytes() if path.exists() else None
+                with self.subTest(path=name):
+                    path.write_text("changed\n", encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "源码或文档"):
+                        resume.load_state(state_path, root, (resume.PENDING_STAGE,), require_snapshot=True)
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
 
 
 class TimeoutTests(SFCase):
@@ -898,8 +1297,29 @@ class MainTests(_TempCase):
         return "feat/x" if "--abbrev-ref" in args else HEAD
 
     def common(self, command, **state):
+        from release_state import reference
+        state_path = self.write_state(**state)
+        record = self.root / "bound-quality.json"
+        manifest = record.with_suffix(".manifest.json")
+        record.write_text("{}", encoding="utf-8")
+        manifest.write_text("{}", encoding="utf-8")
+        value = json.loads(state_path.read_text(encoding="utf-8"))
+        value["observations"] = {"publish_quality": reference(record),
+                                 "publish_manifest": reference(manifest)}
+        state_path.write_text(json.dumps(value), encoding="utf-8")
         return [command, "--root", str(self.root), "--evidence", str(self.evidence),
-                "--state", str(self.write_state(**state))]
+                "--state", str(state_path)]
+
+    def bind_results(self, argv):
+        state_path = Path(argv[argv.index("--state") + 1])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        binding = resume.binding_context(self.root, state_path, state)
+        steps = resume.plan(str(self.root / ".venv/bin/python3"), VERSION, "feat/x", APP,
+                            Path(binding["quality"]["path"]))
+        for name, _, command in steps:
+            if resume.step_rc(self.evidence, name) is not None:
+                data = resume.binding_data(self.evidence, name, command, binding)
+                (self.evidence / ("rest-%s.binding.json" % name)).write_text(json.dumps(data), encoding="utf-8")
 
     def test_run_refuses_a_version_that_is_not_published_and_pending(self):
         code, _, err = self.run_main(*self.common("run", stage="complete"))
@@ -924,6 +1344,124 @@ class MainTests(_TempCase):
         self.assertLess(out.index("publish_update_release.py"), out.index("deploy-pages"))
         self.assertIn("SF_QUALITY_RECORD=" + str(record.resolve()), out)
         self.assertFalse(self.evidence.exists())
+
+    def test_run_rejects_guide_render_drift_before_any_release_step(self):
+        with mock.patch.object(resume, "verify_guide_render", side_effect=ValueError("安装说明与冻结内容不一致")), \
+                mock.patch.object(resume, "run_steps") as steps:
+            code, _, err = self.run_main(*self.common("run"), "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("安装说明", err)
+        steps.assert_not_called()
+
+    def test_run_rejects_source_drift_before_any_step(self):
+        for apply in (False, True):
+            with self.subTest(apply=apply):
+                argv = self.common("run") + (["--apply"] if apply else [])
+                with mock.patch("release_state.source_snapshot", return_value={"head": HEAD, "changed": True}), \
+                        mock.patch.object(resume, "run_steps") as steps:
+                    code, _, err = self.run_main(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn("源码或文档", err)
+                steps.assert_not_called()
+
+    def test_main_source_guard_rechecks_snapshot_before_each_step(self):
+        argv = self.common("run") + ["--apply"]
+        with mock.patch.object(resume, "run_steps", return_value=0) as steps:
+            code, _, _ = self.run_main(*argv)
+        self.assertEqual(code, 0)
+        guard = steps.call_args.kwargs["verify_source"]
+        guard()
+        with mock.patch("release_state.source_snapshot", return_value={"head": HEAD, "changed": True}):
+            with self.assertRaisesRegex(ValueError, "源码或文档"):
+                guard()
+
+    def test_quality_binding_is_rechecked_between_actual_steps(self):
+        state_args = self.common("run") + ["--apply"]
+        record = self.root / "bound-quality.json"
+        calls = []
+        def run_steps(root, directory, steps, branch, *, verify_source, **kwargs):
+            verify_source()
+            calls.append("first")
+            record.write_text('{"changed":true}', encoding="utf-8")
+            verify_source()
+            calls.append("second")
+            return 0
+        with mock.patch.object(resume, "run_steps", side_effect=run_steps):
+            code, _, err = self.run_main(*state_args)
+        self.assertEqual(code, 2)
+        self.assertIn("质量", err)
+        self.assertEqual(calls, ["first"])
+
+    def test_apply_rejects_unbound_quality_record_before_any_release_step(self):
+        record = self.root / "quality.json"
+        record.write_text("{}", encoding="utf-8")
+        with mock.patch.object(resume, "run_steps") as steps:
+            code, _, err = self.run_main(*self.common("run"), "--quality-record", str(record), "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("质量", err)
+        steps.assert_not_called()
+
+    def test_apply_accepts_exact_bound_record_and_rejects_changed_manifest(self):
+        from release_state import reference
+        record = self.root / "quality.json"
+        manifest = record.with_suffix(".manifest.json")
+        record.write_text("{}", encoding="utf-8")
+        manifest.write_text("{}", encoding="utf-8")
+        state_path = self.write_state()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["observations"] = {"publish_quality": reference(record),
+                                 "publish_manifest": reference(manifest)}
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        argv = ["run", "--root", str(self.root), "--evidence", str(self.evidence),
+                "--state", str(state_path), "--quality-record", str(record), "--apply"]
+        with mock.patch.object(resume, "run_steps", return_value=0) as steps:
+            code, _, _ = self.run_main(*argv)
+            self.assertEqual(code, 0)
+            steps.assert_called_once()
+            steps.reset_mock()
+            manifest.write_text('{"changed":true}', encoding="utf-8")
+            code, _, _ = self.run_main(*argv)
+            self.assertEqual(code, 2)
+            steps.assert_not_called()
+
+    def test_apply_without_quality_argument_still_validates_bound_record(self):
+        from release_state import reference
+        record = self.root / "quality.json"
+        manifest = record.with_suffix(".manifest.json")
+        record.write_text("{}", encoding="utf-8")
+        manifest.write_text("{}", encoding="utf-8")
+        state_path = self.write_state()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["observations"] = {"publish_quality": reference(record),
+                                 "publish_manifest": reference(manifest)}
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        manifest.write_text('{"changed":true}', encoding="utf-8")
+        argv = ["run", "--root", str(self.root), "--evidence", str(self.evidence),
+                "--state", str(state_path), "--apply"]
+        with mock.patch.object(resume, "run_steps") as steps:
+            code, _, _ = self.run_main(*argv)
+        self.assertEqual(code, 2)
+        steps.assert_not_called()
+
+    def test_apply_rejects_nonobject_quality_bindings(self):
+        state_path = self.write_state()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["observations"] = []
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        argv = ["run", "--root", str(self.root), "--evidence", str(self.evidence),
+                "--state", str(state_path), "--apply"]
+        with mock.patch.object(resume, "run_steps") as steps:
+            code, _, err = self.run_main(*argv)
+        self.assertEqual(code, 2)
+        self.assertIn("质量绑定", err)
+        steps.assert_not_called()
+
+    def test_apply_without_explicit_record_includes_bound_ota_step(self):
+        with mock.patch.object(resume, "run_steps", return_value=0) as steps:
+            code, _, _ = self.run_main(*self.common("run"), "--apply")
+        self.assertEqual(code, 0)
+        plan = steps.call_args.args[2]
+        self.assertIn(resume.PUBLISH_STEP, [item[0] for item in plan])
 
     def test_run_refuses_a_quality_record_that_is_not_a_file(self):
         code, _, err = self.run_main(*self.common("run"), "--quality-record", str(self.root / "missing.json"))
@@ -1000,18 +1538,75 @@ class MainTests(_TempCase):
         self.assertEqual(code, 1)
         self.assertIn("没有记录", err)
 
+    def test_run_does_not_skip_unbound_fresh_successes(self):
+        self.write_results()
+        runner = FakeRunner()
+        with mock.patch.object(resume, "execute", side_effect=lambda runner, argv, cwd, timeout:
+                               (0, "offline result\n")) as execute:
+            code, _, _ = self.run_main(*self.common("run"), "--apply")
+        self.assertEqual(code, 0)
+        self.assertTrue(any("tools/public_release.py" in call.args[1] for call in execute.call_args_list),
+                        "无绑定的旧成功不能作为本次发布的成功")
+
+    def test_actual_run_bindings_allow_resume_and_reject_tampering(self):
+        argv = self.common("run") + ["--apply"]
+        def offline(_runner, command, _cwd, _timeout):
+            if command[:2] == ["git", "rev-list"]:
+                return 0, "0\n"
+            if "tools/smoke_frozen_app.py" in command:
+                return 0, resume.SMOKE_VERDICT + "\n"
+            return 0, "offline\n"
+        with mock.patch.object(resume, "execute", side_effect=offline) as execute:
+            self.assertEqual(self.run_main(*argv)[0], 0)
+            execute.reset_mock()
+            self.assertEqual(self.run_main(*argv)[0], 0)
+            self.assertEqual(execute.call_count, 0)
+            source = self.write_publish_log()
+            compose_args = ["compose", *argv[1:-1], "--publish-log", str(source),
+                            "--out", str(self.root / "bound.log")]
+            self.assertEqual(self.run_main(*compose_args)[0], 0)
+            log = self.evidence / "rest-6.0-public-release.log"
+            log.write_text("changed\n", encoding="utf-8")
+            compose_args[-1] = str(self.root / "tampered.log")
+            self.assertNotEqual(self.run_main(*compose_args)[0], 0)
+            self.assertEqual(self.run_main(*argv)[0], 0)
+            self.assertTrue(any("tools/public_release.py" in call.args[1] for call in execute.call_args_list))
+
+    def test_compose_rejects_unbound_fresh_step_evidence(self):
+        self.write_results()
+        source = self.write_publish_log()
+        target = self.root / "unbound.log"
+        code, _, _ = self.run_main(*self.common("compose"), "--publish-log", str(source),
+                                   "--out", str(target))
+        self.assertNotEqual(code, 0)
+        self.assertFalse(target.exists())
+
+    def test_compose_rejects_source_drift(self):
+        self.write_results()
+        source = self.write_publish_log()
+        target = self.root / "drift.log"
+        argv = self.common("compose") + ["--publish-log", str(source), "--out", str(target)]
+        self.bind_results(argv)
+        with mock.patch("release_state.source_snapshot", return_value={"head": HEAD, "changed": True}):
+            code, _, _ = self.run_main(*argv)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(target.exists())
+
     def test_compose_accepts_the_state_after_acceptance_too(self):
         self.write_results()
         source = self.write_publish_log()
-        code, _, _ = self.run_main(*self.common("compose", stage=resume.COMPLETE_STAGE),
-                                   "--publish-log", str(source), "--out", str(self.root / "late.log"))
+        argv = self.common("compose", stage=resume.COMPLETE_STAGE)
+        self.bind_results(argv)
+        code, _, _ = self.run_main(*argv, "--publish-log", str(source), "--out", str(self.root / "late.log"))
         self.assertEqual(code, 0)
 
     def test_compose_success_prints_the_output_path(self):
         self.write_results()
         source = self.write_publish_log()
         target = self.root / "o.log"
-        arguments = (*self.common("compose"), "--publish-log", str(source), "--out", str(target))
+        argv = self.common("compose")
+        self.bind_results(argv)
+        arguments = (*argv, "--publish-log", str(source), "--out", str(target))
         code, out, _ = self.run_main(*arguments)
         self.assertEqual(code, 0)
         self.assertIn(str(target), out)

@@ -9,10 +9,10 @@
     "build:pages": "node build-pages.mjs"
   },
   "dependencies": {
-    "@zip.js/zip.js": "2.24.0",
+    "@zip.js/zip.js": "2.25.0",
     "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
-    "wrangler": "4.154.0"
+    "wrangler": "4.168.0"
   }
 }

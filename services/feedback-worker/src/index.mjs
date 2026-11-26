@@ -25,6 +25,9 @@ export const PUBLISH_DEADLINE_MS = 100000;
 // 单个来源每天最多的请求数。全局额度被一个来源灌满，别的用户当天就全部失败。
 export const CLIENT_DAILY_LIMIT = 30;
 export const CASE_PRUNE_AT = 900;
+export const RETENTION_DAYS = 30;
+export const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+export const AUTO_RETENTION_CAPABILITY = 'auto-delete-v1';
 // 每天最多退还多少次全局额度。退款让垃圾请求不再烧光当天额度，但每次退款都是一笔数据库写入；
 // 不设上限的话，换着来源地址发垃圾包的人能无限放大写入。超过上限就不再退，回到“垃圾也占额度”的保守行为。
 export const REFUND_DAILY_LIMIT = 500;
@@ -411,6 +414,383 @@ function isGitHubAuthFailure(error) {
 }
 
 
+function retentionUntil(receivedAt) {
+  return new Date(Date.parse(receivedAt) + RETENTION_MS).toISOString();
+}
+
+export function retentionNegotiated(request) {
+  return request.headers.get('X-Skyrocket-Retention') === 'auto-delete-v1';
+}
+
+function intentNames(envelope) {
+  const caseId = `feedback-${envelope.idempotency_key}`;
+  return { caseId, zipName: `${caseId}.zip`, receiptName: `${caseId}.receipt.json` };
+}
+
+export async function createRetentionIntent(env, envelope, autoRetention, now = Date.now()) {
+  const { caseId, zipName, receiptName } = intentNames(envelope);
+  const policy = autoRetention ? 'auto_delete' : 'manual_deletion';
+  await env.DB.prepare(`INSERT OR IGNORE INTO retention_intents
+    (idempotency_key, case_id, archive_sha256, archive_size, consent_policy_version, diagnostic_payload_version, zip_name, receipt_name, policy, created_at, publish_deadline, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`)
+    .bind(envelope.idempotency_key, caseId, envelope.archive_sha256, envelope.size_bytes, envelope.consent_policy_version,
+      envelope.diagnostic_payload_version, zipName, receiptName, policy, now, now + PUBLISH_DEADLINE_MS).run();
+  const intent = await env.DB.prepare('SELECT * FROM retention_intents WHERE idempotency_key=?')
+    .bind(envelope.idempotency_key).first();
+  if (!intent || intent.archive_sha256 !== envelope.archive_sha256 || intent.archive_size !== envelope.size_bytes
+      || intent.consent_policy_version !== envelope.consent_policy_version || intent.diagnostic_payload_version !== envelope.diagnostic_payload_version
+      || intent.case_id !== caseId || intent.zip_name !== zipName || intent.receipt_name !== receiptName) reject('retention_intent_conflict', 409);
+  return intent;
+}
+
+function validateAssetId(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) reject('asset_id_invalid', 503);
+  return value;
+}
+
+function validateRetentionReceipt(receipt, intent, zipAssetId, receiptAssetId) {
+  if (!object(receipt) || Object.getPrototypeOf(receipt) !== Object.prototype) reject('receipt_binding', 503);
+  validateAssetId(zipAssetId);
+  validateAssetId(receiptAssetId);
+  validateAssetId(receipt.asset_id);
+  if (receipt.case_id !== intent.case_id || receipt.archive_sha256 !== intent.archive_sha256 || receipt.size_bytes !== intent.archive_size
+      || receipt.asset_id !== zipAssetId || receipt.repository !== REPOSITORY || receipt.storage_status !== 'stored'
+      || receipt.validation_status !== 'validated' || !['auto_delete', 'manual_deletion'].includes(receipt.retention_policy)
+      || (receipt.retention_policy === 'auto_delete' && intent.policy !== 'auto_delete')
+      || receipt.consent_policy_version !== intent.consent_policy_version
+      || [POLICY, FULL_POLICY, FULL_V3_POLICY][intent.diagnostic_payload_version - 1] !== intent.consent_policy_version
+      || (receipt.validation_scope !== undefined && receipt.validation_scope !== 'container_sha256_and_member_catalog')
+      || (receipt.consent_policy_version === POLICY && receipt.validation_scope !== undefined)) reject('receipt_binding', 503);
+  if (typeof receipt.received_at !== 'string' || !/(Z|[+-]\d\d:\d\d)$/.test(receipt.received_at)
+      || !Number.isFinite(Date.parse(receipt.received_at))) reject('retention_timing', 503);
+  if (receipt.retention_policy === 'manual_deletion') {
+    if (receipt.retention_until !== null) reject('retention_policy_mismatch', 503);
+  } else {
+    const receivedAt = Date.parse(receipt.received_at);
+    const until = Date.parse(receipt.retention_until);
+    if (!Number.isFinite(receivedAt) || until - receivedAt !== RETENTION_MS) reject('retention_timing', 503);
+  }
+  receipt._receipt_asset_id = receiptAssetId;
+  return receipt;
+}
+
+// A zero-row fenced write is not an SQL error. Force a NOT NULL violation inside
+// the same batch so D1 rolls back every preceding write, rather than checking
+// meta.changes after the transaction has already committed.
+function requireOneChange(db) {
+  return db.prepare(`INSERT INTO cases (idempotency_key, archive_sha256, state, lease_until, lease_token)
+    SELECT '', NULL, '', 0, '' WHERE changes() != 1`).bind();
+}
+
+// SQLite evaluates 'now' at statement execution, not when D1 queues the batch.
+// Unsupported clock functions yield NULL, making lease predicates fail closed.
+const DB_NOW_MS = "(CAST(strftime('%s','now') AS INTEGER)*1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
+
+export async function bindRetentionIntent(env, intent, verifiedReceipt, now = Date.now(), leaseToken = null) {
+  const receipt = validateRetentionReceipt(verifiedReceipt, intent, verifiedReceipt.asset_id, verifiedReceipt._receipt_asset_id);
+  const finalized = receipt.retention_policy === 'auto_delete';
+  const retentionUntilValue = finalized ? Date.parse(receipt.retention_until) : null;
+  const savedReceipt = JSON.stringify(receipt);
+  const ownerSql = leaseToken
+    ? `EXISTS (SELECT 1 FROM cases WHERE idempotency_key=? AND lease_token=? AND lease_until>? AND lease_until>${DB_NOW_MS})`
+    : `EXISTS (SELECT 1 FROM retention_intents WHERE idempotency_key=? AND reconcile_lease_token=? AND reconcile_lease_until>? AND reconcile_lease_until>${DB_NOW_MS})`;
+  const ownerParams = [intent.idempotency_key, leaseToken || intent.reconcile_lease_token, now];
+  const caseSql = leaseToken
+    ? `UPDATE cases SET state='received', receipt=? WHERE idempotency_key=? AND archive_sha256=? AND ${ownerSql}`
+    : `UPDATE cases SET state='received', lease_until=0, lease_token='', receipt=? WHERE idempotency_key=? AND archive_sha256=? AND state IN ('unknown','uploading','new','received') AND lease_until<=? AND lease_until<=${DB_NOW_MS} AND ${ownerSql}`;
+  const caseParams = leaseToken
+    ? [savedReceipt, intent.idempotency_key, intent.archive_sha256, ...ownerParams]
+    : [savedReceipt, intent.idempotency_key, intent.archive_sha256, now, ...ownerParams];
+  const statements = [env.DB.prepare(caseSql).bind(...caseParams), requireOneChange(env.DB)];
+  if (finalized && intent.state === 'pending') {
+    statements.push(env.DB.prepare(`INSERT INTO retention
+      (idempotency_key, retention_until, zip_asset_id, receipt_asset_id, zip_deleted, receipt_deleted, cleanup_error)
+      SELECT ?, ?, ?, ?, 0, 0, NULL WHERE ${ownerSql}
+      ON CONFLICT(idempotency_key) DO UPDATE SET retention_until=retention.retention_until
+      WHERE retention.retention_until=excluded.retention_until
+        AND retention.zip_asset_id=excluded.zip_asset_id AND retention.receipt_asset_id=excluded.receipt_asset_id`)
+      .bind(intent.idempotency_key, retentionUntilValue, receipt.asset_id, receipt._receipt_asset_id, ...ownerParams));
+    statements.push(requireOneChange(env.DB));
+  }
+  const intentUpdate = intent.state === 'pending'
+    ? `UPDATE retention_intents SET state=?, zip_asset_id=?, receipt_asset_id=?, retention_until=?,
+      reconcile_lease_until=0, reconcile_lease_token='', last_error=NULL
+      WHERE idempotency_key=? AND state='pending' AND archive_sha256=? AND archive_size=?
+        AND case_id=? AND zip_name=? AND receipt_name=? AND policy=? AND consent_policy_version=? AND diagnostic_payload_version=?
+        AND reconcile_lease_token=? AND reconcile_lease_until=? AND ${ownerSql}`
+    : `UPDATE retention_intents SET state=state WHERE state=? AND zip_asset_id=? AND receipt_asset_id=? AND retention_until IS ?
+      AND idempotency_key=? AND archive_sha256=? AND archive_size=? AND case_id=? AND zip_name=? AND receipt_name=? AND policy=? AND consent_policy_version=? AND diagnostic_payload_version=?
+      AND reconcile_lease_token=? AND reconcile_lease_until=? AND ${ownerSql}`;
+  statements.push(env.DB.prepare(intentUpdate)
+    .bind(finalized ? 'bound' : 'resolved_manual', receipt.asset_id, receipt._receipt_asset_id,
+      retentionUntilValue, intent.idempotency_key, intent.archive_sha256, intent.archive_size,
+      intent.case_id, intent.zip_name, intent.receipt_name, intent.policy, intent.consent_policy_version, intent.diagnostic_payload_version,
+      intent.reconcile_lease_token, intent.reconcile_lease_until, ...ownerParams));
+  statements.push(requireOneChange(env.DB));
+  if (leaseToken) {
+    statements.push(env.DB.prepare(`UPDATE cases SET lease_until=0, lease_token='' WHERE idempotency_key=? AND lease_token=? AND lease_until>? AND lease_until>${DB_NOW_MS}`)
+      .bind(...ownerParams), requireOneChange(env.DB));
+  }
+  try {
+    await env.DB.batch(statements);
+  } catch (error) {
+    // Preserve operational errors; map only our deliberately triggered constraint.
+    if (String(error?.message).includes('NOT NULL constraint failed: cases.archive_sha256')) {
+      reject(leaseToken ? 'lease_superseded' : 'retention_bind_conflict', 409);
+    }
+    throw error;
+  }
+  return { ...receipt, _receipt_asset_id: receipt._receipt_asset_id };
+}
+
+function intentError(error) {
+  return error instanceof Rejection ? error.code : 'reconcile_failed';
+}
+
+async function verifyRemoteZip(store, asset, expectedSize, expectedHash) {
+  validateAssetId(asset?.id);
+  if (asset.size !== expectedSize) reject('remote_asset_metadata_mismatch', 503);
+  const bytes = await store.readAsset(asset.id, MAX_UPLOAD);
+  if (bytes.length !== expectedSize || await digest(bytes) !== expectedHash) reject('remote_binding', 503);
+  return bytes;
+}
+
+export async function reconcilePendingIntent(env, store, intent, now = Date.now()) {
+  if (now < intent.publish_deadline) return { state: 'not_due' };
+  const claimed = await env.DB.prepare(`UPDATE retention_intents SET state='pending', reconcile_lease_until=?, reconcile_lease_token=?
+    WHERE idempotency_key=? AND (state='pending' OR (state='unresolved' AND last_error='remote_pair_incomplete')) AND publish_deadline<=? AND reconcile_lease_until<=?
+      AND NOT EXISTS (SELECT 1 FROM cases WHERE cases.idempotency_key=retention_intents.idempotency_key AND lease_until>?)
+      AND NOT EXISTS (SELECT 1 FROM retention WHERE retention.idempotency_key=retention_intents.idempotency_key AND (cleanup_lease_token!='' OR cleanup_lease_until>?)) RETURNING *`)
+    .bind(now + LEASE_MS, crypto.randomUUID(), intent.idempotency_key, now, now, now, now).first();
+  if (!claimed) return { state: 'busy' };
+  const leaseToken = claimed.reconcile_lease_token;
+  try {
+    await store.verifyInbox();
+    const listed = await store.listAssets();
+    const matchingZip = listed.filter(asset => asset.name === claimed.zip_name);
+    const matchingReceipt = listed.filter(asset => asset.name === claimed.receipt_name);
+    if (matchingZip.length > 1 || matchingReceipt.length > 1) reject('duplicate_assets', 503);
+    const zip = matchingZip[0];
+    const receiptAsset = matchingReceipt[0];
+    if (zip && !receiptAsset) {
+      await verifyRemoteZip(store, zip, claimed.archive_size, claimed.archive_sha256);
+      const updated = await env.DB.prepare(`UPDATE retention_intents SET state='orphan_cleanup', last_error=?, reconcile_lease_until=0, reconcile_lease_token='' WHERE idempotency_key=? AND state='pending' AND reconcile_lease_token=? AND reconcile_lease_until>? AND reconcile_lease_until>${DB_NOW_MS}`)
+        .bind('zip_only_orphan', claimed.idempotency_key, leaseToken, Date.now()).run();
+      return { state: updated.meta?.changes === 1 ? 'orphan_cleanup' : 'busy' };
+    }
+    if (!zip || !receiptAsset) throw new Rejection('remote_pair_incomplete', 503);
+    await verifyRemoteZip(store, zip, claimed.archive_size, claimed.archive_sha256);
+    if (!Number.isSafeInteger(receiptAsset.id) || receiptAsset.id <= 0 || receiptAsset.size <= 0) throw new Rejection('remote_asset_metadata_mismatch', 503);
+    const receiptBytes = await store.readAsset(receiptAsset.id, 64 * 1024);
+    if (receiptBytes.length !== receiptAsset.size) throw new Rejection('remote_asset_metadata_mismatch', 503);
+    const receipt = strictJson(receiptBytes);
+    validateRetentionReceipt(receipt, claimed, zip.id, receiptAsset.id);
+    const bound = await bindRetentionIntent(env, { ...claimed, state: 'pending' }, receipt, Date.now(), null);
+    return { state: 'bound', receipt: bound };
+  } catch (error) {
+    const code = intentError(error);
+    const retryable = !(error instanceof Rejection) || /^github_http_(401|403|408|429|5\d\d)$/.test(code) || ['upstream_timeout', 'remote_pair_incomplete'].includes(code);
+    const updated = await env.DB.prepare(`UPDATE retention_intents SET state=?, last_error=?, reconcile_lease_until=0, reconcile_lease_token='' WHERE idempotency_key=? AND state='pending' AND reconcile_lease_token=? AND reconcile_lease_until>? AND reconcile_lease_until>${DB_NOW_MS}`)
+      .bind(retryable ? 'pending' : 'unresolved', code, claimed.idempotency_key, leaseToken, Date.now()).run();
+    return updated.meta?.changes === 1 ? { state: retryable ? 'retryable' : 'unresolved', error: code } : { state: 'busy' };
+  }
+}
+
+async function cleanupOrphanIntent(env, store, intent, now) {
+  const token = crypto.randomUUID();
+  const claimed = await env.DB.prepare(`UPDATE retention_intents SET reconcile_lease_until=?, reconcile_lease_token=?
+    WHERE idempotency_key=? AND state='orphan_cleanup' AND reconcile_lease_until<=? AND reconcile_lease_until<=${DB_NOW_MS}
+      AND NOT EXISTS (SELECT 1 FROM cases WHERE cases.idempotency_key=retention_intents.idempotency_key AND (lease_until>? OR lease_until>${DB_NOW_MS}))
+      AND NOT EXISTS (SELECT 1 FROM retention WHERE retention.idempotency_key=retention_intents.idempotency_key AND (cleanup_lease_token!='' OR cleanup_lease_until>? OR cleanup_lease_until>${DB_NOW_MS})) RETURNING *`)
+    .bind(now + LEASE_MS, token, intent.idempotency_key, now, now, now).first();
+  if (!claimed) return { state: 'busy' };
+  try {
+    if (claimed.policy !== 'auto_delete') reject('orphan_manual_review', 503);
+    await store.verifyInbox();
+    const assets = await store.listAssets();
+    const zip = assets.filter(asset => asset.name === claimed.zip_name);
+    const receipt = assets.filter(asset => asset.name === claimed.receipt_name);
+    if (zip.length > 1 || receipt.length) reject('orphan_identity_ambiguous', 503);
+    if (zip.length) {
+      await verifyRemoteZip(store, zip[0], claimed.archive_size, claimed.archive_sha256);
+      const owned = await env.DB.prepare(`SELECT idempotency_key FROM retention_intents WHERE idempotency_key=? AND state='orphan_cleanup' AND reconcile_lease_token=? AND reconcile_lease_until>${DB_NOW_MS}`)
+        .bind(claimed.idempotency_key, token).first();
+      if (!owned) return { state: 'busy' };
+      await store.deleteAndConfirmAsset(zip[0].id, { name: claimed.zip_name });
+    }
+    const updated = await env.DB.prepare(`UPDATE retention_intents SET state='manual_review', last_error='orphan_deleted_late_post_unproven', reconcile_lease_until=0, reconcile_lease_token=''
+      WHERE idempotency_key=? AND state='orphan_cleanup' AND reconcile_lease_token=? AND reconcile_lease_until>${DB_NOW_MS}`)
+      .bind(claimed.idempotency_key, token).run();
+    return { state: updated.meta?.changes === 1 ? 'manual_review' : 'busy' };
+  } catch (error) {
+    const manual = error instanceof Rejection && error.code === 'orphan_manual_review';
+    const updated = await env.DB.prepare(`UPDATE retention_intents SET state=?, last_error=?, reconcile_lease_until=0, reconcile_lease_token=''
+      WHERE idempotency_key=? AND state='orphan_cleanup' AND reconcile_lease_token=? AND reconcile_lease_until>${DB_NOW_MS}`)
+      .bind(manual ? 'manual_review' : 'orphan_cleanup', intentError(error), claimed.idempotency_key, token).run();
+    return { state: updated.meta?.changes === 1 ? (manual ? 'manual_review' : 'retryable') : 'busy' };
+  }
+}
+
+export async function reconcileRetentionIntents(env, store, now = Date.now()) {
+  const cursor = await env.DB.prepare("SELECT created_at,idempotency_key,version FROM retention_queue_cursor WHERE name='reconcile'").bind().first();
+  const select = `SELECT * FROM retention_intents WHERE (state IN ('pending','orphan_cleanup')
+    OR (state='unresolved' AND last_error='remote_pair_incomplete')) AND publish_deadline<=? AND reconcile_lease_until<=?
+    AND (created_at>? OR (created_at=? AND idempotency_key>?)) ORDER BY created_at,idempotency_key LIMIT 25`;
+  let rows = await env.DB.prepare(select).bind(now, now, cursor?.created_at ?? -1, cursor?.created_at ?? -1, cursor?.idempotency_key ?? '').all();
+  if (!(rows.results || []).length && cursor) rows = await env.DB.prepare(select).bind(now, now, -1, -1, '').all();
+  const last = rows.results?.at(-1);
+  if (last) await env.DB.prepare(`INSERT INTO retention_queue_cursor(name,created_at,idempotency_key,version) VALUES ('reconcile',?,?,1)
+    ON CONFLICT(name) DO UPDATE SET created_at=excluded.created_at,idempotency_key=excluded.idempotency_key,version=retention_queue_cursor.version+1
+    WHERE retention_queue_cursor.version=?`)
+    .bind(last.created_at, last.idempotency_key, cursor?.version ?? -1).run();
+  const counts = { bound: 0, orphanCleanup: 0, unresolved: 0, retryable: 0, busy: 0, manualReview: 0 };
+  for (const intent of rows.results || []) {
+    const result = intent.state === 'orphan_cleanup' ? await cleanupOrphanIntent(env, store, intent, now) : await reconcilePendingIntent(env, store, intent, now);
+    if (result.state === 'bound') counts.bound++;
+    else if (result.state === 'orphan_cleanup') counts.orphanCleanup++;
+    else if (result.state === 'unresolved') counts.unresolved++;
+    else if (result.state === 'retryable') counts.retryable++;
+    else if (result.state === 'manual_review') counts.manualReview++;
+    else counts.busy++;
+  }
+  const backlog = await env.DB.prepare("SELECT COUNT(*) AS n FROM retention_intents WHERE state='orphan_cleanup'").bind().first();
+  counts.orphanBacklog = backlog.n;
+  return counts;
+}
+
+async function deleteRetentionRow(env, store, row, now = Date.now()) {
+  const lease = crypto.randomUUID();
+  const claimedAt = now;
+  const claimed = await env.DB.prepare(`UPDATE retention SET cleanup_lease_until=?, cleanup_lease_token=?
+    WHERE idempotency_key=? AND cleanup_lease_until<=? AND cleanup_lease_until<=${DB_NOW_MS}
+      AND NOT EXISTS (SELECT 1 FROM cases WHERE cases.idempotency_key=retention.idempotency_key AND (lease_until>? OR lease_until>${DB_NOW_MS}))
+      AND NOT EXISTS (SELECT 1 FROM retention_intents WHERE retention_intents.idempotency_key=retention.idempotency_key AND (reconcile_lease_until>? OR reconcile_lease_until>${DB_NOW_MS})) RETURNING idempotency_key`)
+    .bind(now + LEASE_MS, lease, row.idempotency_key, now, now, now).first();
+  if (!claimed) reject('retention_cleanup_in_progress', 409);
+  row.cleanup_lease_token = lease;
+  const existingIntent = await env.DB.prepare('SELECT * FROM retention_intents WHERE idempotency_key=?').bind(row.idempotency_key).first();
+  if (!existingIntent) {
+    const saved = await env.DB.prepare('SELECT * FROM cases WHERE idempotency_key=?').bind(row.idempotency_key).first();
+    if (!saved?.receipt) reject('retention_legacy_binding_failed', 503);
+    const receipt = strictJson(saved.receipt);
+    const version = [POLICY, FULL_POLICY, FULL_V3_POLICY].indexOf(receipt.consent_policy_version) + 1;
+    const names = intentNames({ idempotency_key: row.idempotency_key });
+    const intent = { case_id: names.caseId, archive_sha256: saved.archive_sha256, archive_size: receipt.size_bytes,
+      consent_policy_version: receipt.consent_policy_version, diagnostic_payload_version: version, policy: receipt.retention_policy };
+    const savedReceiptAssetId = receipt._receipt_asset_id;
+    validateRetentionReceipt(receipt, intent, row.zip_asset_id, row.receipt_asset_id);
+    if (!version || receipt.retention_policy !== 'auto_delete' || Date.parse(receipt.retention_until) !== row.retention_until
+        || (savedReceiptAssetId != null && savedReceiptAssetId !== row.receipt_asset_id)) reject('retention_legacy_binding_failed', 503);
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO retention_intents
+        (idempotency_key, case_id, archive_sha256, archive_size, consent_policy_version, diagnostic_payload_version, zip_name, receipt_name, policy, created_at, publish_deadline, state, zip_asset_id, receipt_asset_id, retention_until, last_error)
+        SELECT ?,?,?,?,?,?,?,?,?,?,?,'manual_review',?,?,?,'legacy_retention_review'
+        WHERE EXISTS (SELECT 1 FROM cases WHERE idempotency_key=? AND archive_sha256=? AND receipt=? AND state='received' AND lease_until<=${DB_NOW_MS})
+          AND EXISTS (SELECT 1 FROM retention WHERE idempotency_key=? AND cleanup_lease_token=? AND cleanup_lease_until>${DB_NOW_MS} AND zip_asset_id=? AND receipt_asset_id=? AND retention_until=?)`)
+        .bind(row.idempotency_key, names.caseId, saved.archive_sha256, receipt.size_bytes, receipt.consent_policy_version, version,
+          names.zipName, names.receiptName, receipt.retention_policy, now, now, row.zip_asset_id, row.receipt_asset_id, row.retention_until,
+          row.idempotency_key, saved.archive_sha256, saved.receipt, row.idempotency_key, lease, row.zip_asset_id, row.receipt_asset_id, row.retention_until),
+      requireOneChange(env.DB),
+    ]);
+    reject('retention_manual_review_required', 503);
+  }
+  if (['manual_review', 'cleanup_watch'].includes(existingIntent.state)) reject('retention_manual_review_required', 503);
+  const owned = `idempotency_key=? AND cleanup_lease_token=? AND cleanup_lease_until>? AND cleanup_lease_until>${DB_NOW_MS}`;
+  for (const [flag, assetId, suffix] of [
+    ['zip_deleted', row.zip_asset_id, '.zip'], ['receipt_deleted', row.receipt_asset_id, '.receipt.json'],
+  ]) {
+    if (row[flag]) continue;
+    await store.deleteAndConfirmAsset(assetId, { name: `feedback-${row.idempotency_key}${suffix}` });
+    const updated = await env.DB.prepare(`UPDATE retention SET ${flag}=1, cleanup_error=NULL WHERE ${owned} AND ${flag}=0`)
+      .bind(row.idempotency_key, lease, Date.now()).run();
+    if (updated.meta?.changes !== 1) reject('retention_cleanup_lease_lost', 409);
+  }
+  const at = Date.now();
+  try {
+    const intent = await env.DB.prepare('SELECT idempotency_key FROM retention_intents WHERE idempotency_key=?')
+      .bind(row.idempotency_key).first();
+    const statements = [];
+    if (intent) {
+      statements.push(env.DB.prepare(`UPDATE retention_intents SET state='manual_review', last_error='cleanup_late_post_unproven'
+        WHERE idempotency_key=? AND EXISTS (SELECT 1 FROM retention WHERE ${owned} AND zip_deleted=1 AND receipt_deleted=1)`)
+        .bind(row.idempotency_key, row.idempotency_key, lease, at), requireOneChange(env.DB));
+    }
+    statements.push(
+      env.DB.prepare(`INSERT INTO deleted_cases(idempotency_key, deleted_at)
+        SELECT idempotency_key, ? FROM retention WHERE ${owned} AND zip_deleted=1 AND receipt_deleted=1`)
+        .bind(at, row.idempotency_key, lease, at), requireOneChange(env.DB),
+      env.DB.prepare(`DELETE FROM retention WHERE ${owned} AND zip_deleted=1 AND receipt_deleted=1`)
+        .bind(row.idempotency_key, lease, at), requireOneChange(env.DB),
+      env.DB.prepare("DELETE FROM cases WHERE idempotency_key=? AND state='received' AND lease_until<=? AND lease_until<=" + DB_NOW_MS)
+        .bind(row.idempotency_key, at), requireOneChange(env.DB),
+    );
+    await env.DB.batch(statements);
+  } catch (error) {
+    if (String(error?.message).includes('NOT NULL constraint failed: cases.archive_sha256')) reject('retention_cleanup_lease_lost', 409);
+    throw error;
+  }
+}
+
+async function recordCleanupError(env, key, lease, error) {
+  if (!lease) throw error;
+  const recorded = await env.DB.prepare(`UPDATE retention SET cleanup_error=?, cleanup_lease_until=0, cleanup_lease_token='' WHERE idempotency_key=? AND cleanup_lease_token=? AND cleanup_lease_until>${DB_NOW_MS}`)
+    .bind(error instanceof Rejection ? error.code : type(error), key, lease).run();
+  if (recorded.success === false || recorded.meta?.changes !== 1) reject('retention_cleanup_error_record_failed', 503);
+}
+
+export async function deleteRetainedCase(env, store, key) {
+  const row = await env.DB.prepare('SELECT idempotency_key, retention_until, zip_asset_id, receipt_asset_id, zip_deleted, receipt_deleted FROM retention WHERE idempotency_key=?')
+    .bind(key).first();
+  if (!row) {
+    const deleted = await env.DB.prepare('SELECT idempotency_key FROM deleted_cases WHERE idempotency_key=?').bind(key).first();
+    if (deleted) {
+      const review = await env.DB.prepare("SELECT idempotency_key FROM retention_intents WHERE idempotency_key=? AND state IN ('manual_review','cleanup_watch')").bind(key).first();
+      if (review) reject('retention_manual_review_required', 503);
+      return;
+    }
+    reject('retention_case_not_found', 404);
+  }
+  try {
+    await deleteRetentionRow(env, store, row);
+  } catch (error) {
+    if (!(error instanceof Rejection && ['retention_cleanup_in_progress', 'retention_cleanup_lease_lost'].includes(error.code))) {
+      await recordCleanupError(env, key, row.cleanup_lease_token, error);
+    }
+    throw error;
+  }
+  reject('retention_manual_review_required', 503);
+}
+
+export async function pruneExpiredCases(env, store, now = Date.now()) {
+  const expired = await env.DB.prepare(
+    'SELECT idempotency_key, retention_until, zip_asset_id, receipt_asset_id, zip_deleted, receipt_deleted FROM retention WHERE retention_until<=?'
+  ).bind(now).all();
+  const deletedCaseIds = [];
+  let failed = 0, busy = 0;
+  for (const row of expired.results || []) {
+    try {
+      await deleteRetentionRow(env, store, row);
+      deletedCaseIds.push(row.idempotency_key);
+    } catch (error) {
+      if (error instanceof Rejection && ['retention_cleanup_in_progress', 'retention_cleanup_lease_lost'].includes(error.code)) busy++;
+      else {
+        failed++;
+        await recordCleanupError(env, row.idempotency_key, row.cleanup_lease_token, error);
+      }
+    }
+  }
+  const backlog = await env.DB.prepare('SELECT COUNT(*) AS n FROM retention WHERE retention_until<=?').bind(now).first();
+  return { deletedCaseIds, failed, busy, backlog: backlog.n };
+}
+
+function type(error) { return error?.constructor?.name || 'Error'; }
+
+function adminTokenMatches(request, env) {
+  const expected = env.FEEDBACK_ADMIN_DELETE_TOKEN;
+  return typeof expected === 'string' && expected.length >= 32
+    && request.headers.get('Authorization') === 'Bearer ' + expected;
+}
+
 export class GitHubStore {
   constructor(token, releaseId, fetcher = fetch, deadline = Infinity, probe = null) {
     this.token = token; this.releaseId = releaseId; this.fetcher = fetcher.bind(globalThis); this.deadline = deadline;
@@ -441,11 +821,63 @@ export class GitHubStore {
       if (target.protocol !== 'https:' || target.hostname !== 'release-assets.githubusercontent.com' || target.username || target.password) reject('asset_redirect', 503);
       response = await this.fetcher(target, { redirect: 'manual', signal: AbortSignal.timeout(this.budget()) });
     }
-    if (!response.ok) reject(`github_http_${response.status}`, 503);
+    if (!response.ok && !(method === 'DELETE' && response.status === 404)) reject(`github_http_${response.status}`, 503);
+    if (method === 'DELETE') return null;
     const bytes = await readBounded(response, maximum);
     return binary ? bytes : JSON.parse(utf8.decode(bytes));
   }
-  async publish(envelope, archive) {
+  async deleteAsset(assetId) {
+    if (!Number.isSafeInteger(assetId) || assetId <= 0) reject('asset_id_invalid', 503);
+    return this.request(`/releases/assets/${assetId}`, { method: 'DELETE', maximum: 0 });
+  }
+  async readAssetMetadata(assetId) {
+    validateAssetId(assetId);
+    try {
+      return { found: true, metadata: await this.request(`/releases/assets/${assetId}`, { maximum: 64 * 1024 }) };
+    } catch (error) {
+      if (error instanceof Rejection && error.code === 'github_http_404') return { found: false };
+      throw error;
+    }
+  }
+  async deleteAndConfirmAsset(assetId, expected) {
+    validateAssetId(assetId);
+    await this.verifyInbox();
+    const assets = await this.listAssets();
+    const matching = assets.filter(asset => asset.id === assetId || asset.name === expected.name);
+    if (matching.some(asset => asset.id !== assetId || asset.name !== expected.name) || matching.length > 1) reject('remote_asset_metadata_mismatch', 503);
+    if (matching.length) {
+      const before = await this.readAssetMetadata(assetId);
+      if (!before.found || before.metadata.id !== assetId || before.metadata.name !== expected.name) reject('remote_asset_metadata_mismatch', 503);
+    }
+    try { await this.deleteAsset(assetId); } catch (_) { /* readback may resolve a lost response */ }
+    await this.verifyInbox();
+    const after = await this.readAssetMetadata(assetId);
+    if (after.found) reject('asset_delete_unconfirmed', 503);
+    const remaining = await this.listAssets();
+    if (remaining.some(asset => asset.id === assetId || asset.name === expected.name)) reject('asset_delete_unconfirmed', 503);
+    return { confirmed: true };
+  }
+  async verifyInbox() {
+    const repo = await this.request('');
+    if (repo.private !== true || repo.full_name !== REPOSITORY) reject('repository_not_private', 503);
+    const release = await this.request(`/releases/${this.releaseId}`);
+    if (!Number.isSafeInteger(release.id) || release.id <= 0 || String(release.id) !== String(this.releaseId)
+        || release.tag_name !== INBOX_TAG) reject('inbox_identity', 503);
+  }
+  async listAssets() {
+    const assets = [];
+    for (let page = 1; page <= 22; page++) {
+      const rows = await this.request(`/releases/${this.releaseId}/assets?per_page=100&page=${page}`);
+      assets.push(...rows);
+      if (rows.length < 100) break;
+      if (page === 22) reject('inbox_capacity', 503);
+    }
+    return assets;
+  }
+  async readAsset(assetId, maximum = 2 * 1024 * 1024) {
+    return this.request(`/releases/assets/${assetId}`, { binary: true, maximum });
+  }
+  async publish(envelope, archive, autoRetention = false) {
     // 仓库、发布、第一页资产三个读取互不依赖，同时发出，省掉两次串行往返。
     // 判断结果仍按原来的先后：先看仓库，再看发布，最后看资产，所以同时出错时报的错误码和以前一致。
     // 令牌只授权这一个仓库；仓库不是私有时，多发出去的两次也只是读，写入要等检查通过之后才开始。
@@ -492,9 +924,11 @@ export class GitHubStore {
       ms => this.mark('gh_zip_readback', ms));
     if (stored.length !== archive.length || await digest(stored) !== envelope.archive_sha256) reject('remote_binding', 409);
     if (!receiptAsset) {
+      const receivedAt = new Date().toISOString();
       const receipt = { case_id: caseId, archive_sha256: envelope.archive_sha256, size_bytes: archive.length,
-        received_at: new Date().toISOString(), storage_status: 'stored', validation_status: 'validated',
-        retention_until: null, retention_policy: 'manual_deletion', repository: REPOSITORY,
+        received_at: receivedAt, storage_status: 'stored', validation_status: 'validated',
+        retention_until: autoRetention ? retentionUntil(receivedAt) : null,
+        retention_policy: autoRetention ? 'auto_delete' : 'manual_deletion', repository: REPOSITORY,
         asset_id: zip.id, consent_policy_version: envelope.consent_policy_version };
       if (envelope.diagnostic_payload_version >= 2) receipt.validation_scope = 'container_sha256_and_member_catalog';
       receiptAsset = await this.span(
@@ -513,8 +947,13 @@ export class GitHubStore {
     }
     if (receipt.case_id !== caseId || receipt.archive_sha256 !== envelope.archive_sha256 || receipt.size_bytes !== archive.length
         || receipt.asset_id !== zip.id || receipt.repository !== REPOSITORY || receipt.storage_status !== 'stored'
-        || receipt.validation_status !== 'validated' || receipt.consent_policy_version !== envelope.consent_policy_version) reject('receipt_binding', 503);
+        || receipt.validation_status !== 'validated' || receipt.consent_policy_version !== envelope.consent_policy_version
+        || !Number.isSafeInteger(zip.id) || zip.id <= 0 || !Number.isSafeInteger(receiptAsset.id) || receiptAsset.id <= 0) reject('receipt_binding', 503);
     if (envelope.diagnostic_payload_version >= 2 && receipt.validation_scope !== 'container_sha256_and_member_catalog') reject('receipt_validation_scope', 503);
+    if (!['manual_deletion', 'auto_delete'].includes(receipt.retention_policy)
+        || receipt.retention_policy === 'manual_deletion' && receipt.retention_until !== null
+        || receipt.retention_policy === 'auto_delete' && Date.parse(receipt.retention_until) - Date.parse(receipt.received_at) !== RETENTION_MS) reject('retention_policy_mismatch', 503);
+    receipt._receipt_asset_id = receiptAsset.id;
     return receipt;
   }
 }
@@ -528,6 +967,19 @@ export default {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...extra } });
     if (request.method === 'GET' && url.pathname === '/health') return json({ ready: Boolean(configured), protocol: 1,
       payloadVersions: [1, 2, 3], maxUploadBytes: MAX_UPLOAD, freeOnly: true });
+    const adminCase = /^\/v1\/admin\/feedback\/([a-f0-9]{32})$/.exec(url.pathname);
+    if (request.method === 'DELETE' && adminCase && !url.search) {
+      if (!adminTokenMatches(request, env)) return json({ error: 'admin_unauthorized' }, 401);
+      if (!configured) return json({ error: 'receiver_not_ready' }, 503);
+      try {
+        const token = await installationToken(env, fetch, Date.now() + PUBLISH_DEADLINE_MS);
+        await deleteRetainedCase(env, new GitHubStore(token, env.GITHUB_RELEASE_ID, fetch), adminCase[1]);
+        return json({ case_id: 'feedback-' + adminCase[1], deleted: true });
+      } catch (error) {
+        if (error instanceof Rejection) return json({ error: error.code }, error.status);
+        return json({ error: 'retention_delete_failed' }, 503);
+      }
+    }
     if (request.method !== 'POST' || url.pathname !== '/v1/feedback' || url.search) return json({ error: 'not_found' }, 404);
     if (!configured) return json({ error: 'receiver_not_ready' }, 503);
     let phase = 'headers';
@@ -611,11 +1063,14 @@ export default {
         // 注意这只清“没走完”的行，管不到真正的容量天花板：每份反馈在发布里占 zip 和回执两个资产，
         // 发布的资产上限是 MAX_RELEASE_ASSETS(1000)，所以实际最多收约 500 份，之后只会得到
         // inbox_asset_capacity。收件资产不自动删（保留策略是人工删除），要腾位置得维护者处理。
-        await env.DB.prepare("DELETE FROM cases WHERE state != 'received' AND lease_until <= ? AND idempotency_key != ?")
+        // Intent-bearing cases retain the identity and state needed for recovery.
+        await env.DB.prepare("DELETE FROM cases WHERE state != 'received' AND lease_until <= ? AND idempotency_key != ? AND NOT EXISTS (SELECT 1 FROM retention_intents WHERE retention_intents.idempotency_key=cases.idempotency_key)")
           .bind(Date.now(), envelope.idempotency_key).run();
       }
-      await env.DB.prepare("INSERT OR IGNORE INTO cases SELECT ?, ?, 'new', 0, '', NULL WHERE (SELECT COUNT(*) FROM cases)<1000")
-        .bind(envelope.idempotency_key, envelope.archive_sha256).run();
+      await env.DB.prepare("INSERT OR IGNORE INTO cases SELECT ?, ?, 'new', 0, '', NULL WHERE (SELECT COUNT(*) FROM cases)<1000 AND NOT EXISTS (SELECT 1 FROM deleted_cases WHERE idempotency_key=?)")
+        .bind(envelope.idempotency_key, envelope.archive_sha256, envelope.idempotency_key).run();
+      const deleted = await env.DB.prepare('SELECT idempotency_key FROM deleted_cases WHERE idempotency_key=?').bind(envelope.idempotency_key).first();
+      if (deleted) reject('retention_case_deleted', 409);
       const row = await env.DB.prepare('SELECT * FROM cases WHERE idempotency_key=?').bind(envelope.idempotency_key).first();
       if (!row) reject('case_budget', 429);
       if (row.archive_sha256 !== envelope.archive_sha256) reject('identity_conflict', 409);
@@ -625,6 +1080,8 @@ export default {
       enter('lease');
       // 容量已满、身份冲突这类请求在任何 GitHub 请求之前就被拒了，这一点不变。
       // 同一安装号的并发请求会复用同一枚在途令牌；租约被拒时这一路在后台自己跑完，失败也不能变成未处理拒绝。
+      const existingReceipt = row.receipt ? strictJson(row.receipt) : null;
+      const intent = await createRetentionIntent(env, envelope, existingReceipt ? existingReceipt.retention_policy === 'auto_delete' : retentionNegotiated(request), now);
       const probe = timer ? (name, ms) => timer.inner(name, ms) : null;
       const requestToken = async () => {
         const began = Date.now();
@@ -635,8 +1092,12 @@ export default {
       tokenRequest.catch(() => {});
       // 已经有回执的行（重放一次已收件的案件）保持“已收件”，不能被临时改成 uploading：
       // 重放中途失败会让它变成可被清理的状态，而回执的本地副本只在这一行里。
-      const owned = await env.DB.prepare("UPDATE cases SET state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'uploading' END, lease_until=?, lease_token=? WHERE idempotency_key=? AND lease_until<=? RETURNING idempotency_key")
-        .bind(now + LEASE_MS, lease, envelope.idempotency_key, now).first();
+      const owned = await env.DB.prepare(`UPDATE cases SET state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'uploading' END, lease_until=?, lease_token=?
+        WHERE idempotency_key=? AND lease_until<=?
+          AND NOT EXISTS (SELECT 1 FROM retention_intents WHERE retention_intents.idempotency_key=cases.idempotency_key AND (reconcile_lease_until>? OR state IN ('orphan_cleanup','manual_review','cleanup_watch')))
+          AND NOT EXISTS (SELECT 1 FROM retention WHERE retention.idempotency_key=cases.idempotency_key AND (cleanup_lease_token!='' OR cleanup_lease_until>? OR zip_deleted=1 OR receipt_deleted=1 OR cleanup_error IS NOT NULL))
+        RETURNING idempotency_key`)
+        .bind(now + LEASE_MS, lease, envelope.idempotency_key, now, now, now).first();
       if (!owned) reject('submission_in_progress', 409);
       try {
         enter('github_auth');
@@ -644,12 +1105,38 @@ export default {
           // 令牌拿到才算真的用了上游：配置错误、证书导入失败这类没碰到 GitHub 的失败仍然退额度。
           reachedGitHub = true;
           enter('github_storage');
-          const receipt = await new GitHubStore(token, env.GITHUB_RELEASE_ID, fetch, deadline, probe).publish(envelope, archive);
+          let publishedReceipt;
+          let remoteConflict = false;
+          try {
+            publishedReceipt = await new GitHubStore(token, env.GITHUB_RELEASE_ID, fetch, deadline, probe)
+              .publish(envelope, archive, intent.policy === 'auto_delete');
+          } catch (error) {
+            if (!existingReceipt || !(error instanceof Rejection) || !['receipt_binding', 'retention_policy_mismatch'].includes(error.code)) throw error;
+            remoteConflict = true;
+          }
+          if (existingReceipt && (remoteConflict || existingReceipt.retention_policy !== intent.policy
+              || existingReceipt.retention_policy !== publishedReceipt.retention_policy
+              || existingReceipt.retention_until !== publishedReceipt.retention_until
+              || existingReceipt.asset_id !== publishedReceipt.asset_id
+              || (existingReceipt._receipt_asset_id != null && existingReceipt._receipt_asset_id !== publishedReceipt._receipt_asset_id)
+              || (intent.zip_asset_id != null && intent.zip_asset_id !== publishedReceipt.asset_id)
+              || (intent.receipt_asset_id != null && intent.receipt_asset_id !== publishedReceipt._receipt_asset_id))) {
+            await env.DB.batch([
+              env.DB.prepare(`UPDATE retention_intents SET state='manual_review', last_error='retention_receipt_conflict'
+                WHERE idempotency_key=? AND state=? AND policy=? AND reconcile_lease_token=? AND reconcile_lease_until=?
+                  AND EXISTS (SELECT 1 FROM cases WHERE idempotency_key=? AND receipt=? AND lease_token=? AND lease_until>${DB_NOW_MS})`)
+                .bind(intent.idempotency_key, intent.state, intent.policy, intent.reconcile_lease_token, intent.reconcile_lease_until,
+                  intent.idempotency_key, row.receipt, lease),
+              requireOneChange(env.DB),
+            ]);
+            reject('retention_receipt_conflict', 409);
+          }
+          const receipt = existingReceipt || publishedReceipt;
           enter('receipt_commit');
-          const saved = await env.DB.prepare("UPDATE cases SET state='received', lease_until=0, receipt=? WHERE idempotency_key=? AND lease_token=? RETURNING idempotency_key")
-            .bind(JSON.stringify(receipt), envelope.idempotency_key, lease).first();
-          if (!saved) reject('lease_superseded', 409);
-          return json(receipt, 200, timingHeaders());
+          const bound = await bindRetentionIntent(env, intent, { ...receipt, _receipt_asset_id: publishedReceipt._receipt_asset_id || receipt._receipt_asset_id }, Date.now(), lease);
+          const receiptForClient = { ...bound };
+          delete receiptForClient._receipt_asset_id;
+          return json(receiptForClient, 200, timingHeaders());
         };
         let token = await tokenRequest;
         try {
@@ -669,8 +1156,8 @@ export default {
       } catch (error) {
         // 只给计时器换个阶段名；phase 变量不动，它还要用来判断错误类型和退额度。
         if (timer) timer.enter('lease_release');
-        await env.DB.prepare("UPDATE cases SET lease_until=0, state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'unknown' END WHERE idempotency_key=? AND lease_token=?")
-          .bind(envelope.idempotency_key, lease).run();
+        await env.DB.prepare(`UPDATE cases SET lease_until=0, state=CASE WHEN receipt IS NOT NULL THEN state ELSE 'unknown' END WHERE idempotency_key=? AND lease_token=? AND lease_until>? AND lease_until>${DB_NOW_MS}`)
+          .bind(envelope.idempotency_key, lease, Date.now()).run();
         throw error;
       }
     } catch (error) {

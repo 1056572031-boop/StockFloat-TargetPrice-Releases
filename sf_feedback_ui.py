@@ -183,14 +183,16 @@ _REJECTED_CODES = frozenset({
     "diagnostic_member", "diagnostic_members", "diagnostic_missing_category", "diagnostic_export",
     "diagnostic_inventory", "diagnostic_secret", "diagnostic_inflated_limit", "diagnostic_size",
     "diagnostic_v3_missing", "diagnostic_v3_mixed", "diagnostic_v3_snapshot", "diagnostic_local_header",
-    "zip_member", "zip_members", "inflated_limit", "identity_conflict", "remote_binding", "archive_invalid"})
+    "zip_member", "zip_members", "inflated_limit", "identity_conflict", "remote_binding", "archive_invalid",
+    "retention_case_not_found", "case_deleted", "retention_reconcile_pending",
+    "retention_intent_conflict", "retention_case_deleted", "retention_receipt_conflict"})
 # 服务端明确说“内容有问题”的 HTTP 状态：请求体过大、内容校验不过。具体错误码有三十多个，
 # 逐个列会漏（审查时就漏了 zip_members），所以按状态兜底；列表只是更早、更明确的一层。
 _REJECTED_STATUSES = frozenset({413, 422})
 # 服务端容量已满：同样不是“稍后再试”能解决的（案件数、资产数是永久上限）。
 _CAPACITY_CODES = frozenset({"case_budget", "inbox_asset_capacity", "inbox_capacity"})
-# 409 里真正“等一会儿就好”的只有这两种；其余 409（身份冲突、远端校验和不符）等多久都一样。
-_WAIT_CODES = frozenset({"submission_in_progress", "lease_superseded"})
+# 处理中的 409 可等待；永久冲突与未知错误码分别按拒收名单和默认策略处理。
+_WAIT_CODES = frozenset({"submission_in_progress", "lease_superseded", "retention_cleanup_in_progress", "retention_cleanup_lease_lost"})
 
 
 def _failure_kind(detail):
@@ -239,6 +241,7 @@ _HISTORY_STATUS = {
     "locally_verified": ("待提交", True),
     "submitting": ("正在上传，稍后可重试", True),
     "response_unknown": ("等待确认，可重试", True),
+    "cancel_pending": ("撤回未完成，正在保护本机资料", True),
     "receipt_persisted": ("已收件，本机资料待清理", False),
     "cleanup_pending": ("已收件，等待本机清理", False),
     # 已清理的记录不在记录页展示（history(include_cleaned=False)），所以这里没有 cleaned。
@@ -442,7 +445,13 @@ class FeedbackHistoryDialog(_TitleDragDialog):
             label.setTextFormat(Qt.TextFormat.RichText)
             label.setWordWrap(True)
             line.addWidget(label, 1)
-            if row["status"] == "receipt_persisted":
+            if row["status"] in ("locally_verified", "response_unknown", "cancel_pending"):
+                cancel = QToolButton(box)
+                cancel.setText("重试删除本机资料" if row["status"] == "cancel_pending" else "撤回并删除本机资料")
+                cancel.setToolTip("只删除本机尚未确认收件的资料，不删除已发送内容。")
+                cancel.clicked.connect(lambda _=False, ident=row["outbox_id"]: self._cancel_local(ident))
+                line.addWidget(cancel)
+            elif row["status"] == "receipt_persisted":
                 clean = QToolButton(box)
                 clean.setText("清理")
                 clean.setToolTip("清理本机诊断资料，清理后这条记录不再显示；不会删除已收件的远端反馈。")
@@ -456,6 +465,15 @@ class FeedbackHistoryDialog(_TitleDragDialog):
         note.setObjectName("feedbackEmpty")
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.rows.addWidget(note)
+
+    def _cancel_local(self, outbox_id):
+        try:
+            self.outbox.cancel_local(outbox_id)
+        except OutboxBusy:
+            log_line("feedback local cancellation skipped: record already submitted or busy", "INFO")
+        except Exception:
+            logging.getLogger(__name__).warning("feedback local cancellation failed", exc_info=True)
+        self.refresh()
 
     def _cleanup(self, outbox_id):
         try:

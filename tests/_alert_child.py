@@ -54,8 +54,8 @@ def run_show_and_click():
                           message="发现新版本 v9.9.9。", info=notes,
                           buttons=("暂不更新", "立即更新"), default="立即更新",
                           cancel="暂不更新", on_result=got.append)
-    window = handle._window
-    alert = handle._alert
+    window = handle._window  # discipline-ok(R5): native boundary under test
+    alert = handle._alert  # discipline-ok(R5): native boundary under test
     _marker("numbered_notes", str(alert.informativeText()) == notes)
     _marker("note_lines", len(str(alert.informativeText()).splitlines()))
     _marker("visible", window.isVisible())
@@ -69,8 +69,44 @@ def run_show_and_click():
     _marker("result", ",".join(got))
     _marker("visible_after_click", window.isVisible())
     # 防 GC 注册表必须在收口后清空，否则每弹一次窗就永久漏一个窗口对象
-    _marker("live_after", len(s.NativeAlert._live))
+    _marker("live_after", len(s.NativeAlert._live))  # discipline-ok(R5): registry leak evidence
     return 0 if got == ["立即更新"] and not window.isVisible() else 1
+
+
+def run_force():
+    """Forced update alert: only update/restart or exit, and close attempts do not dismiss it."""
+    got = []
+    handle = s.show_alert(
+        title="软件更新", text="必须更新才能继续使用。",
+        buttons=("更新并重启应用", "退出程序"), default="更新并重启应用",
+        on_result=got.append, dismissible=False)
+    window = handle._window  # discipline-ok(R5): native boundary under test
+    alert = handle._alert  # discipline-ok(R5): native boundary under test
+    _offscreen(window)
+    _marker("titles", ",".join(_titles(alert)))
+    _marker("dismissible", str(handle._dismissible))
+    _marker("esc_key", ",".join(str(ord(button.keyEquivalent() or "\0"))
+                                  for button in alert.buttons()))
+    visible_before_close = bool(window.isVisible())
+    _marker("visible_before_close_attempt", str(visible_before_close))
+    window.performClose_(None)
+    remained_visible = bool(window.isVisible())
+    _marker("window_should_close", str(not remained_visible))
+    _marker("visible_after_close_attempt", str(remained_visible))
+    for button in alert.buttons():
+        if str(button.title()) == "退出程序":
+            button.performClick_(None)
+    _marker("result", ",".join(got))
+    _marker("visible_after_exit", str(window.isVisible()))
+    return 0 if (
+        _titles(alert) == ["更新并重启应用", "退出程序"]
+        and handle._dismissible is False
+        and visible_before_close
+        and remained_visible
+        and all(str(button.keyEquivalent() or "") == "" for button in alert.buttons())
+        and got == ["退出程序"]
+        and not window.isVisible()
+    ) else 1
 
 
 def run_programmatic_close():
@@ -84,7 +120,7 @@ def run_programmatic_close():
     handle.close()                       # 重复收口必须安全
     _marker("result", ",".join(got))
     _marker("visible_after_close", window.isVisible())
-    _marker("live_after", len(s.NativeAlert._live))
+    _marker("live_after", len(s.NativeAlert._live))  # discipline-ok(R5): registry leak evidence
     return 0 if got == [] and not window.isVisible() else 1
 
 
@@ -471,6 +507,8 @@ if __name__ == "__main__":
             sys.exit(run_show_and_click())
         if mode == "close":
             sys.exit(run_programmatic_close())
+        if mode == "force":
+            sys.exit(run_force())
         if mode == "broken":
             sys.exit(run_missing_button_title())
         if mode == "centered":

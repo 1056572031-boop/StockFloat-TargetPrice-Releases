@@ -24,6 +24,7 @@ from nacl.signing import SigningKey
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_identity import NOTES_MAX_CHARS, REPO, TAG, count_notes_chars  # noqa: E402
+from release_sequence import verify_prearchive  # noqa: E402
 # v1.4.55 全局改名：产物与清单里的身份字段一起换（REPO 名不动 —— 那是外部仓库地址，
 # 改它要连 GitHub 仓库一起搬，客户端里也有它）。
 APP_NAME = "Skyrocket.app"
@@ -204,6 +205,7 @@ def main():
     with open(info, "rb") as handle:
         plist = plistlib.load(handle)
     version = str(plist.get("CFBundleShortVersionString", ""))
+    release_sequence = plist.get("SkyrocketReleaseSequence")
     if plist.get("CFBundleIdentifier") != BUNDLE_ID or not version:
         raise SystemExit("应用标识或版本无效")
     root = Path(__file__).resolve().parents[1]
@@ -222,6 +224,13 @@ def main():
     # 一屏显示好几个版本 —— 那种事不该靠肉眼在弹窗里发现，打包时就得红。
     require_own_section(raw_notes, version)
     notes = sf_update.notes_for_version(raw_notes, version)
+    try:
+        verified_sequence = verify_prearchive(
+            root / "tools" / "release_sequence_ledger.json", root / "sf_constants.py", app)
+    except ValueError as exc:
+        raise SystemExit("拒绝生成 OTA 资产：%s" % exc) from exc
+    if verified_sequence != {"version": version, "release_sequence": release_sequence}:
+        raise SystemExit("拒绝生成 OTA 资产：Info.plist 发布序号与源码或账本不一致")
     if not notes:
         raise SystemExit("发布说明为空：%s" % notes_file)
     if len(notes) > 4000:
@@ -233,6 +242,9 @@ def main():
     if not key_file.is_file():
         raise SystemExit("未找到本机更新私钥")
     signing_key = SigningKey(base64.b64decode(key_file.read_text(encoding="ascii").strip()))
+    from sf_constants import UPDATE_PUBLIC_KEY_B64
+    if bytes(signing_key.verify_key) != base64.b64decode(UPDATE_PUBLIC_KEY_B64, validate=True):
+        raise SystemExit("更新签名密钥与客户端公钥不一致")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     os.chmod(output, 0o700)
@@ -256,6 +268,7 @@ def main():
         "channel": "stable",
         "stage": release_stage,
         "version": version,
+        "release_sequence": release_sequence,
         "published_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "bundle_id": BUNDLE_ID,
         "app_name": APP_NAME,

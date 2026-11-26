@@ -10,9 +10,11 @@ import time
 import queue
 import threading
 import datetime
+import inspect
 import traceback
 import platform
 import tempfile
+from pathlib import Path
 
 # ---- v1.4.5 启动位置守卫：必须在 PyQt6 之前（旧副本从 /tmp 误启动会在
 # Qt 导入期 SIGSEGV，只留"程序意外退出"弹窗；守卫改为提示后正常退出）----
@@ -107,6 +109,8 @@ from sf_quote_loop import (QuoteLoopSchedule, WakeDetector, minute_retry_state,
 from sf_window_message_router import WindowMessageRouter
 from sf_update_controller import UpdateController
 from sf_update_flow import UpdateFlowController
+from sf_update_policy import PolicyState
+from sf_update_cache import UpdateCache
 from sf_diagnostics_controller import DiagnosticsExportController
 from sf_window_state import UpdateFlowState
 from sf_window_geometry import keep_on_screen_position
@@ -114,7 +118,7 @@ from sf_window_lifecycle import WindowLifecycleController
 from sf_quote_runtime import QuoteRuntimeController
 from sf_quote_presentation import QuotePresentationController
 from sf_target_controller import TargetController
-from sf_face_guard_controller import FaceGuardController
+from sf_face_guard_controller import FaceGuardController, FaceGuardPort
 
 # ---- 模块化拆分 sf_runtime（v1.2.41 上帝类拆分第三步）：App Nap 省电 / 置顶 / 缩 Dock 运行状态 ----
 from sf_runtime import RuntimeState, restore_ui_interval
@@ -176,7 +180,8 @@ from sf_constants import (ANIM_LARGE_MS, ANIM_LARGE_PCT, ANIM_NORMAL_MS, ANIM_TI
                           TEMP_SWEEP_DELAY_MS, STAGING_PRUNE_DELAY_MS,
                           UPDATE_PERIODIC_MS, UPDATE_RESUME_MIN_GAP_SEC,
                           UPDATE_RETRY_FIRST_MS, UPDATE_RETRY_LATER_MS,
-                          BELL_BUBBLE_DWELL_MS, BELL_BUBBLE_HIDE_GRACE_MS)
+                          BELL_BUBBLE_DWELL_MS, BELL_BUBBLE_HIDE_GRACE_MS,
+                          RELEASE_SEQUENCE, UPDATE_STAGING_DIR)
 
 # ---- 再导出契约（v1.3.51 显式登记，禁止当死代码删掉）----
 # 下面这批符号在本文件正文里**零使用**，看起来像导入冗余，实际是刻意保留的再导出：
@@ -453,6 +458,365 @@ def _ensure_update_controller(owner):
     controller = UpdateController(enqueue, _bundle_version)
     owner._update_controller = controller
     return controller
+
+
+def _call_with_optional_token(method, *args, token=None):
+    """Select legacy signatures before calling; never retry an executed operation."""
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        # Unknown callables use the current contract once; failures stay visible.
+        return method(*args, token)
+    try:
+        signature.bind(*args, token)
+    except TypeError:
+        signature.bind(*args)
+        return method(*args)
+    return method(*args, token)
+
+
+class _UpdateWindowControls:
+    """Narrow lifecycle controls that the update flow needs from its window."""
+
+    def __init__(self, target):
+        self._target = target
+
+    def controller(self):
+        return self._target.update_controller()
+
+    def download_started(self, cancel_event, prompt_when_ready, show_progress, token=None):
+        return _call_with_optional_token(self._target.begin_update_download,
+                                         cancel_event, prompt_when_ready, show_progress, token=token)
+
+    def download_finished(self, update, archive, error, record, token=None):
+        return _call_with_optional_token(self._target.finish_update_download,
+                                         update, archive, error, record, token=token)
+
+    def finish_update_check(self, manual):
+        return self._target.finish_update_check(manual, consume_abort=True)
+
+    def record_download(self, details):
+        return self._target.record_update_download(details)
+
+    def dispose_dialog(self, dialog):
+        return self._target.dispose_update_dialog(dialog)
+
+    def current_prompt_dialog(self):
+        return self._target.current_update_prompt_dialog()
+
+    def anchor_dialog(self):
+        return self._target.anchor_update_dialog_screen()
+
+    def set_prompt_dialog(self, dialog):
+        return self._target.set_update_prompt_dialog(dialog)
+
+    def queue(self, item):
+        return self._target.queue_update_message(item)
+
+    def show_message(self, title, body):
+        return self._target.show_update_message(title, body)
+
+    def show_checking(self):
+        return self._target.show_checking_dialog()
+
+    def install(self, update, archive):
+        return self._target.install_update(update, archive)
+
+    def quit(self):
+        return self._target.quit()
+
+
+class _UpdateFlowPort:
+    """把真实窗口的生命周期/UI动作装配到强制更新流程。"""
+
+    def __init__(self, owner):
+        self._owner = owner
+        self._controls = _UpdateWindowControls(owner)
+        self._controller = self._controls.controller()
+        try:
+            self._cache: UpdateCache | None = UpdateCache(Path(UPDATE_STAGING_DIR))
+        except Exception as exc:
+            self._cache = None
+            log_swallow("stock_float_window.update_cache_init", exc)
+        self._flow = UpdateFlowController(port=self, cache=self._cache,
+                                           log=lambda *args: log_line(*args),
+                                           swallow=lambda *args: log_swallow(*args))
+        self._cancel_event = None
+        self._check_token = None
+        self._manifest_retry_scheduled = False
+        self._manifest_retry_attempts = 0
+        self._stopped = False
+        self._prompt_token = None
+
+    def invalidate_prompt(self):
+        self._prompt_token = None
+
+    @property
+    def flow(self):
+        return self._flow
+
+    @property
+    def cache(self):
+        return self._cache
+
+
+    def accept_legacy_manifest(self, update):
+        """在缓存锁下拒绝已经迁移到现代协议后的旧清单。"""
+        if self._cache is None:
+            raise RuntimeError("更新缓存不可用，无法验证协议降级")
+        with self._cache.write_lock():
+            return self._cache.accept_manifest_identity(update)
+
+    def finish_update_check(self, manual):
+        return self._controls.finish_update_check(manual)
+
+    def get_local_version(self):
+        return _bundle_version()
+
+    def get_local_sequence(self):
+        try:
+            import plistlib
+            plist = os.path.abspath(os.path.join(os.path.dirname(sys.executable), '..', 'Info.plist'))
+            if os.path.exists(plist):
+                with open(plist, 'rb') as f:
+                    sequence = plistlib.load(f).get('SkyrocketReleaseSequence')
+                if type(sequence) is int and sequence > 0:
+                    return sequence
+        except Exception:
+            pass
+        return RELEASE_SEQUENCE
+
+    def start_download(self, update, *, prompt_when_ready, show_progress, token=None):
+        self._cancel_event = threading.Event()
+        cancel_event = self._cancel_event
+        try:
+            self._controls.download_started(
+                cancel_event, prompt_when_ready, show_progress, token)
+            started = _call_with_optional_token(self._controller.download, update, cancel_event, token=token)
+            if started is False:
+                raise RuntimeError("更新下载未能启动")
+        except Exception as exc:
+            cancel_event.set()
+            if token is not None:
+                try:
+                    self._controller.cancel_download(update, token=token)
+                except Exception as cleanup_exc:
+                    log_swallow("stock_float_window.update_start_cancel", cleanup_exc)
+                try:
+                    self._controls.download_finished(update, None, exc, self._record_download, token)
+                except Exception as cleanup_exc:
+                    log_swallow("stock_float_window.update_start_cleanup", cleanup_exc)
+            if self._cancel_event is cancel_event:
+                self._cancel_event = None
+            raise
+
+    def on_download_finished(self, update, archive, error, token=None):
+        current = self._flow.accepts_download_terminal(update, token)
+        try:
+            self._controls.download_finished(update, archive, error, self._record_download, token)
+        except Exception as exc:
+            log_swallow("stock_float_window.update_terminal_cleanup", exc)
+        if not current:
+            return False
+        return self._flow.on_download_finished(update, archive, error, token)
+
+    def _record_download(self, update, archive, error, background):
+        try:
+            import sf_update
+            cancelled = isinstance(error, sf_update.UpdateCancelled)
+            fatal = isinstance(error, sf_update.UpdateFatal)
+        except Exception as exc:
+            cancelled = fatal = False
+            log_swallow("stock_float_window.update_download_classify", exc)
+        try:
+            self._controls.record_download({
+                "outcome": ("ok" if error is None else
+                            ("cancelled" if cancelled else "failed")),
+                "fatal": bool(fatal),
+                "error_type": type(error).__name__ if error is not None else "",
+                "error": str(error)[:200] if error is not None else "",
+                "version": str(getattr(update, "version", "") or ""),
+                "silent": bool(background),
+                "at": time.time(),
+            })
+        except Exception as exc:
+            log_swallow("stock_float_window.update_last_download", exc)
+
+    def cancel_download(self, update=None, *, token=None):
+        return self._controller.cancel_download(update, token=token)
+
+    def stop(self):
+        self._stopped = True
+        self.invalidate_prompt()
+        self._flow.cancel_download()
+        self._controller.stop()
+
+    def prompt_update(self, update, *, kind, generation=None, identity=None):
+        if kind in ("force_pending", "force_ready"):
+            self._show_forced_prompt(update, kind, generation=generation, identity=identity)
+        else:
+            self._show_ported_update_prompt(update, kind, generation=generation, identity=identity)
+
+    def _show_ported_update_prompt(self, update, kind, *, generation=None, identity=None):
+        import sf_system_alert
+        import sf_update
+        self._controls.dispose_dialog(self._controls.current_prompt_dialog())
+        prompt_token = object()
+        self._prompt_token = prompt_token
+        notes = sf_update.numbered_notes_for_display(update.notes, update.version)
+        ready = kind == "ready"
+        rollback = kind == "rollback"
+        buttons = (("暂不更新", "更新并重启应用") if ready else
+                   (("暂不回退", "回退到此版本") if rollback else ("暂不更新", "立即更新")))
+        headline = (("可回退到%s版本 v%s。" % (" Beta " if getattr(update, "stage", "stable") == "beta" else "", update.version))
+                    if rollback else sf_update.offer_headline(update.version, getattr(update, "stage", "stable")))
+        self._controls.anchor_dialog()
+        dialog = sf_system_alert.show_alert(
+            title="软件更新", text="%s\n\n%s" % (headline, notes),
+            message=headline, info=notes,
+            buttons=buttons, default=buttons[1], cancel=buttons[0],
+            icon_path=sf_system_alert.bundled_icon_path(),
+            on_result=lambda button: self._controls.queue(
+                ("update_prompt_answer", (button, generation, identity, prompt_token))))
+        self._controls.set_prompt_dialog(dialog)
+
+
+    def schedule_manifest_retry(self):
+        if not self._manifest_retry_scheduled and not self._stopped and not getattr(self._owner, "_quitting", False):
+            if self._manifest_retry_attempts >= 10:
+                self._controls.show_message("检查更新失败", "更新缓存正忙，请稍后重新检查。")
+                return
+            self._manifest_retry_attempts += 1
+            self._manifest_retry_scheduled = True
+            QTimer.singleShot(1000, self._retry_pending_manifest)
+
+    def _retry_pending_manifest(self):
+        self._manifest_retry_scheduled = False
+        if not self._stopped and not getattr(self._owner, "_quitting", False):
+            result = self._flow.retry_pending_manifest()
+            if result is not None:
+                self._manifest_retry_attempts = 0
+
+    def show_download_progress(self):
+        self._flow.progress_revealed()
+        self._owner.show_background_download_progress()
+
+    def show_update_message(self, title, body):
+        self._controls.show_message(title, body)
+
+    def install_update(self, update, archive):
+        return self._controls.install(update, archive)
+
+    def accepts_check(self, token):
+        return self._check_token is None or token is self._check_token
+
+    def accepts_progress(self, token):
+        active = self._flow.download_token
+        if active is None:
+            cancel = getattr(self._owner, "_update_cancel", None)
+            if cancel is not None and cancel.is_set():
+                return False
+            active = getattr(self._owner, "_update_download_token", None)
+        return token is active
+
+    def request_check(self, manual, token=None):
+        if manual:
+            self._manifest_retry_attempts = 0
+        self._check_token = token if token is not None else object()
+        _call_with_optional_token(self._controller.check, manual, token=self._check_token)
+
+    def _show_forced_prompt(self, update, kind, *, generation=None, identity=None):
+        import sf_system_alert
+        import sf_update
+        self._controls.dispose_dialog(self._controls.current_prompt_dialog())
+        prompt_token = object()
+        self._prompt_token = prompt_token
+        notes = sf_update.numbered_notes_for_display(update.notes, update.version)
+        if kind == "force_pending":
+            buttons = ("开始下载", "退出程序")
+            default = "开始下载"
+        else:
+            buttons = ("更新并重启应用", "退出程序")
+            default = "更新并重启应用"
+        self._controls.anchor_dialog()
+        label = "Beta 版本" if getattr(update, "stage", "stable") == "beta" else "版本"
+        headline = "必须更新到%s v%s 才能继续使用。" % (label, update.version)
+        dialog = sf_system_alert.show_alert(
+            title="软件更新", text="%s\n\n%s" % (headline, notes),
+            message=headline,
+            info=notes, buttons=buttons, default=default,
+            icon_path=sf_system_alert.bundled_icon_path(),
+            dismissible=False,
+            on_result=lambda button: self._controls.queue(
+                ("update_prompt_answer", (button, generation, identity, prompt_token))))
+        self._controls.set_prompt_dialog(dialog)
+
+    def handle_prompt_answer(self, answer):
+        generation = identity = None
+        if isinstance(answer, tuple):
+            if len(answer) == 4:
+                button, generation, identity, token = answer
+                if token is not getattr(self, "_prompt_token", None) or token is None:
+                    return False
+                self.invalidate_prompt()
+            elif len(answer) == 3:
+                button, generation, identity = answer
+            else:
+                return False
+        else:
+            button = answer
+        if getattr(self, "_stopped", False) or getattr(getattr(self, "_owner", None), "_quitting", False) is True:
+            return False
+        if (generation is not None and generation != self._flow.generation) or (
+                identity is not None and not self._flow.is_current(identity=identity,
+                                                                   generation=generation)):
+            return False
+        if button == "退出程序":
+            self._controls.quit()
+            return True
+        if button in ("立即更新", "回退到此版本", "更新并重启应用"):
+            if button in ("立即更新", "回退到此版本"):
+                return self._flow.start_download(prompt_when_ready=True, show_progress=True)
+            return self._flow.install_ready()
+        if button == "开始下载":
+            return self._flow.handle_force_action("开始下载", identity=identity,
+                                                 generation=generation)
+        return False
+
+
+def make_update_flow_port(owner):
+    """公开装配入口，供主窗口和离屏契约测试共用。"""
+    return _UpdateFlowPort(owner)
+
+
+class _WindowFaceGuardPort(FaceGuardPort):
+    """将窗口提供的回调装配成控制器可使用的端口。"""
+
+    def __init__(self, snapshot, new_monitor, start_timer, stop_timer, set_state, ensure_arbiter):
+        self._snapshot = snapshot
+        self._new_monitor = new_monitor
+        self._start_timer = start_timer
+        self._stop_timer = stop_timer
+        self._set_state = set_state
+        self._ensure_arbiter = ensure_arbiter
+
+    def snapshot(self):
+        return self._snapshot()
+
+    def set_state(self, name, value):
+        self._set_state(name, value)
+
+    def ensure_arbiter(self):
+        return self._ensure_arbiter()
+
+    def new_monitor(self):
+        return self._new_monitor()
+
+    def start_timer(self):
+        self._start_timer()
+
+    def stop_timer(self):
+        self._stop_timer()
 
 
 _UPDATE_FLOW = UpdateFlowController(
@@ -991,6 +1355,83 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
     def _target_bubble(self, value):
         self._tool_windows.target_bubble = value
 
+    def finish_update_check(self, manual, *, consume_abort=True):
+        """Close legacy check state and return the effective manual intent."""
+        self._update_checking = False
+        self._update_transition_pending = False
+        manual = bool(manual) or bool(getattr(self, "_update_manual_wait", False))
+        self._update_manual_wait = False
+        if getattr(self, "_update_check_aborted", False):
+            manual = False
+            if consume_abort:
+                self._update_check_aborted = False
+        self._dispose_update_dialog(getattr(self, "_update_check_dialog", None))
+        return manual
+
+    def update_controller(self):
+        """Return the update controller for ports that coordinate UI lifecycle."""
+        return self._update_controller
+
+    def begin_legacy_update_download(self, cancel_event, token):
+        self._update_cancel = cancel_event
+        self._update_download_token = token
+
+    def set_legacy_update_prompt_when_ready(self, value):
+        self._update_prompt_when_ready = value
+
+    def open_update_download_progress(self):
+        return self._open_download_progress_box()
+
+    def clear_legacy_update_token(self):
+        self._update_download_token = None
+
+    def begin_update_download(self, cancel_event, prompt_when_ready, show_progress,
+                              token=None):
+        """Publish download activity and optionally reveal its progress UI."""
+        self._update_downloading = True
+        self._update_cancel = cancel_event
+        self._update_prompt_when_ready = bool(prompt_when_ready)
+        self._update_download_token = token
+        self.reset_update_progress()
+        if show_progress:
+            self._open_download_progress_box()
+
+    def finish_update_download(self, update, archive, error, record, token=None):
+        """Clear only the matching download activity and dismiss its progress UI."""
+        if token is not None and token is not getattr(self, "_update_download_token", None):
+            return False
+        prompt_when_ready = bool(self._update_prompt_when_ready)
+        self._update_prompt_when_ready = False
+        self._update_downloading = False
+        self._update_cancel = None
+        self._update_download_token = None
+        record(update, archive, error, prompt_when_ready)
+        self.close_update_progress()
+        return True
+
+    def record_update_download(self, details):
+        """Store the latest update-download outcome for diagnostics."""
+        self._update_last_download = details
+
+    def current_update_prompt_dialog(self):
+        return getattr(self, "_update_prompt_dialog", None)
+
+    def set_update_prompt_dialog(self, dialog):
+        self._update_prompt_dialog = dialog
+
+    def dispose_update_dialog(self, dialog):
+        return self._dispose_update_dialog(dialog)
+
+    def queue_update_message(self, item):
+        return self._q_put(item)
+
+    def install_update(self, update, archive):
+        return self._launch_downloaded_update(update, archive)
+
+    def show_checking_dialog(self):
+        return self._show_checking_dialog()
+
+
     def __init__(self):
         super().__init__()
         self._tool_windows = ToolWindowManager()
@@ -1015,6 +1456,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         self.q = queue.Queue(maxsize=32)  # 有界队列：UI 卡顿时丢弃最旧行情，防止内存无限积压
         self._update_controller = UpdateController(
             lambda item: self._q_put(item), _bundle_version)
+        self._update_port = _UpdateFlowPort(self)
         self._diagnostics_controller = DiagnosticsExportController(_publish_diagnostics_file)
         self._quote_runtime = QuoteRuntimeController()
         tick_store_path = os.environ.get("SF_TARGET_TICKS_PATH")
@@ -1392,6 +1834,7 @@ class FloatWindow(GlassMixin, RenderMixin, QWidget):
         # 必须在行情线程启动**之前**：否则两条路径会同时写显示状态。
         self._seeded_from_cache = False
         self._seed_first_screen()
+        self._notify_update_first_frame()
 
         # 5.1 v1.2.27：后台线程保存引用，供 quit() 显式 join 优雅退出；loop 外层
         # wrapper 捕获子线程异常并带频率限制自动恢复（见 _quote_loop_wrapper）。
@@ -2221,7 +2664,8 @@ QMenu::separator {
             if _g is not None:
                 _g.setCheckable(True)
                 _g.setData("face_guard")
-                # 勾的口径与点击目标共用 `_face_guard_switch_on()`（v1.4.67）：
+                # 通常勾号和点击目标共用 `_face_guard_switch_on()`（v1.4.67）；
+                # 失败但仍持有资源时不勾，并用文案明确下一次点击会关闭。
                 # running 算开，starting（刚点下、会话正在起的那 0.2~0.6 秒）也算开
                 # —— 否则勾号每 300ms 被自己的刷新按回去一次，用户看到"第一次点击
                 # 没反应，第二次才生效"。needs_auth/denied 等起不来的状态一律不勾
@@ -2229,11 +2673,13 @@ QMenu::separator {
                 # v1.4.51 起这一项**下面不再有灰字状态行**（用户要求菜单不展示提示语）；
                 # v1.4.52 起首次开启的那次说明框也撤了（用户看图要求「永不出现」）。
                 _on = self._face_guard_switch_on()
+                if not _on and self._face_guard_menu_disable_target():
+                    _g.setText(FACE_GUARD_MENU_TEXT + "（启动失败，点此关闭）")
                 _g.setChecked(_on)
                 _set_menu_icon(_g, "eye_open" if _on else "eye_closed")
                 _g.triggered.connect(
                     lambda _=False: self._on_face_guard_toggled(
-                        not self._face_guard_switch_on(), _g))
+                        not self._face_guard_menu_disable_target(), _g))
                 # v1.4.54：菜单开着的时候勾号必须**跟真实状态走**，不能只在每次弹出
                 # 时算一遍 —— 菜单开着时状态翻转（比如守卫自己收窗、起会话失败）
                 # 也完全看不见。300ms 刷新一次，值永远取自同一个口径
@@ -2244,8 +2690,18 @@ QMenu::separator {
                 self._face_guard_menu_timer.timeout.connect(
                     self._refresh_face_guard_menu_check)
                 self._face_guard_menu_timer.start()
-        _set_menu_icon(m.addAction("检查更新",
-                             lambda: self._check_updates_background(manual=True)), "update", tag="update")
+        update_state = getattr(getattr(self, "_update_port", None), "_flow", None)
+        update_state = getattr(update_state, "state", None)
+        if update_state is PolicyState.FORCE_PENDING:
+            update_label = "开始下载"
+            update_action = lambda: self._handle_update_prompt_answer("开始下载")
+        elif update_state is PolicyState.FORCE_READY:
+            update_label = "更新并重启应用"
+            update_action = lambda: self._handle_update_prompt_answer("更新并重启应用")
+        else:
+            update_label = "检查更新"
+            update_action = lambda: self._check_updates_background(manual=True)
+        _set_menu_icon(m.addAction(update_label, update_action), "update", tag="update")
         # v1.4.51：这里**不再放**那行灰字（"自动检查：启动后 15 秒，之后每 6 小时…"）。
         # 用户 2026-10-09 看图明确要求"右键菜单中的提示语去掉，不展示"。
         # 节奏数字仍然只有 `sf_constants` 一个来源；要查"实际多久查一次"看
@@ -2435,6 +2891,10 @@ QMenu::separator {
 
         threading.Thread(target=worker, daemon=True, name="temp-sweep").start()
 
+    def anchor_update_dialog_screen(self):
+        """Expose the existing screen anchor to the update flow port."""
+        return self._anchor_update_dialog_screen()
+
     def _anchor_update_dialog_screen(self):
         """把『该弹在哪块屏』交给系统弹窗模块：悬浮窗所在那块屏的中心点。
 
@@ -2476,6 +2936,14 @@ QMenu::separator {
 
     def _check_updates_background(self, manual=False):
         return _UPDATE_FLOW.check(self, manual)
+
+    def _notify_update_first_frame(self):
+        port = getattr(self, "_update_port", None)
+        if port is not None:
+            decision = port._flow.on_first_frame_ready()
+            if decision is not None and decision.state is PolicyState.FORCE_READY:
+                return decision
+        return None
 
     def _update_check_stale(self):
         return _UPDATE_FLOW.check_stale(self)
@@ -2546,6 +3014,11 @@ QMenu::separator {
                 setattr(self, attr, None)
                 if attr == "_update_check_dialog":
                     self._update_check_dialog_token = None
+                elif attr == "_update_prompt_dialog":
+                    self._legacy_update_prompt_token = None
+                    port = getattr(self, "_update_port", None)
+                    if isinstance(port, _UpdateFlowPort):
+                        port.invalidate_prompt()
         try:
             dialog.close()
         except Exception as exc:
@@ -2576,6 +3049,10 @@ QMenu::separator {
             return
         self._check_updates_background()
 
+    def close_update_flow(self):
+        """公开更新流程端口：收口旧式检查/下载提示框。"""
+        return self._close_update_flow_box()
+
     def _close_update_flow_box(self):
         """同步收口更新状态框，必须在主窗口与事件循环退出前执行。
 
@@ -2590,6 +3067,10 @@ QMenu::separator {
         重复调用安全。
         """
         self._update_check_dialog_token = None
+        self._legacy_update_prompt_token = None
+        port = getattr(self, "_update_port", None)
+        if isinstance(port, _UpdateFlowPort):
+            port.invalidate_prompt()
         for attr in ("_update_check_dialog", "_update_message_dialog",
                      "_update_prompt_dialog"):
             dialog = getattr(self, attr, None)
@@ -2599,6 +3080,10 @@ QMenu::separator {
                     dialog.close()
                 except Exception:
                     pass
+        self.close_update_progress()
+
+    def close_update_progress(self):
+        """Close only download progress, preserving any update decision prompt."""
         box = getattr(self, "_update_flow_box", None)
         self._update_flow_box = None
         self._update_flow_progress = None
@@ -2625,7 +3110,37 @@ QMenu::separator {
         except Exception as exc:
             log_line("dispose download progress box failed: %r" % (exc,), "WARNING")
 
-    def _handle_update_check(self, manual, update, error):
+    def _handle_update_check(self, manual, update, error, token=None):
+        port = getattr(self, "_update_port", None)
+        if port is not None and not port.accepts_check(token):
+            return False
+        if port is not None and error is None and update is not None and getattr(update, "release_sequence", None) is not None:
+            aborted = bool(getattr(self, "_update_check_aborted", False))
+            manual = port.finish_update_check(manual)
+            _UPDATE_FLOW.record_checked(self, manual, update, None)
+            if aborted:
+                return False
+            return port._flow.on_manifest_verified(update, automatic=not manual)
+        if (port is not None and error is None and update is not None and
+                getattr(update, "release_sequence", None) is None and port._flow.has_pending_manifest is True):
+            port.finish_update_check(manual)
+            return False
+        if port is not None and error is None and update is not None and getattr(update, "release_sequence", None) is None:
+            try:
+                if not port.accept_legacy_manifest(update):
+                    raise ValueError("已接收现代更新清单，拒绝旧协议降级")
+                import sf_update
+                if not sf_update.is_newer(update.version, port.get_local_version()):
+                    update = None
+            except Exception as exc:
+                log_line("update legacy manifest rejected: %r" % (exc,), "WARNING")
+                port._flow.clear_verified_session()
+                manual = port.finish_update_check(manual)
+                if manual:
+                    self._show_update_message("检查更新失败", "暂时无法检查更新。")
+                return False
+        if port is not None:
+            port._flow.clear_verified_session()
         return _UPDATE_FLOW.checked(self, manual, update, error)
 
     def _ready_update_archive(self, update):
@@ -2657,6 +3172,8 @@ QMenu::separator {
         buttons = ("暂不更新", "更新并重启应用") if ready_to_restart else ("暂不更新", "立即更新")
         primary = buttons[1]
         self._anchor_update_dialog_screen()
+        prompt_token = object()
+        self._legacy_update_prompt_token = prompt_token
         self._update_prompt_dialog = sf_system_alert.show_alert(
             title="软件更新",
             text="%s\n\n%s" % (headline, notes),
@@ -2666,9 +3183,23 @@ QMenu::separator {
             default=primary,
             cancel="暂不更新",
             icon_path=sf_system_alert.bundled_icon_path(),
-            on_result=lambda button: self._q_put(("update_prompt_answer", button)))
+            on_result=lambda button: self._q_put(("update_prompt_answer", ("legacy", button, prompt_token))))
 
     def _handle_update_prompt_answer(self, button):
+        port = getattr(self, "_update_port", None)
+        if isinstance(button, tuple) and len(button) == 3 and button[0] == "legacy":
+            _, button, token = button
+            if ((port is not None and getattr(port._flow, "_update", None) is not None) or
+                    token is not getattr(self, "_legacy_update_prompt_token", None)):
+                return False
+            self._legacy_update_prompt_token = None
+            return _UPDATE_FLOW.answered(self, button)
+        if isinstance(button, tuple):
+            if port is None or not port._flow.is_current():
+                return False
+            return port.handle_prompt_answer(button)
+        if port is not None and getattr(port._flow, "_update", None) is not None:
+            return port.handle_prompt_answer(button)
         return _UPDATE_FLOW.answered(self, button)
 
     def _accept_update_prompt(self, box, update):
@@ -2688,6 +3219,9 @@ QMenu::separator {
         self._update_progress_pending = None
 
     def _show_background_download_progress(self):
+        port = getattr(self, "_update_port", None)
+        if port is not None:
+            port.flow.progress_revealed()
         box = getattr(self, "_update_flow_box", None)
         if box is not None:
             present = getattr(box, "present", None)
@@ -2697,7 +3231,7 @@ QMenu::separator {
                 box.raise_()
                 box.activateWindow()
                 return
-            self._close_update_flow_box()
+            self.close_update_progress()
         self._open_download_progress_box(background=True)
         progress = self._update_progress_pending
         if progress is not None:
@@ -2713,15 +3247,22 @@ QMenu::separator {
         import sf_system_alert
         self._anchor_update_dialog_screen()
         opened: list[object | None] = [None]
+        download_token = getattr(self, "_update_download_token", None)
+
+        def cancel_owned(button="取消"):
+            if (button in ("取消", False) and opened[0] is not None and
+                    self._update_flow_box is opened[0] and
+                    getattr(self, "_update_download_token", None) is download_token):
+                self._on_download_dialog_answer("取消")
 
         def close_background(_button=None):
             if opened[0] is not None and self._update_flow_box is opened[0]:
-                self._close_update_flow_box()
+                self.close_update_progress()
 
         handle = sf_system_alert.show_progress_alert(
             message="正在下载更新…", info="准备中 0%",
             cancel="好" if background else "取消",
-            on_result=close_background if background else self._on_download_dialog_answer,
+            on_result=close_background if background else cancel_owned,
             icon_path=sf_system_alert.bundled_icon_path())
         if handle is not None:
             opened[0] = handle
@@ -2740,7 +3281,7 @@ QMenu::separator {
         box.layout().addWidget(bar, 1, 0, 1, box.layout().columnCount())
         cancel = box.addButton("好" if background else "取消", QMessageBox.ButtonRole.RejectRole)
         opened[0] = box
-        cancel.clicked.connect(close_background if background else self._cancel_update_download)
+        cancel.clicked.connect(close_background if background else cancel_owned)
         self._update_flow_box = box
         self._update_flow_progress = bar
         self._update_flow_cancel = cancel
@@ -2760,10 +3301,16 @@ QMenu::separator {
             self._cancel_update_download()
 
     def _cancel_update_download(self):
+        port = getattr(self, "_update_port", None)
+        if port is not None and port._flow.download_token is not None:
+            return port._flow.cancel_download()
         return _UPDATE_FLOW.cancel_download(self)
 
-    def _handle_update_progress(self, pct, downloaded, total):
-        self._update_progress_pending = (pct, downloaded, total)
+    def _handle_update_progress(self, pct, downloaded, total, token=None):
+        port = getattr(self, "_update_port", None)
+        if port is not None and not port.accepts_progress(token):
+            return False
+        self._update_progress_pending = (pct, downloaded, total, token)
         box = getattr(self, "_update_flow_box", None)
         if box is None:
             return
@@ -2791,7 +3338,11 @@ QMenu::separator {
             import uuid
             handoff_id = uuid.uuid4().hex
             launch = sf_update.launch_installer(archive, update.archive_sha256, update.version,
-                                                handoff_id=handoff_id)
+                                                handoff_id=handoff_id,
+                                                **({"release_sequence": update.release_sequence,
+                                                    "archive_size": update.archive_size}
+                                                   if getattr(update, "release_sequence", None) is not None
+                                                   else {}))
             session = vars(self).get("_runtime_session")
             session_id = vars(self).get("_runtime_session_id")
             if isinstance(session, RuntimeSessionLedger) and isinstance(session_id, str):
@@ -2809,10 +3360,21 @@ QMenu::separator {
             log_line("update handoff failed: %r" % (exc,), "ERROR")
             self._show_update_message("更新未完成",
                                       "无法启动安装助手。", "当前版本未受影响。")
-            return
+            return False
         self.quit()
+        return True
 
-    def _handle_update_download(self, update, archive, error):
+    def _handle_update_download(self, update, archive, error, token=None):
+        port = getattr(self, "_update_port", None)
+        if port is not None and getattr(update, "release_sequence", None) is not None:
+            return port.on_download_finished(update, archive, error, token)
+        if token is not getattr(self, "_update_download_token", None):
+            return False
+        cancel = getattr(self, "_update_cancel", None)
+        if cancel is not None and cancel.is_set() and error is None:
+            from sf_update import UpdateCancelled
+            error = UpdateCancelled("下载已取消")
+            archive = None
         return _UPDATE_FLOW.downloaded(self, update, archive, error)
 
     def _face_guard_screen_off(self, now=None):
@@ -2834,8 +3396,8 @@ QMenu::separator {
     def _refresh_face_guard_menu_check(self):
         """菜单开着时让勾号跟真实状态走（v1.4.54，见菜单构造处那段说明）。
 
-        值取 `_face_guard_switch_on()`：与点击目标同一个口径（v1.4.67 起）——
-        勾号亮着的时候用户再点必须是"关"，所以刷新与点击不许各说各话。
+        勾号亮着的时候用户再点必须是"关"；失败但仍持有资源时勾号保持灭，
+        菜单文字明确指出点击会关闭，而不暗示保护正在运行。
 
         不看 `menu.isVisible()`：弹出路径与测试桩都可能不走真实显示，而定时器的
         生命周期由 `_on_ctx_menu_closed` 负责（关菜单即停），菜单对象没了也会在
@@ -2847,6 +3409,9 @@ QMenu::separator {
             return
         try:
             _on = self._face_guard_switch_on()
+            act.setText(FACE_GUARD_MENU_TEXT + "（启动失败，点此关闭）"
+                        if not _on and self._face_guard_menu_disable_target()
+                        else FACE_GUARD_MENU_TEXT)
             act.setChecked(_on)
             # 图标与勾号**同一个口径、同一个刷新点**（v1.4.69）：有图标的行 Qt 不画勾，
             # 所以这一行"现在是开还是关"只由图标说话。菜单开着时状态自己翻转
@@ -6726,6 +7291,17 @@ QMenu::separator {
         state = getattr(mon, "state", "") if mon is not None else ""
         return state in (sf_presence.STATE_STARTING, sf_presence.STATE_RUNNING)
 
+    def _face_guard_menu_disable_target(self):
+        """失败但仍持有原生资源时，允许下一次菜单点击关闭并收口。"""
+        if self._face_guard_switch_on():
+            return True
+        if not self._face_guard_pref:
+            return False
+        mon = self._face_guard_monitor
+        held = getattr(mon, "has_pending_resources", None)
+        return bool(mon is not None and getattr(mon, "state", "") == sf_presence.STATE_FAILED
+                    and callable(held) and held())
+
     def face_guard_diagnostics(self):
         """人脸守卫的可观测状态。界面状态行与诊断包共用这一份，不存在两套口径。
 
@@ -7020,17 +7596,50 @@ QMenu::separator {
         return sf_presence.FacePresenceMonitor(
             on_sample=self.face_guard_wakeup.emit)
 
+    def _make_face_guard_port(self):
+        def snapshot():
+            return {"available": self._face_guard_available(),
+                    "preference": self._face_guard_pref,
+                    "quitting": getattr(self, "_quitting", False),
+                    "visible": self.isVisible(), "paused": self._face_guard_paused}
+
+        def start_timer():
+            timer = getattr(self, "_guard_timer", None)
+            if timer is not None and not timer.isActive():
+                timer.start()
+
+        def stop_timer():
+            timer = getattr(self, "_guard_timer", None)
+            if timer is not None and timer.isActive():
+                timer.stop()
+
+        def set_state(name, value):
+            if name == "last_stop":
+                self._face_guard_last_stop = dict(value)
+
+        def ensure_arbiter():
+            controller = _lazy_attr(self, "_face_guard_controller", FaceGuardController)
+            if controller.arbiter is None:
+                controller.arbiter = sf_presence.PresenceArbiter()
+            return controller.arbiter
+
+        return _WindowFaceGuardPort(snapshot, self._face_guard_new_monitor,
+                                    start_timer, stop_timer, set_state, ensure_arbiter)
+
     def _sync_face_guard(self, reason="", stop_wait=True):
+        if getattr(self, "_quitting", False) or getattr(self, "_exit_persisted", False):
+            return
         return FaceGuardController.sync(
-            _lazy_attr(self, "_face_guard_controller", FaceGuardController), self, reason, stop_wait)
+            _lazy_attr(self, "_face_guard_controller", FaceGuardController),
+            self._make_face_guard_port(), reason, stop_wait)
 
     def _stop_face_guard(self, reason="", wait=True, stop_timer=True):
-        return FaceGuardController.stop(
-            _lazy_attr(self, "_face_guard_controller", FaceGuardController), self, reason, wait, stop_timer)
+        controller = _lazy_attr(self, "_face_guard_controller", FaceGuardController)
+        return FaceGuardController.stop(controller, self._make_face_guard_port(), reason, wait, stop_timer)
 
     def _drain_pending_guard_stops(self, reason=""):
-        return FaceGuardController.drain_pending(
-            _lazy_attr(self, "_face_guard_controller", FaceGuardController), self, reason)
+        controller = _lazy_attr(self, "_face_guard_controller", FaceGuardController)
+        return FaceGuardController.drain_pending(controller, self._make_face_guard_port(), reason)
 
     def _on_face_guard_tick(self):
         """守卫的判定入口：采集线程数完新样本立刻进来一次，另有同拍看门狗兜底。
@@ -7041,8 +7650,10 @@ QMenu::separator {
         两条都进来也不怕重复：喂给迟滞之前按样本时刻去重，同一份快照只算一次，
         所以"连续两次命中"是真的两次独立复检，驻留计时也是真的看了多久。
         """
+        if getattr(self, "_quitting", False) or getattr(self, "_exit_persisted", False):
+            return
         if not self._face_guard_available() or not self._face_guard_pref:
-            self._stop_face_guard("pref off")
+            self._stop_face_guard("pref off", wait=False)
             return
         mon = self._face_guard_monitor
         a = self._face_guard_arbiter
@@ -7051,8 +7662,8 @@ QMenu::separator {
         # 只在系统**明确回答**「锁了/睡了」时才停（见 sf_presence.screen_unavailable
         # 的 fail-open 方向）；停表后把下一次重试排在探测节流之后，唤醒即恢复。
         if self._face_guard_screen_off(now):
-            if mon is not None:
-                # 停摄像头，但**留着轮询表**：解锁之后就是这张表把看守重新起来的。
+            if mon is not None or self._face_guard_pending_stop:
+                # 停摄与待停会话均非阻塞处理；留表供解锁后重新武装。
                 self._stop_face_guard("screen off", wait=False, stop_timer=False)
             self._face_guard_next_retry = now + FACE_GUARD_SCREEN_PROBE_SEC
             return
@@ -7606,6 +8217,12 @@ QMenu::separator {
                 update_cancel.set()
             except Exception:
                 pass
+        update_port = getattr(self, "_update_port", None)
+        if update_port is not None:
+            try:
+                update_port.stop()
+            except Exception as exc:
+                log_swallow("stock_float_window.update_port_stop", exc)
         # 置停止标志：后台循环 while self.running 的下一节拍即退出
         self.running = False
         # 唤醒所有可能在 _sleep/Event.wait 上长睡的线程，消除残余等待

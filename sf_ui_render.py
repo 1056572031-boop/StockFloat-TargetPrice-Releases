@@ -2068,7 +2068,8 @@ class RenderMixin:
             # v1.3.51：补 lo/hi —— 归一化区间含昨收（pre_close），行情刷新时昨收可能
             # 变化而 _line_ver 不变（版本号只在 minute_points 整表替换时 +1），此时
             # np_ 全变、path 几何全变，键里没有 lo/hi 就会沿用旧折线画错位置。
-            key = (self._line_ver, len(pts), m["lo"], m["hi"],
+            current_price = chart_current_price(self)
+            key = (self._line_ver, len(pts), m["lo"], m["hi"], current_price,
                    pts[0][1] if pts else None, pts[-1][1] if pts else None,
                    m["color"], rect.x(), rect.y(), rect.width(), rect.height())
             if self._line_path is None or self._line_path_key != key:
@@ -2076,6 +2077,9 @@ class RenderMixin:
                 path.moveTo(xs[0], top + np_[0] * h)
                 for i in range(1, m["n"]):
                     path.lineTo(xs[i], top + np_[i] * h)
+                # 保留分钟末点，并连接同一横坐标的实时价，避免改写历史走势。
+                if current_price is not None:
+                    path.lineTo(xs[-1], self._chart_y(rect, m, current_price))
                 self._line_path = path
                 self._line_path_key = key
             return self._line_path

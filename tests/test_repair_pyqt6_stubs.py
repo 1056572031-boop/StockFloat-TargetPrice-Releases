@@ -33,6 +33,14 @@ BAD = "class C:\n    def f(self, a: int, *args: int, /) -> None: ...\n"
 BAD_NO_TYPE = "def f(a, *args, /):\n    pass\n"          # 报同一条错，但正则匹配不到
 BAD_UNRELATED = "def broken(:\n"                          # 与该规则无关的语法错误
 
+SEMANTIC_BAD = """class pyqtSignal:
+    def __init__(self, *types: typing.Any, name: str = ..., revision: int = ..., arguments: collections.abc.Sequence[str]) -> None: ...
+class QObject:
+    def __init__(self, /, parent: typing.Self = ...) -> None: ...
+class Other:
+    def __init__(self, /, parent: typing.Self = ...) -> None: ...
+"""
+
 
 def run_main(argv, stub_dir):
     """在临时存根目录上跑一次 main()，返回 (退出码, stdout)。"""
@@ -55,6 +63,15 @@ class RepairPyQt6StubsTest(SFCase):
         path = self.dir / name
         path.write_text(text, encoding="utf-8")
         return path
+
+    def test_repairs_pyqt6_semantic_signature_regressions(self):
+        path = self.write("QtCore.pyi", SEMANTIC_BAD)
+        code, out = run_main([], self.dir)
+        self.assertEqual(code, 0, out)
+        fixed = path.read_text(encoding="utf-8")
+        self.assertIn("arguments: collections.abc.Sequence[str] = ...", fixed)
+        self.assertIn("parent: QObject | None = ...", fixed)
+        self.assertIn("class Other:\n    def __init__(self, /, parent: typing.Self = ...)", fixed)
 
     def test_valid_stub_is_untouched(self):
         path = self.write("ok.pyi", VALID)

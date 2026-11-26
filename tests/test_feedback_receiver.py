@@ -30,6 +30,17 @@ class FeedbackReceiverTests(SFCase):
                       bundle_id="com.skyrocket.app", run_id=value)
         return path
 
+    def test_new_local_receipt_reports_manual_retention_without_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receiver = FeedbackReceiver(root / "receiver.sock", root / "cases.sqlite", root / "objects")
+            archive = self._archive(root)
+            envelope = make_envelope(archive_path=archive, app_version="test", outbox_id="one")
+            receipt = receiver.accept(envelope, archive.read_bytes())
+            self.assertEqual(receipt.get("retention_policy"), "manual_deletion")
+            self.assertIsNone(receipt["retention_until"])
+            self.assertEqual(receiver.accept(envelope, archive.read_bytes()), receipt)
+
     def test_cross_process_submit_is_idempotent_and_conflict_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

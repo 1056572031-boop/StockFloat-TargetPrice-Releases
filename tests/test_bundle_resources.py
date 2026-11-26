@@ -29,7 +29,7 @@ def package_resources(datas, binaries=()):
         "PYZ": lambda *args, **kwargs: object(),
         "EXE": lambda *args, **kwargs: object(),
         "COLLECT": collect,
-        "BUNDLE": lambda *args, **kwargs: object(),
+        "BUNDLE": lambda *args, **kwargs: collected.update(bundle_kwargs=kwargs) or object(),
     }
     constants = (ROOT / "sf_constants.py").read_text(encoding="utf-8")
     with patch("builtins.open", mock_open(read_data=constants)):
@@ -42,6 +42,14 @@ def resource(destination, kind="DATA"):
 
 
 class TestBundleResources(SFCase):
+    def test_reads_integer_release_sequence_into_integer_info_plist_value(self):
+        bundle = package_resources([])["bundle_kwargs"]
+        info_plist = bundle["info_plist"]
+        self.assertIsInstance(info_plist["SkyrocketReleaseSequence"], int)
+        self.assertEqual(info_plist["SkyrocketReleaseSequence"], 1)
+        self.assertIsInstance(info_plist["CFBundleShortVersionString"], str)
+        self.assertIsInstance(info_plist["CFBundleVersion"], str)
+
     def test_project_docs_and_titlecase_dependency_license_are_collected(self):
         dependency = SimpleNamespace(files=[Path("licenses/License.txt"), Path("COPYING"),
                                             Path("package/not-a-license.py")],

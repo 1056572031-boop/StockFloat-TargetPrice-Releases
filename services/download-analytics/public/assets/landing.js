@@ -290,9 +290,13 @@
       } else {
         syncScene();
       }
-      if (reduce && reduce.addEventListener) reduce.addEventListener("change", syncScene);
+      if (reduce && reduce.addEventListener) reduce.addEventListener("change", function () {
+        if (staticMode()) unload();
+        syncScene();
+      });
     }
   }
+  bindScene("s1", "sv1", "ss1");
   bindScene("s2", "sv2", "ss2");
   bindScene("s4", "sv", "ss");
 

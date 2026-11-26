@@ -865,7 +865,37 @@ def scenario_errors(scenario: dict[str, Any], fingerprint: str, base: Path) -> l
     return errors
 
 
-def verify(root: Path, record: dict[str, Any], base: Path, manifest_path: Path) -> list[str]:
+def published_ledger_transition(root: Path, version: str, sequence: int) -> set[str]:
+    """Accept only the exact allocated-to-published transition from committed ledger."""
+    ledger_name = "tools/release_sequence_ledger.json"
+    lock_name = ledger_name + ".lock"
+    try:
+        ledger_path = root / ledger_name
+        lock_path = root / lock_name
+        if ledger_path.is_symlink() or not ledger_path.is_file():
+            return set()
+        if lock_path.is_symlink() or (lock_path.exists() and
+                                      (not lock_path.is_file() or lock_path.stat().st_size != 0)):
+            return set()
+        original = json.loads(_git(root, "show", "HEAD:" + ledger_name))
+        current = json.loads(ledger_path.read_text(encoding="utf-8"))
+        if not isinstance(original, dict) or not isinstance(original.get("releases"), list):
+            return set()
+        matches = [item for item in original["releases"] if isinstance(item, dict)
+                   and item.get("version") == version and type(item.get("sequence")) is int
+                   and item["sequence"] == sequence and item.get("status") == "allocated"]
+        if len(matches) != 1:
+            return set()
+        matches[0]["status"] = "published"
+        if original != current:
+            return set()
+        return {ledger_name, lock_name}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def verify(root: Path, record: dict[str, Any], base: Path, manifest_path: Path,
+           *, published_identity: tuple[str, int] | None = None) -> list[str]:
     errors = validate(record)
     if errors:
         return errors
@@ -875,8 +905,11 @@ def verify(root: Path, record: dict[str, Any], base: Path, manifest_path: Path) 
     except (OSError, ValueError, SyntaxError, TypeError) as exc:
         return [f"源码或影响范围无法核验: {exc}"]
     fingerprint = snapshot["fingerprint"]
-    if report["unmapped_changes"]:
-        errors.append("存在未申报改动: " + ", ".join(report["unmapped_changes"]))
+    unmapped = set(report["unmapped_changes"])
+    if published_identity is not None:
+        unmapped -= published_ledger_transition(root, *published_identity)
+    if unmapped:
+        errors.append("存在未申报改动: " + ", ".join(sorted(unmapped)))
     evidence = record["verification_evidence"]
     receipt_cache: dict[str, tuple[Path, dict[str, Any] | None, list[str]]] = {}
     for item in evidence:
@@ -979,13 +1012,14 @@ def verify(root: Path, record: dict[str, Any], base: Path, manifest_path: Path) 
 
 
 def verify_release_candidate(root: Path, record: dict[str, Any], base: Path,
-                             manifest_path: Path) -> list[str]:
+                             manifest_path: Path, *,
+                             published_identity: tuple[str, int] | None = None) -> list[str]:
     """核验正式候选资格；开发协议通过不等于可以发布。
 
     发布前只要求发布前阶段的真实场景通过，发布后有效场景保持待验证。
     四专项排除与固定 Intel 能力边界不算通过；其余场景全部闭环才可 complete。
     """
-    errors = verify(root, record, base, manifest_path)
+    errors = verify(root, record, base, manifest_path, published_identity=published_identity)
     errors.extend(validate_release_policy(record))
     qualification = record.get("release_qualification")
     if record.get("status") != "release_candidate":

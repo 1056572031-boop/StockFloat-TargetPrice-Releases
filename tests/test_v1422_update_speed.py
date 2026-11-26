@@ -205,8 +205,9 @@ class TestAdaptiveStillDegrades(unittest.TestCase):
              patch.object(sf_update.concurrent.futures, "ThreadPoolExecutor", _Pool), \
              patch.object(sf_update, "resolve_download_url", return_value=info.archive_url), \
              patch.object(sf_update, "_download_range", side_effect=fake_range):
-            part = Path(folder) / "a.part"
-            state = Path(folder) / "a.resume.json"
+            cache = sf_update.UpdateCache(Path(folder))
+            part = cache.part_path(info)
+            state = cache.resume_path(info)
             sf_update._download_adaptive(info, part, state, threading.Event(), 60)
             self.assertEqual(part.read_bytes(), body)
         self.assertEqual(worker_counts, [8, 4, 1],

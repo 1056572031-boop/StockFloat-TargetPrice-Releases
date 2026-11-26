@@ -528,10 +528,9 @@ test("the hero plays the recorded replay, falls back to a still frame, and the l
   assert.ok(video.indexOf("video/quicktime") < video.indexOf("video/webm"), "Safari 的 HEVC 源要排在 WebM 前面，Chrome 会跳过它");
   assert.match(body, /<img class="still" src="\/assets\/hero-replay-poster\.webp"[^>]*alt="[^"]*非实时[^"]*"/, "减少动态效果时显示的静止图");
   assert.match(video, /aria-label="[^"]*真实分钟线回放 非实时[^"]*"/, "读屏用户能听到这是回放、非实时");
-  // 第 1、3 张是脚本懒加载的图片：HTML 里只有占位图 + data-src，真地址靠脚本在接近视野时换上；
-  // 第 2、4 张是循环视频（后面的用例各自守），所以这里只取 scene-1 和 scene-3 的 data-src。
-  const shots = body.match(/<img class="lz" src="data:[^"]*" data-src="\/assets\/scene-[13]-[a-z]+\.webp"[^>]*>/g) || [];
-  assert.equal(shots.length, 2);
+  // 第 3 张保留图片，其余场景使用各自的视频和静态回退。
+  const shots = body.match(/<img class="lz" src="data:[^"]*" data-src="\/assets\/scene-3-[a-z]+\.webp"[^>]*>/g) || [];
+  assert.equal(shots.length, 1);
   for (const tag of shots) {
     assert.match(tag, /width="2940" height="1912"/, "屏下场景图写明宽高，避免版面跳动");
     assert.match(tag, /decoding="async"/);
@@ -541,11 +540,12 @@ test("the hero plays the recorded replay, falls back to a still frame, and the l
     assert.deepEqual(set.split(", ").map(item => item.split(" ")[1]), ["720w", "1280w", "2100w", "2940w"], "四档宽度，最大一档是原图");
     assert.match(tag, /sizes="\(min-width:1120px\) 1040px, \(min-width:981px\) calc\(100vw - 80px\), calc\(100vw - 48px\)"/, "sizes 要与版面一致：容器最宽 1040，窄屏两侧留白 40 和 24");
   }
-  assert.equal(new Set(shots.map(tag => tag.match(/scene-\d/)[0])).size, 2, "两张用两张不同的图");
-  // 没有脚本时占位图会让图空着，所以每张都要有 noscript 里的真图；真地址不能只存在于 data-src 里。
-  for (const name of ["scene-1-switch", "scene-3-fullscreen"]) {
-    assert.match(body, new RegExp(`<noscript><img src="/assets/${name}\\.webp" srcset="[^"]+" sizes="[^"]+" width="2940" height="1912"[^>]*></noscript>`), `${name} 缺 noscript 备份`);
-  }
+  assert.match(body, /<noscript><img src="\/assets\/scene-3-fullscreen\.webp" srcset="[^"]+" sizes="[^"]+" width="2940" height="1912"[^>]*><\/noscript>/);
+  const firstVideo = body.match(/<video id="sv1"[^>]*>[\s\S]*?<\/video>/)?.[0] || "";
+  assert.match(firstVideo, /muted loop playsinline preload="none"/);
+  assert.match(firstVideo, /scene-1-motion-1470\.mp4/);
+  assert.match(firstVideo, /scene-1-motion-1470\.webm/);
+  assert.match(body, /<noscript><img src="\/assets\/scene-1-motion-poster\.webp"/);
   assert.doesNotMatch(body, /<img src="\/assets\/scene-[1-3]-[a-z]+\.webp"[^>]*>(?!<\/noscript>)/, "场景图不能再以真地址直接出现在 HTML 里，否则会随首屏一起下载");
   assert.doesNotMatch(body, /class="scene |class="dock"|hero-window|wall-\d/, "自绘场景和上一版素材不再出现");
 });

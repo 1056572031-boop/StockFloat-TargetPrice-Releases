@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import shutil
 import sqlite3
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import sf_feedback as protocol
 from sf_feedback_outbox import FeedbackOutbox, OutboxBusy, OutboxConflict
+from sf_feedback_transport import submit_pending
 from tests._base import SFCase
 
 
@@ -30,6 +32,263 @@ class OutboxLeaseTests(SFCase):
     def claim(self, token="a" * 32, seconds=30):
         return self.store.claim(self.row["outbox_id"], kind="submit", statuses=("locally_verified",),
                                 target_status="submitting", token=token, lease_seconds=seconds, now=self.clock)
+
+    def test_cancel_recovery_rejects_when_flock_support_is_missing(self):
+        with mock.patch("sf_feedback_outbox.fcntl", None):
+            with self.assertRaises(protocol.FeedbackProtocolError):
+                self.store.cancel_local(self.row["outbox_id"])
+
+    def test_cancel_recovery_skips_a_row_resolved_by_another_worker(self):
+        claimed = self.store.claim(self.row["outbox_id"], kind="cancel",
+                                   statuses=("locally_verified",), target_status="cancel_pending",
+                                   token="c" * 32, lease_seconds=1, now=self.clock)
+        lock = Path(claimed["archive_path"]).with_suffix(".cancel.lock")
+        with lock.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        self.store.finish_claim(self.row["outbox_id"], token=claimed["lease_token"],
+                                fence=claimed["lease_fence"], status="cancelled", now=self.clock)
+        self.assertEqual(self.store.recover_interrupted(now=self.clock), 0)
+
+    def test_cancel_pending_recovery_keeps_expired_lease_while_cancel_lock_is_held(self):
+        claimed = self.store.claim(self.row["outbox_id"], kind="cancel",
+                                   statuses=("locally_verified",), target_status="cancel_pending",
+                                   token="c" * 32, lease_seconds=1, now=self.clock)
+        lock_path = Path(claimed["archive_path"]).with_suffix(".cancel.lock")
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            expired = self.clock + timedelta(seconds=2)
+            self.assertEqual(self.store.recover_interrupted(now=expired), 0)
+        still_owned = self.store.get(self.row["outbox_id"])
+        self.assertEqual(still_owned["status"], "cancel_pending")
+        self.assertEqual(still_owned["lease_token"], claimed["lease_token"])
+        self.assertTrue(Path(still_owned["archive_path"]).exists())
+
+
+    def test_cancel_pending_recovery_acquires_lock_fences_expired_worker_and_cancels(self):
+        claimed = self.store.claim(self.row["outbox_id"], kind="cancel",
+                                   statuses=("locally_verified",), target_status="cancel_pending",
+                                   token="c" * 32, lease_seconds=1, now=self.clock)
+        archive = Path(claimed["archive_path"])
+        expired = self.clock + timedelta(seconds=2)
+        self.assertEqual(self.store.recover_interrupted(now=expired), 1)
+        recovered = self.store.get(self.row["outbox_id"])
+        self.assertEqual(recovered["status"], "cancelled")
+        self.assertFalse(archive.exists())
+        self.assertGreater(recovered["lease_fence"], claimed["lease_fence"])
+        self.assertIsNone(recovered["lease_token"])
+
+    def test_cancel_pending_recovery_uses_unlocked_cancel_lock_over_live_database_lease(self):
+        claimed = self.store.claim(self.row["outbox_id"], kind="cancel",
+                                   statuses=("locally_verified",), target_status="cancel_pending",
+                                   token="c" * 32, lease_seconds=60, now=self.clock)
+        archive = Path(claimed["archive_path"])
+        self.assertEqual(self.store.recover_interrupted(now=self.clock), 1)
+        recovered = self.store.get(self.row["outbox_id"])
+        self.assertEqual(recovered["status"], "cancelled")
+        self.assertFalse(archive.exists())
+        self.assertGreater(recovered["lease_fence"], claimed["lease_fence"])
+
+    def test_cancel_pending_recovery_delete_failure_stays_visible_and_non_uploadable(self):
+        claimed = self.store.claim(self.row["outbox_id"], kind="cancel",
+                                   statuses=("locally_verified",), target_status="cancel_pending",
+                                   token="c" * 32, lease_seconds=1, now=self.clock)
+        archive = Path(claimed["archive_path"])
+        expired = self.clock + timedelta(seconds=2)
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("synthetic retry failure")):
+            self.assertEqual(self.store.recover_interrupted(now=expired), 1)
+        pending = self.store.get(self.row["outbox_id"])
+        self.assertEqual(pending["status"], "cancel_pending")
+        self.assertEqual(pending["last_error"], "cancel_recovery_OSError")
+        self.assertTrue(archive.exists())
+        self.assertEqual([item["status"] for item in self.store.history(include_cleaned=False)],
+                         ["cancel_pending"])
+        self.assertEqual(self.store.pending(), [])
+        with self.assertRaises(protocol.FeedbackProtocolError):
+            submit_pending(self.store, self.row["outbox_id"], "https://receiver.example/v1/feedback",
+                           sender=lambda *_: self.fail("cancel_pending must never submit"))
+
+    def test_cancel_pending_recovery_records_delete_failure_without_restoring_upload(self):
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("synthetic retry failure")):
+            with self.assertRaises(OSError):
+                self.store.cancel_local(self.row["outbox_id"])
+        pending = self.store.get(self.row["outbox_id"])
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): seed an expired interrupted-cancel lease.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), pending["outbox_id"]))
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("synthetic recovery failure")):
+            self.assertEqual(self.store.recover_interrupted(now=self.clock, abandoned=True), 1)
+        still_pending = self.store.get(self.row["outbox_id"])
+        self.assertEqual(still_pending["status"], "cancel_pending")
+        self.assertEqual(still_pending["last_error"], "cancel_recovery_OSError")
+        self.assertIsNone(still_pending["lease_token"])
+        self.assertTrue(Path(still_pending["archive_path"]).exists())
+        self.assertEqual([item["status"] for item in self.store.history(include_cleaned=False)],
+                         ["cancel_pending"])
+        self.assertEqual(self.store.pending(), [])
+        with self.assertRaises(protocol.FeedbackProtocolError):
+            submit_pending(self.store, self.row["outbox_id"], "https://receiver.example/v1/feedback",
+                           sender=lambda *_: self.fail("cancel_pending must never submit"))
+
+    def test_cancel_local_deletes_response_unknown_archive_and_marks_cancelled(self):
+        self.store.transition(self.row["outbox_id"], "submitting")
+        unknown = self.store.transition(self.row["outbox_id"], "response_unknown")
+        archive_path = Path(unknown["archive_path"])
+        cancelled = self.store.cancel_local(unknown["outbox_id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertFalse(archive_path.exists())
+
+    def test_cancel_local_rejects_received_feedback(self):
+        row = self.store.transition(self.row["outbox_id"], "submitting")
+        receipt = {"case_id": "feedback-test", "archive_sha256": row["archive_sha256"],
+                   "size_bytes": row["archive_size"], "received_at": "2026-10-24T00:00:00Z",
+                   "storage_status": "stored", "validation_status": "validated",
+                   "retention_until": "2026-11-23T00:00:00Z", "retention_policy": "auto_delete"}
+        self.store.persist_receipt(row["outbox_id"], receipt)
+        with self.assertRaises(protocol.FeedbackProtocolError):
+            self.store.cancel_local(row["outbox_id"])
+        self.assertEqual(self.store.get(row["outbox_id"])["status"], "receipt_persisted")
+
+    def test_cancel_local_rejects_live_submission_lease(self):
+        self.clock = datetime(2030, 10, 24, 10, 0, tzinfo=timezone.utc)
+        claimed = self.claim()
+        with self.assertRaises(OutboxBusy):
+            self.store.cancel_local(self.row["outbox_id"])
+        self.assertEqual(self.store.get(self.row["outbox_id"])["status"], "submitting")
+        self.assertEqual(self.store.get(self.row["outbox_id"])["lease_token"], claimed["lease_token"])
+
+    def test_cancel_pending_blocks_expired_lease_recovery_and_submit_attempts(self):
+        with mock.patch("sf_feedback_outbox.os.fsync", side_effect=OSError("synthetic fsync failure")):
+            with self.assertRaises(OSError):
+                self.store.cancel_local(self.row["outbox_id"])
+        cancelling = self.store.get(self.row["outbox_id"])
+        self.assertEqual(cancelling["status"], "cancel_pending")
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): seed an expired interrupted-cancel lease.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), cancelling["outbox_id"]))
+        self.assertEqual(self.store.recover_expired_leases(now=self.clock), 0)  # discipline-ok(R6): lease recovery count is the public result under test.
+        with self.assertRaises(protocol.FeedbackProtocolError):
+            submit_pending(self.store, cancelling["outbox_id"], "https://receiver.example/v1/feedback",
+                           sender=lambda *_: self.fail("cancel_pending must never submit"))
+        after = self.store.get(cancelling["outbox_id"])
+        self.assertEqual(after["status"], "cancel_pending")
+        self.assertEqual(after["lease_token"], cancelling["lease_token"])
+
+    def test_interrupted_cancel_after_unlink_recovers_cancelled_when_fsync_fails(self):
+        archive = Path(self.row["archive_path"])
+        calls = 0
+
+        def fail_directory_fsync(fd):
+            nonlocal calls
+            calls += 1
+            raise OSError("synthetic fsync failure")
+
+        with mock.patch("sf_feedback_outbox.os.fsync", side_effect=fail_directory_fsync):
+            with self.assertRaises(OSError):
+                self.store.cancel_local(self.row["outbox_id"])
+        interrupted = self.store.get(self.row["outbox_id"])
+        self.assertFalse(archive.exists())
+        self.assertEqual(interrupted["status"], "cancel_pending")
+        self.assertIn("cancel", interrupted["last_error"])
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): prove recovery waits for the cancel lease to expire.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), interrupted["outbox_id"]))
+        self.assertEqual(self.store.recover_interrupted(now=self.clock, abandoned=True), 1)
+        recovered = self.store.get(self.row["outbox_id"])
+        self.assertEqual(recovered["status"], "cancelled")
+        self.assertIn("cancel", recovered["last_error"])
+
+    def test_interrupted_cancel_after_unlink_recovers_cancelled_when_final_commit_fails(self):
+        archive = Path(self.row["archive_path"])
+        with mock.patch.object(self.store, "finish_claim", side_effect=sqlite3.OperationalError("synthetic commit failure")):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.store.cancel_local(self.row["outbox_id"])
+        interrupted = self.store.get(self.row["outbox_id"])
+        self.assertFalse(archive.exists())
+        self.assertEqual(interrupted["status"], "cancel_pending")
+        self.assertIn("cancel", interrupted["last_error"])
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): seed an expired interrupted-cancel lease.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), interrupted["outbox_id"]))
+        self.assertEqual(self.store.recover_interrupted(now=self.clock, abandoned=True), 1)
+        self.assertEqual(self.store.get(self.row["outbox_id"])["status"], "cancelled")
+
+    def test_interrupted_cancel_before_unlink_keeps_pending_until_retry_deletes_archive(self):
+        archive = Path(self.row["archive_path"])
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("synthetic before unlink")):
+            with self.assertRaises(OSError):
+                self.store.cancel_local(self.row["outbox_id"])
+        pending = self.store.get(self.row["outbox_id"])
+        self.assertEqual(pending["status"], "cancel_pending")
+        self.assertTrue(archive.exists())
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): seed an expired interrupted-cancel lease.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), pending["outbox_id"]))
+        self.assertEqual(self.store.recover_interrupted(now=self.clock, abandoned=True), 1)
+        recovered = self.store.get(self.row["outbox_id"])
+        self.assertEqual(recovered["status"], "cancelled")
+        self.assertFalse(archive.exists())
+        self.assertIn("cancel", recovered["last_error"])
+
+    def test_interrupted_cancel_retry_failure_remains_visible_and_not_uploadable(self):
+        archive = Path(self.row["archive_path"])
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("synthetic before unlink")):
+            with self.assertRaises(OSError):
+                self.store.cancel_local(self.row["outbox_id"])
+        pending = self.store.get(self.row["outbox_id"])
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): seed an expired interrupted-cancel lease.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), pending["outbox_id"]))
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("synthetic retry failure")):
+            self.assertEqual(self.store.recover_interrupted(now=self.clock, abandoned=True), 1)
+        still_pending = self.store.get(self.row["outbox_id"])
+        self.assertEqual(still_pending["status"], "cancel_pending")
+        self.assertTrue(archive.exists())
+        self.assertEqual([item["status"] for item in self.store.history(include_cleaned=False)],
+                         ["cancel_pending"])
+        self.assertEqual(self.store.pending(), [])
+        with self.assertRaises(protocol.FeedbackProtocolError):
+            submit_pending(self.store, self.row["outbox_id"], "https://receiver.example/v1/feedback",
+                           sender=lambda *_: self.fail("cancel_pending must never submit"))
+
+    def test_cancel_pending_recovery_never_restores_uploadable_state_when_archive_remains(self):
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("synthetic before unlink")):
+            with self.assertRaises(OSError):
+                self.store.cancel_local(self.row["outbox_id"])
+        pending = self.store.get(self.row["outbox_id"])
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): model A's expired lease while A may still be alive.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), pending["outbox_id"]))
+        with mock.patch("sf_feedback_outbox.Path.unlink", side_effect=OSError("A still blocks unlink")):
+            self.assertEqual(self.store.recover_interrupted(now=self.clock), 1)
+        after = self.store.get(self.row["outbox_id"])
+        self.assertEqual(after["status"], "cancel_pending")
+        self.assertTrue(Path(after["archive_path"]).exists())
+        self.assertIsNone(after["lease_token"])
+        with self.assertRaises(protocol.FeedbackProtocolError):
+            submit_pending(self.store, self.row["outbox_id"], "https://receiver.example/v1/feedback",
+                           sender=lambda *_: self.fail("expired cancel must remain non-uploadable"))
+
+    def test_interrupted_cancel_with_archive_already_deleted_converges_to_cancelled(self):
+        archive = Path(self.row["archive_path"])
+        with mock.patch("sf_feedback_outbox.os.fsync", side_effect=OSError("synthetic fsync failure")):
+            with self.assertRaises(OSError):
+                self.store.cancel_local(self.row["outbox_id"])
+        self.assertFalse(archive.exists())
+        pending = self.store.get(self.row["outbox_id"])
+        expired = self.clock - timedelta(seconds=1)
+        with self.store._db() as db:  # discipline-ok(R5): seed an expired interrupted-cancel lease.
+            db.execute("UPDATE outbox SET lease_until=? WHERE outbox_id=?",
+                       (expired.isoformat(), pending["outbox_id"]))
+        self.assertEqual(self.store.recover_interrupted(now=self.clock), 1)
+        self.assertEqual(self.store.get(self.row["outbox_id"])["status"], "cancelled")
 
     def test_only_one_live_worker_can_claim_the_same_row(self):
         first = self.claim()

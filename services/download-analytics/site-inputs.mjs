@@ -8,7 +8,7 @@ export const DEVELOPMENT_BRANCH = "feat/target-price";
 // sf_icons 又 import sf_constants 与 sf_logging，sf_logging 再 import sf_privacy 与 sf_instance，
 // 所以这五份 Python 也算输入（tests/site-inputs.test.mjs 按 import 逐层推算，名单漏一份就红）。
 // 说明文档、测试、素材来源说明不进页面，改它们不该逼人重新预览。
-const PYTHON_INPUTS = ["sf_constants.py", "sf_icons.py", "sf_instance.py", "sf_logging.py", "sf_privacy.py"];
+const PYTHON_INPUTS = ["sf_constants.py", "sf_icons.py", "sf_instance.py", "sf_logging.py", "sf_privacy.py", "sf_update_policy_defaults.py"];
 export const SITE_PATHSPEC = ["services/download-analytics", ...PYTHON_INPUTS];
 const EXTRA_INPUTS = new Set(PYTHON_INPUTS);
 const SITE_PREFIX = "services/download-analytics/";

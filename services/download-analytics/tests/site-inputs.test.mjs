@@ -15,7 +15,7 @@ const blobId = ch => ch.repeat(40);
 
 test("the development branch and the site pathspec are the agreed values", () => {
   assert.equal(DEVELOPMENT_BRANCH, "feat/target-price");
-  assert.deepEqual(SITE_PATHSPEC, [SITE, "sf_constants.py", "sf_icons.py", "sf_instance.py", "sf_logging.py", "sf_privacy.py"]);
+  assert.deepEqual(SITE_PATHSPEC, [SITE, "sf_constants.py", "sf_icons.py", "sf_instance.py", "sf_logging.py", "sf_privacy.py", "sf_update_policy_defaults.py"]);
 });
 
 test("every repo-local Python module export-icon.py pulls in is a site input", () => {

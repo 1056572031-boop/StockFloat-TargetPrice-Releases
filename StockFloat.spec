@@ -15,10 +15,13 @@ def _const(name, fallback):
     # 而 AGENTS 声称"身份字段的唯一来源是 sf_constants" —— 对包名这句话并不成立，
     # 第三次改名要手改六处且没有任何判据兜住。取不到值时照旧退 0.0.0 那种"响亮失败"
     # 不够：身份取不到就直接抛，宁可打包失败也不要出一个身份错乱的包。
-    m = _re.search(name + r"\s*=\s*['\"]([^'\"]+)['\"]", _SRC)
+    m = _re.search(
+        _re.escape(name) + r"\s*=\s*(?:['\"]([^'\"]+)['\"]|(-?\d+))",
+        _SRC,
+    )
     if not m:
         raise SystemExit("StockFloat.spec 读不到 sf_constants.%s —— 拒绝打包" % name)
-    return m.group(1)
+    return m.group(1) if m.group(1) is not None else int(m.group(2))
 
 
 APP_VERSION = _const('APP_VERSION', None)
@@ -144,6 +147,7 @@ app = BUNDLE(
         'CFBundleDisplayName': APP_DISPLAY_NAME,
         'CFBundleShortVersionString': APP_VERSION,
         'CFBundleVersion': APP_VERSION,
+        'SkyrocketReleaseSequence': _const('RELEASE_SEQUENCE', None),
         'CFBundleInfoDictionaryVersion': '6.0',
         # Qt 6.12 binding and framework binaries measure minos 14.4 (Qt 6.11 was 13.0);
         # the release gate verifies every arm64 image, so this declaration must match

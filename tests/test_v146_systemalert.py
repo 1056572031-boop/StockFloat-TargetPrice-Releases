@@ -42,6 +42,20 @@ class _FakeProc:
 
 
 class TestBuildLaunch(unittest.TestCase):
+    def test_missing_appkit_import_disables_both_native_bridge_targets(self):
+        import builtins
+        import runpy
+        real_import = builtins.__import__
+        def import_without_appkit(name, *args, **kwargs):
+            if name == "AppKit":
+                raise ImportError("simulated missing AppKit")
+            return real_import(name, *args, **kwargs)
+        with patch("builtins.__import__", side_effect=import_without_appkit):
+            module = runpy.run_path(sf_system_alert.__file__, run_name="isolated_alert_probe")
+        self.assertIsNone(module["_AlertTarget"])
+        self.assertIsNone(module["_AlertWindowDelegate"])
+        self.assertFalse(module["native_available"]())
+
     def test_dynamic_text_never_enters_script_source(self):
         """安全核心：外部文本只落在 argv 参数位，脚本源码恒为常量（防注入）。"""
         evil = 'x" & (do shell script "rm -rf /") & "'
@@ -99,7 +113,8 @@ class TestShowAlert(unittest.TestCase):
 
         with patch.object(sf_system_alert, "native_available", lambda: False), \
              patch.object(sf_system_alert, "build_launch", spy), \
-             patch.object(sf_system_alert, "SystemDialog", lambda launch, on_result=None: None):
+             patch.object(sf_system_alert, "SystemDialog",
+                           lambda launch, on_result=None, **kwargs: None):
             sf_system_alert.show_alert("t", "x", buttons=("暂不更新", "立即更新"))
         # build_launch 内 default 缺省取末位按钮
         self.assertEqual(captured["launch"][3], "立即更新")
@@ -140,6 +155,86 @@ class TestSystemDialog(unittest.TestCase):
                         "后台线程必须随收口结束")
         self.assertEqual(results, [], "程序主动收口不得伪装成用户选择")
 
+    def test_dismissible_system_dialog_returns_after_close_without_representing(self):
+        proc = _FakeProc(out="gave up:true")
+        with patch.object(sf_system_alert.subprocess, "Popen", return_value=proc):
+            dialog = sf_system_alert.SystemDialog(
+                sf_system_alert.build_launch("软件更新", "正文"), dismissible=True)
+            self.assertTrue(wait_for(lambda: not dialog._thread.is_alive(), timeout=5.0))  # discipline-ok(R5): inspect fake dialog thread lifecycle
+
+    def test_forced_system_dialog_represent_waits_after_give_up_and_callback_errors_are_swallowed(self):
+        gate = threading.Event()
+        proc = _FakeProc(out="gave up:true", gate=gate)
+        called = []
+        with patch.object(sf_system_alert.subprocess, "Popen", return_value=proc), \
+                patch.object(sf_system_alert, "_swallow") as swallow:
+            dialog = sf_system_alert.SystemDialog(
+                sf_system_alert.build_launch("软件更新", "正文"),
+                on_result=lambda _button: (_ for _ in ()).throw(RuntimeError("callback")),
+                dismissible=False)
+            self.assertTrue(wait_for(lambda: bool(dialog._proc), timeout=5.0))  # discipline-ok(R5): inspect fake dialog process lifecycle
+            dialog.close()
+            gate.set()
+            self.assertTrue(wait_for(lambda: not dialog._thread.is_alive(), timeout=5.0))  # discipline-ok(R5): inspect fake dialog thread lifecycle
+        swallow.assert_not_called()
+
+    def test_alert_delegate_allows_dismissible_and_blocks_forced_close(self):
+        class Delegate:
+            def __init__(self):
+                self._owner = None
+            def setOwner_(self, owner):
+                self._owner = owner
+            def windowShouldClose_(self, _window):
+                owner = getattr(self, "_owner", None)
+                return bool(owner is not None and owner.dismissible)
+            def cancelOperation_(self, _sender):
+                return None
+
+        delegate = Delegate()
+        owner = type("Owner", (), {"dismissible": True})()
+        delegate.setOwner_(owner)
+        self.assertTrue(delegate.windowShouldClose_(None))
+        owner.dismissible = False
+        self.assertFalse(delegate.windowShouldClose_(None))
+        self.assertIsNone(delegate.cancelOperation_(None))
+    def test_real_native_delegate_obeys_the_public_close_policy(self):
+        delegate_type = sf_system_alert._AlertWindowDelegate  # discipline-ok(R5): real ObjC delegate under test
+        if delegate_type is None:
+            self.skipTest("AppKit delegate unavailable")
+        delegate = delegate_type.alloc().init()
+        delegate.setOwner_(None)
+        self.assertFalse(delegate.windowShouldClose_(None))
+        policy = type("ClosePolicy", (), {"dismissible": True})()
+        delegate.setOwner_(policy)
+        self.assertTrue(delegate.windowShouldClose_(None))
+        policy.dismissible = False
+        self.assertFalse(delegate.windowShouldClose_(None))
+        self.assertIsNone(delegate.cancelOperation_(None))
+
+    def test_callback_exception_is_logged_and_forced_fallback_reopens_after_dismiss(self):
+        callback = lambda _button: (_ for _ in ()).throw(RuntimeError("callback failure"))
+        with patch.object(sf_system_alert.subprocess, "Popen", return_value=_FakeProc()), \
+                patch.object(sf_system_alert, "_swallow") as swallow:
+            dialog = sf_system_alert.SystemDialog(sf_system_alert.build_launch("title", "body"),
+                                                   on_result=callback)
+            self.assertTrue(wait_for(lambda: not dialog._thread.is_alive(), timeout=5))  # discipline-ok(R5): isolated dialog worker must finish inside patched transport
+            swallow.assert_called_once()
+        dismissed = _FakeProc(out="gave up:true")
+        selected = _FakeProc()
+        got = []
+        with patch.object(sf_system_alert.subprocess, "Popen", side_effect=[dismissed, selected]) as popen:
+            dialog = sf_system_alert.SystemDialog(sf_system_alert.build_launch("title", "body"),
+                                                   on_result=got.append, dismissible=False)
+            self.assertTrue(wait_for(lambda: bool(got), timeout=5))
+            self.assertTrue(wait_for(lambda: not dialog._thread.is_alive(), timeout=5))  # discipline-ok(R5): prevent real osascript after patch cleanup
+            self.assertEqual(popen.call_count, 2)
+            self.assertEqual(got, ["立即更新"])
+
+    def test_bridge_checker_builds_the_real_native_window_delegate(self):
+        from tools import pyobjc_sig_check
+        builder = pyobjc_sig_check.BUILDERS["alert_window_delegate"]
+        self.assertIs(builder(), sf_system_alert._AlertWindowDelegate)  # discipline-ok(R5): compare native bridge implementation identity
+
     def test_close_is_safe_before_and_after_run(self):
         """close() 幂等，且 osascript 缺失时不抛 —— 全程不得拉起真实弹窗。
 
@@ -168,7 +263,7 @@ class TestSystemDialog(unittest.TestCase):
             with patch.object(sf_system_alert.subprocess, "Popen",
                               side_effect=OSError("no osascript")):
                 late = sf_system_alert.SystemDialog(launch)
-                late._run()  # 直接跑一次：OSError 被吞，不抛出即通过
+                late._run()  # discipline-ok(R5): execute private fallback worker directly to cover OSError path
         self.assertIs(sf_system_alert.subprocess.Popen, real_popen,
                       "patch 退出后必须还原，不给后续用例留真实弹窗通道")
 

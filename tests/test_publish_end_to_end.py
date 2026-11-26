@@ -31,6 +31,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
+import zipfile
+import plistlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -49,7 +51,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 ARCHIVE_NAME = "StockFloatTargetPrice-1.4.17-macos.zip"
-ARCHIVE_BYTES = b"zip-bytes"
+_archive_buffer = io.BytesIO()
+with zipfile.ZipFile(_archive_buffer, "w") as _archive:
+    _archive.writestr("Skyrocket.app/Contents/Info.plist", plistlib.dumps({
+        "CFBundleShortVersionString": "1.4.17", "SkyrocketReleaseSequence": 10,
+    }))
+ARCHIVE_BYTES = _archive_buffer.getvalue()
 
 
 def _load_publish_tool():
@@ -251,7 +258,7 @@ class PublishEndToEndTest(SFCase):
         self.raw_root = base + "/raw"
         self.state.manifest_name = self.tool.MANIFEST_PATH
         self.state.contents[self.tool.MANIFEST_PATH] = {
-            "sha": "live-sha", "content": json.dumps({"version": "1.4.15"}).encode()
+            "sha": "live-sha", "content": json.dumps({"version": "1.4.15", "published_at": "2026-11-19T00:00:00Z"}).encode()
         }
         roots = (self.tool.API_ROOT, self.tool.UPLOAD_ROOT)
         self.addCleanup(setattr_chain, self.tool, roots)
@@ -265,7 +272,7 @@ class PublishEndToEndTest(SFCase):
         self.httpd.server_close()
         self.thread.join(timeout=5)
 
-    def _workspace(self, notes="修了几个问题", with_archive=True, manifest_notes=None):
+    def _workspace(self, notes="修了几个问题", with_archive=True, manifest_notes=None, rollback_key=None):
         """造一份 build_release.sh 第 6 步交给脚本的资产目录。"""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -285,7 +292,8 @@ class PublishEndToEndTest(SFCase):
             (assets / "Skyrocket-1.4.17-source.zip").write_bytes(b"source-fixture")
             (assets / "Skyrocket-1.4.17-SHA256SUMS.txt").write_bytes(b"checksum-fixture")
             (assets / self.tool.MANIFEST_PATH).write_text(
-                json.dumps({"version": "1.4.17",
+                json.dumps({"version": "1.4.17", "release_sequence": 10,
+                            "published_at": "2026-11-20T00:00:00Z",
                             "notes": notes if manifest_notes is None else manifest_notes,
                             "archive": {
                                 "url": "https://github.com/%s/releases/download/%s/%s" % (
@@ -293,14 +301,49 @@ class PublishEndToEndTest(SFCase):
                                 "size": len(ARCHIVE_BYTES),
                                 "sha256": hashlib.sha256(ARCHIVE_BYTES).hexdigest(),
                             }}), encoding="utf-8")
+        if with_archive:
+            from nacl.signing import SigningKey
+            import sf_constants
+            signing_key = rollback_key or SigningKey.generate()
+            self.signing_key = signing_key
+            self.enterContext(patch.object(sf_constants, "UPDATE_PUBLIC_KEY_B64",
+                                           base64.b64encode(bytes(signing_key.verify_key)).decode()))
+            manifest_path = assets / self.tool.MANIFEST_PATH
+            prepared = json.loads(manifest_path.read_bytes())
+            if rollback_key is not None:
+                prepared["rollback_reason"] = "regression"
+                prepared["published_at"] = "2026-11-21T00:00:00Z"
+            manifest_path.write_text(json.dumps(self.tool.resign_manifest(
+                prepared, signing_key, prepared["published_at"])), encoding="utf-8")
         # 真执行器、真核验器，只在临时 git 源树中运行；观测是协议夹具而非真机验收。
         quality = self.tool.quality_module()
         source = root / "source"
         source.mkdir()
+        (source / "sf_constants.py").write_text(
+            "APP_VERSION = '1.4.17'\nRELEASE_SEQUENCE = 10\n", encoding="utf-8")
+        (source / "tools").mkdir()
+        (source / "tools" / "release_sequence_ledger.json").write_text(json.dumps({
+            "schema": 1,
+            "releases": [{"version": "1.4.17", "sequence": 10, "status": "published" if rollback_key is not None else "allocated",
+                          "skip_reason": "synthetic fixture"}],
+        }), encoding="utf-8")
+        app = source / "dist" / "Skyrocket.app"
+        (app / "Contents").mkdir(parents=True)
+        with (app / "Contents" / "Info.plist").open("wb") as stream:
+            import plistlib
+            plistlib.dump({"CFBundleShortVersionString": "1.4.17",
+                           "SkyrocketReleaseSequence": 10}, stream)
         subprocess.run(["git", "init", "--quiet", str(source)], check=True,
                        capture_output=True,
                        env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
         (source / "probe.py").write_text("print('protocol fixture')\n", encoding="utf-8")
+        fixture_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        subprocess.run(["git", "add", "sf_constants.py", "tools/release_sequence_ledger.json",
+                        "dist/Skyrocket.app/Contents/Info.plist", "probe.py"], cwd=source,
+                       check=True, capture_output=True, env=fixture_env)
+        subprocess.run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "--quiet", "-m", "fixture"], cwd=source,
+                       check=True, capture_output=True, env=fixture_env)
         receipt_path = quality.run_command(source, root / "sessions", ["/usr/bin/true"], 3)
         receipt = quality.load(receipt_path)
         reference = receipt_path.relative_to(root).as_posix()
@@ -370,6 +413,11 @@ class PublishEndToEndTest(SFCase):
         self.enterContext(patch.dict(os.environ, {"SF_QUALITY_RECORD": str(record_path)}))
         return assets, notes_file
 
+    def _write_signed(self, path, metadata):
+        signed = self.tool.resign_manifest(metadata, self.signing_key, metadata["published_at"])
+        path.write_text(json.dumps(signed), encoding="utf-8")
+        return signed
+
     def _publish(self, assets, notes_file, token="local-test-token", extra=()):
         out = io.StringIO()
         with patch.object(self.tool, "github_token", return_value=token), \
@@ -389,7 +437,7 @@ class PublishEndToEndTest(SFCase):
         self.assertEqual(self.state.routes(),
                          ["release", "contents", "upload", "release",          # 读取线上版本后传 ZIP 并复验
                           "release_body", "release",                 # 写入并读回 GitHub Release 正文
-                          "contents", "contents", "contents",       # GET/PUT/读回清单指针
+                          "contents", "contents",       # GET/PUT/读回清单指针
                           "release", "upload", "release",          # 换旧客户端清单
                           "contents"],                                # 发布后读回仓库侧清单
                          "顺序错了就等于清单指向还不存在的包，或公开说明与清单不同步")
@@ -401,6 +449,204 @@ class PublishEndToEndTest(SFCase):
         # 「打印 published」不等于「线上生效」：读回必须真的发生并给出结论
         self.assertIn("读回通过", text, "宣布成功之前没有权威读回，成功与失败看起来一模一样")
 
+    def test_completed_publish_can_resume_with_original_quality_evidence(self):
+        assets, notes = self._workspace()
+        self._publish(assets, notes)
+        original = (assets / self.tool.MANIFEST_PATH).read_bytes()
+        self._publish(assets, notes, extra=("--resume",))
+        self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"], original)
+
+    def test_completed_publish_resume_rejects_unrelated_ledger_change(self):
+        assets, notes = self._workspace()
+        self._publish(assets, notes)
+        ledger = self.tool.SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+        data["releases"][0]["notes"] = "unexpected modification"
+        ledger.write_text(json.dumps(data), encoding="utf-8")
+        self.state.log.clear()
+        with self.assertRaisesRegex(SystemExit, "未申报改动"):
+            self._publish(assets, notes, extra=("--resume",))
+        self.assertFalse(any(method in ("PUT", "POST", "PATCH", "DELETE")
+                             for method, _ in self.state.log))
+
+    def test_completed_publish_resume_rejects_unsafe_lock_and_missing_ledger(self):
+        assets, notes = self._workspace()
+        self._publish(assets, notes)
+        ledger = self.tool.SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+        lock = ledger.with_name(ledger.name + ".lock")
+        lock.write_text("unexpected", encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "未申报改动"):
+            self._publish(assets, notes, extra=("--resume",))
+        lock.write_text("", encoding="utf-8")
+        ledger.unlink()
+        with self.assertRaisesRegex(SystemExit, "未申报改动"):
+            self._publish(assets, notes, extra=("--resume",))
+
+    def test_resume_rejects_ledger_transition_for_different_identity(self):
+        assets, notes = self._workspace()
+        self._publish(assets, notes)
+        quality = self.tool.quality_module()
+        self.assertEqual(quality.published_ledger_transition(self.tool.SOURCE_ROOT, "other", 10), set())
+
+    def test_beta_to_stable_promotion_preserves_quality_binding(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        record_path = pathlib.Path(os.environ["SF_QUALITY_RECORD"])
+        quality = self.tool.quality_module()
+        record = quality.load(record_path)
+        candidate = json.loads(manifest.read_bytes())
+        candidate["stage"] = "beta"
+        candidate = self._write_signed(manifest, candidate)
+        quality.atomic_json(record_path.with_suffix(".manifest.json"),
+                            quality.manifest(self.tool.SOURCE_ROOT, record, record_path.parent))
+        self._publish(assets, notes)
+        candidate["stage"] = "stable"
+        candidate["published_at"] = "2026-11-21T00:00:00Z"
+        candidate = self._write_signed(manifest, candidate)
+        quality.atomic_json(record_path.with_suffix(".manifest.json"),
+                            quality.manifest(self.tool.SOURCE_ROOT, record, record_path.parent))
+        self._publish(assets, notes)
+        live = json.loads(self.state.contents[self.tool.MANIFEST_PATH]["content"])
+        self.assertEqual(live, candidate)
+
+    def test_main_rejects_untrusted_ledger_and_missing_live_version(self):
+        for case, expected in (("ledger", "默认账本"), ("withdrawn", "已撤回"),
+                               ("live", "缺少有效 version")):
+            with self.subTest(case=case):
+                assets, notes = self._workspace()
+                manifest = assets / self.tool.MANIFEST_PATH
+                metadata = json.loads(manifest.read_bytes())
+                if case == "withdrawn":
+                    ledger = self.tool.SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+                    contents = json.loads(ledger.read_bytes())
+                    contents["releases"][0]["status"] = "withdrawn"
+                    ledger.write_text(json.dumps(contents), encoding="utf-8")
+                if case == "live":
+                    self.state.contents[self.tool.MANIFEST_PATH] = {
+                        "sha": "live", "content": b"{}"}
+                extra = ("--ledger", str(self.tool.SOURCE_ROOT / "tools" / "release_sequence_ledger.json")) if case == "ledger" else ()
+                self.state.log.clear()
+                with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), metadata["version"])):
+                    with self.assertRaisesRegex(SystemExit, expected):
+                        self._publish(assets, notes, extra=extra)
+                self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE")
+                                     for method, _ in self.state.log))
+
+    def test_quality_binding_rejects_wrong_recorded_manifest_digest(self):
+        assets, notes = self._workspace()
+        record_path = pathlib.Path(os.environ["SF_QUALITY_RECORD"])
+        quality = self.tool.quality_module()
+        evidence_path = record_path.with_suffix(".manifest.json")
+        evidence = quality.load(evidence_path)
+        evidence["release_artifacts"]["roles"]["ota_manifest"]["content_sha256"] = "0" * 64
+        quality.atomic_json(evidence_path, evidence)
+        with self.assertRaisesRegex(SystemExit, "字节与质量绑定不一致"):
+            self.tool.publication_snapshot(assets / ARCHIVE_NAME, assets / self.tool.MANIFEST_PATH, notes)
+
+    def test_quality_transition_rejects_malformed_committed_ledger_and_git_error(self):
+        assets, notes = self._workspace()
+        del assets, notes
+        quality = self.tool.quality_module()
+        root = self.tool.SOURCE_ROOT
+        version = "1.4.17"
+        with patch.object(quality, "_git", return_value='{"releases": null}'):
+            self.assertEqual(quality.published_ledger_transition(root, version, 10), set())
+        with patch.object(quality, "_git", side_effect=ValueError("git unavailable")):
+            self.assertEqual(quality.published_ledger_transition(root, version, 10), set())
+
+    def test_published_resume_rejects_changed_manifest_before_remote_writes(self):
+        assets, notes = self._workspace()
+        self._publish(assets, notes)
+        manifest = assets / self.tool.MANIFEST_PATH
+        changed = json.loads(manifest.read_bytes())
+        changed["published_at"] = "2026-11-21T00:00:00Z"
+        changed["notes"] = "different release notes"
+        changed = self._write_signed(manifest, changed)
+        self.state.log.clear()
+        with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), changed["version"])):
+            with self.assertRaisesRegex(SystemExit, "续做.*清单|清单.*一致"):
+                self._publish(assets, notes, extra=("--resume",))
+        self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE")
+                             for method, _ in self.state.log))
+
+    def test_promotion_rejects_changed_notes_before_remote_writes(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        candidate = json.loads(manifest.read_bytes())
+        candidate["stage"] = "beta"
+        candidate = self._write_signed(manifest, candidate)
+        record_path = pathlib.Path(os.environ["SF_QUALITY_RECORD"])
+        quality = self.tool.quality_module()
+        record = quality.load(record_path)
+        quality.atomic_json(record_path.with_suffix(".manifest.json"),
+                            quality.manifest(self.tool.SOURCE_ROOT, record, record_path.parent))
+        self._publish(assets, notes)
+        candidate.update(stage="stable", published_at="2026-11-21T00:00:00Z", notes="changed")
+        candidate = self._write_signed(manifest, candidate)
+        self.state.log.clear()
+        with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), candidate["version"])):
+            with self.assertRaisesRegex(SystemExit, "只允许改变"):
+                self._publish(assets, notes)
+        self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE")
+                             for method, _ in self.state.log))
+
+    def test_published_resume_rejects_different_serialized_manifest_bytes(self):
+        assets, notes = self._workspace()
+        self._publish(assets, notes)
+        manifest = assets / self.tool.MANIFEST_PATH
+        data = json.loads(manifest.read_bytes())
+        manifest.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        self.state.log.clear()
+        with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), data["version"])):
+            with self.assertRaisesRegex(SystemExit, "续做.*清单|清单.*一致"):
+                self._publish(assets, notes, extra=("--resume",))
+        self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE")
+                             for method, _ in self.state.log))
+
+    def test_unmarked_published_pointer_resume_rejects_different_bytes(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        with patch.object(self.tool, "mark_published", side_effect=RuntimeError("interrupted")):
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                self._publish(assets, notes)
+        data = json.loads(manifest.read_bytes())
+        manifest.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        self.state.log.clear()
+        with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), data["version"])):
+            with self.assertRaisesRegex(SystemExit, "续做.*清单|清单.*一致"):
+                self._publish(assets, notes, extra=("--resume",))
+        self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE")
+                             for method, _ in self.state.log))
+
+    def test_normal_publish_rejects_unsupported_signature_algorithm(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        candidate = json.loads(manifest.read_bytes())
+        candidate["signature"]["algorithm"] = "unsupported"
+        manifest.write_text(json.dumps(candidate), encoding="utf-8")
+        with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), candidate["version"])), \
+                patch.object(self.tool, "github_token") as credentials:
+            with self.assertRaisesRegex(SystemExit, "签名"):
+                self._publish(assets, notes)
+        credentials.assert_not_called()
+        self.assertEqual(self.state.log, [])
+
+    def test_normal_publish_rejects_bad_signature_before_network_write(self):
+        from nacl.signing import SigningKey
+        import sf_constants
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        candidate = json.loads(manifest.read_bytes())
+        candidate = self.tool.resign_manifest(candidate, SigningKey.generate(), candidate["published_at"])
+        manifest.write_text(json.dumps(candidate), encoding="utf-8")
+        expected = base64.b64encode(bytes(SigningKey.generate().verify_key)).decode()
+        with patch.object(sf_constants, "UPDATE_PUBLIC_KEY_B64", expected), \
+                patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), candidate["version"])):
+            with self.assertRaisesRegex(SystemExit, "签名"):
+                self._publish(assets, notes)
+        self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE")
+                             for method, _ in self.state.log))
+
     def test_same_size_wrong_archive_bytes_stop_before_manifest_pointer(self):
         assets, notes = self._workspace()
         self.state.corrupt_archive_after_upload = True
@@ -408,6 +654,163 @@ class PublishEndToEndTest(SFCase):
             self._publish(assets, notes)
         self.assertIn("原始字节与本地固定快照不一致", str(got.exception))
         self.assertNotIn(("PUT", "contents"), self.state.log)
+
+    def test_sequence_mismatch_stops_before_credentials_and_any_write(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        metadata = json.loads(manifest.read_text(encoding="utf-8"))
+        metadata["release_sequence"] = 99
+        metadata["stage"] = "beta"
+        metadata["published_at"] = "2026-11-19T00:00:00Z"
+        self._write_signed(manifest, metadata)
+        with patch.object(self.tool, "github_token", side_effect=AssertionError("不得读取凭据")), \
+                patch.object(self.tool, "publication_snapshot",
+                             return_value=(ARCHIVE_BYTES, manifest.read_bytes(), "1.4.17")), \
+                patch.object(self.tool, "verify_candidate_sequence", side_effect=SystemExit("序号不一致")):
+            with self.assertRaisesRegex(SystemExit, "序号不一致"):
+                self._publish(assets, notes)
+        self.assertEqual(self.state.log, [])
+
+    def test_missing_candidate_sequence_stops_before_credentials_and_any_write(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        metadata = json.loads(manifest.read_text(encoding="utf-8"))
+        metadata.pop("release_sequence")
+        self._write_signed(manifest, metadata)
+        with patch.object(self.tool, "github_token", side_effect=AssertionError("不得读取凭据")), \
+                patch.object(self.tool, "publication_snapshot",
+                             return_value=(ARCHIVE_BYTES, manifest.read_bytes(), "1.4.17")), \
+                patch.object(sys, "argv", ["publish_update_release.py", "--assets", str(assets),
+                                          "--notes", str(notes)]):
+            with self.assertRaisesRegex(SystemExit, "release_sequence"):
+                self.tool.main()
+        self.assertEqual(self.state.log, [])
+
+    def test_unbound_manifest_path_is_rejected_before_credentials(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        alternate = assets.parent / "other.json"
+        alternate.write_bytes(manifest.read_bytes())
+        with patch.object(self.tool, "github_token", side_effect=AssertionError("不得读取凭据")):
+            with self.assertRaisesRegex(SystemExit, "清单.*绑定|绑定.*清单"):
+                self.tool.publication_snapshot(assets / ARCHIVE_NAME, alternate, notes)
+        self.assertEqual(self.state.log, [])
+
+    def test_withdrawn_ledger_identity_stops_before_publication_writes(self):
+        assets, notes = self._workspace()
+        ledger_path = self.tool.SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+        original = self.tool.load_ledger
+        calls = []
+        def read_ledger(path):
+            value = original(path)
+            calls.append(path)
+            if len(calls) >= 2:
+                value["releases"] = []
+            return value
+        with patch.object(self.tool, "load_ledger", side_effect=read_ledger):
+            with self.assertRaisesRegex(SystemExit, "账本身份"):
+                self._publish(assets, notes)
+        self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE") for method, _ in self.state.log))
+
+    def test_resume_after_pointer_switch_keeps_exact_manifest_and_identity(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        raw = manifest.read_bytes()
+        with patch.object(self.tool, "publish_legacy_manifest", side_effect=SystemExit("interrupted after pointer")):
+            with self.assertRaisesRegex(SystemExit, "interrupted after pointer"):
+                self._publish(assets, notes)
+        self.state.log.clear()
+        self._publish(assets, notes, extra=("--resume",))
+        self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"], raw)
+        self.assertEqual(self.state.blobs[ARCHIVE_NAME], ARCHIVE_BYTES)
+        self.assertEqual(self.state.routes().count("upload"), 1, "续做只上传兼容清单，不重传 ZIP")
+
+    def test_rollback_sends_final_snapshot_bytes_without_resigning(self):
+        import sf_constants
+        from nacl.signing import SigningKey
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        key = SigningKey.generate()
+        signing_dir = self.tool.SOURCE_ROOT / ".private_tools"
+        signing_dir.mkdir()
+        (signing_dir / "update_signing_key.txt").write_text(base64.b64encode(bytes(key)).decode())
+        ledger_path = self.tool.SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+        ledger = json.loads(ledger_path.read_bytes())
+        ledger["releases"][0]["status"] = "published"
+        ledger_path.write_text(json.dumps(ledger))
+        prepared = assets / "prepared.json"
+        with patch.object(sf_constants, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode()):
+            self.tool.prepare_rollback_main(["--prepare-rollback", "--manifest", str(manifest),
+                "--archive", str(assets / ARCHIVE_NAME), "--output", str(prepared),
+                "--rollback-to", "1.4.17", "--reason", "regression",
+                "--published-at", "2026-11-21T00:00:00Z"])
+            final_bytes = prepared.read_bytes()
+            manifest.write_bytes(final_bytes)
+            with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, final_bytes, "1.4.17")):
+                self._already_uploaded(ARCHIVE_BYTES)
+                self._publish(assets, notes, extra=("--rollback-to", "1.4.17", "--reason", "regression"))
+        self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"], final_bytes)
+        self.assertEqual(self.state.blobs[self.tool.MANIFEST_PATH], final_bytes)
+
+    def test_rollback_final_bytes_pass_real_quality_binding_and_publish_unchanged(self):
+        import sf_constants
+        from nacl.signing import SigningKey
+        key = SigningKey.generate()
+        assets, notes = self._workspace(rollback_key=key)
+        manifest = assets / self.tool.MANIFEST_PATH
+        final_bytes = manifest.read_bytes()
+        self._already_uploaded(ARCHIVE_BYTES)
+        with patch.object(sf_constants, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode()):
+            self._publish(assets, notes, extra=("--rollback-to", "1.4.17", "--reason", "regression"))
+        self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"], final_bytes)
+        self.assertEqual(self.state.blobs[self.tool.MANIFEST_PATH], final_bytes)
+        self.assertEqual(manifest.read_bytes(), final_bytes)
+
+    def test_published_identity_rejects_missing_asset_wrong_live_identity_and_unrequested_repeat(self):
+        for mutation, expected, extra in (("missing", "ZIP 缺失", ("--resume",)),
+                                          ("wrong_live", "线上清单不一致", ("--resume",)),
+                                          ("repeat", "只允许续做", ())):
+            with self.subTest(mutation=mutation):
+                assets, notes = self._workspace()
+                manifest = assets / self.tool.MANIFEST_PATH
+                metadata = json.loads(manifest.read_bytes())
+                ledger_path = self.tool.SOURCE_ROOT / "tools" / "release_sequence_ledger.json"
+                ledger = json.loads(ledger_path.read_bytes())
+                ledger["releases"][0]["status"] = "published"
+                ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+                self.state.log.clear()
+                self.state.release = {"id": 77, "assets": []}
+                self.state.blobs.clear()
+                live = json.loads(json.dumps(metadata))
+                live["published_at"] = "2026-11-19T00:00:00Z"
+                live["release_sequence"] = metadata["release_sequence"] - 1
+                if mutation == "missing":
+                    live["release_sequence"] = metadata["release_sequence"]
+                if mutation == "repeat":
+                    live["version"] = "1.0.0"
+                self.state.contents[self.tool.MANIFEST_PATH] = {
+                    "sha": "checked-live", "content": json.dumps(live).encode()}
+                with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), metadata["version"])):
+                    with self.assertRaisesRegex(SystemExit, expected):
+                        self._publish(assets, notes, extra=extra)
+                self.assertFalse(any(method in ("POST", "PUT", "PATCH", "DELETE") for method, _ in self.state.log))
+
+    def test_rollback_invalid_package_identity_is_rejected_before_credentials(self):
+        assets, notes = self._workspace()
+        manifest = assets / self.tool.MANIFEST_PATH
+        metadata = json.loads(manifest.read_bytes())
+        metadata["release_sequence"] += 1
+        self._write_signed(manifest, metadata)
+        with patch.object(self.tool, "publication_snapshot", return_value=(ARCHIVE_BYTES, manifest.read_bytes(), metadata["version"])), \
+                patch.object(self.tool, "github_token") as credentials, \
+                patch.object(sys, "argv", ["p", "--assets", str(assets), "--notes", str(notes),
+                                          "--rollback-to", metadata["version"], "--reason", "regression"]):
+            with self.assertRaisesRegex(SystemExit, "回滚前身份核验失败"):
+                self.tool.main()
+        credentials.assert_not_called()
+        self.assertEqual(self.state.log, [])
 
     def test_release_body_readback_mismatch_stops_before_manifest_pointer(self):
         """Release 正文读回不等于签名 notes 时，客户端仍必须停留在上一版清单。"""
@@ -446,7 +849,7 @@ class PublishEndToEndTest(SFCase):
         # 与正常发版同一条路由序列：版本 ZIP 与旧客户端清单各上传一次，重读不许多出任何请求。
         self.assertEqual(self.state.routes(),
                          ["release", "contents", "upload", "release", "release_body", "release",
-                          "contents", "contents", "contents",
+                          "contents", "contents",
                           "release", "upload", "release", "contents"],
                          "重读不许引发第二次上传，也不许改变发布顺序")
         self.assertIn("资产读回第 1 次中断", text)
@@ -545,11 +948,12 @@ class PublishEndToEndTest(SFCase):
 
     def test_resume_never_overwrites_an_asset_whose_bytes_differ(self):
         assets, notes = self._workspace()
-        self._already_uploaded(b"zip-BYTES")                 # 同样 9 字节，内容不同
+        different = bytes([ARCHIVE_BYTES[0] ^ 1]) + ARCHIVE_BYTES[1:]
+        self._already_uploaded(different)  # 相同长度、不同内容
         with self.assertRaises(SystemExit) as got:
             self._publish(assets, notes, extra=("--resume",))
         self.assertIn("字节不同", str(got.exception))
-        self.assertEqual((self.state.routes().count("upload"), self.state.blobs[ARCHIVE_NAME]), (0, b"zip-BYTES"))
+        self.assertEqual((self.state.routes().count("upload"), self.state.blobs[ARCHIVE_NAME]), (0, different))
         self.assertNotIn(("DELETE", "asset"), self.state.log, "拒绝复用时也不许删线上资产")
         self.assertNotIn(("PUT", "contents"), self.state.log)
 
@@ -721,7 +1125,7 @@ class PublishEndToEndTest(SFCase):
     def test_existing_manifest_is_replaced_with_its_current_sha(self):
         """清单已存在时必须带 sha 提交（GitHub 用它做乐观并发控制）。"""
         self.state.contents[self.tool.MANIFEST_PATH] = {
-            "sha": "preexisting-sha", "content": b'{"version":"1.4.16"}'}
+            "sha": "preexisting-sha", "content": json.dumps({"version": "1.4.16", "published_at": "2026-11-19T00:00:00Z"}).encode()}
         assets, notes = self._workspace()
         self._publish(assets, notes)
         self.assertEqual(json.loads(
@@ -747,7 +1151,7 @@ class PublishEndToEndTest(SFCase):
         self.assertNotIn("contents", self.state.routes()[2:],
                          "ZIP 没验证过就不该发出任何清单请求")
         self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"],  # discipline-ok(R1): verify preserved live manifest
-                         json.dumps({"version": "1.4.15"}).encode())
+                         json.dumps({"version": "1.4.15", "published_at": "2026-11-19T00:00:00Z"}).encode())
 
     def test_incomplete_workspace_stops_before_any_request(self):
         assets, notes = self._workspace(with_archive=False)
@@ -1062,10 +1466,70 @@ class PublishEndToEndTest(SFCase):
                     request.assert_not_called()
                 self.assertEqual(self.state.log, [])
 
+    def test_real_four_identity_guards_reject_before_credentials_from_main(self):
+        import plistlib
+        import zipfile
+
+        assets, notes = self._workspace()
+        archive = assets / ARCHIVE_NAME
+        manifest = assets / self.tool.MANIFEST_PATH
+        source = self.tool.SOURCE_ROOT
+        constants = source / "sf_constants.py"
+        app_plist = source / "dist/Skyrocket.app/Contents/Info.plist"
+        originals = {path: path.read_bytes() for path in (constants, app_plist, manifest, archive)}
+        original_metadata = json.loads(originals[manifest])
+        original_sequence = original_metadata["release_sequence"]
+        scenarios = ("source", "app", "manifest", "zip", "missing_sequence", "bool_sequence")
+        for scenario in scenarios:
+            with self.subTest(identity=scenario):
+                for path, data in originals.items():
+                    path.write_bytes(data)
+                metadata = dict(original_metadata)
+                wrong_sequence = original_sequence + 1
+                if scenario == "source":
+                    constants.write_text(
+                        "APP_VERSION = '%s'\nRELEASE_SEQUENCE = %d\n" %
+                        (metadata["version"], wrong_sequence), encoding="utf-8")
+                elif scenario == "app":
+                    value = plistlib.loads(originals[app_plist])
+                    value["SkyrocketReleaseSequence"] = wrong_sequence
+                    app_plist.write_bytes(plistlib.dumps(value))
+                elif scenario == "zip":
+                    changed = io.BytesIO()
+                    with zipfile.ZipFile(io.BytesIO(originals[archive])) as old, zipfile.ZipFile(changed, "w") as new:
+                        for entry in old.infolist():
+                            data = old.read(entry.filename)
+                            if entry.filename.endswith(".app/Contents/Info.plist"):
+                                value = plistlib.loads(data)
+                                value["SkyrocketReleaseSequence"] = wrong_sequence
+                                data = plistlib.dumps(value)
+                            new.writestr(entry, data)
+                    archive.write_bytes(changed.getvalue())
+                elif scenario == "missing_sequence":
+                    metadata.pop("release_sequence")
+                elif scenario == "bool_sequence":
+                    metadata["release_sequence"] = True
+                else:
+                    metadata["release_sequence"] = wrong_sequence
+                self._write_signed(manifest, metadata)
+                expected = "release_sequence" if scenario in ("missing_sequence", "bool_sequence") else "四处发布序号不一致"
+                with patch.object(self.tool, "publication_snapshot", return_value=(
+                        archive.read_bytes(), manifest.read_bytes(), metadata["version"])), \
+                     patch.object(self.tool, "github_token") as credentials, \
+                     patch.object(self.tool, "request") as request, \
+                     patch.object(sys, "argv", ["p", "--assets", str(assets), "--notes", str(notes)]), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(SystemExit, expected):
+                        self.tool.main()
+                    credentials.assert_not_called()
+                    request.assert_not_called()
+                self.assertEqual(self.state.log, [])
+        for path, data in originals.items():
+            path.write_bytes(data)
+
     def test_preflight_snapshot_survives_local_file_replacement(self):
         assets, notes = self._workspace()
         manifest = assets / self.tool.MANIFEST_PATH
-        original_manifest = manifest.read_bytes()
         snapshot = self.tool.publication_snapshot
 
         def replace_after_check(*args):
@@ -1074,13 +1538,13 @@ class PublishEndToEndTest(SFCase):
             manifest.write_bytes(b'{"version":"wrong-version"}')
             return result
 
-        with patch.object(self.tool, "publication_snapshot", side_effect=replace_after_check):
-            text = self._publish(assets, notes)
-        self.assertEqual(self.state.blobs[ARCHIVE_NAME], ARCHIVE_BYTES)
-        self.assertEqual(self.state.blobs[self.tool.MANIFEST_PATH], original_manifest)
-        self.assertEqual(self.state.contents[self.tool.MANIFEST_PATH]["content"], original_manifest)
-        self.assertIn("读回通过", text)
-        self.assertNotIn("authorization", self.state.raw_headers)
+        with patch.object(self.tool, "publication_snapshot", side_effect=replace_after_check), \
+                patch.object(self.tool, "github_token", side_effect=AssertionError("不得读取凭据")), \
+                patch.object(sys, "argv", ["publish_update_release.py", "--assets", str(assets),
+                                          "--notes", str(notes)]):
+            with self.assertRaisesRegex(SystemExit, "发布前序号核验失败"):
+                self.tool.main()
+        self.assertEqual(self.state.log, [])
 
     def test_credential_never_appears_in_request_line_but_in_header(self):
         assets, notes = self._workspace()

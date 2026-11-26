@@ -366,14 +366,12 @@ class TestPublishToolGuards(unittest.TestCase):
             def fake_request(url, token, method="GET", data=None, **k):
                 verbs.append(method)
                 if method == "GET":
-                    if len(verbs) == 1:
-                        raise gone
                     return json.dumps({"content": base64.b64encode(b"{}").decode()}).encode()
                 return b"{}"
 
             with patch.object(self.tool, "request", side_effect=fake_request):
-                self.tool.publish_manifest_pointer("t", mf.read_bytes())
-            self.assertEqual(verbs, ["GET", "PUT", "GET"], "404 之后仍要提交并读回清单")
+                self.tool.publish_manifest_pointer("t", mf.read_bytes(), expected_sha=None)
+            self.assertEqual(verbs, ["PUT", "GET"], "已检查不存在的清单仍须创建并逐字节读回")
 
     def test_server_error_is_not_mistaken_for_missing_manifest(self):
         import urllib.error
@@ -384,7 +382,7 @@ class TestPublishToolGuards(unittest.TestCase):
             self.addCleanup(boom.close)
             with patch.object(self.tool, "request", side_effect=boom):
                 with self.assertRaises(urllib.error.HTTPError):
-                    self.tool.publish_manifest_pointer("t", mf.read_bytes())
+                    self.tool.publish_manifest_pointer("t", mf.read_bytes(), expected_sha="checked-sha")
 
     def test_legacy_manifest_reupload_is_verified(self):
         with tempfile.TemporaryDirectory() as tmp:

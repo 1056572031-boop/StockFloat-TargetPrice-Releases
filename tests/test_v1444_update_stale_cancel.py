@@ -74,6 +74,8 @@ def _fake(prompts=None, messages=None, closed=None, **overrides):
         "_dispose_update_dialog": lambda self, dialog: (
             closed.append(dialog) if closed is not None else None),
         "_close_update_flow_box": lambda self: None,
+        "close_update_flow": lambda self: self._close_update_flow_box(),
+        "finish_update_check": FloatWindow.finish_update_check,
         "_schedule_update_retry": lambda self: None,
     }
     base.update(overrides)

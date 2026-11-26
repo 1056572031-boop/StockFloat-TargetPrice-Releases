@@ -98,14 +98,178 @@ class TestUpdateManifest(unittest.TestCase):
         }
         return json.dumps(data, ensure_ascii=False).encode("utf-8")
 
+    def test_same_time_same_archive_but_different_signed_manifest_is_rejected_after_restart(self):
+        from sf_update_cache import UpdateCache
+        key = SigningKey.generate()
+        first = self._manifest(key, release_sequence=7, published_at="2026-11-20T00:00:00Z",
+                               stage="beta", notes="first")
+        changed = self._manifest(key, release_sequence=7, published_at="2026-11-20T00:00:00Z",
+                                 stage="stable", notes="changed")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            first_info = sf_update.verify_manifest(first)
+            changed_info = sf_update.verify_manifest(changed)
+        with tempfile.TemporaryDirectory(prefix="sf-signed-replay-") as root:
+            cache = UpdateCache(Path(root))
+            with cache.write_lock():
+                self.assertTrue(cache.accept_manifest_identity(first_info))
+            restarted = UpdateCache(Path(root))
+            with restarted.write_lock():
+                self.assertFalse(restarted.accept_manifest_identity(changed_info))
+                self.assertTrue(restarted.accept_manifest_identity(first_info))
+
+    def test_sequence_aware_check_returns_signed_legacy_even_when_not_newer(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version="1.2.3")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")), \
+                patch.object(sf_update, "fetch_manifest", return_value=raw):
+            for current in ("1.2.3", "2.0.0"):
+                with self.subTest(current=current):
+                    result = sf_update.check_for_update(current, sequence_aware=True)
+                    self.assertIsNotNone(result, "验签清单必须先到协议降级判断")
+                    self.assertIsNone(result.release_sequence)
+            self.assertIsNone(sf_update.check_for_update("2.0.0"),
+                              "旧调用默认保留按版本过滤的行为")
+
     def test_valid_signed_manifest_is_accepted(self):
         key = SigningKey.generate()
         raw = self._manifest(key)
         with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
                           base64.b64encode(bytes(key.verify_key)).decode("ascii")):
             info = sf_update.verify_manifest(raw)
-        self.assertEqual(info.version, "1.3.71")
-        self.assertTrue(sf_update.is_newer(info.version, "1.3.70"))
+        self.assertEqual(info.version, "1.3.71")  # discipline-ok(R1): legacy manifest fixture
+        self.assertTrue(sf_update.is_newer(info.version, "1.3.70"))  # discipline-ok(R1): legacy version fixture
+
+
+    def test_legacy_manifest_without_release_sequence_ignores_invalid_published_at(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, published_at="not-a-time")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            info = sf_update.verify_manifest(raw)
+        self.assertIsNone(info.release_sequence)
+        self.assertEqual(info.published_at, "not-a-time")
+
+    def test_explicit_null_release_sequence_is_rejected(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, release_sequence=None,
+                             published_at="2026-10-13T08:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            with self.assertRaises(sf_update.UpdateError):
+                sf_update.verify_manifest(raw)
+
+    def test_legacy_manifest_with_published_at_keeps_legacy_protocol(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, published_at="2026-10-13T08:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            info = sf_update.verify_manifest(raw)
+        self.assertIsNone(info.release_sequence)
+        self.assertEqual(info.published_at, "2026-10-13T08:00:00Z")
+
+    def test_high_sequence_high_version_manifest_is_parseable(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version="1.4.119", release_sequence=11,
+                             published_at="2026-11-19T00:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            info = sf_update.verify_manifest(raw)
+        self.assertEqual((info.version, info.release_sequence), ("1.4.119", 11))  # discipline-ok(R1): fixed candidate protocol fixture
+
+
+    def test_same_sequence_different_version_manifest_is_parseable(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version="1.4.119", release_sequence=10,
+                             published_at="2026-11-19T00:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            info = sf_update.verify_manifest(raw)
+        self.assertEqual(info.version, "1.4.119")  # discipline-ok(R1): fixed candidate protocol fixture
+
+        self.assertEqual(info.release_sequence, 10)
+
+
+    def test_manifest_order_is_not_compared_with_local_release_constants(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version="1.4.117", release_sequence=9,
+                             published_at="2026-11-19T00:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            info = sf_update.verify_manifest(raw)
+        self.assertEqual((info.version, info.release_sequence), ("1.4.117", 9))  # discipline-ok(R1): fixed legacy-order fixture
+
+
+    def test_invalid_calendar_published_at_is_rejected(self):
+        for value in ("2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z",
+                      "2026-04-31T00:00:00Z", "2026-11-19T24:00:00Z"):
+            with self.subTest(value=value):
+                key = SigningKey.generate()
+                raw = self._manifest(key, release_sequence=11, published_at=value)
+                with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                                  base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+                    with self.assertRaises(sf_update.UpdateError):
+                        sf_update.verify_manifest(raw)
+
+    def test_release_sequence_requires_a_strict_positive_integer(self):
+        for value in (True, 0, -1, "7"):
+            with self.subTest(value=value):
+                key = SigningKey.generate()
+                raw = self._manifest(key, release_sequence=value,
+                                     published_at="2026-11-19T00:00:00Z")
+                with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                                  base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+                    with self.assertRaises(sf_update.UpdateError):
+                        sf_update.verify_manifest(raw)
+
+    def test_release_sequence_requires_utc_published_at(self):
+        for value in (None, "2026-11-19", "2026-11-19T00:00:00+00:00", "not-a-time"):
+            with self.subTest(value=value):
+                key = SigningKey.generate()
+                changes = {"release_sequence": 1}
+                if value is not None:
+                    changes["published_at"] = value
+                raw = self._manifest(key, **changes)
+                with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                                  base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+                    with self.assertRaises(sf_update.UpdateError):
+                        sf_update.verify_manifest(raw)
+
+    def test_release_sequence_does_not_compare_with_local_version(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version=sf_constants.APP_VERSION,
+                             release_sequence=1,
+                             published_at="2026-11-19T00:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            info = sf_update.verify_manifest(raw)
+        self.assertEqual(info.version, sf_constants.APP_VERSION)
+        self.assertEqual(info.release_sequence, 1)
+
+    def test_tampering_release_sequence_breaks_signature(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, release_sequence=1,
+                             published_at="2026-11-19T00:00:00Z")
+        manifest = json.loads(raw.decode("utf-8"))
+        manifest["release_sequence"] = 2
+        tampered = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            with self.assertRaises(sf_update.UpdateError):
+                sf_update.verify_manifest(tampered)
+
+    def test_tampering_published_at_breaks_signature(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, release_sequence=1,
+                             published_at="2026-11-19T00:00:00Z")
+        manifest = json.loads(raw.decode("utf-8"))
+        manifest["published_at"] = "2026-11-20T00:00:00Z"
+        tampered = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")):
+            with self.assertRaises(sf_update.UpdateError):
+                sf_update.verify_manifest(tampered)
 
     def test_tampered_manifest_is_rejected(self):
         key = SigningKey.generate()
@@ -132,6 +296,42 @@ class TestUpdateManifest(unittest.TestCase):
         with self.assertRaises(sf_update.UpdateError):
             sf_update.parse_version("1.3.70-beta")
 
+    def test_verified_sequenced_manifest_reaches_policy_even_for_older_version(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version="1.4.119", release_sequence=11,
+                             published_at="2026-11-19T00:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")), \
+             patch.object(sf_update, "fetch_manifest", return_value=raw):
+            info = sf_update.check_for_update(current_version="9.9.9", attempts=1, sequence_aware=True)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.release_sequence, 11)
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")), \
+             patch.object(sf_update, "fetch_manifest", return_value=raw):
+            same_version = sf_update.check_for_update(current_version="1.4.119", attempts=1, sequence_aware=True)
+        self.assertIsNotNone(same_version)
+        self.assertEqual(same_version.release_sequence, 11)
+
+    def test_default_update_api_still_filters_old_sequenced_version(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version="1.4.119", release_sequence=11,
+                             published_at="2026-11-19T00:00:00Z")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")), \
+                patch.object(sf_update, "fetch_manifest", return_value=raw):
+            installed_version = "9.9.9"
+            self.assertIsNone(sf_update.check_for_update(current_version=installed_version, attempts=1))
+
+    def test_custom_current_version_controls_release_manifest_result(self):
+        key = SigningKey.generate()
+        raw = self._manifest(key, version="1.4.119")
+        with patch.object(sf_update, "UPDATE_PUBLIC_KEY_B64",
+                          base64.b64encode(bytes(key.verify_key)).decode("ascii")), \
+             patch.object(sf_update, "fetch_manifest", return_value=raw):
+            installed_version = "9.9.9"
+            self.assertIsNone(sf_update.check_for_update(current_version=installed_version, attempts=1))
+
     def test_unicode_release_tag_is_percent_encoded_only_for_request(self):
         source = "https://github.com/a/b/releases/download/版本更新/a.zip"
         self.assertEqual(
@@ -149,7 +349,7 @@ class TestUpdateManifest(unittest.TestCase):
         self.assertNotIn('add_argument("--notes"', tool)
         self.assertIn('parser.add_argument("--notes", type=Path, required=True)', release)
         self.assertIn('git", "credential", "fill"', release)
-        self.assertIn('publish_manifest_pointer(token, manifest_bytes)', release)
+        self.assertIn('publish_manifest_pointer(token, manifest_bytes, expected_sha=checked_live_sha)', release)
         self.assertIn('def publish_legacy_manifest', release)
         self.assertIn('publish_legacy_manifest(token, load_release(token), manifest_bytes)', release)
         self.assertIn('NOTES_FILE="$PROJ/release_notes.txt"', build)
@@ -336,6 +536,7 @@ class TestUpdateWindowLifecycle(unittest.TestCase):
             "_update_flow_box": box,
             "_update_flow_progress": object(),
             "_update_flow_cancel": object(),
+            "close_update_progress": lambda self: FloatWindow.close_update_progress(self),
         })()
         import stock_float_window
         from stock_float_window import FloatWindow
@@ -371,6 +572,7 @@ class TestUpdateWindowLifecycle(unittest.TestCase):
             "_update_flow_box": box,
             "_update_flow_progress": object(),
             "_update_flow_cancel": object(),
+            "close_update_progress": lambda self: FloatWindow.close_update_progress(self),
         })()
         import stock_float_window
         from stock_float_window import FloatWindow
@@ -385,18 +587,24 @@ class TestUpdateWindowLifecycle(unittest.TestCase):
         events = []
         update = sf_update.UpdateInfo("9.9.9", "更新说明", "https://github.com/a/b/releases/download/v/a.zip",
                                       8, "a" * 64)
+        backend = unittest.mock.Mock()
         fake = type("FakeWindow", (), {
             "_threads_stopped": False,
             "_update_checking": False,
+            "_update_transition_pending": False,
             "_update_downloading": False,
             "_update_pending": update,
+            "_update_port": None,
+            "_show_checking_dialog": lambda self: events.append("checking"),
             "_prompt_update": lambda self, value: events.append(value),
         })()
         import stock_float_window
         from stock_float_window import FloatWindow
-        FloatWindow._check_updates_background(fake, manual=True)
-        self.assertEqual(events, [update])
-        self.assertFalse(fake._update_checking)
+        with patch.object(stock_float_window._UPDATE_FLOW._impl, "_backend", return_value=backend):  # discipline-ok(R5): exercise real check entry without network
+            FloatWindow._check_updates_background(fake, manual=True)
+        self.assertEqual(events, ["checking"])
+        backend.check.assert_called_once_with(True)
+        self.assertTrue(fake._update_checking)
 
     def test_silent_check_starts_background_download_without_prompting(self):
         events = []
@@ -415,6 +623,8 @@ class TestUpdateWindowLifecycle(unittest.TestCase):
             "_download_update_background": lambda self, value, **kwargs: (
                 downloads.append((value, kwargs))),
             "_close_update_flow_box": lambda self: FloatWindow._close_update_flow_box(self),
+            "_dispose_update_dialog": lambda self, dialog: None,
+            "finish_update_check": lambda self, manual: FloatWindow.finish_update_check(self, manual),
         })()
         import stock_float_window
         from stock_float_window import FloatWindow
@@ -551,6 +761,8 @@ class TestUpdateWindowLifecycle(unittest.TestCase):
             "_update_pending": None,
             "_prompt_update": lambda self, value: events.append((value.version, value.notes)),
             "_close_update_flow_box": lambda self: FloatWindow._close_update_flow_box(self),
+            "_dispose_update_dialog": lambda self, dialog: None,
+            "finish_update_check": lambda self, manual: FloatWindow.finish_update_check(self, manual),
         })()
         import stock_float_window
         from stock_float_window import FloatWindow
@@ -576,6 +788,21 @@ class TestUpdateWindowLifecycle(unittest.TestCase):
             FloatWindow._shutdown_threads(fake)
         self.assertTrue(event.is_set())
         self.assertFalse(fake.running)
+    def test_shutdown_records_update_port_failure_and_continues(self):
+        from unittest.mock import Mock
+        from stock_float_window import FloatWindow
+        error = RuntimeError("stop failed")
+        port = Mock()
+        port.stop.side_effect = error
+        fake = type("FakeWindow", (), {
+            "_threads_stopped": False, "_update_port": port, "running": True,
+            "_wake": None, "_editor": None, "_quote_thread": None, "_minute_thread": None,
+        })()
+        with patch("stock_float_window._NET_POOL.close_all"), \
+                patch("stock_float_window.log_swallow") as logged:
+            FloatWindow._shutdown_threads(fake)  # discipline-ok(R5): exercise the real exit lifecycle boundary
+        logged.assert_any_call("stock_float_window.update_port_stop", error)
+        self.assertFalse(fake.running)
 
 
 class TestUpdateDownload(unittest.TestCase):
@@ -597,10 +824,26 @@ class TestUpdateDownload(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, \
              patch.object(sf_update, "UPDATE_STAGING_DIR", folder), \
              patch.object(sf_update, "_download_adaptive", side_effect=self._fake_adaptive(b"zip")):
-            with self.assertRaises(sf_update.UpdateError):
+            with self.assertRaises(sf_update.UpdateFatal):
                 sf_update.download_update(info)
             self.assertFalse((Path(folder) / "Skyrocket-1.3.71.zip").exists())
             self.assertFalse((Path(folder) / "Skyrocket-1.3.71.zip.part").exists())
+            self.assertFalse((Path(folder) / "Skyrocket-1.3.71.zip.resume.json").exists())
+
+    def test_cancelled_at_entry_cleans_matching_partial_artifacts(self):
+        info = sf_update.UpdateInfo("1.3.71", "", "https://github.com/a/b/releases/download/v/a.zip",
+                                    3, hashlib.sha256(b"zip").hexdigest())
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(sf_update, "UPDATE_STAGING_DIR", folder):
+            cache = sf_update.UpdateCache(Path(folder))
+            cache.part_path(info).write_bytes(b"x")
+            cache.mark_resume(info, {0})
+            cancel = threading.Event()
+            cancel.set()
+            with self.assertRaises(sf_update.UpdateCancelled):
+                sf_update.download_update(info, cancel_event=cancel)
+            self.assertFalse(cache.part_path(info).exists())
+            self.assertFalse(cache.resume_path(info).exists())
 
     def test_verified_download_reports_progress_and_completes(self):
         body = b"zip"
@@ -613,6 +856,18 @@ class TestUpdateDownload(unittest.TestCase):
             archive = sf_update.download_update(info, progress_callback=lambda done, total: seen.append((done, total)))
             self.assertEqual(Path(archive).read_bytes(), body)
             self.assertEqual(seen[-1], (len(body), len(body)))
+
+    def test_sequence_identity_changes_download_and_resume_filenames(self):
+        info = sf_update.UpdateInfo("1.4.119", "", "https://github.com/a/b/releases/download/v/a.zip",
+                                    3, hashlib.sha256(b"zip").hexdigest(),
+                                    release_sequence=11, published_at="2026-11-19T00:00:00Z")
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(sf_update, "UPDATE_STAGING_DIR", folder):
+                cache = sf_update.UpdateCache(Path(folder))
+                self.assertEqual(cache.archive_path(info).name,
+                                 "Skyrocket-1.4.119-s11-%s.zip" % info.archive_sha256[:8])
+                self.assertEqual(cache.resume_path(info).name,
+                                 "Skyrocket-1.4.119-s11-%s.zip.resume.json" % info.archive_sha256[:8])
 
     def test_valid_completed_archive_is_reused_without_network(self):
         body = b"zip"
@@ -630,10 +885,9 @@ class TestUpdateDownload(unittest.TestCase):
         info = sf_update.UpdateInfo("1.3.71", "", "https://github.com/a/b/releases/download/v/a.zip",
                                     80, "a" * 64)
         with tempfile.TemporaryDirectory() as folder:
-            state = Path(folder) / "resume.json"
-            state.write_text(json.dumps({"version": "1.3.71", "size": 80,
-                                         "sha256": "a" * 64, "completed": [0, 3]}),
-                             encoding="utf-8")
+            cache = sf_update.UpdateCache(Path(folder))
+            state = cache.resume_path(info)
+            cache.mark_resume(info, {0, 3})
             self.assertEqual(sf_update._load_resume_state(state, info), {0, 3})
             wrong = dataclasses.replace(info, archive_sha256="b" * 64)
             self.assertEqual(sf_update._load_resume_state(state, wrong), set())
@@ -684,8 +938,9 @@ class TestUpdateDownload(unittest.TestCase):
              patch.object(sf_update.concurrent.futures, "ThreadPoolExecutor", _Pool), \
              patch.object(sf_update, "resolve_download_url", return_value=info.archive_url), \
              patch.object(sf_update, "_download_range", side_effect=fake_range):
-            part = Path(folder) / "a.part"
-            state = Path(folder) / "a.resume.json"
+            cache = sf_update.UpdateCache(Path(folder))
+            part = cache.part_path(info)
+            state = cache.resume_path(info)
             sf_update._download_adaptive(info, part, state, threading.Event(), 60)
             self.assertEqual(part.read_bytes(), body)
         self.assertEqual(worker_counts, [8, 4, 1])

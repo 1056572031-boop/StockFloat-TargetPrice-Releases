@@ -17,6 +17,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from nacl.exceptions import BadSignatureError
@@ -26,6 +27,8 @@ from sf_http import (ResponseCancelledError, ResponseDeadlineError, ResponsePoli
                      RestrictedRequest, read_chunk, read_limited, remaining_budget,
                      safe_urlopen)
 
+from sf_update_cache import (UpdateCache, UpdateCacheBusyError, UpdateCacheError,
+                             UpdateCacheSpaceError)
 from sf_constants import (APP_DISPLAY_NAME, APP_VERSION,
                           BUNDLE_ID, STAGING_PRUNE_GRACE_SEC, UPDATE_ARCHIVE_MAX_BYTES,
                           UPDATE_MANIFEST_ATTEMPTS, UPDATE_MANIFEST_MAX_BYTES,
@@ -37,6 +40,7 @@ from sf_constants import (APP_DISPLAY_NAME, APP_VERSION,
 # 2026-11-02 走查 F-H-09：\d 默认匹配全部 Unicode 数字（"1٤.0.0" 会被当成 14.0.0），
 # 版本号只许 ASCII 数字，所以带 re.ASCII。
 _VERSION_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z", re.ASCII)
+_PUBLISHED_AT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z", re.ASCII)
 _ALLOWED_HOSTS = frozenset({"github.com", "raw.githubusercontent.com",
                             "objects.githubusercontent.com",
                             "github-releases.githubusercontent.com",
@@ -102,6 +106,9 @@ class UpdateInfo:
     # 发版阶段标签（纯展示，不改变更新链路）：'beta' | 'stable'。
     # 缺省 stable，兼容不含该字段的旧清单；channel 仍恒为 stable，所有客户端照常更新。
     stage: str = "stable"
+    release_sequence: int | None = None
+    published_at: str | None = None
+    manifest_digest: str | None = None
 
 
 def parse_version(value):
@@ -240,6 +247,17 @@ def verify_manifest(raw):
         raise UpdateError("更新包信息缺失")
     version = manifest.get("version")
     parse_version(version)
+    release_sequence = manifest.get("release_sequence")
+    published_at = manifest.get("published_at")
+    if "release_sequence" in manifest:
+        if type(release_sequence) is not int or release_sequence < 1:
+            raise UpdateError("发布序号格式无效")
+        if not isinstance(published_at, str) or not _PUBLISHED_AT_RE.fullmatch(published_at):
+            raise UpdateError("发布时间格式无效")
+        try:
+            datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as exc:
+            raise UpdateError("发布时间格式无效") from exc
     url = archive.get("url")
     if not isinstance(url, str):
         # F-H-09：非字符串地址在 urlparse 里会抛 AttributeError，不是 UpdateError。
@@ -258,7 +276,9 @@ def verify_manifest(raw):
     stage = manifest.get("stage")
     if stage not in ("beta", "stable"):
         stage = "stable"
-    return UpdateInfo(version, notes, url, size, digest, stage)
+    return UpdateInfo(version, notes, url, size, digest, stage,
+                      release_sequence, published_at,
+                      hashlib.sha256(_canonical_payload(manifest)).hexdigest())
 
 
 def _request_url(url):
@@ -322,7 +342,7 @@ def fetch_manifest(timeout=UPDATE_MANIFEST_TIMEOUT_SEC):
         raise UpdateError("更新清单读取失败或超过总时限") from exc
 
 
-def check_for_update(current_version=APP_VERSION, attempts=UPDATE_MANIFEST_ATTEMPTS):
+def check_for_update(current_version=APP_VERSION, attempts=UPDATE_MANIFEST_ATTEMPTS, *, sequence_aware=False):
     """取线上清单并回答"有没有新版"；**只给取清单这一步**留重试额度。
 
     v1.4.43 的两处放宽，数字来源见 `sf_constants.UPDATE_MANIFEST_TIMEOUT_SEC`
@@ -335,13 +355,13 @@ def check_for_update(current_version=APP_VERSION, attempts=UPDATE_MANIFEST_ATTEM
     """
     _record_manifest("checking")
     try:
-        return _check_for_update(current_version, attempts)
+        return _check_for_update(current_version, attempts, sequence_aware=sequence_aware)
     except Exception as exc:
         _record_manifest("failed", error_kind=type(exc).__name__)
         raise
 
 
-def _check_for_update(current_version, attempts):
+def _check_for_update(current_version, attempts, *, sequence_aware=False):
     raw = None
     last_error = None
     for _ in range(max(1, attempts)):
@@ -357,7 +377,7 @@ def _check_for_update(current_version, attempts):
     _record_manifest("verified", version=info.version, archive_sha256=info.archive_sha256,
                      archive_size=info.archive_size, manifest_sha256=hashlib.sha256(raw).hexdigest(),
                      newer=newer)
-    return info if newer else None
+    return info if sequence_aware or newer else None
 
 
 def _file_matches(path, expected_size, expected_sha256):
@@ -598,30 +618,19 @@ def _download_range(url, start, end, part_path, cancel_event, timeout,
 
 
 def _load_resume_state(state_path, info):
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-        # F-H-09：合法 JSON 但不是对象（[] / null / 5）时 .get 会抛 AttributeError，
-        # 续传状态于是永远读不出来；一律按「没有进度」处理，下一个分片完成时会被覆盖写好。
-        if not isinstance(data, dict):
-            return set()
-        if (data.get("version") == info.version
-                and data.get("size") == info.archive_size
-                and data.get("sha256") == info.archive_sha256):
-            max_parts = len(_download_ranges(info.archive_size))
-            return {int(index) for index in data.get("completed", [])
-                    if isinstance(index, int) and 0 <= index < max_parts}
-    except (OSError, ValueError, TypeError, AttributeError):
-        pass
-    return set()
+    """兼容旧测试/调用的包装；实际读取由 UpdateCache 唯一负责。"""
+    cache = UpdateCache(state_path.parent)
+    if state_path != cache.resume_path(info):
+        raise UpdateCacheError("续传状态路径必须由缓存身份决定")
+    return cache.load_resume(info)
 
 
 def _save_resume_state(state_path, info, completed):
-    data = {"version": info.version, "size": info.archive_size,
-            "sha256": info.archive_sha256, "completed": sorted(completed)}
-    temp = state_path.with_suffix(".json.tmp-%d-%d" % (os.getpid(), time.time_ns()))
-    temp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
-    os.chmod(temp, 0o600)
-    os.replace(temp, state_path)
+    """兼容旧测试/调用的包装；实际写入由 UpdateCache 唯一负责。"""
+    cache = UpdateCache(state_path.parent)
+    if state_path != cache.resume_path(info):
+        raise UpdateCacheError("续传状态路径必须由缓存身份决定")
+    cache.mark_resume(info, completed)
 
 
 def _worker_ladder(parts):
@@ -643,13 +652,15 @@ def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
     # This budget is shared across HEAD, all workers, retries and fallback levels.
     deadline = time.monotonic() + timeout
     ranges = _download_ranges(info.archive_size)
-    completed = _load_resume_state(state_path, info) if part_path.is_file() else set()
+    cache = UpdateCache(part_path.parent)
+    cache.ensure_identity_paths_safe(info)
+    completed = cache.load_resume(info) if part_path.is_file() else set()
     if not part_path.is_file() or part_path.stat().st_size != info.archive_size:
         with open(part_path, "wb") as out:
             out.truncate(info.archive_size)
         os.chmod(part_path, 0o600)
         completed.clear()
-        _save_resume_state(state_path, info, completed)
+        cache.mark_resume(info, completed)
     completed_bytes = sum(ranges[index][1] - ranges[index][0] + 1 for index in completed)
     progress_lock = threading.Lock()
     covered = [end - start + 1 if index in completed else 0
@@ -703,7 +714,7 @@ def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
                     last_error = exc
                 else:
                     completed.add(index)
-                    _save_resume_state(state_path, info, completed)
+                    cache.mark_resume(info, completed)
         if cancel_event is not None and cancel_event.is_set():
             raise UpdateCancelled("下载已取消") from fatal_error
         if fatal_error is not None:
@@ -717,31 +728,51 @@ def _download_adaptive(info, part_path, state_path, cancel_event, timeout,
 def download_update(info, cancel_event=None, timeout=300, progress_callback=None):
     """Bound the whole network phase; verify the archive before atomic delivery."""
     local_cancel = cancel_event or threading.Event()
-    _update_remaining(time.monotonic() + timeout, local_cancel)
-    root = Path(UPDATE_STAGING_DIR)
-    root.mkdir(parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
-    final_path = root / ("Skyrocket-%s.zip" % info.version)
-    if _file_matches(final_path, info.archive_size, info.archive_sha256):
-        if progress_callback is not None:
-            progress_callback(info.archive_size, info.archive_size)
-        return str(final_path)
-    part_path = final_path.with_suffix(".zip.part")
-    state_path = final_path.with_suffix(".zip.resume.json")
     try:
-        _download_adaptive(info, part_path, state_path, local_cancel, timeout,
-                           progress_callback)
-        if not _file_matches(part_path, info.archive_size, info.archive_sha256):
-            part_path.unlink(missing_ok=True)
-            state_path.unlink(missing_ok=True)
-            raise UpdateError("下载文件校验失败")
-        if local_cancel.is_set():
-            raise UpdateCancelled("下载已取消")
-        os.replace(part_path, final_path)
-        state_path.unlink(missing_ok=True)
-        return str(final_path)
-    except UpdateError:
-        raise
+        cache = UpdateCache(Path(UPDATE_STAGING_DIR))
+        with cache.write_lock():
+            if local_cancel.is_set():
+                cache.discard_partial_download(info)
+                raise UpdateCancelled("下载已取消")
+            if not cache.accept_manifest_identity(info):
+                raise UpdateError("更新清单已过期或身份不一致")
+            cache.invalidate_stale(info)
+            cache.ensure_identity_paths_safe(info)
+            final_path = cache.validate_cached_archive_locked(info)
+            if final_path is not None:
+                if progress_callback is not None:
+                    progress_callback(info.archive_size, info.archive_size)
+                return str(final_path)
+            cache.require_space(info)
+            part_path = cache.part_path(info)
+            state_path = cache.resume_path(info)
+            try:
+                _download_adaptive(info, part_path, state_path, local_cancel, timeout,
+                                   progress_callback)
+                if local_cancel.is_set():
+                    raise UpdateCancelled("下载已取消")
+                if not _file_matches(part_path, info.archive_size, info.archive_sha256):
+                    raise UpdateFatal("下载文件校验失败")
+                if local_cancel.is_set():
+                    raise UpdateCancelled("下载已取消")
+                os.replace(part_path, cache.archive_path(info))
+                state_path.unlink(missing_ok=True)
+                return str(cache.archive_path(info))
+            except UpdateCancelled:
+                cache.discard_partial_download(info)
+                raise
+            except UpdateFatal:
+                cache.discard_partial_download(info)
+                raise
+            except UpdateError:
+                cache.preserve_interrupted_download(info)
+                raise
+    except UpdateCacheBusyError as exc:
+        raise UpdateError("已有更新下载正在进行") from exc
+    except UpdateCacheSpaceError as exc:
+        raise UpdateFatal("更新暂存空间不足") from exc
+    except UpdateCacheError as exc:
+        raise UpdateFatal("更新暂存目录不安全") from exc
 
 
 def _handoff_path(handoff_id, suffix):
@@ -851,6 +882,10 @@ def residue_reason(name, mtime_age_sec, installed_version, grace_sec=STAGING_PRU
     每条都还要过 `grace_sec` 这一关 —— 时间不够的一律当作"正在写"。
     """
     if mtime_age_sec < grace_sec:
+        return None
+    # Sequenced cache artifacts are owned and retired by UpdateCache, not the
+    # legacy startup sweeper; it has no current-manifest identity or lock.
+    if re.fullmatch(r"Skyrocket-\d+\.\d+\.\d+-s\d+-[0-9a-f]{8}\.zip(?:\.part|\.resume\.json)?", name):
         return None
     if name.endswith(".zip.part"):
         return "part"
@@ -1094,7 +1129,8 @@ class _InstallerLaunch(list):
         self.copied = copied
 
 
-def launch_installer(archive_path, expected_sha256, expected_version, target_app=None, handoff_id=None):
+def launch_installer(archive_path, expected_sha256, expected_version, target_app=None,
+                     handoff_id=None, *, release_sequence=None, archive_size=None):
     """把助手拷到 App 外再启动；主程序随后调用既有 quit() 优雅退出。"""
     target_app = target_app or installed_bundle_path()
     if not target_app or not os.path.isdir(target_app):
@@ -1102,6 +1138,19 @@ def launch_installer(archive_path, expected_sha256, expected_version, target_app
     helper = bundled_helper_path()
     if not os.path.isfile(helper):
         raise UpdateError("更新助手不可用")
+    parse_version(expected_version)
+    modern_protocol = release_sequence is not None
+    if modern_protocol and archive_size is None:
+        raise UpdateError("更新助手参数不完整")
+    if not modern_protocol and archive_size is not None:
+        raise UpdateError("更新助手参数不完整")
+    if modern_protocol:
+        if type(release_sequence) is not int or release_sequence < 1:
+            raise UpdateError("更新序号无效")
+        if type(archive_size) is not int or archive_size < 1:
+            raise UpdateError("更新包大小无效")
+    if bool(UPDATE_SIGNING_TEAM_ID) != bool(UPDATE_SIGNING_CERT_SHA1):
+        raise UpdateError("更新签名身份配置不完整")
     root = Path(UPDATE_STAGING_DIR)
     root.mkdir(parents=True, exist_ok=True)
     handoff = handoff_id or uuid.uuid4().hex
@@ -1111,14 +1160,14 @@ def launch_installer(archive_path, expected_sha256, expected_version, target_app
     shutil.copy2(helper, copied)
     os.chmod(copied, 0o700)
     result = root / "update-result.json"
-    parse_version(expected_version)
-    if bool(UPDATE_SIGNING_TEAM_ID) != bool(UPDATE_SIGNING_CERT_SHA1):
-        raise UpdateError("更新签名身份配置不完整")
     command = ["/bin/sh", str(copied), "--pid", str(os.getpid()), "--archive", archive_path,
                "--sha256", expected_sha256, "--version", expected_version,
-               "--target", target_app, "--result", str(result), "--handoff", handoff,
-               "--team-id", UPDATE_SIGNING_TEAM_ID,
-               "--cert-sha1", UPDATE_SIGNING_CERT_SHA1]
+               "--target", target_app, "--result", str(result)]
+    if modern_protocol:
+        command.extend(["--sequence", str(release_sequence), "--size", str(archive_size)])
+    command.extend(["--handoff", handoff,
+                    "--team-id", UPDATE_SIGNING_TEAM_ID,
+                    "--cert-sha1", UPDATE_SIGNING_CERT_SHA1])
     try:
         process = subprocess.Popen(command, close_fds=True, start_new_session=True)
     except OSError as exc:

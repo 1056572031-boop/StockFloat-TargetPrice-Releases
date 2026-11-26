@@ -31,7 +31,7 @@ function makeEl(attrs = {}) {
 }
 
 function harness({ hash = "", withAlt = true, withCta = true, withVideo = false, withScene = false, lazies = 0, observer = true,
-  reduced = false, playRejects = false, connection = null, readyState = "loading", dpr = 1, width = 1040, withScene2 = false, width2 = 1040 } = {}) {
+  reduced = false, playRejects = false, connection = null, readyState = "loading", dpr = 1, width = 1040, withScene2 = false, width2 = 1040, withScene1 = false } = {}) {
   const listeners = { window: {}, cta: [], go: [], motion: [] };
   const makeVideo = (attrs = {}) => Object.assign(makeEl(attrs), {
     plays: 0, pauses: 0,
@@ -107,6 +107,7 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
   const go = { addEventListener: (type, fn) => listeners.go.push([type, fn]) };
   const registry = { page, cta: withCta ? cta : null, alt: withAlt ? alt : null, goalt: go, mv: withVideo ? video : null,
     s4: withScene ? fig : null, sv: withScene ? scene : null, ss: withScene ? still : null,
+    s1: withScene1 ? fig : null, sv1: withScene1 ? scene : null, ss1: withScene1 ? still : null,
     s2: withScene2 ? fig2 : null, sv2: withScene2 ? scene2 : null, ss2: withScene2 ? still2 : null };
   const document = {
     readyState,
@@ -121,7 +122,7 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
     requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
   };
   // 默认不提供 matchMedia：老浏览器和旧用例都要能跑；要测动效偏好时才挂上。
-  if (withVideo || withScene || withScene2) window.matchMedia = () => motion;
+  if (withVideo || withScene || withScene2 || withScene1) window.matchMedia = () => motion;
   if (observer) window.IntersectionObserver = FakeObserver;
   const context = { document, window, location: { hash } };
   if (connectionState) context.navigator = { connection: connectionState };
@@ -153,6 +154,29 @@ function harness({ hash = "", withAlt = true, withCta = true, withVideo = false,
   const fallback = () => { const t = timers.find(item => item.ms === 6000); if (t) t.fn(); };
   return { page, cta, alt, summary, go, listeners, timers, imgs, click, context, video, scene, still, fig, scene2, still2, fig2, sources2, lazy, sources, motion, connection: connectionState, connectionListeners, observers, all, find, fire, changeMotion, changeConnection, load, scroll, intent, flush, startHero, fallback };
 }
+
+test("the first scene loads only near view, plays on screen and respects reduced motion", () => {
+  const h = harness({ withScene1: true });
+  assert.equal(h.scene.loads, 0);
+  h.fire("near", true);
+  h.fire("on", true);
+  assert.equal(h.scene.hidden, false);
+  assert.ok(h.scene.plays > 0);
+  h.changeMotion(true);
+  assert.equal(h.scene.hidden, true);
+  assert.equal(h.still.hidden, false);
+});
+
+test("reduced motion unloads a warmed scene and stops its pending download", () => {
+  const h = harness({ withScene1: true });
+  h.load();
+  h.intent();
+  h.fire("warm", true);
+  assert.ok(h.sources.some(source => source.getAttribute("src")));
+  h.changeMotion(true);
+  assert.ok(h.sources.every(source => !source.getAttribute("src")), "减少动态效果时必须清除预热的视频地址");
+  assert.equal(h.scene.getAttribute("preload"), "none");
+});
 
 test("clicking the download link marks the page as started and does not cancel the download", () => {
   const h = harness();

@@ -130,6 +130,7 @@ def submit_https(url, envelope, archive_path, *, allow_loopback=False, verified=
         raise FeedbackProtocolError("反馈信封过大")
     request = Request(url, data=struct.pack("!I", len(header)) + header + archive,
                       headers={"Content-Type": "application/vnd.skyrocket.feedback-v1",
+                               "X-Skyrocket-Retention": "auto-delete-v1",
                                "User-Agent": "Skyrocket-Feedback/1", "Accept": "application/json"}, method="POST")
     timeout = 120 if envelope["diagnostic_payload_version"] >= 2 else 30
     with build_opener(NoRedirect(), RejectRealConnectionUnderTest()).open(request, timeout=timeout) as response:

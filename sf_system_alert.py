@@ -24,10 +24,14 @@ import os
 import subprocess
 import sys
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
 
 try:
-    import AppKit
-    import objc
+    import AppKit  # type: ignore[import-untyped]
+    import objc  # type: ignore[import-untyped]
 except Exception:                                    # 非 macOS / 依赖缺失
     AppKit = None
     objc = None
@@ -268,18 +272,20 @@ class SystemDialog:
     只出现在参数位，绝不进入脚本源码。
     """
 
-    def __init__(self, launch, on_result=None):
+    def __init__(self, launch, on_result=None, dismissible=True):
         self._launch = list(launch)
         self._on_result = on_result
+        self._dismissible = bool(dismissible)
         self._proc = None
         self._closing = False
+        self._wake = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="system-dialog")
         self._thread.start()
 
     def _run(self):
-        button = None
-        if not self._closing:
+        while not self._closing:
+            button = None
             try:
                 self._proc = subprocess.Popen(
                     ["/usr/bin/osascript", "-e"] + self._launch,
@@ -290,23 +296,53 @@ class SystemDialog:
                 button = None
             finally:
                 self._proc = None
-        if self._closing:
-            button = None
-        if button is not None and self._on_result is not None:
-            try:
-                self._on_result(button)
-            except Exception:
-                pass
+            if self._closing:
+                return
+            if button is not None:
+                if self._on_result is not None:
+                    try:
+                        self._on_result(button)
+                    except Exception as exc:
+                        _swallow("sf_system_alert.SystemDialog.result", exc)
+                return
+            if self._dismissible:
+                return
+            # AppleScript cannot disable the close button. Re-present a forced
+            # prompt after a user-initiated window close, while close() remains
+            # an explicit programmatic shutdown path.
+            self._wake.wait(1.0)
+            self._wake.clear()
 
     def close(self):
         """收口：terminate 弹窗进程；重复调用安全。"""
         self._closing = True
+        self._wake.set()
         proc = self._proc
         if proc is not None and proc.poll() is None:
             try:
                 proc.terminate()
             except OSError:
                 pass
+
+
+if AppKit is not None:
+
+    class _AlertWindowDelegate(AppKit.NSObject):
+        """Keep forced NSAlert windows alive against close/Esc/Cmd-W."""
+
+        def setOwner_(self, owner):
+            self._owner = owner
+
+        def windowShouldClose_(self, _window):
+            owner = getattr(self, "_owner", None)
+            return bool(owner is not None and owner.dismissible)
+
+        def cancelOperation_(self, _sender):
+            return None
+
+
+else:
+    _AlertWindowDelegate: Any = None  # type: ignore[no-redef]
 
 
 if AppKit is not None:
@@ -341,7 +377,7 @@ if AppKit is not None:
 
 
 else:
-    _AlertTarget = None
+    _AlertTarget: Any = None  # type: ignore[no-redef]
 
 
 class NativeAlert:
@@ -356,11 +392,14 @@ class NativeAlert:
     NSAlert 的纯文案版式都装不下进度条，此前只能退回 Qt 自绘框。
     """
 
-    _live = {}          # 防 GC：AppKit target/action 链需要 Python 侧存活引用
+    _live: dict[int, "NativeAlert"] = {}          # 防 GC：AppKit target/action 链需要 Python 侧存活引用
 
     def __init__(self, message, info, buttons, default, cancel,
-                 icon_path, on_result, progress=False, center_text=False):
+                 icon_path, on_result, progress=False, center_text=False,
+                 dismissible=True):
         self._on_result = on_result
+        self._dismissible = bool(dismissible)
+        self._window_delegate = None
         # 文案是否连"段落样式"一起居中。默认关：更新说明那类编号列表要贴左读，
         # 只有明确要逐行居中的弹窗（反馈结果）才打开，见 _center_text。
         self._paragraph_centered = bool(center_text)
@@ -388,8 +427,11 @@ class NativeAlert:
             titles.append(cancel)
         for title in titles:
             alert.addButtonWithTitle_(title)
-        if cancel and titles:
+        if cancel and titles and self._dismissible:
             alert.buttons()[-1].setKeyEquivalent_("\x1b")   # Esc = 取消
+        elif not self._dismissible:
+            for button in alert.buttons():
+                button.setKeyEquivalent_("")
         for button in alert.buttons():
             # 焦点描边：按钮成为第一响应者会被一圈蓝色描边套住（用户要求去掉）。
             button.setFocusRingType_(AppKit.NSFocusRingTypeNone)
@@ -402,6 +444,12 @@ class NativeAlert:
         self._alert = alert
         self._window = alert.window()
         self._window.setReleasedWhenClosed_(False)
+        if not self._dismissible and _AlertWindowDelegate is not None:
+            self._window_delegate = _AlertWindowDelegate.alloc().init()
+            self._window_delegate.setOwner_(self)
+            setter = getattr(self._window, "setDelegate_", None)
+            if setter is not None:
+                setter(self._window_delegate)
         self._center_content(alert, self._paragraph_centered)
         self._target = _AlertTarget.alloc().init()
         self._target.setOwner_(self)
@@ -419,6 +467,11 @@ class NativeAlert:
         # 上屏后再调一次是幂等的 —— 位置没变就等于没动，仍在真被系统重排时兜住。
         center_window(self._window)
         NativeAlert._live[id(self)] = self
+
+    @property
+    def dismissible(self):
+        """Read-only close policy consumed by the native window delegate."""
+        return self._dismissible
 
     def present(self):
         """Bring an existing alert to the current Space without creating another one."""
@@ -745,7 +798,6 @@ class NativeAlert:
         label = text or ("%d%%" % value)
         if self._last_shown == (value, label):
             return False
-        self._last_shown = (value, label)
         try:
             self._bar.setDoubleValue_(float(value))
             self._bar.display()
@@ -756,8 +808,10 @@ class NativeAlert:
             # 重排也可能让窗口长高一截（副文案换行）：只补内容居中，窗口会
             # 越刷越往上跑，所以落点也要跟着补一次。
             center_window(self._window)
-        except Exception:
+        except Exception as exc:
+            _swallow("sf_system_alert.NativeAlert.set_progress", exc)
             return False
+        self._last_shown = (value, label)
         return True
 
     def _handle_click(self, title):
@@ -801,7 +855,7 @@ def native_available():
 
 def show_alert(title, text, buttons=("好",), default=None, cancel=None,
                icon_path=None, on_result=None, message=None, info=None,
-               center_text=False):
+               center_text=False, dismissible=True):
     """弹一条 macOS 原生样式对话框，立即返回句柄，不阻塞调用线程。
 
     message/info 用于 NSAlert 的粗体主文案与副文案；未提供时以 text 兜底
@@ -816,7 +870,7 @@ def show_alert(title, text, buttons=("好",), default=None, cancel=None,
         try:
             return NativeAlert(message or text, info or "", buttons,
                                default, cancel, icon_path, on_result,
-                               center_text=center_text)
+                               center_text=center_text, dismissible=dismissible)
         except Exception as exc:
             # 这里是"降不降级"的决策点，必须留痕（AGENTS §6 第 9 条；复核 B1）：
             # 静默吞掉的后果是弹窗既不居中、也可能不可见，而用户只会说"点了没反应"。
@@ -829,7 +883,7 @@ def show_alert(title, text, buttons=("好",), default=None, cancel=None,
     launch = build_launch(title, merged, buttons=buttons, default=default,
                           cancel=cancel,
                           icon_path=icon_path if icon_path and os.path.isfile(icon_path) else None)
-    return SystemDialog(launch, on_result=on_result)
+    return SystemDialog(launch, on_result=on_result, dismissible=dismissible)
 
 
 def show_progress_alert(message, info="", cancel="取消", on_result=None,

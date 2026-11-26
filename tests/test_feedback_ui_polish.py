@@ -165,7 +165,8 @@ class HistoryLayout(_DialogCase):
         self.assertIn("case-001", text)
         self.assertIn("等待确认，可重试", text)
         self.assertIn("已收件，本机资料待清理", text)
-        self.assertEqual(len(history.findChildren(QToolButton)), 2, "只有“已收件、待清理”的两条有清理按钮")
+        buttons = [button for button in history.findChildren(QToolButton) if button.text() == "清理"]
+        self.assertEqual(len(buttons), 2, "夹具里有两条已收件记录")
 
     def test_waiting_records_stand_out_from_settled_ones(self):
         history = self.track_widget(FeedbackHistoryDialog(_Outbox(3), self.dialog))
@@ -593,6 +594,13 @@ class RejectedVersusRetryable(FailureEvidence):
             self.assertIn("拒收", hint, code)
         self.assertIn("1~2 分钟", _failure_hint({"server_code": "lease_superseded", "http_status": 409}))
 
+    def test_deleted_case_is_permanently_rejected_not_retried(self):
+        detail = {"server_code": "case_deleted", "http_status": 409}
+        self.assertEqual(_failure_kind(detail), "rejected")
+        self.assertIn("拒收", _failure_hint(detail))
+        alerts, _log = self.fail_with(self.http_error(409, b'{"error":"case_deleted"}'))
+        self.assertNotIn(_REOPEN_TAIL, alerts.call_args.kwargs["info"])
+
     def test_an_unknown_409_gets_no_made_up_reason(self):
         self.assertEqual(_failure_hint({"server_code": "some_future_conflict", "http_status": 409}), "",
                          "不认识的 409 不知道等一会儿有没有用，不能编“可能仍在处理”")
@@ -604,6 +612,14 @@ class RejectedVersusRetryable(FailureEvidence):
         self.assertEqual(_failure_kind({"server_code": "never_heard_of_it", "http_status": 413}), "rejected")
         self.assertEqual(_failure_kind({"server_code": "inbox_capacity", "http_status": 503}), "full")
         self.assertEqual(_failure_kind({"http_status": 503}), "retry")
+
+    def test_retention_error_classification(self):
+        for code in ("retention_intent_conflict", "retention_case_deleted", "case_deleted"):
+            with self.subTest(code=code):
+                self.assertEqual(_failure_kind({"server_code": code, "http_status": 409}), "rejected")
+        for code in ("retention_cleanup_in_progress", "retention_cleanup_lease_lost"):
+            with self.subTest(code=code):
+                self.assertEqual(_failure_kind({"server_code": code, "http_status": 409}), "retry")
 
     def test_failure_kinds(self):
         self.assertEqual(_failure_kind({"server_code": "diagnostic_member"}), "rejected")
@@ -739,7 +755,7 @@ class CleanupIsImmediate(_DialogCase):
 
     def test_cleaning_one_record_leaves_the_others_in_place(self):
         history = self.track_widget(FeedbackHistoryDialog(_Outbox(3), self.dialog))
-        buttons = history.findChildren(QToolButton)
+        buttons = [button for button in history.findChildren(QToolButton) if button.text() == "清理"]
         self.assertEqual(len(buttons), 2, "夹具里有两条已收件记录")
         buttons[0].click()
         remaining = self.cards(history)
